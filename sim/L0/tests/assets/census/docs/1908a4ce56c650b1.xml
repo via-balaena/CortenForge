@@ -1,0 +1,4 @@
+<mujoco>
+            <worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>
+            <actuator><cylinder joint="j" bias="1 2"/></actuator>
+        </mujoco>

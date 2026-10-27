@@ -8,7 +8,7 @@ use crate::error::{MjcfError, Result};
 
 use crate::types::MjcfKeyframe;
 
-use super::attrs::{get_attribute_opt, parse_float_array_opt, parse_float_attr, skip_element};
+use super::attrs::{Attrs, skip_element};
 
 // ============================================================================
 // Keyframe parsing
@@ -51,16 +51,17 @@ pub(super) fn parse_keyframes<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<
 
 /// Parse attributes of a single `<key>` element.
 pub(super) fn parse_key_attrs(e: &BytesStart) -> Result<MjcfKeyframe> {
+    let a = Attrs::new(e)?;
     let mut kf = MjcfKeyframe::default();
 
-    kf.name = get_attribute_opt(e, "name").unwrap_or_default();
-    kf.time = parse_float_attr(e, "time").unwrap_or(0.0);
-    kf.qpos = parse_float_array_opt(e, "qpos")?;
-    kf.qvel = parse_float_array_opt(e, "qvel")?;
-    kf.act = parse_float_array_opt(e, "act")?;
-    kf.ctrl = parse_float_array_opt(e, "ctrl")?;
-    kf.mpos = parse_float_array_opt(e, "mpos")?;
-    kf.mquat = parse_float_array_opt(e, "mquat")?;
+    kf.name = a.string("name").unwrap_or_default();
+    kf.time = a.real("time")?.unwrap_or(0.0);
+    kf.qpos = a.vector("qpos")?;
+    kf.qvel = a.vector("qvel")?;
+    kf.act = a.vector("act")?;
+    kf.ctrl = a.vector("ctrl")?;
+    kf.mpos = a.vector("mpos")?;
+    kf.mquat = a.vector("mquat")?;
 
     Ok(kf)
 }

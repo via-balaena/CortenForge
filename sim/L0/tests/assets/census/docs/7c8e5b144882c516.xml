@@ -1,0 +1,1 @@
+<mujoco><worldbody><body><geom size="0.1"/><site type="capsule" size="0.1" fromto="0 0 0 0 0 1 2"/></body></worldbody></mujoco>

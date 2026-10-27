@@ -1,7 +1,7 @@
 //! Unit tests for the MJCF parser.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use super::attrs::parse_vector3;
+use super::attrs::Attrs;
 use super::parse_mjcf_str;
 use crate::error::MjcfError;
 use crate::types::{
@@ -150,7 +150,7 @@ fn test_parse_actuators() {
     assert_eq!(motor.name, "motor1");
     assert_eq!(motor.actuator_type, MjcfActuatorType::Motor);
     assert_eq!(motor.joint, Some("joint1".to_string()));
-    assert_relative_eq!(motor.gear[0], 100.0, epsilon = 1e-10);
+    assert_relative_eq!(motor.gear.unwrap().given()[0], 100.0, epsilon = 1e-10);
 
     let servo = &model.actuators[1];
     assert_eq!(servo.name, "servo1");
@@ -200,13 +200,18 @@ fn test_unknown_joint_type() {
 
 #[test]
 fn test_parse_vector3() {
-    let v = parse_vector3("1.0 2.0 3.0").expect("should parse");
+    let e = quick_xml::events::BytesStart::from_content(
+        r#"geom pos="1.0 2.0 3.0" axis="  1   2   3  ""#,
+        4,
+    );
+    let a = Attrs::new(&e).expect("attributes");
+    let v = a.vec3("pos").expect("should parse").expect("present");
     assert_relative_eq!(v.x, 1.0, epsilon = 1e-10);
     assert_relative_eq!(v.y, 2.0, epsilon = 1e-10);
     assert_relative_eq!(v.z, 3.0, epsilon = 1e-10);
 
     // With extra whitespace
-    let v = parse_vector3("  1   2   3  ").expect("should parse");
+    let v = a.vec3("axis").expect("should parse").expect("present");
     assert_relative_eq!(v.x, 1.0, epsilon = 1e-10);
 }
 
@@ -681,17 +686,17 @@ fn test_parse_option_override_arrays() {
     let opt = &model.option;
 
     let solimp = opt.o_solimp.expect("should have o_solimp");
-    assert_relative_eq!(solimp[0], 0.9, epsilon = 1e-10);
-    assert_relative_eq!(solimp[1], 0.95, epsilon = 1e-10);
-    assert_relative_eq!(solimp[2], 0.001, epsilon = 1e-10);
+    assert_relative_eq!(solimp.given()[0], 0.9, epsilon = 1e-10);
+    assert_relative_eq!(solimp.given()[1], 0.95, epsilon = 1e-10);
+    assert_relative_eq!(solimp.given()[2], 0.001, epsilon = 1e-10);
 
     let solref = opt.o_solref.expect("should have o_solref");
-    assert_relative_eq!(solref[0], 0.02, epsilon = 1e-10);
-    assert_relative_eq!(solref[1], 1.0, epsilon = 1e-10);
+    assert_relative_eq!(solref.given()[0], 0.02, epsilon = 1e-10);
+    assert_relative_eq!(solref.given()[1], 1.0, epsilon = 1e-10);
 
     let friction = opt.o_friction.expect("should have o_friction");
-    assert_relative_eq!(friction[0], 1.0, epsilon = 1e-10);
-    assert_relative_eq!(friction[1], 0.005, epsilon = 1e-10);
+    assert_relative_eq!(friction.given()[0], 1.0, epsilon = 1e-10);
+    assert_relative_eq!(friction.given()[1], 0.005, epsilon = 1e-10);
 }
 
 #[test]
@@ -788,7 +793,7 @@ fn test_parse_default_geom() {
     assert_eq!(geom_defaults.geom_type, Some(MjcfGeomType::Box));
     assert_relative_eq!(geom_defaults.density.unwrap(), 500.0, epsilon = 1e-10);
     let friction = geom_defaults.friction.unwrap();
-    assert_relative_eq!(friction.x, 0.8, epsilon = 1e-10);
+    assert_relative_eq!(friction.given()[0], 0.8, epsilon = 1e-10);
     let rgba = geom_defaults.rgba.unwrap();
     assert_relative_eq!(rgba.x, 1.0, epsilon = 1e-10);
     assert_relative_eq!(rgba.y, 0.0, epsilon = 1e-10);
@@ -813,7 +818,11 @@ fn test_parse_default_actuator() {
         .actuator
         .as_ref()
         .expect("should have actuator defaults");
-    assert_relative_eq!(actuator_defaults.gear.unwrap()[0], 100.0, epsilon = 1e-10);
+    assert_relative_eq!(
+        actuator_defaults.gear.unwrap().given()[0],
+        100.0,
+        epsilon = 1e-10
+    );
     assert_eq!(actuator_defaults.ctrlrange, Some((-1.0, 1.0)));
     assert_relative_eq!(actuator_defaults.kp.unwrap(), 50.0, epsilon = 1e-10);
     assert_relative_eq!(actuator_defaults.kv.unwrap(), 5.0, epsilon = 1e-10);
@@ -971,7 +980,7 @@ fn test_parse_default_site() {
     let site_defaults = default.site.as_ref().expect("should have site defaults");
     assert_eq!(site_defaults.site_type, Some("sphere".to_string()));
     let size = site_defaults.size.as_ref().unwrap();
-    assert_relative_eq!(size[0], 0.02, epsilon = 1e-10);
+    assert_relative_eq!(size.given()[0], 0.02, epsilon = 1e-10);
     let rgba = site_defaults.rgba.unwrap();
     assert_relative_eq!(rgba.y, 1.0, epsilon = 1e-10);
 }
@@ -1295,13 +1304,13 @@ fn test_parse_connect_constraint_with_solver_params() {
     let connect = &model.equality.connects[0];
 
     let solref = connect.solref.expect("should have solref");
-    assert_relative_eq!(solref[0], 0.02, epsilon = 1e-10);
-    assert_relative_eq!(solref[1], 1.0, epsilon = 1e-10);
+    assert_relative_eq!(solref.given()[0], 0.02, epsilon = 1e-10);
+    assert_relative_eq!(solref.given()[1], 1.0, epsilon = 1e-10);
 
     let solimp = connect.solimp.expect("should have solimp");
-    assert_relative_eq!(solimp[0], 0.9, epsilon = 1e-10);
-    assert_relative_eq!(solimp[1], 0.95, epsilon = 1e-10);
-    assert_relative_eq!(solimp[2], 0.001, epsilon = 1e-10);
+    assert_relative_eq!(solimp.given()[0], 0.9, epsilon = 1e-10);
+    assert_relative_eq!(solimp.given()[1], 0.95, epsilon = 1e-10);
+    assert_relative_eq!(solimp.given()[2], 0.001, epsilon = 1e-10);
 }
 
 #[test]

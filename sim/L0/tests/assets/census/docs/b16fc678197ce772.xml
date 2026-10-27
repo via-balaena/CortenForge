@@ -1,0 +1,8 @@
+<mujoco>
+            <worldbody><body><joint name="a"/><geom size="0.1"/></body></worldbody>
+            <tendon>
+                <fixed name="t1"><joint joint="a" coef="1"/></fixed>
+                <fixed name="t2"><joint joint="a" coef="2"/></fixed>
+            </tendon>
+            <equality><tendon tendon1="t1" tendon2="t2" polycoef="0 1 0 0 0 0"/></equality>
+        </mujoco>

@@ -472,10 +472,7 @@ fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> MjcfG
         geom.rgba = Some(nalgebra::Vector4::new(rgba[0], rgba[1], rgba[2], rgba[3]));
     }
 
-    // Set friction from template (convert [f64; 3] to Vector3)
-    if let Some(friction) = template.friction {
-        geom.friction = Some(Vector3::new(friction[0], friction[1], friction[2]));
-    }
+    geom.friction = template.friction;
 
     // Override placement based on geom type (AddCableBody:392-403)
     match template.geom_type {

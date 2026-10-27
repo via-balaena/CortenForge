@@ -9,10 +9,7 @@ use crate::error::{MjcfError, Result};
 
 use crate::types::{MjcfFlex, MjcfSkin, MjcfSkinBone, MjcfSkinVertex};
 
-use super::attrs::{
-    get_attribute_opt, parse_float_array, parse_float_attr, parse_int_array, parse_int_attr,
-    parse_vector3, parse_vector4, skip_element,
-};
+use super::attrs::{Attrs, skip_element};
 
 // ============================================================================
 // Deformable / Skin parsing
@@ -51,12 +48,12 @@ pub(super) fn parse_deformable<R: BufRead>(
             Ok(Event::Empty(ref e)) => {
                 match e.name().as_ref() {
                     b"skin" => {
-                        let skin = parse_skin_attrs(e);
+                        let skin = parse_skin_attrs(e)?;
                         skins.push(skin);
                     }
                     b"flexcomp" => {
                         // Self-closing <flexcomp .../> — parse attrs and generate mesh
-                        let flex = parse_flexcomp_empty(e);
+                        let flex = parse_flexcomp_empty(e)?;
                         flex_bodies.push(flex);
                     }
                     _ => {}
@@ -80,7 +77,7 @@ pub(super) fn parse_flex<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
 ) -> Result<MjcfFlex> {
-    let mut flex = parse_flex_attrs(start);
+    let mut flex = parse_flex_attrs(start)?;
     let mut buf = Vec::new();
 
     loop {
@@ -89,22 +86,21 @@ pub(super) fn parse_flex<R: BufRead>(
                 let elem_name = e.name().as_ref().to_vec();
                 match elem_name.as_slice() {
                     b"contact" => {
-                        parse_flex_contact_attrs(e, &mut flex);
+                        parse_flex_contact_attrs(e, &mut flex)?;
                         skip_element(reader, &elem_name)?;
                     }
                     b"elasticity" => {
-                        parse_flex_elasticity_attrs(e, &mut flex);
+                        parse_flex_elasticity_attrs(e, &mut flex)?;
                         skip_element(reader, &elem_name)?;
                     }
                     b"edge" => {
-                        parse_flex_edge_attrs(e, &mut flex);
+                        parse_flex_edge_attrs(e, &mut flex)?;
                         skip_element(reader, &elem_name)?;
                     }
                     b"vertex" => {
                         // Parse child vertex elements until end of <vertex>
-                        if let Some(s) = get_attribute_opt(e, "pos") {
+                        if let Some(floats) = Attrs::new(e)?.vector("pos")? {
                             // Inline attribute: flat array of xyz triples
-                            let floats = parse_float_array(&s)?;
                             for chunk in floats.chunks(3) {
                                 if chunk.len() == 3 {
                                     flex.vertices
@@ -115,12 +111,8 @@ pub(super) fn parse_flex<R: BufRead>(
                         skip_element(reader, &elem_name)?;
                     }
                     b"element" => {
-                        if let Some(s) = get_attribute_opt(e, "data") {
-                            // Parse element connectivity
-                            let ints: Vec<usize> = s
-                                .split_whitespace()
-                                .filter_map(|t| t.parse().ok())
-                                .collect();
+                        if let Some(ints) = indices(&Attrs::new(e)?, "data")? {
+                            // Element connectivity
                             let verts_per_elem = match flex.dim {
                                 1 => 2, // cable: edges
                                 3 => 4, // solid: tetrahedra
@@ -135,11 +127,7 @@ pub(super) fn parse_flex<R: BufRead>(
                         skip_element(reader, &elem_name)?;
                     }
                     b"pin" => {
-                        if let Some(s) = get_attribute_opt(e, "id") {
-                            let ids: Vec<usize> = s
-                                .split_whitespace()
-                                .filter_map(|t| t.parse().ok())
-                                .collect();
+                        if let Some(ids) = indices(&Attrs::new(e)?, "id")? {
                             flex.pinned.extend(ids);
                         }
                         skip_element(reader, &elem_name)?;
@@ -152,12 +140,11 @@ pub(super) fn parse_flex<R: BufRead>(
             Ok(Event::Empty(ref e)) => {
                 let elem_name = e.name().as_ref().to_vec();
                 match elem_name.as_slice() {
-                    b"contact" => parse_flex_contact_attrs(e, &mut flex),
-                    b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex),
-                    b"edge" => parse_flex_edge_attrs(e, &mut flex),
+                    b"contact" => parse_flex_contact_attrs(e, &mut flex)?,
+                    b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex)?,
+                    b"edge" => parse_flex_edge_attrs(e, &mut flex)?,
                     b"vertex" => {
-                        if let Some(s) = get_attribute_opt(e, "pos") {
-                            let floats = parse_float_array(&s)?;
+                        if let Some(floats) = Attrs::new(e)?.vector("pos")? {
                             for chunk in floats.chunks(3) {
                                 if chunk.len() == 3 {
                                     flex.vertices
@@ -167,11 +154,7 @@ pub(super) fn parse_flex<R: BufRead>(
                         }
                     }
                     b"element" => {
-                        if let Some(s) = get_attribute_opt(e, "data") {
-                            let ints: Vec<usize> = s
-                                .split_whitespace()
-                                .filter_map(|t| t.parse().ok())
-                                .collect();
+                        if let Some(ints) = indices(&Attrs::new(e)?, "data")? {
                             let verts_per_elem = match flex.dim {
                                 1 => 2,
                                 3 => 4,
@@ -185,11 +168,7 @@ pub(super) fn parse_flex<R: BufRead>(
                         }
                     }
                     b"pin" => {
-                        if let Some(s) = get_attribute_opt(e, "id") {
-                            let ids: Vec<usize> = s
-                                .split_whitespace()
-                                .filter_map(|t| t.parse().ok())
-                                .collect();
+                        if let Some(ids) = indices(&Attrs::new(e)?, "id")? {
                             flex.pinned.extend(ids);
                         }
                     }
@@ -217,165 +196,137 @@ pub(super) fn parse_flex<R: BufRead>(
 ///
 /// `mass` distributes total mass uniformly across all vertices (MuJoCo `<flexcomp mass="...">`).
 /// `density` is a non-standard fallback for element-based mass lumping.
-pub(super) fn parse_flex_attrs(e: &BytesStart) -> MjcfFlex {
+pub(super) fn parse_flex_attrs(e: &BytesStart) -> Result<MjcfFlex> {
+    let a = Attrs::new(e)?;
     let mut flex = MjcfFlex::default();
 
-    if let Some(s) = get_attribute_opt(e, "name") {
+    if let Some(s) = a.string("name") {
         flex.name = s;
     }
-    if let Some(s) = get_attribute_opt(e, "dim") {
-        flex.dim = s.parse().unwrap_or(2);
+    if let Some(dim) = a.int("dim")? {
+        flex.dim = usize::try_from(dim)
+            .map_err(|_| MjcfError::invalid_value(a.element(), "dim", "dim is negative"))?;
     }
-    if let Some(s) = get_attribute_opt(e, "radius") {
-        flex.radius = s.parse().unwrap_or(0.005);
+    if let Some(radius) = a.real("radius")? {
+        flex.radius = radius;
     }
     // Body names for vertex attachment (required on <flex>, auto-generated by <flexcomp>).
-    if let Some(s) = get_attribute_opt(e, "body") {
+    if let Some(s) = a.text("body") {
         flex.body = s.split_whitespace().map(|t| t.to_string()).collect();
     }
     // Node body names (alternative to <vertex> positions).
-    if let Some(s) = get_attribute_opt(e, "node") {
+    if let Some(s) = a.text("node") {
         flex.node = s.split_whitespace().map(|t| t.to_string()).collect();
     }
     // Visualization group (0-5).
-    if let Some(group) = parse_int_attr(e, "group") {
+    if let Some(group) = a.int("group")? {
         flex.group = group;
     }
     // MuJoCo: <flexcomp mass="..."> distributes total mass uniformly across all vertices.
     // When present, overrides element-based mass lumping from density.
-    if let Some(s) = get_attribute_opt(e, "mass") {
-        flex.mass = s.parse().ok();
+    if let Some(mass) = a.real("mass")? {
+        flex.mass = Some(mass);
     }
     // Flexcomp attributes (DT-88)
-    if let Some(s) = get_attribute_opt(e, "inertiabox") {
-        flex.inertiabox = s.parse().unwrap_or(0.0);
+    if let Some(inertiabox) = a.real("inertiabox")? {
+        flex.inertiabox = inertiabox;
     }
-    if let Some(s) = get_attribute_opt(e, "scale") {
-        let vals: Vec<f64> = s
-            .split_whitespace()
-            .filter_map(|t| t.parse().ok())
-            .collect();
-        if vals.len() >= 3 {
-            flex.flexcomp_scale = Some(Vector3::new(vals[0], vals[1], vals[2]));
-        }
+    flex.flexcomp_scale = a.vec3("scale")?;
+    if let Some([w, x, y, z]) = a.array::<4>("quat")? {
+        flex.flexcomp_quat = Some(UnitQuaternion::from_quaternion(Quaternion::new(w, x, y, z)));
     }
-    if let Some(s) = get_attribute_opt(e, "quat") {
-        let vals: Vec<f64> = s
-            .split_whitespace()
-            .filter_map(|t| t.parse().ok())
-            .collect();
-        if vals.len() >= 4 {
-            flex.flexcomp_quat = Some(UnitQuaternion::from_quaternion(Quaternion::new(
-                vals[0], vals[1], vals[2], vals[3],
-            )));
-        }
-    }
-    if let Some(s) = get_attribute_opt(e, "file") {
+    if let Some(s) = a.string("file") {
         flex.flexcomp_file = Some(s);
     }
-    flex
+    Ok(flex)
 }
 
 /// Parse `<contact>` child element attributes into MjcfFlex.
-pub(super) fn parse_flex_contact_attrs(e: &BytesStart, flex: &mut MjcfFlex) {
-    if let Some(s) = get_attribute_opt(e, "priority") {
-        flex.priority = s.parse().unwrap_or(0);
+pub(super) fn parse_flex_contact_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> Result<()> {
+    let a = Attrs::new(e)?;
+    if let Some(priority) = a.int("priority")? {
+        flex.priority = priority;
     }
-    if let Some(s) = get_attribute_opt(e, "solmix") {
-        flex.solmix = s.parse().unwrap_or(1.0);
+    if let Some(solmix) = a.real("solmix")? {
+        flex.solmix = solmix;
     }
-    if let Some(s) = get_attribute_opt(e, "gap") {
-        flex.gap = s.parse().unwrap_or(0.0);
+    if let Some(gap) = a.real("gap")? {
+        flex.gap = gap;
     }
-    if let Some(s) = get_attribute_opt(e, "friction") {
-        // MuJoCo friction is real(3): "tangential torsional rolling".
-        // Accepts 1–3 values, filling MuJoCo defaults for missing components.
-        let parts: Vec<f64> = s
-            .split_whitespace()
-            .filter_map(|t| t.parse().ok())
-            .collect();
-        flex.friction = Vector3::new(
-            parts.first().copied().unwrap_or(1.0),
-            parts.get(1).copied().unwrap_or(0.005),
-            parts.get(2).copied().unwrap_or(0.0001),
-        );
+    // MuJoCo friction is real(3): "tangential torsional rolling", read with
+    // `exact = false`: the values not given keep MuJoCo's defaults.
+    if let Some(friction) = a.prefix("friction")? {
+        flex.friction = Vector3::from(friction.over([1.0, 0.005, 0.0001]));
     }
-    if let Some(s) = get_attribute_opt(e, "condim") {
-        flex.condim = s.parse().unwrap_or(3);
+    if let Some(condim) = a.int("condim")? {
+        flex.condim = condim;
     }
-    if let Some(s) = get_attribute_opt(e, "margin") {
-        flex.margin = s.parse().unwrap_or(0.0);
+    if let Some(margin) = a.real("margin")? {
+        flex.margin = margin;
     }
-    if let Some(s) = get_attribute_opt(e, "solref") {
-        let vals: Vec<f64> = s
-            .split_whitespace()
-            .filter_map(|t| t.parse().ok())
-            .collect();
-        if vals.len() >= 2 {
-            flex.solref = [vals[0], vals[1]];
-        }
+    if let Some(solref) = a.prefix("solref")? {
+        flex.solref = solref.over(flex.solref);
     }
-    if let Some(s) = get_attribute_opt(e, "solimp") {
-        let vals: Vec<f64> = s
-            .split_whitespace()
-            .filter_map(|t| t.parse().ok())
-            .collect();
-        if vals.len() >= 5 {
-            flex.solimp = [vals[0], vals[1], vals[2], vals[3], vals[4]];
-        }
+    if let Some(solimp) = a.prefix("solimp")? {
+        flex.solimp = solimp.over(flex.solimp);
     }
-    flex.contype = parse_int_attr(e, "contype");
-    flex.conaffinity = parse_int_attr(e, "conaffinity");
-    if let Some(s) = get_attribute_opt(e, "selfcollide") {
+    flex.contype = a.int("contype")?;
+    flex.conaffinity = a.int("conaffinity")?;
+    if let Some(s) = a.string("selfcollide") {
         flex.selfcollide = Some(s);
     }
     // DT-85: Flex contact runtime attributes
-    if let Some(s) = get_attribute_opt(e, "internal") {
-        flex.internal = s == "true";
+    if let Some(internal) = a.is_true("internal") {
+        flex.internal = internal;
     }
-    if let Some(val) = parse_int_attr(e, "activelayers") {
+    if let Some(val) = a.int("activelayers")? {
         flex.activelayers = val;
     }
-    if let Some(s) = get_attribute_opt(e, "vertcollide") {
-        flex.vertcollide = s == "true";
+    if let Some(vertcollide) = a.is_true("vertcollide") {
+        flex.vertcollide = vertcollide;
     }
-    if let Some(s) = get_attribute_opt(e, "passive") {
-        flex.passive = s == "true";
+    if let Some(passive) = a.is_true("passive") {
+        flex.passive = passive;
     }
+    Ok(())
 }
 
 /// Parse `<elasticity>` child element attributes into MjcfFlex.
-pub(super) fn parse_flex_elasticity_attrs(e: &BytesStart, flex: &mut MjcfFlex) {
-    if let Some(s) = get_attribute_opt(e, "young") {
-        flex.young = s.parse().unwrap_or(0.0);
+pub(super) fn parse_flex_elasticity_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> Result<()> {
+    let a = Attrs::new(e)?;
+    if let Some(young) = a.real("young")? {
+        flex.young = young;
     }
-    if let Some(s) = get_attribute_opt(e, "poisson") {
-        flex.poisson = s.parse().unwrap_or(0.0);
+    if let Some(poisson) = a.real("poisson")? {
+        flex.poisson = poisson;
     }
-    if let Some(s) = get_attribute_opt(e, "damping") {
-        flex.damping = s.parse().unwrap_or(0.0);
+    if let Some(damping) = a.real("damping")? {
+        flex.damping = damping;
     }
-    if let Some(s) = get_attribute_opt(e, "thickness") {
-        flex.thickness = s.parse().unwrap_or(-1.0);
+    if let Some(thickness) = a.real("thickness")? {
+        flex.thickness = thickness;
     }
     // §42B S4: Parse bending_model (CortenForge extension attribute).
-    if let Some(s) = get_attribute_opt(e, "bending_model") {
-        flex.bending_model = match s.as_str() {
+    if let Some(s) = a.text("bending_model") {
+        flex.bending_model = match s {
             "bridson" => sim_core::FlexBendingType::Bridson,
             _ => sim_core::FlexBendingType::Cotangent, // default for unknown or "cotangent"
         };
     }
+    Ok(())
 }
 
 /// Parse `<edge>` child element attributes into MjcfFlex.
 /// These are passive spring-damper coefficients (not constraint params).
-pub(super) fn parse_flex_edge_attrs(e: &BytesStart, flex: &mut MjcfFlex) {
-    if let Some(s) = get_attribute_opt(e, "stiffness") {
-        flex.edge_stiffness = s.parse().unwrap_or(0.0);
+pub(super) fn parse_flex_edge_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> Result<()> {
+    let a = Attrs::new(e)?;
+    if let Some(stiffness) = a.real("stiffness")? {
+        flex.edge_stiffness = stiffness;
     }
-    if let Some(s) = get_attribute_opt(e, "damping") {
-        flex.edge_damping = s.parse().unwrap_or(0.0);
+    if let Some(damping) = a.real("damping")? {
+        flex.edge_damping = damping;
     }
+    Ok(())
 }
 
 /// Parse a `<flexcomp>` element (procedural mesh generation).
@@ -385,22 +336,7 @@ pub(super) fn parse_flexcomp<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
 ) -> Result<MjcfFlex> {
-    let mut flex = parse_flex_attrs(start);
-
-    let comp_type = get_attribute_opt(start, "type").unwrap_or_else(|| "grid".to_string());
-    let count = parse_flexcomp_count(start);
-    let spacing: f64 = get_attribute_opt(start, "spacing")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0.02);
-
-    match comp_type.as_str() {
-        "grid" => generate_grid(&mut flex, count, spacing),
-        "box" => generate_box_mesh(&mut flex, count, spacing),
-        _ => {} // Unsupported type: leave empty
-    }
-
-    // Apply scale and rotation to generated vertices (DT-88)
-    apply_flexcomp_transforms(&mut flex);
+    let mut flex = flexcomp_mesh(start)?;
 
     // Parse child elements (<contact>, <elasticity>, <edge>, <pin>)
     let mut buf = Vec::new();
@@ -410,23 +346,19 @@ pub(super) fn parse_flexcomp<R: BufRead>(
                 let elem_name = e.name().as_ref().to_vec();
                 match elem_name.as_slice() {
                     b"contact" => {
-                        parse_flex_contact_attrs(e, &mut flex);
+                        parse_flex_contact_attrs(e, &mut flex)?;
                         skip_element(reader, &elem_name)?;
                     }
                     b"elasticity" => {
-                        parse_flex_elasticity_attrs(e, &mut flex);
+                        parse_flex_elasticity_attrs(e, &mut flex)?;
                         skip_element(reader, &elem_name)?;
                     }
                     b"edge" => {
-                        parse_flex_edge_attrs(e, &mut flex);
+                        parse_flex_edge_attrs(e, &mut flex)?;
                         skip_element(reader, &elem_name)?;
                     }
                     b"pin" => {
-                        if let Some(s) = get_attribute_opt(e, "id") {
-                            let ids: Vec<usize> = s
-                                .split_whitespace()
-                                .filter_map(|t| t.parse().ok())
-                                .collect();
+                        if let Some(ids) = indices(&Attrs::new(e)?, "id")? {
                             flex.pinned.extend(ids);
                         }
                         skip_element(reader, &elem_name)?;
@@ -439,15 +371,11 @@ pub(super) fn parse_flexcomp<R: BufRead>(
             Ok(Event::Empty(ref e)) => {
                 let elem_name = e.name().as_ref().to_vec();
                 match elem_name.as_slice() {
-                    b"contact" => parse_flex_contact_attrs(e, &mut flex),
-                    b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex),
-                    b"edge" => parse_flex_edge_attrs(e, &mut flex),
+                    b"contact" => parse_flex_contact_attrs(e, &mut flex)?,
+                    b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex)?,
+                    b"edge" => parse_flex_edge_attrs(e, &mut flex)?,
                     b"pin" => {
-                        if let Some(s) = get_attribute_opt(e, "id") {
-                            let ids: Vec<usize> = s
-                                .split_whitespace()
-                                .filter_map(|t| t.parse().ok())
-                                .collect();
+                        if let Some(ids) = indices(&Attrs::new(e)?, "id")? {
                             flex.pinned.extend(ids);
                         }
                     }
@@ -471,14 +399,19 @@ pub(super) fn parse_flexcomp<R: BufRead>(
 ///
 /// Does the same attribute parsing and mesh generation as `parse_flexcomp`
 /// but without consuming reader events (since there's no End event to find).
-pub(super) fn parse_flexcomp_empty(e: &BytesStart) -> MjcfFlex {
-    let mut flex = parse_flex_attrs(e);
+pub(super) fn parse_flexcomp_empty(e: &BytesStart) -> Result<MjcfFlex> {
+    flexcomp_mesh(e)
+}
 
-    let comp_type = get_attribute_opt(e, "type").unwrap_or_else(|| "grid".to_string());
-    let count = parse_flexcomp_count(e);
-    let spacing: f64 = get_attribute_opt(e, "spacing")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0.02);
+/// A `<flexcomp>`'s attributes and the mesh they generate. MuJoCo reads
+/// `count` and `spacing` as exactly three values each (`xml_native_reader.cc`).
+fn flexcomp_mesh(e: &BytesStart) -> Result<MjcfFlex> {
+    let mut flex = parse_flex_attrs(e)?;
+    let a = Attrs::new(e)?;
+
+    let comp_type = a.string("type").unwrap_or_else(|| "grid".to_string());
+    let count = parse_flexcomp_count(&a)?;
+    let spacing = a.array::<3>("spacing")?.unwrap_or([0.02; 3]);
 
     match comp_type.as_str() {
         "grid" => generate_grid(&mut flex, count, spacing),
@@ -489,7 +422,7 @@ pub(super) fn parse_flexcomp_empty(e: &BytesStart) -> MjcfFlex {
     // Apply scale and rotation to generated vertices (DT-88)
     apply_flexcomp_transforms(&mut flex);
 
-    flex
+    Ok(flex)
 }
 
 /// Apply flexcomp scale and quat transforms to generated vertices.
@@ -510,25 +443,40 @@ pub(super) fn apply_flexcomp_transforms(flex: &mut MjcfFlex) {
 }
 
 /// Parse flexcomp count attribute (3 ints).
-pub(super) fn parse_flexcomp_count(e: &BytesStart) -> [usize; 3] {
-    get_attribute_opt(e, "count")
-        .map(|s| {
-            let vals: Vec<usize> = s
-                .split_whitespace()
-                .filter_map(|t| t.parse().ok())
-                .collect();
-            [
-                vals.first().copied().unwrap_or(10),
-                vals.get(1).copied().unwrap_or(10),
-                vals.get(2).copied().unwrap_or(1),
-            ]
+pub(super) fn parse_flexcomp_count(a: &Attrs) -> Result<[usize; 3]> {
+    let Some(count) = a.int_array::<3>("count")? else {
+        return Ok([10, 10, 1]);
+    };
+    let mut out = [0; 3];
+    for (o, n) in out.iter_mut().zip(count) {
+        *o = usize::try_from(n)
+            .map_err(|_| MjcfError::invalid_value("flexcomp", "count", "a count is negative"))?;
+    }
+    Ok(out)
+}
+
+/// Non-negative integers: vertex, element or pin indices.
+fn indices(a: &Attrs, name: &str) -> Result<Option<Vec<usize>>> {
+    a.int_vector(name)?
+        .map(|ints| {
+            ints.into_iter()
+                .map(|i| {
+                    usize::try_from(i).map_err(|_| {
+                        MjcfError::invalid_value(
+                            a.element(),
+                            name,
+                            format!("index {i} is negative"),
+                        )
+                    })
+                })
+                .collect()
         })
-        .unwrap_or([10, 10, 1])
+        .transpose()
 }
 
 /// Generate a 2D grid mesh for flexcomp type="grid".
 #[allow(clippy::cast_precision_loss)] // mesh dimensions never exceed 2^52
-pub(super) fn generate_grid(flex: &mut MjcfFlex, count: [usize; 3], spacing: f64) {
+pub(super) fn generate_grid(flex: &mut MjcfFlex, count: [usize; 3], spacing: [f64; 3]) {
     flex.dim = 2;
     let nx = count[0];
     let ny = count[1];
@@ -536,8 +484,8 @@ pub(super) fn generate_grid(flex: &mut MjcfFlex, count: [usize; 3], spacing: f64
     // Generate vertices
     for iy in 0..ny {
         for ix in 0..nx {
-            let x = ix as f64 * spacing;
-            let y = iy as f64 * spacing;
+            let x = ix as f64 * spacing[0];
+            let y = iy as f64 * spacing[1];
             flex.vertices.push(Vector3::new(x, y, 0.0));
         }
     }
@@ -557,7 +505,7 @@ pub(super) fn generate_grid(flex: &mut MjcfFlex, count: [usize; 3], spacing: f64
 
 /// Generate a 3D box mesh for flexcomp type="box".
 #[allow(clippy::cast_precision_loss)] // mesh dimensions never exceed 2^52
-pub(super) fn generate_box_mesh(flex: &mut MjcfFlex, count: [usize; 3], spacing: f64) {
+pub(super) fn generate_box_mesh(flex: &mut MjcfFlex, count: [usize; 3], spacing: [f64; 3]) {
     flex.dim = 3;
     let nx = count[0];
     let ny = count[1];
@@ -567,9 +515,9 @@ pub(super) fn generate_box_mesh(flex: &mut MjcfFlex, count: [usize; 3], spacing:
     for iz in 0..nz {
         for iy in 0..ny {
             for ix in 0..nx {
-                let x = ix as f64 * spacing;
-                let y = iy as f64 * spacing;
-                let z = iz as f64 * spacing;
+                let x = ix as f64 * spacing[0];
+                let y = iy as f64 * spacing[1];
+                let z = iz as f64 * spacing[2];
                 flex.vertices.push(Vector3::new(x, y, z));
             }
         }
@@ -606,7 +554,7 @@ pub(super) fn parse_skin<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
 ) -> Result<MjcfSkin> {
-    let mut skin = parse_skin_attrs(start);
+    let mut skin = parse_skin_attrs(start)?;
     let mut buf = Vec::new();
 
     loop {
@@ -652,54 +600,54 @@ pub(super) fn parse_skin<R: BufRead>(
 }
 
 /// Parse skin element attributes.
-pub(super) fn parse_skin_attrs(e: &BytesStart) -> MjcfSkin {
+pub(super) fn parse_skin_attrs(e: &BytesStart) -> Result<MjcfSkin> {
+    let a = Attrs::new(e)?;
     let mut skin = MjcfSkin::default();
 
-    skin.name = get_attribute_opt(e, "name").unwrap_or_default();
-    skin.mesh = get_attribute_opt(e, "mesh");
-    skin.material = get_attribute_opt(e, "material");
+    skin.name = a.string("name").unwrap_or_default();
+    skin.mesh = a.string("mesh");
+    skin.material = a.string("material");
 
-    if let Some(rgba) = get_attribute_opt(e, "rgba")
-        && let Ok(v) = parse_vector4(&rgba)
-    {
-        skin.rgba = v;
+    if let Some(rgba) = a.vec4("rgba")? {
+        skin.rgba = rgba;
     }
 
-    if let Some(inflate) = parse_float_attr(e, "inflate") {
+    if let Some(inflate) = a.real("inflate")? {
         skin.inflate = inflate;
     }
 
     // Parse embedded vertex positions if present
-    if let Some(vertex) = get_attribute_opt(e, "vertex")
-        && let Ok(verts) = parse_float_array(&vertex)
-    {
-        skin.vertex_positions = Some(verts);
-    }
+    skin.vertex_positions = a.vector("vertex")?;
 
     // Parse embedded face data if present
-    if let Some(face) = get_attribute_opt(e, "face")
-        && let Ok(faces) = parse_int_array(&face)
-    {
+    if let Some(faces) = a.int_vector("face")? {
+        let faces = faces
+            .into_iter()
+            .map(u32::try_from)
+            .collect::<std::result::Result<Vec<u32>, _>>()
+            .map_err(|_| MjcfError::invalid_value("skin", "face", "a vertex index is negative"))?;
         skin.faces = Some(faces);
     }
 
-    skin
+    Ok(skin)
 }
 
 /// Parse skin bone element attributes.
 pub(super) fn parse_skin_bone_attrs(e: &BytesStart) -> Result<MjcfSkinBone> {
+    let a = Attrs::new(e)?;
     let mut bone = MjcfSkinBone::default();
 
     // body is required
-    bone.body =
-        get_attribute_opt(e, "body").ok_or_else(|| MjcfError::missing_attribute("bone", "body"))?;
+    bone.body = a
+        .string("body")
+        .ok_or_else(|| MjcfError::missing_attribute("bone", "body"))?;
 
-    if let Some(bindpos) = get_attribute_opt(e, "bindpos") {
-        bone.bindpos = parse_vector3(&bindpos)?;
+    if let Some(bindpos) = a.vec3("bindpos")? {
+        bone.bindpos = bindpos;
     }
 
-    if let Some(bindquat) = get_attribute_opt(e, "bindquat") {
-        bone.bindquat = parse_vector4(&bindquat)?;
+    if let Some(bindquat) = a.vec4("bindquat")? {
+        bone.bindquat = bindquat;
     }
 
     Ok(bone)
@@ -707,16 +655,22 @@ pub(super) fn parse_skin_bone_attrs(e: &BytesStart) -> Result<MjcfSkinBone> {
 
 /// Parse skin vertex element attributes.
 pub(super) fn parse_skin_vertex_attrs(e: &BytesStart) -> Result<MjcfSkinVertex> {
+    let a = Attrs::new(e)?;
+    let index = |name: &str| -> Result<usize> {
+        let i = a
+            .int(name)?
+            .ok_or_else(|| MjcfError::missing_attribute("vertex", name))?;
+        usize::try_from(i)
+            .map_err(|_| MjcfError::invalid_value("vertex", name, format!("index {i} is negative")))
+    };
     // id is required (vertex index in mesh)
-    let id = parse_int_attr(e, "id").ok_or_else(|| MjcfError::missing_attribute("vertex", "id"))?
-        as usize;
+    let id = index("id")?;
 
     // bone is required (bone index in skin)
-    let bone = parse_int_attr(e, "bone")
-        .ok_or_else(|| MjcfError::missing_attribute("vertex", "bone"))? as usize;
+    let bone = index("bone")?;
 
     // weight defaults to 1.0 if not specified
-    let weight = parse_float_attr(e, "weight").unwrap_or(1.0);
+    let weight = a.real("weight")?.unwrap_or(1.0);
 
     Ok(MjcfSkinVertex::new(id, bone, weight))
 }

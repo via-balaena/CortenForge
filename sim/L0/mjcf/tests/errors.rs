@@ -315,10 +315,10 @@ fn a_reader_that_knows_its_attribute_names_it() {
         "{err}"
     );
     let err = refusal(
-        r#"<mujoco><worldbody><geom size="0.1" fluidshape="ellipsoid" fluidcoef="1 2"/></worldbody></mujoco>"#,
+        r#"<mujoco><worldbody><geom size="0.1" fluidshape="ellipsoid" fluidcoef="1 2 3 4 5 6"/></worldbody></mujoco>"#,
     );
     assert!(
-        matches!(&err, MjcfError::WrongValueCount { element, attribute, found: 2, .. }
+        matches!(&err, MjcfError::WrongValueCount { element, attribute, found: 6, .. }
             if element == "geom" && attribute == "fluidcoef"),
         "{err}"
     );
@@ -394,10 +394,10 @@ fn a_body_without_a_name_is_named_by_its_index() {
 #[test]
 fn a_default_classs_fluidcoef_of_the_wrong_length_names_it() {
     let err = refusal(
-        r#"<mujoco><default><geom fluidshape="ellipsoid" fluidcoef="1 2"/></default><worldbody/></mujoco>"#,
+        r#"<mujoco><default><geom fluidshape="ellipsoid" fluidcoef="1 2 3 4 5 6"/></default><worldbody/></mujoco>"#,
     );
     assert!(
-        matches!(&err, MjcfError::WrongValueCount { element, attribute, found: 2, .. }
+        matches!(&err, MjcfError::WrongValueCount { element, attribute, found: 6, .. }
             if element == "geom" && attribute == "fluidcoef"),
         "{err}"
     );

@@ -36,7 +36,7 @@ use crate::types::{
     MjcfActuator, MjcfActuatorDefaults, MjcfContactPair, MjcfDefault, MjcfEqualityDefaults,
     MjcfGeom, MjcfGeomDefaults, MjcfJoint, MjcfJointDefaults, MjcfMesh, MjcfMeshDefaults,
     MjcfModel, MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults,
-    MjcfTendon, MjcfTendonDefaults,
+    MjcfTendon, MjcfTendonDefaults, Prefix,
 };
 
 /// Resolves and applies default classes to MJCF elements.
@@ -137,19 +137,15 @@ impl DefaultResolver {
         &self,
         class: Option<&str>,
         active: &mut Option<bool>,
-        solref: &mut Option<[f64; 2]>,
-        solimp: &mut Option<[f64; 5]>,
+        solref: &mut Option<Prefix<2>>,
+        solimp: &mut Option<Prefix<5>>,
     ) {
         if let Some(defaults) = self.equality_defaults(class) {
             if active.is_none() {
                 *active = defaults.active;
             }
-            if solref.is_none() {
-                *solref = defaults.solref;
-            }
-            if solimp.is_none() {
-                *solimp = defaults.solimp;
-            }
+            *solref = over(*solref, defaults.solref);
+            *solimp = over(*solimp, defaults.solimp);
         }
     }
 
@@ -200,18 +196,10 @@ impl DefaultResolver {
             if result.range.is_none() {
                 result.range = defaults.range;
             }
-            if result.solref_limit.is_none() {
-                result.solref_limit = defaults.solref_limit;
-            }
-            if result.solimp_limit.is_none() {
-                result.solimp_limit = defaults.solimp_limit;
-            }
-            if result.solreffriction.is_none() {
-                result.solreffriction = defaults.solreffriction;
-            }
-            if result.solimpfriction.is_none() {
-                result.solimpfriction = defaults.solimpfriction;
-            }
+            result.solref_limit = over(result.solref_limit, defaults.solref_limit);
+            result.solimp_limit = over(result.solimp_limit, defaults.solimp_limit);
+            result.solreffriction = over(result.solreffriction, defaults.solreffriction);
+            result.solimpfriction = over(result.solimpfriction, defaults.solimpfriction);
             if result.actuatorgravcomp.is_none() {
                 result.actuatorgravcomp = defaults.actuatorgravcomp;
             }
@@ -238,9 +226,7 @@ impl DefaultResolver {
             if result.geom_type.is_none() {
                 result.geom_type = defaults.geom_type;
             }
-            if result.friction.is_none() {
-                result.friction = defaults.friction;
-            }
+            result.friction = over(result.friction, defaults.friction);
             if result.density.is_none() {
                 result.density = defaults.density;
             }
@@ -271,12 +257,8 @@ impl DefaultResolver {
             if result.gap.is_none() {
                 result.gap = defaults.gap;
             }
-            if result.solref.is_none() {
-                result.solref = defaults.solref;
-            }
-            if result.solimp.is_none() {
-                result.solimp = defaults.solimp;
-            }
+            result.solref = over(result.solref, defaults.solref);
+            result.solimp = over(result.solimp, defaults.solimp);
             if result.group.is_none() {
                 result.group = defaults.group;
             }
@@ -320,9 +302,7 @@ impl DefaultResolver {
             if result.fluidshape.is_none() {
                 result.fluidshape = defaults.fluidshape;
             }
-            if result.fluidcoef.is_none() {
-                result.fluidcoef = defaults.fluidcoef;
-            }
+            result.fluidcoef = over(result.fluidcoef, defaults.fluidcoef);
             if result.user.is_empty()
                 && let Some(ref user) = defaults.user
             {
@@ -342,22 +322,12 @@ impl DefaultResolver {
         let mut result = actuator.clone();
 
         if let Some(defaults) = self.actuator_defaults(actuator.class.as_deref()) {
-            // #todo: gear, kp, and sensor noise/cutoff use sentinel-value detection
-            // (== default) instead of Option<T>. Explicitly setting gear=[1,0,0,0,0,0],
-            // kp=1.0, noise=0.0, or cutoff=0.0 is indistinguishable from "unset" and
+            // #todo: kp and sensor noise/cutoff use sentinel-value detection
+            // (== default) instead of Option<T>. Explicitly setting kp=1.0,
+            // noise=0.0, or cutoff=0.0 is indistinguishable from "unset" and
             // will be overwritten by defaults. Migrate these to Option<T> to fix.
 
-            // Gear: apply default if at default [1, 0, 0, 0, 0, 0]
-            let default_gear = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-            if result
-                .gear
-                .iter()
-                .zip(default_gear.iter())
-                .all(|(a, b)| (a - b).abs() < 1e-10)
-                && let Some(gear) = defaults.gear
-            {
-                result.gear = gear;
-            }
+            result.gear = over(result.gear, defaults.gear);
 
             // Control range: apply default if None
             if result.ctrlrange.is_none() {
@@ -416,15 +386,9 @@ impl DefaultResolver {
             if result.dyntype.is_none() {
                 result.dyntype.clone_from(&defaults.dyntype);
             }
-            if result.gainprm.is_none() {
-                result.gainprm.clone_from(&defaults.gainprm);
-            }
-            if result.biasprm.is_none() {
-                result.biasprm.clone_from(&defaults.biasprm);
-            }
-            if result.dynprm.is_none() {
-                result.dynprm.clone_from(&defaults.dynprm);
-            }
+            result.gainprm = over(result.gainprm, defaults.gainprm);
+            result.biasprm = over(result.biasprm, defaults.biasprm);
+            result.dynprm = over(result.dynprm, defaults.dynprm);
 
             // Activation parameters
             if result.group.is_none() {
@@ -542,11 +506,11 @@ impl DefaultResolver {
 
         if let Some(defaults) = self.site_defaults(site.class.as_deref()) {
             // An Option<T> field: the element's value wins if set, otherwise
-            // the default's; the size is read over the default's (`overlay`).
+            // the default's; the size is read over the default's (`over`).
             if result.site_type.is_none() {
                 result.site_type.clone_from(&defaults.site_type);
             }
-            result.size = overlay(defaults.size.as_ref(), site.size.as_ref());
+            result.size = over(site.size, defaults.size);
             if result.rgba.is_none() {
                 result.rgba = defaults.rgba;
             }
@@ -633,18 +597,10 @@ impl DefaultResolver {
             }
 
             // Solver parameters
-            if result.solref_limit.is_none() {
-                result.solref_limit = defaults.solref_limit;
-            }
-            if result.solimp_limit.is_none() {
-                result.solimp_limit = defaults.solimp_limit;
-            }
-            if result.solreffriction.is_none() {
-                result.solreffriction = defaults.solreffriction;
-            }
-            if result.solimpfriction.is_none() {
-                result.solimpfriction = defaults.solimpfriction;
-            }
+            result.solref_limit = over(result.solref_limit, defaults.solref_limit);
+            result.solimp_limit = over(result.solimp_limit, defaults.solimp_limit);
+            result.solreffriction = over(result.solreffriction, defaults.solreffriction);
+            result.solimpfriction = over(result.solimpfriction, defaults.solimpfriction);
             if result.margin.is_none() {
                 result.margin = defaults.margin;
             }
@@ -706,18 +662,10 @@ impl DefaultResolver {
             if result.condim.is_none() {
                 result.condim = defaults.condim;
             }
-            if result.friction.is_none() {
-                result.friction = defaults.friction;
-            }
-            if result.solref.is_none() {
-                result.solref = defaults.solref;
-            }
-            if result.solreffriction.is_none() {
-                result.solreffriction = defaults.solreffriction;
-            }
-            if result.solimp.is_none() {
-                result.solimp = defaults.solimp;
-            }
+            result.friction = over(result.friction, defaults.friction);
+            result.solref = over(result.solref, defaults.solref);
+            result.solreffriction = over(result.solreffriction, defaults.solreffriction);
+            result.solimp = over(result.solimp, defaults.solimp);
             if result.margin.is_none() {
                 result.margin = defaults.margin;
             }
@@ -847,10 +795,10 @@ impl DefaultResolver {
                 frictionloss: c.frictionloss.or(p.frictionloss),
                 group: c.group.or(p.group),
                 range: c.range.or(p.range),
-                solref_limit: c.solref_limit.or(p.solref_limit),
-                solimp_limit: c.solimp_limit.or(p.solimp_limit),
-                solreffriction: c.solreffriction.or(p.solreffriction),
-                solimpfriction: c.solimpfriction.or(p.solimpfriction),
+                solref_limit: over(c.solref_limit, p.solref_limit),
+                solimp_limit: over(c.solimp_limit, p.solimp_limit),
+                solreffriction: over(c.solreffriction, p.solreffriction),
+                solimpfriction: over(c.solimpfriction, p.solimpfriction),
                 actuatorgravcomp: c.actuatorgravcomp.or(p.actuatorgravcomp),
                 margin: c.margin.or(p.margin),
                 user: c.user.clone().or_else(|| p.user.clone()),
@@ -868,7 +816,7 @@ impl DefaultResolver {
             (None, Some(c)) => Some(c.clone()),
             (Some(p), Some(c)) => Some(MjcfGeomDefaults {
                 geom_type: c.geom_type.or(p.geom_type),
-                friction: c.friction.or(p.friction),
+                friction: over(c.friction, p.friction),
                 density: c.density.or(p.density),
                 mass: c.mass.or(p.mass),
                 rgba: c.rgba.or(p.rgba),
@@ -879,8 +827,8 @@ impl DefaultResolver {
                 solmix: c.solmix.or(p.solmix),
                 margin: c.margin.or(p.margin),
                 gap: c.gap.or(p.gap),
-                solref: c.solref.or(p.solref),
-                solimp: c.solimp.or(p.solimp),
+                solref: over(c.solref, p.solref),
+                solimp: over(c.solimp, p.solimp),
                 group: c.group.or(p.group),
                 pos: c.pos.or(p.pos),
                 quat: c.quat.or(p.quat),
@@ -893,7 +841,7 @@ impl DefaultResolver {
                 hfield: c.hfield.clone().or_else(|| p.hfield.clone()),
                 material: c.material.clone().or_else(|| p.material.clone()),
                 fluidshape: c.fluidshape.or(p.fluidshape),
-                fluidcoef: c.fluidcoef.or(p.fluidcoef),
+                fluidcoef: over(c.fluidcoef, p.fluidcoef),
                 user: c.user.clone().or_else(|| p.user.clone()),
                 shellinertia: c.shellinertia.or(p.shellinertia),
             }),
@@ -911,7 +859,7 @@ impl DefaultResolver {
             (Some(p), Some(c)) => Some(MjcfActuatorDefaults {
                 ctrlrange: c.ctrlrange.or(p.ctrlrange),
                 forcerange: c.forcerange.or(p.forcerange),
-                gear: c.gear.or(p.gear),
+                gear: over(c.gear, p.gear),
                 kp: c.kp.or(p.kp),
                 kv: c.kv.or(p.kv),
                 dampratio: c.dampratio.or(p.dampratio),
@@ -920,9 +868,9 @@ impl DefaultResolver {
                 gaintype: c.gaintype.clone().or_else(|| p.gaintype.clone()),
                 biastype: c.biastype.clone().or_else(|| p.biastype.clone()),
                 dyntype: c.dyntype.clone().or_else(|| p.dyntype.clone()),
-                gainprm: c.gainprm.clone().or_else(|| p.gainprm.clone()),
-                biasprm: c.biasprm.clone().or_else(|| p.biasprm.clone()),
-                dynprm: c.dynprm.clone().or_else(|| p.dynprm.clone()),
+                gainprm: over(c.gainprm, p.gainprm),
+                biasprm: over(c.biasprm, p.biasprm),
+                dynprm: over(c.dynprm, p.dynprm),
                 group: c.group.or(p.group),
                 actlimited: c.actlimited.or(p.actlimited),
                 actrange: c.actrange.or(p.actrange),
@@ -971,10 +919,10 @@ impl DefaultResolver {
                 width: c.width.or(p.width),
                 rgba: c.rgba.or(p.rgba),
                 group: c.group.or(p.group),
-                solref_limit: c.solref_limit.or(p.solref_limit),
-                solimp_limit: c.solimp_limit.or(p.solimp_limit),
-                solreffriction: c.solreffriction.or(p.solreffriction),
-                solimpfriction: c.solimpfriction.or(p.solimpfriction),
+                solref_limit: over(c.solref_limit, p.solref_limit),
+                solimp_limit: over(c.solimp_limit, p.solimp_limit),
+                solreffriction: over(c.solreffriction, p.solreffriction),
+                solimpfriction: over(c.solimpfriction, p.solimpfriction),
                 margin: c.margin.or(p.margin),
                 material: c.material.clone().or_else(|| p.material.clone()),
                 user: c.user.clone().or_else(|| p.user.clone()),
@@ -1024,7 +972,7 @@ impl DefaultResolver {
             (None, Some(c)) => Some(c.clone()),
             (Some(p), Some(c)) => Some(MjcfSiteDefaults {
                 site_type: c.site_type.clone().or_else(|| p.site_type.clone()),
-                size: overlay(p.size.as_ref(), c.size.as_ref()),
+                size: over(c.size, p.size),
                 rgba: c.rgba.or(p.rgba),
                 group: c.group.or(p.group),
                 pos: c.pos.or(p.pos),
@@ -1050,10 +998,10 @@ impl DefaultResolver {
             (None, Some(c)) => Some(c.clone()),
             (Some(p), Some(c)) => Some(MjcfPairDefaults {
                 condim: c.condim.or(p.condim),
-                friction: c.friction.or(p.friction),
-                solref: c.solref.or(p.solref),
-                solreffriction: c.solreffriction.or(p.solreffriction),
-                solimp: c.solimp.or(p.solimp),
+                friction: over(c.friction, p.friction),
+                solref: over(c.solref, p.solref),
+                solreffriction: over(c.solreffriction, p.solreffriction),
+                solimp: over(c.solimp, p.solimp),
                 margin: c.margin.or(p.margin),
                 gap: c.gap.or(p.gap),
             }),
@@ -1070,30 +1018,25 @@ impl DefaultResolver {
             (None, Some(c)) => Some(c.clone()),
             (Some(p), Some(c)) => Some(MjcfEqualityDefaults {
                 active: c.active.or(p.active),
-                solref: c.solref.or(p.solref),
-                solimp: c.solimp.or(p.solimp),
+                solref: over(c.solref, p.solref),
+                solimp: over(c.solimp, p.solimp),
             }),
         }
     }
 }
 
 /// An array attribute written over the one it inherits, as MuJoCo's
-/// `ReadAttr` reads one (`xml_util.cc:798-818`): the `n` numbers written take
-/// its first `n` places and the rest keep the inherited ones. A site's
-/// `size` is read so over its class's, and a class's over its parent's
-/// (`xml_native_reader.cc:1928`).
-fn overlay(inherited: Option<&Vec<f64>>, written: Option<&Vec<f64>>) -> Option<Vec<f64>> {
-    match (inherited, written) {
-        (inherited, None) => inherited.cloned(),
-        (None, Some(written)) => Some(written.clone()),
-        (Some(inherited), Some(written)) => {
-            let mut out = inherited.clone();
-            if out.len() < written.len() {
-                out.resize(written.len(), 0.0);
-            }
-            out[..written.len()].copy_from_slice(written);
-            Some(out)
-        }
+/// `ReadAttr` reads one with `exact = false` (`xml_util.cc:798-818`): the `n`
+/// numbers written take its first `n` places and the rest keep the inherited
+/// ones. An element's values are read so over its class's, and a class's over
+/// its parent's (for a site's size, `xml_native_reader.cc:1928`).
+pub fn over<const N: usize>(
+    written: Option<Prefix<N>>,
+    inherited: Option<Prefix<N>>,
+) -> Option<Prefix<N>> {
+    match (written, inherited) {
+        (Some(written), Some(inherited)) => Some(written.over_prefix(&inherited)),
+        (written, inherited) => written.or(inherited),
     }
 }
 
@@ -1298,7 +1241,7 @@ mod tests {
             class: "motor".to_string(),
             parent_class: None,
             actuator: Some(MjcfActuatorDefaults {
-                gear: Some([100.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                gear: Some(Prefix::full([100.0, 0.0, 0.0, 0.0, 0.0, 0.0])),
                 ctrlrange: Some((-1.0, 1.0)),
                 kp: Some(50.0),
                 ..Default::default()
@@ -1314,7 +1257,7 @@ mod tests {
         };
 
         let resolved = resolver.apply_to_actuator(&actuator);
-        assert_relative_eq!(resolved.gear[0], 100.0, epsilon = 1e-10);
+        assert_relative_eq!(resolved.gear.unwrap().given()[0], 100.0, epsilon = 1e-10);
         assert_eq!(resolved.ctrlrange, Some((-1.0, 1.0)));
         assert_relative_eq!(resolved.kp, 50.0, epsilon = 1e-10);
     }

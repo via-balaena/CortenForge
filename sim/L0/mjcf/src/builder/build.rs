@@ -1194,7 +1194,7 @@ mod tests {
             r#"<mujoco>
             <worldbody/>
             <deformable>
-                <flexcomp type="grid" count="2 2" spacing="1.0"
+                <flexcomp type="grid" count="2 2 1" spacing="1 1 1"
                     scale="2 3 1" quat="0.7071068 0 0 0.7071068"/>
             </deformable>
             </mujoco>"#,
@@ -1236,7 +1236,7 @@ mod tests {
             r#"<mujoco>
             <worldbody/>
             <deformable>
-                <flexcomp type="grid" count="2 2" spacing="1.0"
+                <flexcomp type="grid" count="2 2 1" spacing="1 1 1"
                     inertiabox="0.5" file="mesh.obj"/>
             </deformable>
             </mujoco>"#,

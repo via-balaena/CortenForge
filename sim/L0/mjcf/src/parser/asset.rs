@@ -4,14 +4,11 @@ use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
-use crate::error::{MjcfError, Result, ValueCount};
+use crate::error::{MjcfError, Result};
 
 use crate::types::{MeshInertia, MjcfHfield, MjcfMesh};
 
-use super::attrs::{
-    attr_vec3, get_attribute_opt, parse_float_array, parse_int_attr, parse_maxhullvert,
-    skip_element,
-};
+use super::attrs::{Attrs, parse_maxhullvert, skip_element};
 
 /// Parse asset element (contains mesh, texture, material definitions).
 pub(super) fn parse_asset<R: BufRead>(
@@ -85,34 +82,35 @@ pub(super) fn parse_mesh<R: BufRead>(
 
 /// Parse mesh attributes only.
 pub(super) fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
+    let a = Attrs::new(e)?;
     let mut mesh = MjcfMesh::default();
 
-    mesh.name = get_attribute_opt(e, "name").unwrap_or_default();
-    mesh.file = get_attribute_opt(e, "file");
+    mesh.name = a.string("name").unwrap_or_default();
+    mesh.file = a.string("file");
 
-    mesh.scale = attr_vec3(e, "scale")?;
+    mesh.scale = a.vec3("scale")?;
 
     // Parse embedded vertex data
-    if let Some(vertex) = get_attribute_opt(e, "vertex") {
-        mesh.vertex = Some(parse_float_array(&vertex)?);
-    }
+    mesh.vertex = a.vector("vertex")?;
 
-    // Parse embedded face data
-    if let Some(face) = get_attribute_opt(e, "face") {
-        let face_data = parse_float_array(&face)?;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let face_indices: Vec<u32> = face_data.iter().map(|f| *f as u32).collect();
-        mesh.face = Some(face_indices);
+    // Parse embedded face data: vertex indices, integers
+    if let Some(face) = a.int_vector("face")? {
+        let indices = face
+            .iter()
+            .map(|&i| u32::try_from(i))
+            .collect::<std::result::Result<Vec<u32>, _>>()
+            .map_err(|_| MjcfError::invalid_value("mesh", "face", "a vertex index is negative"))?;
+        mesh.face = Some(indices);
     }
 
     // Parse maxhullvert (maximum convex hull vertices)
-    if let Some(n) = parse_int_attr(e, "maxhullvert") {
+    if let Some(n) = a.int("maxhullvert")? {
         mesh.maxhullvert = parse_maxhullvert(n)?;
     }
 
     // Parse mesh inertia mode
-    if let Some(inertia_str) = get_attribute_opt(e, "inertia") {
-        mesh.inertia = Some(match inertia_str.as_str() {
+    if let Some(inertia_str) = a.text("inertia") {
+        mesh.inertia = Some(match inertia_str {
             "convex" => MeshInertia::Convex,
             "exact" => MeshInertia::Exact,
             "legacy" => MeshInertia::Legacy,
@@ -134,41 +132,30 @@ pub(super) fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
 ///
 /// At least one of `file` or `elevation` must be present.
 pub(super) fn parse_hfield_attrs(e: &BytesStart) -> Result<MjcfHfield> {
-    let name = get_attribute_opt(e, "name")
+    let a = Attrs::new(e)?;
+    let name = a
+        .string("name")
         .ok_or_else(|| MjcfError::missing_attribute("hfield", "name"))?;
 
-    let file = get_attribute_opt(e, "file");
+    let file = a.string("file");
 
     // Parse nrow/ncol (optional when file is present, required otherwise)
-    let nrow: Option<usize> = if let Some(s) = get_attribute_opt(e, "nrow") {
-        Some(s.parse().map_err(|_| {
-            MjcfError::invalid_value("hfield", "nrow", "must be a positive integer")
-        })?)
-    } else {
-        None
+    let count = |attr: &str| -> Result<Option<usize>> {
+        a.int(attr)?
+            .map(|n| {
+                usize::try_from(n).map_err(|_| {
+                    MjcfError::invalid_value("hfield", attr, "must be a positive integer")
+                })
+            })
+            .transpose()
     };
-
-    let ncol: Option<usize> = if let Some(s) = get_attribute_opt(e, "ncol") {
-        Some(s.parse().map_err(|_| {
-            MjcfError::invalid_value("hfield", "ncol", "must be a positive integer")
-        })?)
-    } else {
-        None
-    };
+    let nrow = count("nrow")?;
+    let ncol = count("ncol")?;
 
     // Parse size (always required)
-    let size_str = get_attribute_opt(e, "size")
+    let size = a
+        .array::<4>("size")?
         .ok_or_else(|| MjcfError::missing_attribute("hfield", "size"))?;
-    let size_vec = parse_float_array(&size_str)?;
-    if size_vec.len() != 4 {
-        return Err(MjcfError::wrong_count_in(
-            "hfield",
-            "size",
-            ValueCount::Exactly(4),
-            size_vec.len(),
-        ));
-    }
-    let size = [size_vec[0], size_vec[1], size_vec[2], size_vec[3]];
     if size[0] <= 0.0 || size[1] <= 0.0 {
         return Err(MjcfError::invalid_value(
             "hfield",
@@ -185,11 +172,7 @@ pub(super) fn parse_hfield_attrs(e: &BytesStart) -> Result<MjcfHfield> {
     }
 
     // Parse elevation (optional when file is present, required otherwise)
-    let elevation = if let Some(elevation_str) = get_attribute_opt(e, "elevation") {
-        Some(parse_float_array(&elevation_str)?)
-    } else {
-        None
-    };
+    let elevation = a.vector("elevation")?;
 
     // Validation: at least one data source must be present
     if file.is_none() && elevation.is_none() {

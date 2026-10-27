@@ -57,7 +57,7 @@ fn test_t4_pgs_elliptic_sphere_at_rest() {
                 <body name="ball" pos="0 0 0.1">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>"#,
@@ -94,7 +94,7 @@ fn test_t5a_pgs_ray_nonnegative_normal_cold_start() {
                 <body name="ball" pos="0 0 0.1">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>"#,
@@ -207,7 +207,7 @@ fn test_t15_pyramidal_bypass_qcqp() {
                 <body name="ball" pos="0 0 0.1">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>"#,
@@ -251,7 +251,7 @@ fn test_t17_pgs_ray_pure_normal() {
                 <body name="ball" pos="0 0 0.1">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>"#,
@@ -369,7 +369,7 @@ fn test_t7_noslip_pyramidal_finite() {
                 <body name="ball" pos="0 0 0.1">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>"#,
@@ -409,7 +409,7 @@ fn test_t8_newton_elliptic_regression() {
                 <body name="ball" pos="0 0 0.1">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>"#,
@@ -449,7 +449,7 @@ fn test_t16_newton_uses_primal_not_qcqp() {
                 <body name="ball" pos="0 0 0.1">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>"#,
@@ -482,7 +482,7 @@ fn test_t14_noslip_pyramidal_near_degenerate() {
                 <body name="box" pos="0 0 0.05">
                     <joint type="free"/>
                     <geom name="flatbox" type="box" size="0.5 0.5 0.05" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>"#,
@@ -533,7 +533,7 @@ fn test_t25_noslip_pyramidal_threshold() {
                 <body name="ball" pos="0 0 0.1">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>"#,
@@ -570,7 +570,7 @@ fn test_t27_noslip_cone_satisfied_regression() {
                 <body name="ball" pos="0 0 0.1">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>"#,

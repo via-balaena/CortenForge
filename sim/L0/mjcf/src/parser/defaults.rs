@@ -4,7 +4,7 @@ use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
-use crate::error::{MjcfError, Result, ValueCount};
+use crate::error::{MjcfError, Result};
 
 use crate::types::{
     FluidShape, MeshInertia, MjcfActuatorDefaults, MjcfDefault, MjcfEqualityDefaults,
@@ -12,10 +12,7 @@ use crate::types::{
     MjcfPairDefaults, MjcfSensorDefaults, MjcfSiteDefaults, MjcfTendonDefaults,
 };
 
-use super::attrs::{
-    attr_bool, attr_fixed, attr_vec3, attr_vec4, get_attribute_opt, parse_float_array,
-    parse_float_array_opt, parse_float_attr, parse_int_attr, parse_maxhullvert, skip_element,
-};
+use super::attrs::{Attrs, parse_maxhullvert, skip_element};
 
 /// Parse default element and its nested defaults.
 pub(super) fn parse_default<R: BufRead>(
@@ -23,7 +20,7 @@ pub(super) fn parse_default<R: BufRead>(
     start: &BytesStart,
     parent_class: Option<String>,
 ) -> Result<Vec<MjcfDefault>> {
-    let class = get_attribute_opt(start, "class").unwrap_or_default();
+    let class = Attrs::new(start)?.string("class").unwrap_or_default();
     let mut default = MjcfDefault {
         class: class.clone(),
         parent_class,
@@ -119,290 +116,234 @@ pub(super) fn parse_default<R: BufRead>(
 
 /// Parse joint defaults.
 pub(super) fn parse_joint_defaults(e: &BytesStart) -> Result<MjcfJointDefaults> {
+    let a = Attrs::new(e)?;
     let mut defaults = MjcfJointDefaults::default();
 
-    if let Some(jtype) = get_attribute_opt(e, "type") {
-        defaults.joint_type = MjcfJointType::from_str(&jtype);
+    if let Some(jtype) = a.text("type") {
+        defaults.joint_type = MjcfJointType::from_str(jtype);
     }
-    defaults.pos = attr_vec3(e, "pos")?;
-    defaults.limited = attr_bool(e, "limited");
-    defaults.axis = attr_vec3(e, "axis")?;
-    defaults.ref_pos = parse_float_attr(e, "ref");
-    defaults.spring_ref = parse_float_attr(e, "springref");
-    defaults.damping = parse_float_attr(e, "damping");
-    defaults.stiffness = parse_float_attr(e, "stiffness");
-    defaults.armature = parse_float_attr(e, "armature");
-    defaults.frictionloss = parse_float_attr(e, "frictionloss");
-    defaults.group = parse_int_attr(e, "group");
-    if let Some(range) = get_attribute_opt(e, "range") {
-        let parts = parse_float_array(&range)?;
-        if parts.len() >= 2 {
-            defaults.range = Some((parts[0], parts[1]));
-        }
+    defaults.pos = a.vec3("pos")?;
+    defaults.limited = a.is_true("limited");
+    defaults.axis = a.vec3("axis")?;
+    defaults.ref_pos = a.real("ref")?;
+    defaults.spring_ref = a.real("springref")?;
+    defaults.damping = a.real("damping")?;
+    defaults.stiffness = a.real("stiffness")?;
+    defaults.armature = a.real("armature")?;
+    defaults.frictionloss = a.real("frictionloss")?;
+    defaults.group = a.int("group")?;
+    if let Some(pair) = a.array::<2>("range")? {
+        defaults.range = Some(pair.into());
     }
-    defaults.solref_limit = attr_fixed::<2>(e, "solreflimit")?;
-    defaults.solimp_limit = attr_fixed::<5>(e, "solimplimit")?;
-    defaults.solreffriction = attr_fixed::<2>(e, "solreffriction")?;
-    defaults.solimpfriction = attr_fixed::<5>(e, "solimpfriction")?;
-    defaults.actuatorgravcomp = attr_bool(e, "actuatorgravcomp");
-    defaults.margin = parse_float_attr(e, "margin");
-    if let Some(user) = get_attribute_opt(e, "user")
-        && let Ok(parts) = parse_float_array(&user)
-        && !parts.is_empty()
-    {
-        defaults.user = Some(parts);
-    }
+    defaults.solref_limit = a.prefix("solreflimit")?;
+    defaults.solimp_limit = a.prefix("solimplimit")?;
+    defaults.solreffriction = a.prefix("solreffriction")?;
+    defaults.solimpfriction = a.prefix("solimpfriction")?;
+    defaults.actuatorgravcomp = a.is_true("actuatorgravcomp");
+    defaults.margin = a.real("margin")?;
+    defaults.user = a.vector("user")?;
 
     Ok(defaults)
 }
 
 /// Parse geom defaults.
 pub(super) fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
+    let a = Attrs::new(e)?;
     let mut defaults = MjcfGeomDefaults::default();
 
-    if let Some(gtype) = get_attribute_opt(e, "type") {
-        defaults.geom_type = MjcfGeomType::from_str(&gtype);
+    if let Some(gtype) = a.text("type") {
+        defaults.geom_type = MjcfGeomType::from_str(gtype);
     }
-    defaults.friction = attr_vec3(e, "friction")?;
-    defaults.density = parse_float_attr(e, "density");
-    defaults.mass = parse_float_attr(e, "mass");
+    defaults.friction = a.prefix("friction")?;
+    defaults.density = a.real("density")?;
+    defaults.mass = a.real("mass")?;
 
-    defaults.rgba = attr_vec4(e, "rgba")?;
-    defaults.contype = parse_int_attr(e, "contype");
-    defaults.conaffinity = parse_int_attr(e, "conaffinity");
-    defaults.condim = parse_int_attr(e, "condim");
-    defaults.priority = parse_int_attr(e, "priority");
-    defaults.solmix = parse_float_attr(e, "solmix");
-    defaults.margin = parse_float_attr(e, "margin");
-    defaults.gap = parse_float_attr(e, "gap");
-    defaults.solref = attr_fixed::<2>(e, "solref")?;
-    defaults.solimp = attr_fixed::<5>(e, "solimp")?;
-    defaults.group = parse_int_attr(e, "group");
-    defaults.pos = attr_vec3(e, "pos")?;
-    defaults.quat = attr_vec4(e, "quat")?;
-    defaults.euler = attr_vec3(e, "euler")?;
-    defaults.axisangle = attr_vec4(e, "axisangle")?;
-    defaults.xyaxes = attr_fixed::<6>(e, "xyaxes")?;
-    defaults.zaxis = attr_vec3(e, "zaxis")?;
+    defaults.rgba = a.vec4("rgba")?;
+    defaults.contype = a.int("contype")?;
+    defaults.conaffinity = a.int("conaffinity")?;
+    defaults.condim = a.int("condim")?;
+    defaults.priority = a.int("priority")?;
+    defaults.solmix = a.real("solmix")?;
+    defaults.margin = a.real("margin")?;
+    defaults.gap = a.real("gap")?;
+    defaults.solref = a.prefix("solref")?;
+    defaults.solimp = a.prefix("solimp")?;
+    defaults.group = a.int("group")?;
+    defaults.pos = a.vec3("pos")?;
+    defaults.quat = a.vec4("quat")?;
+    defaults.euler = a.vec3("euler")?;
+    defaults.axisangle = a.vec4("axisangle")?;
+    defaults.xyaxes = a.array("xyaxes")?;
+    defaults.zaxis = a.vec3("zaxis")?;
 
     // Exotic geom defaults
-    defaults.fromto = attr_fixed::<6>(e, "fromto")?;
-    defaults.mesh = get_attribute_opt(e, "mesh");
-    defaults.hfield = get_attribute_opt(e, "hfield");
+    defaults.fromto = a.array("fromto")?;
+    defaults.mesh = a.string("mesh");
+    defaults.hfield = a.string("hfield");
 
     // Rendering
-    defaults.material = get_attribute_opt(e, "material");
+    defaults.material = a.string("material");
 
     // Fluid force parameters
-    if let Some(fs) = get_attribute_opt(e, "fluidshape") {
-        defaults.fluidshape = Some(match fs.as_str() {
+    if let Some(fs) = a.text("fluidshape") {
+        defaults.fluidshape = Some(match fs {
             "none" => FluidShape::None,
             "ellipsoid" => FluidShape::Ellipsoid,
             _ => return Err(MjcfError::invalid_keyword("geom", "fluidshape", fs)),
         });
     }
-    if let Some(coef_str) = get_attribute_opt(e, "fluidcoef") {
-        let parts = parse_float_array(&coef_str)?;
-        if parts.len() != 5 {
-            return Err(MjcfError::wrong_count_in(
-                "geom",
-                "fluidcoef",
-                ValueCount::Exactly(5),
-                parts.len(),
-            ));
-        }
-        defaults.fluidcoef = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
-    }
-    if let Some(user) = get_attribute_opt(e, "user")
-        && let Ok(parts) = parse_float_array(&user)
-        && !parts.is_empty()
-    {
-        defaults.user = Some(parts);
-    }
-    defaults.shellinertia = attr_bool(e, "shellinertia");
+    defaults.fluidcoef = a.prefix("fluidcoef")?;
+    defaults.user = a.vector("user")?;
+    defaults.shellinertia = a.is_true("shellinertia");
 
     Ok(defaults)
 }
 
 /// Parse actuator defaults.
 pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefaults> {
-    super::actuator::refuse_actdim(e)?;
+    let a = Attrs::new(e)?;
+    super::actuator::refuse_actdim(&a)?;
     let mut defaults = MjcfActuatorDefaults::default();
 
-    if let Some(ctrlrange) = get_attribute_opt(e, "ctrlrange") {
-        let parts = parse_float_array(&ctrlrange)?;
-        if parts.len() >= 2 {
-            defaults.ctrlrange = Some((parts[0], parts[1]));
-        }
+    if let Some(pair) = a.array::<2>("ctrlrange")? {
+        defaults.ctrlrange = Some(pair.into());
     }
-    if let Some(forcerange) = get_attribute_opt(e, "forcerange") {
-        let parts = parse_float_array(&forcerange)?;
-        if parts.len() >= 2 {
-            defaults.forcerange = Some((parts[0], parts[1]));
-        }
+    if let Some(pair) = a.array::<2>("forcerange")? {
+        defaults.forcerange = Some(pair.into());
     }
-    if let Some(gear_str) = get_attribute_opt(e, "gear") {
-        let parts = parse_float_array(&gear_str)?;
-        let mut gear = [0.0f64; 6];
-        for (i, &v) in parts.iter().take(6).enumerate() {
-            gear[i] = v;
-        }
-        defaults.gear = Some(gear);
-    }
-    defaults.kp = parse_float_attr(e, "kp");
-    defaults.kv = parse_float_attr(e, "kv");
-    defaults.dampratio = parse_float_attr(e, "dampratio");
+    defaults.gear = a.prefix("gear")?;
+    defaults.kp = a.real("kp")?;
+    defaults.kv = a.real("kv")?;
+    defaults.dampratio = a.real("dampratio")?;
 
-    defaults.ctrllimited = attr_bool(e, "ctrllimited");
-    defaults.forcelimited = attr_bool(e, "forcelimited");
+    defaults.ctrllimited = a.is_true("ctrllimited");
+    defaults.forcelimited = a.is_true("forcelimited");
 
     // <general>-specific attributes — parsed unconditionally because
     // parse_actuator_defaults() is called for all actuator element names
     // (actuator|motor|position|velocity|general). The model builder
     // ignores these for shortcut types.
-    defaults.gaintype = get_attribute_opt(e, "gaintype");
-    defaults.biastype = get_attribute_opt(e, "biastype");
-    defaults.dyntype = get_attribute_opt(e, "dyntype");
-    defaults.gainprm = parse_float_array_opt(e, "gainprm")?;
-    defaults.biasprm = parse_float_array_opt(e, "biasprm")?;
-    defaults.dynprm = parse_float_array_opt(e, "dynprm")?;
+    defaults.gaintype = a.string("gaintype");
+    defaults.biastype = a.string("biastype");
+    defaults.dyntype = a.string("dyntype");
+    defaults.gainprm = super::actuator::gain_or_bias(&a, "gainprm")?;
+    defaults.biasprm = super::actuator::gain_or_bias(&a, "biasprm")?;
+    defaults.dynprm = a.prefix("dynprm")?;
 
     // Activation parameters
-    defaults.group = parse_int_attr(e, "group");
-    defaults.actlimited = attr_bool(e, "actlimited");
-    if let Some(actrange) = get_attribute_opt(e, "actrange") {
-        let parts = parse_float_array(&actrange)?;
-        if parts.len() >= 2 {
-            defaults.actrange = Some((parts[0], parts[1]));
-        }
+    defaults.group = a.int("group")?;
+    defaults.actlimited = a.is_true("actlimited");
+    if let Some(pair) = a.array::<2>("actrange")? {
+        defaults.actrange = Some(pair.into());
     }
-    defaults.actearly = attr_bool(e, "actearly");
-    if let Some(lengthrange) = get_attribute_opt(e, "lengthrange") {
-        let parts = parse_float_array(&lengthrange)?;
-        if parts.len() >= 2 {
-            defaults.lengthrange = Some((parts[0], parts[1]));
-        }
+    defaults.actearly = a.is_true("actearly");
+    if let Some(pair) = a.array::<2>("lengthrange")? {
+        defaults.lengthrange = Some(pair.into());
     }
 
     // Interpolation attributes (common to all actuator types)
-    defaults.nsample = parse_int_attr(e, "nsample");
-    defaults.interp = get_attribute_opt(e, "interp");
-    defaults.delay = parse_float_attr(e, "delay");
+    defaults.nsample = a.int("nsample")?;
+    defaults.interp = a.string("interp");
+    defaults.delay = a.real("delay")?;
 
     // Cylinder-specific attributes
-    defaults.area = parse_float_attr(e, "area");
-    defaults.diameter = parse_float_attr(e, "diameter");
-    // `timeconst` is ambiguous: 1 value → cylinder timeconst, 2 values → muscle timeconst.
-    // MuJoCo: <cylinder timeconst="real(1)">, <muscle timeconst="real(2)">.
-    if let Some(tc_str) = get_attribute_opt(e, "timeconst") {
-        let parts = parse_float_array(&tc_str)?;
-        if parts.len() == 1 {
-            defaults.timeconst = Some(parts[0]);
-        } else if parts.len() >= 2 {
-            defaults.muscle_timeconst = Some((parts[0], parts[1]));
+    defaults.area = a.real("area")?;
+    defaults.diameter = a.real("diameter")?;
+    // A muscle's `timeconst` is a pair [activation, deactivation]; every other
+    // type's is one number (`xml_native_reader.cc` reads 2 and 1, exactly).
+    if a.element() == "muscle" {
+        if let Some(pair) = a.array::<2>("timeconst")? {
+            defaults.muscle_timeconst = Some(pair.into());
         }
+    } else {
+        defaults.timeconst = a.real("timeconst")?;
     }
-    defaults.bias = attr_fixed::<3>(e, "bias")?;
+    defaults.bias = a.array("bias")?;
 
     // Muscle-specific attributes
-    if let Some(range_str) = get_attribute_opt(e, "range") {
-        let parts = parse_float_array(&range_str)?;
-        if parts.len() >= 2 {
-            defaults.range = Some((parts[0], parts[1]));
-        }
+    if let Some(pair) = a.array::<2>("range")? {
+        defaults.range = Some(pair.into());
     }
-    defaults.force = parse_float_attr(e, "force");
-    defaults.scale = parse_float_attr(e, "scale");
-    defaults.lmin = parse_float_attr(e, "lmin");
-    defaults.lmax = parse_float_attr(e, "lmax");
-    defaults.vmax = parse_float_attr(e, "vmax");
-    defaults.fpmax = parse_float_attr(e, "fpmax");
-    defaults.fvmax = parse_float_attr(e, "fvmax");
+    defaults.force = a.real("force")?;
+    defaults.scale = a.real("scale")?;
+    defaults.lmin = a.real("lmin")?;
+    defaults.lmax = a.real("lmax")?;
+    defaults.vmax = a.real("vmax")?;
+    defaults.fpmax = a.real("fpmax")?;
+    defaults.fvmax = a.real("fvmax")?;
 
     // Adhesion-specific attributes
-    defaults.gain = parse_float_attr(e, "gain");
-    if let Some(user) = get_attribute_opt(e, "user")
-        && let Ok(parts) = parse_float_array(&user)
-        && !parts.is_empty()
-    {
-        defaults.user = Some(parts);
-    }
+    defaults.gain = a.real("gain")?;
+    defaults.user = a.vector("user")?;
 
     Ok(defaults)
 }
 
 /// Parse tendon defaults.
 pub(super) fn parse_tendon_defaults(e: &BytesStart) -> Result<MjcfTendonDefaults> {
+    let a = Attrs::new(e)?;
     let mut defaults = MjcfTendonDefaults::default();
 
-    if let Some(range) = get_attribute_opt(e, "range") {
-        let parts = parse_float_array(&range)?;
-        if parts.len() >= 2 {
-            defaults.range = Some((parts[0], parts[1]));
-        }
+    if let Some(pair) = a.array::<2>("range")? {
+        defaults.range = Some(pair.into());
     }
-    defaults.limited = attr_bool(e, "limited");
-    defaults.stiffness = parse_float_attr(e, "stiffness");
-    defaults.damping = parse_float_attr(e, "damping");
-    defaults.frictionloss = parse_float_attr(e, "frictionloss");
+    defaults.limited = a.is_true("limited");
+    defaults.stiffness = a.real("stiffness")?;
+    defaults.damping = a.real("damping")?;
+    defaults.frictionloss = a.real("frictionloss")?;
 
     // B3: Parse springlength in defaults
-    if let Some(sl_str) = get_attribute_opt(e, "springlength") {
-        defaults.springlength = super::tendon::springlength(&parse_float_array(&sl_str)?)?;
+    if let Some(sl) = a.prefix::<2>("springlength")? {
+        defaults.springlength = super::tendon::springlength(sl.given())?;
     }
 
-    defaults.width = parse_float_attr(e, "width");
+    defaults.width = a.real("width")?;
 
-    defaults.rgba = attr_vec4(e, "rgba")?;
-    defaults.group = parse_int_attr(e, "group");
+    defaults.rgba = a.vec4("rgba")?;
+    defaults.group = a.int("group")?;
 
     // Solver parameters
-    defaults.solref_limit = attr_fixed::<2>(e, "solreflimit")?;
-    defaults.solimp_limit = attr_fixed::<5>(e, "solimplimit")?;
-    defaults.margin = parse_float_attr(e, "margin");
+    defaults.solref_limit = a.prefix("solreflimit")?;
+    defaults.solimp_limit = a.prefix("solimplimit")?;
+    defaults.margin = a.real("margin")?;
 
     // Friction loss solver parameters
-    defaults.solreffriction = attr_fixed::<2>(e, "solreffriction")?;
-    defaults.solimpfriction = attr_fixed::<5>(e, "solimpfriction")?;
+    defaults.solreffriction = a.prefix("solreffriction")?;
+    defaults.solimpfriction = a.prefix("solimpfriction")?;
 
     // Rendering
-    defaults.material = get_attribute_opt(e, "material");
-    if let Some(user) = get_attribute_opt(e, "user")
-        && let Ok(parts) = parse_float_array(&user)
-        && !parts.is_empty()
-    {
-        defaults.user = Some(parts);
-    }
+    defaults.material = a.string("material");
+    defaults.user = a.vector("user")?;
 
     Ok(defaults)
 }
 
 /// Parse sensor defaults.
 pub(super) fn parse_sensor_defaults(e: &BytesStart) -> Result<MjcfSensorDefaults> {
+    let a = Attrs::new(e)?;
     let mut defaults = MjcfSensorDefaults::default();
 
-    defaults.noise = parse_float_attr(e, "noise");
-    defaults.cutoff = parse_float_attr(e, "cutoff");
+    defaults.noise = a.real("noise")?;
+    defaults.cutoff = a.real("cutoff")?;
 
-    if let Some(user) = get_attribute_opt(e, "user") {
-        defaults.user = Some(parse_float_array(&user)?);
-    }
+    defaults.user = a.vector("user")?;
 
     Ok(defaults)
 }
 
 /// Parse mesh defaults.
 pub(super) fn parse_mesh_defaults(e: &BytesStart) -> Result<MjcfMeshDefaults> {
+    let a = Attrs::new(e)?;
     let mut defaults = MjcfMeshDefaults::default();
 
-    defaults.scale = attr_vec3(e, "scale")?;
+    defaults.scale = a.vec3("scale")?;
 
-    if let Some(n) = parse_int_attr(e, "maxhullvert") {
+    if let Some(n) = a.int("maxhullvert")? {
         defaults.maxhullvert = parse_maxhullvert(n)?;
     }
 
-    if let Some(inertia_str) = get_attribute_opt(e, "inertia") {
-        defaults.inertia = Some(match inertia_str.as_str() {
+    if let Some(inertia_str) = a.text("inertia") {
+        defaults.inertia = Some(match inertia_str {
             "convex" => MeshInertia::Convex,
             "exact" => MeshInertia::Exact,
             "legacy" => MeshInertia::Legacy,
@@ -418,46 +359,41 @@ pub(super) fn parse_mesh_defaults(e: &BytesStart) -> Result<MjcfMeshDefaults> {
 
 /// Parse site defaults.
 pub(super) fn parse_site_defaults(e: &BytesStart) -> Result<MjcfSiteDefaults> {
+    let a = Attrs::new(e)?;
     let mut defaults = MjcfSiteDefaults::default();
 
-    defaults.site_type = get_attribute_opt(e, "type");
-    if let Some(size) = get_attribute_opt(e, "size") {
-        defaults.size = Some(parse_float_array(&size)?);
-    }
-    defaults.rgba = attr_vec4(e, "rgba")?;
-    defaults.group = parse_int_attr(e, "group");
-    defaults.pos = attr_vec3(e, "pos")?;
-    defaults.quat = attr_vec4(e, "quat")?;
-    defaults.euler = attr_vec3(e, "euler")?;
-    defaults.axisangle = attr_vec4(e, "axisangle")?;
-    defaults.xyaxes = attr_fixed::<6>(e, "xyaxes")?;
-    defaults.zaxis = attr_vec3(e, "zaxis")?;
-    defaults.fromto = attr_fixed::<6>(e, "fromto")?;
+    defaults.site_type = a.string("type");
+    defaults.size = a.prefix("size")?;
+    defaults.rgba = a.vec4("rgba")?;
+    defaults.group = a.int("group")?;
+    defaults.pos = a.vec3("pos")?;
+    defaults.quat = a.vec4("quat")?;
+    defaults.euler = a.vec3("euler")?;
+    defaults.axisangle = a.vec4("axisangle")?;
+    defaults.xyaxes = a.array("xyaxes")?;
+    defaults.zaxis = a.vec3("zaxis")?;
+    defaults.fromto = a.array("fromto")?;
 
     // Rendering
-    defaults.material = get_attribute_opt(e, "material");
-    if let Some(user) = get_attribute_opt(e, "user")
-        && let Ok(parts) = parse_float_array(&user)
-        && !parts.is_empty()
-    {
-        defaults.user = Some(parts);
-    }
+    defaults.material = a.string("material");
+    defaults.user = a.vector("user")?;
 
     Ok(defaults)
 }
 
 /// Parse pair defaults from `<default><pair .../>`.
 pub(super) fn parse_pair_defaults(e: &BytesStart) -> Result<MjcfPairDefaults> {
+    let a = Attrs::new(e)?;
     let mut defaults = MjcfPairDefaults::default();
 
-    defaults.condim = parse_int_attr(e, "condim");
-    defaults.margin = parse_float_attr(e, "margin");
-    defaults.gap = parse_float_attr(e, "gap");
+    defaults.condim = a.int("condim")?;
+    defaults.margin = a.real("margin")?;
+    defaults.gap = a.real("gap")?;
 
-    defaults.friction = attr_fixed::<5>(e, "friction")?;
-    defaults.solref = attr_fixed::<2>(e, "solref")?;
-    defaults.solreffriction = attr_fixed::<2>(e, "solreffriction")?;
-    defaults.solimp = attr_fixed::<5>(e, "solimp")?;
+    defaults.friction = a.prefix("friction")?;
+    defaults.solref = a.prefix("solref")?;
+    defaults.solreffriction = a.prefix("solreffriction")?;
+    defaults.solimp = a.prefix("solimp")?;
 
     Ok(defaults)
 }
@@ -465,11 +401,12 @@ pub(super) fn parse_pair_defaults(e: &BytesStart) -> Result<MjcfPairDefaults> {
 /// Parse `<default><equality>` attributes: active, solref, solimp.
 /// MuJoCo ref: `OneEquality()` in `xml_native_reader.cc` (defaults context).
 pub(super) fn parse_equality_defaults(e: &BytesStart) -> Result<MjcfEqualityDefaults> {
+    let a = Attrs::new(e)?;
     let mut defaults = MjcfEqualityDefaults::default();
 
-    defaults.active = attr_bool(e, "active");
-    defaults.solref = attr_fixed::<2>(e, "solref")?;
-    defaults.solimp = attr_fixed::<5>(e, "solimp")?;
+    defaults.active = a.is_true("active");
+    defaults.solref = a.prefix("solref")?;
+    defaults.solimp = a.prefix("solimp")?;
 
     Ok(defaults)
 }

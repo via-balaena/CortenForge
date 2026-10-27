@@ -6,12 +6,9 @@ use std::io::BufRead;
 
 use crate::error::{MjcfError, Result};
 
-use crate::types::{MjcfActuator, MjcfActuatorType};
+use crate::types::{MjcfActuator, MjcfActuatorType, Prefix};
 
-use super::attrs::{
-    attr_bool, get_attribute_opt, parse_float_array, parse_float_array_opt, parse_float_attr,
-    parse_int_attr, skip_element,
-};
+use super::attrs::{Attrs, skip_element};
 use super::extension::{parse_plugin_ref, parse_plugin_ref_empty};
 
 /// Parse actuators element.
@@ -52,11 +49,33 @@ pub(super) fn parse_actuators<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<
 /// An actuator's `actdim` is not read: the builder gives a stateful actuator
 /// one activation, so a written count, which MuJoCo honours for `user`
 /// dynamics, is refused rather than ignored.
-pub(super) fn refuse_actdim(e: &BytesStart) -> Result<()> {
-    if get_attribute_opt(e, "actdim").is_some() {
+pub(super) fn refuse_actdim(a: &Attrs) -> Result<()> {
+    if a.has("actdim") {
         return Err(MjcfError::unsupported("an actuator's actdim"));
     }
     Ok(())
+}
+
+/// `gainprm` or `biasprm`: MuJoCo 3.5.0 reads up to ten (`mjNGAIN`,
+/// `mjNBIAS`); sim-core stores nine. A tenth equal to MuJoCo's default, 0, is
+/// read as unwritten; any other is refused (D-GAINPRM-10).
+pub(super) fn gain_or_bias(a: &Attrs, name: &str) -> Result<Option<Prefix<9>>> {
+    let Some(given) = a.prefix::<10>(name)? else {
+        return Ok(None);
+    };
+    let given = given.given();
+    if let [nine @ .., tenth] = given
+        && given.len() == 10
+    {
+        if *tenth != 0.0 {
+            return Err(MjcfError::unsupported(format!(
+                "a nonzero tenth {name} value on <{}>",
+                a.element()
+            )));
+        }
+        return Ok(Prefix::new(nine));
+    }
+    Ok(Prefix::new(given))
 }
 
 /// Parse actuator attributes.
@@ -64,64 +83,52 @@ pub(super) fn parse_actuator_attrs(
     e: &BytesStart,
     actuator_type: MjcfActuatorType,
 ) -> Result<MjcfActuator> {
-    refuse_actdim(e)?;
+    let a = Attrs::new(e)?;
+    refuse_actdim(&a)?;
     let mut actuator = MjcfActuator {
         actuator_type,
         ..Default::default()
     };
 
     // Common attributes
-    actuator.name = get_attribute_opt(e, "name").unwrap_or_default();
-    actuator.class = get_attribute_opt(e, "class");
-    actuator.joint = get_attribute_opt(e, "joint");
-    actuator.site = get_attribute_opt(e, "site");
-    actuator.tendon = get_attribute_opt(e, "tendon");
-    actuator.body = get_attribute_opt(e, "body");
+    actuator.name = a.string("name").unwrap_or_default();
+    actuator.class = a.string("class");
+    actuator.joint = a.string("joint");
+    actuator.site = a.string("site");
+    actuator.tendon = a.string("tendon");
+    actuator.body = a.string("body");
 
-    if let Some(gear_str) = get_attribute_opt(e, "gear") {
-        let parts = parse_float_array(&gear_str)?;
-        let mut gear = [0.0f64; 6];
-        for (i, &v) in parts.iter().take(6).enumerate() {
-            gear[i] = v;
-        }
-        actuator.gear = gear;
-    }
-    actuator.refsite = get_attribute_opt(e, "refsite");
-    actuator.jointinparent = get_attribute_opt(e, "jointinparent");
-    actuator.cranksite = get_attribute_opt(e, "cranksite");
-    actuator.slidersite = get_attribute_opt(e, "slidersite");
-    actuator.cranklength = parse_float_attr(e, "cranklength");
+    actuator.gear = a.prefix("gear")?;
+    actuator.refsite = a.string("refsite");
+    actuator.jointinparent = a.string("jointinparent");
+    actuator.cranksite = a.string("cranksite");
+    actuator.slidersite = a.string("slidersite");
+    actuator.cranklength = a.real("cranklength")?;
 
-    if let Some(ctrlrange) = get_attribute_opt(e, "ctrlrange") {
-        let parts = parse_float_array(&ctrlrange)?;
-        if parts.len() >= 2 {
-            actuator.ctrlrange = Some((parts[0], parts[1]));
-        }
+    if let Some(pair) = a.array::<2>("ctrlrange")? {
+        actuator.ctrlrange = Some(pair.into());
     }
-    if let Some(forcerange) = get_attribute_opt(e, "forcerange") {
-        let parts = parse_float_array(&forcerange)?;
-        if parts.len() >= 2 {
-            actuator.forcerange = Some((parts[0], parts[1]));
-        }
+    if let Some(pair) = a.array::<2>("forcerange")? {
+        actuator.forcerange = Some(pair.into());
     }
 
-    actuator.ctrllimited = attr_bool(e, "ctrllimited");
-    actuator.forcelimited = attr_bool(e, "forcelimited");
+    actuator.ctrllimited = a.is_true("ctrllimited");
+    actuator.forcelimited = a.is_true("forcelimited");
 
-    if let Some(kp) = parse_float_attr(e, "kp") {
+    if let Some(kp) = a.real("kp")? {
         actuator.kp = kp;
     }
-    if let Some(kv) = parse_float_attr(e, "kv") {
+    if let Some(kv) = a.real("kv")? {
         actuator.kv = Some(kv);
     }
-    if let Some(dampratio) = parse_float_attr(e, "dampratio") {
+    if let Some(dampratio) = a.real("dampratio")? {
         actuator.dampratio = Some(dampratio);
     }
 
     // Interpolation attributes (common to all actuator types)
-    actuator.nsample = parse_int_attr(e, "nsample");
-    actuator.interp = get_attribute_opt(e, "interp");
-    actuator.delay = parse_float_attr(e, "delay");
+    actuator.nsample = a.int("nsample")?;
+    actuator.interp = a.string("interp");
+    actuator.delay = a.real("delay")?;
 
     // ========================================================================
     // <general>-specific attributes
@@ -129,105 +136,85 @@ pub(super) fn parse_actuator_attrs(
     // These are only parsed for <general> actuators. For shortcut types,
     // these attributes are not part of the MJCF schema and are ignored.
     if actuator_type == MjcfActuatorType::General {
-        actuator.gaintype = get_attribute_opt(e, "gaintype");
-        actuator.biastype = get_attribute_opt(e, "biastype");
-        actuator.dyntype = get_attribute_opt(e, "dyntype");
-        actuator.gainprm = parse_float_array_opt(e, "gainprm")?;
-        actuator.biasprm = parse_float_array_opt(e, "biasprm")?;
-        actuator.dynprm = parse_float_array_opt(e, "dynprm")?;
+        actuator.gaintype = a.string("gaintype");
+        actuator.biastype = a.string("biastype");
+        actuator.dyntype = a.string("dyntype");
+        actuator.gainprm = gain_or_bias(&a, "gainprm")?;
+        actuator.biasprm = gain_or_bias(&a, "biasprm")?;
+        actuator.dynprm = a.prefix("dynprm")?;
     }
 
     // ========================================================================
     // Cylinder-specific attributes
     // ========================================================================
-    if let Some(area) = parse_float_attr(e, "area") {
+    if let Some(area) = a.real("area")? {
         actuator.area = area;
     }
-    if let Some(diameter) = parse_float_attr(e, "diameter") {
+    if let Some(diameter) = a.real("diameter")? {
         actuator.diameter = Some(diameter);
     }
-    if let Some(timeconst) = parse_float_attr(e, "timeconst") {
+    // A muscle's `timeconst` is a pair [activation, deactivation]; every other
+    // type's is one number (`xml_native_reader.cc` reads 2 and 1, exactly).
+    if actuator_type == MjcfActuatorType::Muscle {
+        if let Some(pair) = a.array::<2>("timeconst")? {
+            actuator.muscle_timeconst = pair.into();
+        }
+    } else if let Some(timeconst) = a.real("timeconst")? {
         actuator.timeconst = Some(timeconst);
     }
-    if let Some(bias) = get_attribute_opt(e, "bias") {
-        let parts = parse_float_array(&bias)?;
-        if parts.len() >= 3 {
-            actuator.bias = [parts[0], parts[1], parts[2]];
-        }
+    if let Some(bias) = a.array::<3>("bias")? {
+        actuator.bias = bias;
     }
 
     // ========================================================================
     // Muscle-specific attributes
     // ========================================================================
-    // For muscle, timeconst is a pair [activation, deactivation]
-    if actuator_type == MjcfActuatorType::Muscle
-        && let Some(tc) = get_attribute_opt(e, "timeconst")
-    {
-        let parts = parse_float_array(&tc)?;
-        if parts.len() >= 2 {
-            actuator.muscle_timeconst = (parts[0], parts[1]);
-        } else if parts.len() == 1 {
-            // Single value means both are the same
-            actuator.muscle_timeconst = (parts[0], parts[0]);
-        }
+    if let Some(pair) = a.array::<2>("range")? {
+        actuator.range = pair.into();
     }
-    if let Some(range) = get_attribute_opt(e, "range") {
-        let parts = parse_float_array(&range)?;
-        if parts.len() >= 2 {
-            actuator.range = (parts[0], parts[1]);
-        }
-    }
-    if let Some(force) = parse_float_attr(e, "force") {
+    if let Some(force) = a.real("force")? {
         actuator.force = force;
     }
-    if let Some(scale) = parse_float_attr(e, "scale") {
+    if let Some(scale) = a.real("scale")? {
         actuator.scale = scale;
     }
-    if let Some(lmin) = parse_float_attr(e, "lmin") {
+    if let Some(lmin) = a.real("lmin")? {
         actuator.lmin = lmin;
     }
-    if let Some(lmax) = parse_float_attr(e, "lmax") {
+    if let Some(lmax) = a.real("lmax")? {
         actuator.lmax = lmax;
     }
-    if let Some(vmax) = parse_float_attr(e, "vmax") {
+    if let Some(vmax) = a.real("vmax")? {
         actuator.vmax = vmax;
     }
-    if let Some(fpmax) = parse_float_attr(e, "fpmax") {
+    if let Some(fpmax) = a.real("fpmax")? {
         actuator.fpmax = fpmax;
     }
-    if let Some(fvmax) = parse_float_attr(e, "fvmax") {
+    if let Some(fvmax) = a.real("fvmax")? {
         actuator.fvmax = fvmax;
     }
 
     // ========================================================================
     // Adhesion-specific attributes
     // ========================================================================
-    if let Some(gain) = parse_float_attr(e, "gain") {
+    if let Some(gain) = a.real("gain")? {
         actuator.gain = gain;
     }
 
     // ========================================================================
     // Activation parameters
     // ========================================================================
-    actuator.group = parse_int_attr(e, "group");
-    actuator.actlimited = attr_bool(e, "actlimited");
-    if let Some(actrange) = get_attribute_opt(e, "actrange") {
-        let parts = parse_float_array(&actrange)?;
-        if parts.len() >= 2 {
-            actuator.actrange = Some((parts[0], parts[1]));
-        }
+    actuator.group = a.int("group")?;
+    actuator.actlimited = a.is_true("actlimited");
+    if let Some(pair) = a.array::<2>("actrange")? {
+        actuator.actrange = Some(pair.into());
     }
-    actuator.actearly = attr_bool(e, "actearly");
-    if let Some(lengthrange) = get_attribute_opt(e, "lengthrange") {
-        let parts = parse_float_array(&lengthrange)?;
-        if parts.len() >= 2 {
-            actuator.lengthrange = Some((parts[0], parts[1]));
-        }
+    actuator.actearly = a.is_true("actearly");
+    if let Some(pair) = a.array::<2>("lengthrange")? {
+        actuator.lengthrange = Some(pair.into());
     }
-    if let Some(user) = get_attribute_opt(e, "user")
-        && let Ok(parts) = parse_float_array(&user)
-    {
-        actuator.user = parts;
+    if let Some(user) = a.vector("user")? {
+        actuator.user = user;
     }
 
     Ok(actuator)

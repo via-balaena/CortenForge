@@ -10,11 +10,12 @@
 
 use nalgebra::Vector3;
 
-use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
+use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
+use crate::defaults::over;
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
     EqualityKind, MjcfConnect, MjcfDistance, MjcfEquality, MjcfEqualityDefaults, MjcfJointEquality,
-    MjcfTendonEquality, MjcfWeld,
+    MjcfTendonEquality, MjcfWeld, Prefix,
 };
 use sim_core::EqualityType;
 
@@ -23,19 +24,15 @@ use sim_core::EqualityType;
 fn apply_eq_defaults(
     defaults: Option<&MjcfEqualityDefaults>,
     active: &mut Option<bool>,
-    solref: &mut Option<[f64; 2]>,
-    solimp: &mut Option<[f64; 5]>,
+    solref: &mut Option<Prefix<2>>,
+    solimp: &mut Option<Prefix<5>>,
 ) {
     if let Some(d) = defaults {
         if active.is_none() {
             *active = d.active;
         }
-        if solref.is_none() {
-            *solref = d.solref;
-        }
-        if solimp.is_none() {
-            *solimp = d.solimp;
-        }
+        *solref = over(*solref, d.solref);
+        *solimp = over(*solimp, d.solimp);
     }
 }
 
@@ -130,8 +127,8 @@ impl ModelBuilder {
         self.eq_obj2id.push(body2_id);
         self.eq_data.push(data);
         self.eq_active.push(active.unwrap_or(true));
-        self.eq_solimp.push(solimp.unwrap_or(DEFAULT_SOLIMP));
-        self.eq_solref.push(solref.unwrap_or(DEFAULT_SOLREF));
+        self.eq_solimp.push(written_over(solimp, DEFAULT_SOLIMP));
+        self.eq_solref.push(written_over(solref, DEFAULT_SOLREF));
         let eq_id = self.eq_name.len();
         if let Some(ref name) = connect.name {
             self.eq_name_to_id.insert(name.clone(), eq_id);
@@ -214,8 +211,8 @@ impl ModelBuilder {
         self.eq_obj2id.push(body2_id);
         self.eq_data.push(data);
         self.eq_active.push(active.unwrap_or(true));
-        self.eq_solimp.push(solimp.unwrap_or(DEFAULT_SOLIMP));
-        self.eq_solref.push(solref.unwrap_or(DEFAULT_SOLREF));
+        self.eq_solimp.push(written_over(solimp, DEFAULT_SOLIMP));
+        self.eq_solref.push(written_over(solref, DEFAULT_SOLREF));
         let eq_id = self.eq_name.len();
         if let Some(ref name) = weld.name {
             self.eq_name_to_id.insert(name.clone(), eq_id);
@@ -264,8 +261,8 @@ impl ModelBuilder {
         self.eq_obj2id.push(joint2_id);
         self.eq_data.push(data);
         self.eq_active.push(active.unwrap_or(true));
-        self.eq_solimp.push(solimp.unwrap_or(DEFAULT_SOLIMP));
-        self.eq_solref.push(solref.unwrap_or(DEFAULT_SOLREF));
+        self.eq_solimp.push(written_over(solimp, DEFAULT_SOLIMP));
+        self.eq_solref.push(written_over(solref, DEFAULT_SOLREF));
         let eq_id = self.eq_name.len();
         if let Some(ref name) = joint_eq.name {
             self.eq_name_to_id.insert(name.clone(), eq_id);
@@ -315,8 +312,8 @@ impl ModelBuilder {
         self.eq_obj2id.push(geom2_id);
         self.eq_data.push(data);
         self.eq_active.push(active.unwrap_or(true));
-        self.eq_solimp.push(solimp.unwrap_or(DEFAULT_SOLIMP));
-        self.eq_solref.push(solref.unwrap_or(DEFAULT_SOLREF));
+        self.eq_solimp.push(written_over(solimp, DEFAULT_SOLIMP));
+        self.eq_solref.push(written_over(solref, DEFAULT_SOLREF));
         let eq_id = self.eq_name.len();
         if let Some(ref name) = dist.name {
             self.eq_name_to_id.insert(name.clone(), eq_id);
@@ -360,8 +357,8 @@ impl ModelBuilder {
         self.eq_obj2id.push(t2_id);
         self.eq_data.push(data);
         self.eq_active.push(active.unwrap_or(true));
-        self.eq_solimp.push(solimp.unwrap_or(DEFAULT_SOLIMP));
-        self.eq_solref.push(solref.unwrap_or(DEFAULT_SOLREF));
+        self.eq_solimp.push(written_over(solimp, DEFAULT_SOLIMP));
+        self.eq_solref.push(written_over(solref, DEFAULT_SOLREF));
         let eq_id = self.eq_name.len();
         if let Some(ref name) = ten_eq.name {
             self.eq_name_to_id.insert(name.clone(), eq_id);

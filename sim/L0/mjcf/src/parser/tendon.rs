@@ -1,6 +1,5 @@
 //! `<tendon>` parsing.
 
-use nalgebra::Vector4;
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
@@ -9,10 +8,7 @@ use crate::error::{MjcfError, Result};
 
 use crate::types::{MjcfTendon, MjcfTendonType, SpatialPathElement};
 
-use super::attrs::{
-    attr_bool, attr_fixed, get_attribute_opt, parse_float_array, parse_float_attr, parse_int_attr,
-    skip_element,
-};
+use super::attrs::{Attrs, skip_element};
 
 // ============================================================================
 // Tendon parsing
@@ -66,10 +62,11 @@ pub(super) fn parse_tendon<R: BufRead>(
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 let name_bytes = e.name().as_ref().to_vec();
+                let a = Attrs::new(e)?;
                 match name_bytes.as_slice() {
                     b"site" => {
                         // Site reference for spatial tendon path
-                        if let Some(site_name) = get_attribute_opt(e, "site") {
+                        if let Some(site_name) = a.string("site") {
                             tendon
                                 .path_elements
                                 .push(SpatialPathElement::Site { site: site_name });
@@ -83,15 +80,15 @@ pub(super) fn parse_tendon<R: BufRead>(
                             ));
                         }
                         // Joint reference for fixed tendon
-                        if let Some(joint_name) = get_attribute_opt(e, "joint") {
-                            let coef = parse_float_attr(e, "coef").unwrap_or(1.0);
+                        if let Some(joint_name) = a.string("joint") {
+                            let coef = a.real("coef")?.unwrap_or(1.0);
                             tendon.joints.push((joint_name, coef));
                         }
                     }
                     b"geom" => {
                         // Wrapping geom reference for spatial tendon path
-                        if let Some(geom_name) = get_attribute_opt(e, "geom") {
-                            let sidesite = get_attribute_opt(e, "sidesite");
+                        if let Some(geom_name) = a.string("geom") {
+                            let sidesite = a.string("sidesite");
                             tendon.path_elements.push(SpatialPathElement::Geom {
                                 geom: geom_name,
                                 sidesite,
@@ -100,7 +97,7 @@ pub(super) fn parse_tendon<R: BufRead>(
                     }
                     b"pulley" => {
                         // Pulley element for spatial tendon path
-                        let divisor = parse_float_attr(e, "divisor").unwrap_or(1.0);
+                        let divisor = a.real("divisor")?.unwrap_or(1.0);
                         tendon
                             .path_elements
                             .push(SpatialPathElement::Pulley { divisor });
@@ -131,60 +128,47 @@ pub(super) fn parse_tendon_attrs(
     e: &BytesStart,
     tendon_type: MjcfTendonType,
 ) -> Result<MjcfTendon> {
+    let a = Attrs::new(e)?;
     let mut tendon = MjcfTendon {
         tendon_type,
         ..Default::default()
     };
 
-    tendon.name = get_attribute_opt(e, "name").unwrap_or_default();
-    tendon.class = get_attribute_opt(e, "class");
+    tendon.name = a.string("name").unwrap_or_default();
+    tendon.class = a.string("class");
 
-    if let Some(range) = get_attribute_opt(e, "range")
-        && let Ok(parts) = parse_float_array(&range)
-        && parts.len() >= 2
-    {
-        tendon.range = Some((parts[0], parts[1]));
+    if let Some(pair) = a.array::<2>("range")? {
+        tendon.range = Some(pair.into());
     }
 
-    tendon.limited = attr_bool(e, "limited");
+    tendon.limited = a.is_true("limited");
 
-    tendon.stiffness = parse_float_attr(e, "stiffness");
-    tendon.damping = parse_float_attr(e, "damping");
-    tendon.frictionloss = parse_float_attr(e, "frictionloss");
+    tendon.stiffness = a.real("stiffness")?;
+    tendon.damping = a.real("damping")?;
+    tendon.frictionloss = a.real("frictionloss")?;
 
     // B2: Parse springlength (1 or 2 values)
-    if let Some(sl_str) = get_attribute_opt(e, "springlength")
-        && let Ok(parts) = parse_float_array(&sl_str)
-        && let Some(sl) = springlength(&parts)?
-    {
-        tendon.springlength = Some(sl); // S2
+    if let Some(sl) = a.prefix::<2>("springlength")? {
+        tendon.springlength = springlength(sl.given())?; // S2
     }
 
-    tendon.width = parse_float_attr(e, "width");
-    tendon.group = parse_int_attr(e, "group");
-
-    if let Some(rgba) = get_attribute_opt(e, "rgba")
-        && let Ok(parts) = parse_float_array(&rgba)
-        && parts.len() >= 4
-    {
-        tendon.rgba = Some(Vector4::new(parts[0], parts[1], parts[2], parts[3]));
-    }
+    tendon.width = a.real("width")?;
+    tendon.group = a.int("group")?;
+    tendon.rgba = a.vec4("rgba")?;
 
     // Solver parameters
-    tendon.solref_limit = attr_fixed::<2>(e, "solreflimit")?;
-    tendon.solimp_limit = attr_fixed::<5>(e, "solimplimit")?;
-    tendon.margin = parse_float_attr(e, "margin");
+    tendon.solref_limit = a.prefix("solreflimit")?;
+    tendon.solimp_limit = a.prefix("solimplimit")?;
+    tendon.margin = a.real("margin")?;
 
     // Friction loss solver parameters
-    tendon.solreffriction = attr_fixed::<2>(e, "solreffriction")?;
-    tendon.solimpfriction = attr_fixed::<5>(e, "solimpfriction")?;
+    tendon.solreffriction = a.prefix("solreffriction")?;
+    tendon.solimpfriction = a.prefix("solimpfriction")?;
 
     // Rendering
-    tendon.material = get_attribute_opt(e, "material");
-    if let Some(user) = get_attribute_opt(e, "user")
-        && let Ok(parts) = parse_float_array(&user)
-    {
-        tendon.user = parts;
+    tendon.material = a.string("material");
+    if let Some(user) = a.vector("user")? {
+        tendon.user = user;
     }
 
     Ok(tendon)

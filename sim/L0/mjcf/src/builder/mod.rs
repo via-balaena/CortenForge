@@ -47,7 +47,7 @@ use crate::defaults::DefaultResolver;
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
     MeshInertia, MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfJacobianType, MjcfKeyframe,
-    MjcfModel, MjcfOption, MjcfSolverType,
+    MjcfModel, MjcfOption, MjcfSolverType, Prefix,
 };
 
 use self::compiler::{apply_discardvisual, apply_fusestatic};
@@ -66,6 +66,12 @@ pub const DEFAULT_SOLREF: [f64; 2] = [0.02, 1.0];
 /// - width = 0.001: penetration depth at which impedance transitions
 /// - midpoint = 0.5, power = 2.0: sigmoid transition shape
 pub const DEFAULT_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
+
+/// The values written over `base`: an attribute MuJoCo reads with `exact =
+/// false` keeps `base`'s values past the ones written.
+fn written_over<const N: usize>(written: Option<Prefix<N>>, base: [f64; N]) -> [f64; N] {
+    written.map_or(base, |written| written.over(base))
+}
 
 /// Whether an MJCF range makes an automatic limit: `0 0` does not, as MuJoCo
 /// leaves it unlimited (`islimited`, `user_objects.cc:184-189`).
@@ -806,13 +812,13 @@ impl ModelBuilder {
             self.o_margin = option.o_margin;
         }
         if let Some(sr) = option.o_solref {
-            self.o_solref = sr;
+            self.o_solref = sr.over(self.o_solref);
         }
         if let Some(si) = option.o_solimp {
-            self.o_solimp = si;
+            self.o_solimp = si.over(self.o_solimp);
         }
         if let Some(fr) = option.o_friction {
-            self.o_friction = fr;
+            self.o_friction = fr.over(self.o_friction);
         }
 
         // Wire all flags from parsed MJCF to Model bitfields.

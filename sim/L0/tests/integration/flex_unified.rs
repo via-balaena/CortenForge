@@ -187,7 +187,7 @@ fn flexcomp_grid_mjcf() -> &'static str {
     <mujoco model="flexcomp_grid">
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <deformable>
-            <flexcomp name="grid" type="grid" count="5 5 1" spacing="0.04"
+            <flexcomp name="grid" type="grid" count="5 5 1" spacing="0.04 0.04 0.04"
                       dim="2" density="200">
                 <elasticity young="1e5" thickness="0.001"/>
             </flexcomp>

@@ -1,0 +1,4 @@
+<mujoco>
+            <worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>
+            <actuator><general joint="j" gainprm="1 2 3 4 5 6 7 8 9 0"/></actuator>
+        </mujoco>

@@ -1,0 +1,1 @@
+<mujoco><worldbody><site name="x &amp; y"/><site name="a & b"/><site name="a&foo;b"/><site name="a&lt;b&#62;"/></worldbody></mujoco>

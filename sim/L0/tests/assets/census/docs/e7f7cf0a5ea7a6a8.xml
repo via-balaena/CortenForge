@@ -1,0 +1,4 @@
+<mujoco>
+            <worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>
+            <actuator><muscle joint="j" timeconst="0.01"/></actuator>
+        </mujoco>

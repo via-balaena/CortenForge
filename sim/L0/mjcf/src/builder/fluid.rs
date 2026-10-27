@@ -8,7 +8,8 @@
 use nalgebra::Vector3;
 use sim_core::GeomType;
 
-use crate::types::FluidShape;
+use super::written_over;
+use crate::types::{FluidShape, Prefix};
 
 /// 15-point Gauss-Kronrod integration constants from MuJoCo `user_objects.cc`.
 /// Pre-transformed integration nodes: l_i = x_i³ / (1 - x_i)²
@@ -101,7 +102,7 @@ pub fn geom_semi_axes(geom_type: GeomType, size: Vector3<f64>) -> [f64; 3] {
 /// (or defaults), elements 6-11 from kappa quadrature.
 pub fn compute_geom_fluid(
     fluidshape: FluidShape,
-    fluidcoef: Option<[f64; 5]>,
+    fluidcoef: Option<Prefix<5>>,
     geom_type: GeomType,
     size: Vector3<f64>,
 ) -> [f64; 12] {
@@ -110,7 +111,7 @@ pub fn compute_geom_fluid(
     }
 
     // Defaults: [C_blunt=0.5, C_slender=0.25, C_ang=1.5, C_K=1.0, C_M=1.0]
-    let coef = fluidcoef.unwrap_or([0.5, 0.25, 1.5, 1.0, 1.0]);
+    let coef = written_over(fluidcoef, [0.5, 0.25, 1.5, 1.0, 1.0]);
 
     // Semi-axes (diameters in MuJoCo's convention = semi-axes here)
     let s = geom_semi_axes(geom_type, size);
@@ -238,7 +239,7 @@ mod tests {
         let coef = [0.42, 0.13, 2.71, 1.62, 0.31];
         let g = compute_geom_fluid(
             FluidShape::Ellipsoid,
-            Some(coef),
+            Some(Prefix::full(coef)),
             GeomType::Sphere,
             Vector3::new(0.5, 0.5, 0.5),
         );

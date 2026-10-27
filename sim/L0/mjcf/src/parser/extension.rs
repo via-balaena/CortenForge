@@ -10,7 +10,7 @@ use crate::types::{
     MjcfExtension, MjcfExtensionPlugin, MjcfPluginConfig, MjcfPluginInstance, MjcfPluginRef,
 };
 
-use super::attrs::get_attribute_opt;
+use super::attrs::Attrs;
 
 // ============================================================================
 // §66: Plugin/Extension Parsing
@@ -23,7 +23,8 @@ pub(super) fn parse_extension<R: BufRead>(reader: &mut Reader<R>) -> Result<Mjcf
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) if e.name().as_ref() == b"plugin" => {
-                let plugin_name = get_attribute_opt(e, "plugin")
+                let plugin_name = Attrs::new(e)?
+                    .string("plugin")
                     .ok_or_else(|| MjcfError::missing_attribute("plugin", "plugin"))?;
                 let mut ep = MjcfExtensionPlugin {
                     plugin: plugin_name,
@@ -53,13 +54,15 @@ pub(super) fn parse_extension_plugin<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) if e.name().as_ref() == b"instance" => {
-                let name = get_attribute_opt(e, "name")
+                let name = Attrs::new(e)?
+                    .string("name")
                     .ok_or_else(|| MjcfError::missing_attribute("instance", "name"))?;
                 let config = parse_plugin_config(reader, b"instance")?;
                 ep.instances.push(MjcfPluginInstance { name, config });
             }
             Ok(Event::Empty(ref e)) if e.name().as_ref() == b"instance" => {
-                let name = get_attribute_opt(e, "name")
+                let name = Attrs::new(e)?
+                    .string("name")
                     .ok_or_else(|| MjcfError::missing_attribute("instance", "name"))?;
                 ep.instances.push(MjcfPluginInstance {
                     name,
@@ -89,7 +92,8 @@ pub(super) fn parse_plugin_config<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Empty(ref e)) if e.name().as_ref() == b"config" => {
-                let key = get_attribute_opt(e, "key")
+                let key = Attrs::new(e)?
+                    .string("key")
                     .ok_or_else(|| MjcfError::missing_attribute("config", "key"))?;
                 if !seen_keys.insert(key.clone()) {
                     return Err(MjcfError::invalid_value(
@@ -98,7 +102,8 @@ pub(super) fn parse_plugin_config<R: BufRead>(
                         format!("duplicate config key: {key}"),
                     ));
                 }
-                let value = get_attribute_opt(e, "value")
+                let value = Attrs::new(e)?
+                    .string("value")
                     .ok_or_else(|| MjcfError::missing_attribute("config", "value"))?;
                 configs.push(MjcfPluginConfig { key, value });
             }
@@ -119,9 +124,10 @@ pub(super) fn parse_plugin_ref<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
 ) -> Result<MjcfPluginRef> {
-    let plugin = get_attribute_opt(start, "plugin")
+    let plugin = Attrs::new(start)?
+        .string("plugin")
         .ok_or_else(|| MjcfError::missing_attribute("plugin", "plugin"))?;
-    let instance = get_attribute_opt(start, "instance");
+    let instance = Attrs::new(start)?.string("instance");
     let config = parse_plugin_config(reader, b"plugin")?;
 
     // Validation: can't have both instance reference and inline config
@@ -143,9 +149,10 @@ pub(super) fn parse_plugin_ref<R: BufRead>(
 /// Parse a self-closing `<plugin plugin="..." instance="..."/>` element (Event::Empty).
 /// No child `<config>` elements are possible in a self-closing tag.
 pub(super) fn parse_plugin_ref_empty(start: &BytesStart) -> Result<MjcfPluginRef> {
-    let plugin = get_attribute_opt(start, "plugin")
+    let plugin = Attrs::new(start)?
+        .string("plugin")
         .ok_or_else(|| MjcfError::missing_attribute("plugin", "plugin"))?;
-    let instance = get_attribute_opt(start, "instance");
+    let instance = Attrs::new(start)?.string("instance");
 
     Ok(MjcfPluginRef {
         plugin,

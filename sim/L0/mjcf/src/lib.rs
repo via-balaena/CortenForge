@@ -203,7 +203,7 @@ pub use types::{
     MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
     MjcfJointEquality, MjcfJointType, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption,
     MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendon, MjcfTendonDefaults,
-    MjcfTendonType, MjcfWeld, SpatialPathElement,
+    MjcfTendonType, MjcfWeld, Prefix, SpatialPathElement,
 };
 pub use validation::{ValidationResult, validate, validate_tendons};
 
