@@ -309,7 +309,7 @@ impl Attrs {
         Ok(self.array::<4>(name)?.map(Vector4::from))
     }
 
-    /// A quaternion, as MuJoCo's `ReadQuat` reads one (`xml_util.cc:830-843`):
+    /// A quaternion, as MuJoCo's `ReadQuat` reads one (`xml_util.cc:834-844`):
     /// exactly four numbers, not all zero (measured: "zero quaternion is not
     /// allowed").
     pub(super) fn quat(&self, name: &str) -> Result<Option<Vector4<f64>>> {

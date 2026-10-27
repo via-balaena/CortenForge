@@ -717,7 +717,8 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            matches!(err, crate::error::MjcfError::ConflictingAttributes { .. }),
+            matches!(&err, crate::error::MjcfError::ConflictingAttributes { element, attributes, .. }
+                if element == "site" && attributes == &["quat", "euler"]),
             "{err}"
         );
     }

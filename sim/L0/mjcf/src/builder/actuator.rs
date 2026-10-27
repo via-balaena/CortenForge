@@ -1137,7 +1137,8 @@ mod tests {
         }
     }
 
-    /// Criterion 13: a tenth gainprm element is refused, not truncated.
+    /// Criterion 13: a nonzero tenth gainprm element is refused, not
+    /// truncated.
     #[test]
     fn test_general_tenth_gainprm_is_a_stated_limitation() {
         // MuJoCo 3.5.0 stores ten gain parameters, sim-core nine: a nonzero

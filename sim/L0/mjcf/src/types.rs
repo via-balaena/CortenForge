@@ -2879,14 +2879,17 @@ pub struct MjcfActuator {
     /// Dynamics type: "none", "integrator", "filter", "filterexact", "muscle".
     /// None means use default (None/direct). Only parsed for `<general>`.
     pub dyntype: Option<String>,
-    /// Gain parameters (up to 9 elements, zero-padded).
-    /// None means use default [1, 0, ..., 0]. Only parsed for `<general>`.
+    /// Gain parameters, up to nine (MuJoCo's `exact = false`): those not
+    /// written keep the class's, else MuJoCo's default [1, 0, ..., 0]; a
+    /// tenth is read and refused unless it is zero (D-GAINPRM-10). Only
+    /// parsed for `<general>`.
     pub gainprm: Option<Prefix<9>>,
-    /// Bias parameters (up to 9 elements, zero-padded).
-    /// None means use default [0, ..., 0]. Only parsed for `<general>`.
+    /// Bias parameters, up to nine, as `gainprm` (MuJoCo's default
+    /// [0, ..., 0]). Only parsed for `<general>`.
     pub biasprm: Option<Prefix<9>>,
-    /// Dynamics parameters (up to 3 elements, zero-padded).
-    /// None means use default [1, 0, 0]. Only parsed for `<general>`.
+    /// Dynamics parameters, up to ten (MuJoCo's `exact = false`): those not
+    /// written keep the class's, else MuJoCo's default [1, 0, ..., 0]. Only
+    /// parsed for `<general>`.
     pub dynprm: Option<Prefix<10>>,
     /// Per-element user data from `user="..."` attribute.
     pub user: Vec<f64>,

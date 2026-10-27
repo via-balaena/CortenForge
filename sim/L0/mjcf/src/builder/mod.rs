@@ -177,6 +177,11 @@ fn resolve_keyframe(mjcf_kf: &MjcfKeyframe, model: &Model) -> Result<Keyframe> {
 /// all Model arrays in a single tree traversal, resolves keyframes, and
 /// validates mocap body constraints.
 ///
+/// An [`MjcfModel`] built in code or read from `.mjb` has not passed the
+/// attribute reader, which refuses every non-finite number it reads: its
+/// numbers are checked only where validation and the builder check them
+/// (the census registry's D-NONFINITE lists where).
+///
 /// # Arguments
 ///
 /// * `mjcf` - The parsed MJCF model
