@@ -66,7 +66,7 @@ fn cable_mjcf(count: u32, prefix: &str, initial: &str, curve: &str, size: &str) 
 // ── Check 1: Body count ─────────────────────────────────────────────────────
 
 fn check_1_body_count() -> (u32, u32) {
-    let xml = cable_mjcf(11, "", "ball", "l 0 0", "1");
+    let xml = cable_mjcf(11, "", "ball", "s 0 0", "1");
     let model = load(&xml);
 
     // world + anchor + 10 cable bodies = 12
@@ -83,7 +83,7 @@ fn check_1_body_count() -> (u32, u32) {
 // ── Check 2: Joint count and types ──────────────────────────────────────────
 
 fn check_2_joint_count_and_types() -> (u32, u32) {
-    let xml = cable_mjcf(8, "", "ball", "l 0 0", "1");
+    let xml = cable_mjcf(8, "", "ball", "s 0 0", "1");
     let model = load(&xml);
 
     // count=8 → 7 cable bodies → 7 ball joints (initial="ball")
@@ -111,7 +111,7 @@ fn check_2_joint_count_and_types() -> (u32, u32) {
 // ── Check 3: Contact exclusions ─────────────────────────────────────────────
 
 fn check_3_contact_exclusions() -> (u32, u32) {
-    let xml = cable_mjcf(6, "", "none", "l 0 0", "1");
+    let xml = cable_mjcf(6, "", "none", "s 0 0", "1");
     let model = load(&xml);
     let mut data = model.make_data();
 
@@ -155,7 +155,7 @@ fn check_4_hangs_below_anchor() -> (u32, u32) {
           <worldbody>
             <body name="anchor" pos="0 0 1.5">
               <composite type="cable" prefix="" count="11 1 1"
-                         initial="none" curve="l 0 0" size="1">
+                         initial="none" curve="s 0 0" size="1">
                 <joint kind="main" damping="0.5"/>
                 <geom type="capsule" size="0.01" rgba="0.8 0.2 0.1 1"
                       density="500"/>
@@ -210,7 +210,7 @@ fn check_5_convergence() -> (u32, u32) {
               <worldbody>
                 <body name="anchor" pos="0 0 1">
                   <composite type="cable" prefix="" count="{count} 1 1"
-                             initial="none" curve="l 0 0" size="1">
+                             initial="none" curve="s 0 0" size="1">
                     <joint kind="main" damping="0.5"/>
                     <geom type="capsule" size="0.01" rgba="0.8 0.2 0.1 1"
                           density="500"/>
@@ -244,7 +244,7 @@ fn check_5_convergence() -> (u32, u32) {
 // ── Check 6: Cable preserves total length ───────────────────────────────────
 
 fn check_6_length_preservation() -> (u32, u32) {
-    let xml = cable_mjcf(11, "", "none", "l 0 0", "1");
+    let xml = cable_mjcf(11, "", "none", "s 0 0", "1");
     let model = load(&xml);
     let mut data = model.make_data();
 
@@ -279,9 +279,9 @@ fn check_6_length_preservation() -> (u32, u32) {
 // ── Check 7: Cosine curve initial shape ─────────────────────────────────────
 
 fn check_7_curve_shape() -> (u32, u32) {
-    // curve="s c 0" → sin in x, cos in y, zero in z
+    // curve="sin(s) cos(s) 0" → sin in x, cos in y, zero in z
     // size="1 0.3 2" → length=1, amplitude=0.3, frequency=2
-    let xml = cable_mjcf(21, "", "ball", "s c 0", "1 0.3 2");
+    let xml = cable_mjcf(21, "", "ball", "sin(s) cos(s) 0", "1 0.3 2");
     let model = load(&xml);
     let mut data = model.make_data();
 
@@ -339,7 +339,7 @@ fn check_8_multi_cable_independence() -> (u32, u32) {
           <worldbody>
             <body name="anchor" pos="0 0 1">
               <composite type="cable" prefix="A" count="6 1 1"
-                         initial="none" curve="l 0 0" size="0.8">
+                         initial="none" curve="s 0 0" size="0.8">
                 <joint kind="main" damping="0.05"/>
                 <geom type="capsule" size="0.01" rgba="0.8 0.2 0.1 1"
                       density="500"/>
@@ -356,7 +356,7 @@ fn check_8_multi_cable_independence() -> (u32, u32) {
           <worldbody>
             <body name="anchor_A" pos="0 0 1">
               <composite type="cable" prefix="A" count="6 1 1"
-                         initial="none" curve="l 0 0" size="0.8">
+                         initial="none" curve="s 0 0" size="0.8">
                 <joint kind="main" damping="0.05"/>
                 <geom type="capsule" size="0.01" rgba="0.8 0.2 0.1 1"
                       density="500"/>
@@ -364,7 +364,7 @@ fn check_8_multi_cable_independence() -> (u32, u32) {
             </body>
             <body name="anchor_B" pos="2 0 1">
               <composite type="cable" prefix="B" count="8 1 1"
-                         initial="none" curve="l 0 0" size="0.8">
+                         initial="none" curve="s 0 0" size="0.8">
                 <joint kind="main" damping="0.05"/>
                 <geom type="capsule" size="0.01" rgba="0.2 0.8 0.1 1"
                       density="500"/>

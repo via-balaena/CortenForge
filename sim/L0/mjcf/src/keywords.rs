@@ -15,7 +15,9 @@ use sim_core::{
     SleepPolicy,
 };
 
-use crate::types::{AngleUnit, CompositeType, FluidShape, InertiaFromGeom, MeshInertia};
+use crate::types::{
+    AngleUnit, CompositeShape, CompositeType, FluidShape, InertiaFromGeom, MeshInertia,
+};
 
 /// `<compiler angle>` (`angle_map`).
 pub fn angle(s: &str) -> Option<AngleUnit> {
@@ -155,6 +157,18 @@ pub fn composite_type(s: &str) -> Option<CompositeType> {
         "loop" => Some(CompositeType::Loop),
         "cable" => Some(CompositeType::Cable),
         "cloth" => Some(CompositeType::Cloth),
+        _ => None,
+    }
+}
+
+/// One shape of a `<composite>`'s `curve` (`shape_map`): `s` is the straight
+/// line.
+pub fn composite_shape(s: &str) -> Option<CompositeShape> {
+    match s {
+        "s" => Some(CompositeShape::Line),
+        "cos(s)" => Some(CompositeShape::Cos),
+        "sin(s)" => Some(CompositeShape::Sin),
+        "0" => Some(CompositeShape::Zero),
         _ => None,
     }
 }

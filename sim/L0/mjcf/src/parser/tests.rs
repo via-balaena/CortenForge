@@ -2156,7 +2156,7 @@ fn test_parse_composite_in_worldbody() {
     let xml = r#"
             <mujoco model="composite_test">
                 <worldbody>
-                    <composite type="cable" count="3 1 1" curve="l 0 0" size="1">
+                    <composite type="cable" count="3 1 1" curve="s 0 0" size="1">
                         <joint kind="main" damping="0.01"/>
                         <geom type="capsule" size=".005"/>
                     </composite>
@@ -2182,7 +2182,7 @@ fn test_parse_composite_in_body() {
             <mujoco model="composite_test_body">
                 <worldbody>
                     <body name="parent" pos="1 0 0">
-                        <composite type="cable" count="3 1 1" curve="l 0 0" size="1">
+                        <composite type="cable" count="3 1 1" curve="s 0 0" size="1">
                             <joint kind="main" damping="0.01"/>
                             <geom type="capsule" size=".005"/>
                         </composite>

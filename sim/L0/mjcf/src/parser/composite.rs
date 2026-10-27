@@ -9,7 +9,7 @@ use crate::keywords;
 
 use crate::types::{CompositeGeom, CompositeJoint, CompositeShape, MjcfComposite, MjcfGeomType};
 
-use super::attrs::{Attrs, skip_element};
+use super::attrs::{Attrs, is_c_space, skip_element};
 
 // ============================================================================
 // Composite parsing
@@ -47,7 +47,7 @@ pub(super) fn parse_composite<R: BufRead>(
         .map_or([1.0, 0.0, 0.0], |size| size.over([1.0, 0.0, 0.0]));
 
     let curve = if let Some(s) = a.text("curve") {
-        parse_curve_shapes(s)?
+        parse_curve_shapes(&a, s)?
     } else {
         [CompositeShape::Zero; 3]
     };
@@ -161,22 +161,21 @@ pub(super) fn parse_composite_geom_attrs(e: &BytesStart) -> Result<CompositeGeom
     })
 }
 
-/// Parse curve shapes from space-separated string (e.g., "s 0 l").
-pub(super) fn parse_curve_shapes(s: &str) -> Result<[CompositeShape; 3]> {
+/// A `<composite>`'s `curve`: up to three of MuJoCo's shapes
+/// ([`keywords::composite_shape`]), split on C's `isspace`, the rest zero;
+/// four or more are refused, as MuJoCo's "maximum of 3 components". Space
+/// after the last shape, or a curve of only space, is read without it
+/// (D-CURVE-WHITESPACE): MuJoCo's read loop re-reads a stale token there and
+/// refuses the document.
+fn parse_curve_shapes(a: &Attrs, text: &str) -> Result<[CompositeShape; 3]> {
+    let tokens: Vec<&str> = text.split(is_c_space).filter(|t| !t.is_empty()).collect();
+    if tokens.len() > 3 {
+        return Err(a.wrong_count("curve", ValueCount::AtMost(3), tokens.len()));
+    }
     let mut shapes = [CompositeShape::Zero; 3];
-    for (i, token) in s.split_whitespace().enumerate() {
-        if i >= 3 {
-            break;
-        }
-        shapes[i] = match token {
-            "s" => CompositeShape::Sin,
-            "c" => CompositeShape::Cos,
-            "l" => CompositeShape::Line,
-            "0" | "zero" => CompositeShape::Zero,
-            other => {
-                return Err(MjcfError::invalid_keyword("composite", "curve", other));
-            }
-        };
+    for (shape, token) in shapes.iter_mut().zip(tokens) {
+        *shape = keywords::composite_shape(token)
+            .ok_or_else(|| MjcfError::invalid_keyword("composite", "curve", token))?;
     }
     Ok(shapes)
 }

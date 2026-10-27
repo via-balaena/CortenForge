@@ -39,7 +39,7 @@ pub(super) fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
 }
 
 /// C's `isspace` in the "C" locale: Rust's ASCII whitespace and the vertical tab.
-fn is_c_space(c: char) -> bool {
+pub(super) fn is_c_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\u{b}' | '\u{c}' | '\r')
 }
 

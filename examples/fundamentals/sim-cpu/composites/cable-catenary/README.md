@@ -21,7 +21,7 @@ match the catenary tangent). The right end is attached via an equality
 `connect` constraint — a 3-DOF translational constraint that pins a point
 on the last cable body to the right pylon.
 
-The cable starts with a half-sine upward bulge (`curve="l 0 s"`) to give the
+The cable starts with a half-sine upward bulge (`curve="s 0 sin(s)"`) to give the
 chain slack — rigid links summing to exactly the span can't sag, so the path
 length (~1.06m) must exceed the 1.0m span. Under gravity, the cable swings
 down into a shape approximating the continuous catenary `y = a cosh(x/a)`.

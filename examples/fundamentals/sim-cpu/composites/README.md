@@ -22,12 +22,13 @@ for adjacent segments.
   and a ball joint (3 rotational DOF).
 - **`initial="none"`:** First body has no joint — pinned rigidly to its parent.
   `"ball"` (default) gives it a ball joint; `"free"` gives it 6 DOF.
-- **`curve="l 0 0"`:** Curve shapes control the initial vertex layout. `l` =
-  line, `s` = sine, `c` = cosine, `0` = zero. Three values for x, y, z axes.
+- **`curve="s 0 0"`:** Curve shapes control the initial vertex layout, one
+  for each of the x, y and z axes: `s` = the straight line, `sin(s)` = sine,
+  `cos(s)` = cosine, `0` = zero (MuJoCo's keywords).
 - **`size="L A F"`:** Length along the curve axis, amplitude for sin/cos,
   frequency multiplier.
 - **Slack for catenary:** Rigid links summing to exactly the span can't sag.
-  Use `curve="l 0 s"` with a sine bulge to give path length > span.
+  Use `curve="s 0 sin(s)"` with a sine bulge to give path length > span.
 - **Contact exclusions:** Automatically generated for adjacent cable bodies
   (N-2 pairs for N-1 bodies) to prevent self-collision between neighbors.
 - **`prefix="X"`:** All generated elements get prefix X (bodies: XB_first,

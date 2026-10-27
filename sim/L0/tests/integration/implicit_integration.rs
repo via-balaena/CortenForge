@@ -1206,7 +1206,7 @@ fn test_implicitfast_connect_ball_chain_stability() {
             <worldbody>
                 <body name="left" pos="-0.5 0 1">
                     <composite type="cable" prefix="A" count="4 1 1"
-                               initial="none" curve="l 0 0" size="1.0">
+                               initial="none" curve="s 0 0" size="1.0">
                         <joint kind="main" damping="0.5"/>
                         <geom type="capsule" size="0.01" density="200"
                               contype="0" conaffinity="0"/>
