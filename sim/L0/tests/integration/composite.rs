@@ -557,19 +557,44 @@ fn a_curve_word_not_mujocos_is_refused() {
 }
 
 #[test]
-fn space_after_the_last_curve_word_is_read_without_it() {
-    // D-CURVE-WHITESPACE: MuJoCo 3.5.0 refuses `"s 0 0 "` ("maximum of 3
-    // components") and `" "` ("invalid shape"): its read loop re-reads a stale
-    // token after the last word. sim-mjcf reads them as `"s 0 0"` and `""`.
+fn space_after_three_curve_shapes_or_alone_is_read_without_it() {
+    // D-CURVE-WHITESPACE: MuJoCo 3.5.0 refuses "s 0 0 " ("maximum of 3
+    // components") and a curve of only space ("invalid shape", measured with
+    // the vertices below): after the last shape its read loop takes a stale
+    // token. sim-mjcf reads the shapes space separates.
     let trimmed = load_model(&curve_cable(5, "s 0 0", "1"));
     let spaced = load_model(&curve_cable(5, "s 0 0 ", "1"));
     assert_eq!(trimmed.body_pos, spaced.body_pos);
-    let empty = load_model(&curve_cable(5, "", "1"));
-    let space = load_model(&curve_cable(5, " ", "1"));
-    assert_eq!(empty.body_pos, space.body_pos);
-    // Space before or between words MuJoCo reads too (measured).
+    let with_vertices = |curve: &str| {
+        format!(
+            r#"<mujoco><worldbody><composite type="cable" vertex="0 0 0 1 0 0 2 0 1 3 0 1"{curve}>
+                <geom type="capsule" size="0.01"/>
+            </composite></worldbody></mujoco>"#
+        )
+    };
+    let unwritten = load_model(&with_vertices(""));
+    let space = load_model(&with_vertices(r#" curve=" ""#));
+    assert_eq!(unwritten.body_pos, space.body_pos);
+    // Space before or between shapes MuJoCo reads too (measured).
     let model = load_model(&curve_cable(5, " s\t 0 0", "1"));
     assert_eq!(model.body_pos, trimmed.body_pos);
+}
+
+#[test]
+fn space_after_one_or_two_curve_shapes_is_read_without_it() {
+    // D-CURVE-TRAILING-SPACE: MuJoCo 3.5.0 reads "s " as "s s" (measured,
+    // count 5, size "1 0.5 1": CB_2 at x 0.3535533905932738, CB_first's quat
+    // (0.9238795325112867, 0, 0, 0.38268343236508967)), its read loop storing
+    // the stale last shape in the next slot. sim-mjcf reads it as "s" (CB_2 at
+    // x 0.25, as MuJoCo's "s").
+    let one = load_model(&curve_cable(5, "s", "1 0.5 1"));
+    let spaced = load_model(&curve_cable(5, "s ", "1 0.5 1"));
+    assert_eq!(one.body_pos, spaced.body_pos);
+    let b2 = spaced.name2id(ElementType::Body, "CB_2").expect("CB_2");
+    assert_eq!(spaced.body_pos[b2].x, 0.25);
+    let two = load_model(&curve_cable(6, "cos(s) sin(s)", "1 0.2 1"));
+    let spaced = load_model(&curve_cable(6, "cos(s) sin(s) ", "1 0.2 1"));
+    assert_eq!(two.body_pos, spaced.body_pos);
 }
 
 // ============================================================================

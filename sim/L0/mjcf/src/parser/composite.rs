@@ -164,9 +164,10 @@ pub(super) fn parse_composite_geom_attrs(e: &BytesStart) -> Result<CompositeGeom
 /// A `<composite>`'s `curve`: up to three of MuJoCo's shapes
 /// ([`keywords::composite_shape`]), split on C's `isspace`, the rest zero;
 /// four or more are refused, as MuJoCo's "maximum of 3 components". Space
-/// after the last shape, or a curve of only space, is read without it
-/// (D-CURVE-WHITESPACE): MuJoCo's read loop re-reads a stale token there and
-/// refuses the document.
+/// after the last shape is read as no more shapes. MuJoCo's read loop takes
+/// the last shape once more there (`xml_native_reader.cc`, OneComposite): it
+/// reads `"s "` as `"s s"` (D-CURVE-TRAILING-SPACE), and refuses three shapes
+/// then space, or a curve of only space (D-CURVE-WHITESPACE).
 fn parse_curve_shapes(a: &Attrs, text: &str) -> Result<[CompositeShape; 3]> {
     let tokens: Vec<&str> = text.split(is_c_space).filter(|t| !t.is_empty()).collect();
     if tokens.len() > 3 {
