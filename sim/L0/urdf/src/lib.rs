@@ -357,6 +357,41 @@ mod tests {
         }
     }
 
+    /// A link's children are converted depth-first in the order their joints
+    /// are written, as MuJoCo 3.5.0's URDF importer orders its bodies
+    /// (measured: joints j1 base→c1, j2 base→c2, j3 c1→g1 give c1, g1, c2).
+    #[test]
+    fn a_links_children_follow_their_joints_order() {
+        let link = |n: &str| {
+            format!(
+                r#"<link name="{n}"><inertial><mass value="1"/><inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/></inertial></link>"#
+            )
+        };
+        let joint = |n: &str, parent: &str, child: &str| {
+            format!(
+                r#"<joint name="{n}" type="revolute"><parent link="{parent}"/><child link="{child}"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>"#
+            )
+        };
+        let urdf = format!(
+            r#"<robot name="r">{}{}{}{}{}{}{}</robot>"#,
+            link("base"),
+            link("c1"),
+            link("c2"),
+            link("g1"),
+            joint("j1", "base", "c1"),
+            joint("j2", "base", "c2"),
+            joint("j3", "c1", "g1"),
+        );
+        let model = load_urdf_model(&urdf).expect("loads");
+        let order: Vec<&str> = model
+            .body_name
+            .iter()
+            .filter_map(|n| n.as_deref())
+            .filter(|n| ["c1", "c2", "g1"].contains(n))
+            .collect();
+        assert_eq!(order, ["c1", "g1", "c2"]);
+    }
+
     /// The converter nests a body per link without recursing, so a chain far
     /// past the XML depth rule is refused by it, not by the caller's stack
     /// (ledger L303: 5000 links overflowed a 2-mebibyte thread).

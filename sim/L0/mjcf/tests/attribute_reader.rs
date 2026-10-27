@@ -965,3 +965,23 @@ fn a_composite_joint_names_its_kind() {
     );
     assert_missing(&err, "joint", "kind");
 }
+
+// ── what the mutants of the quaternion and required-attribute commits found ──
+
+#[test]
+fn a_class_takes_one_orientation_and_no_quaternion_of_zeros() {
+    let err = refused(
+        r#"<mujoco><default><site quat="1 0 0 0" euler="0 0 1"/></default><worldbody/></mujoco>"#,
+    );
+    assert_two_orientations(&err, "site", "quat", "euler");
+    let err = refused(r#"<mujoco><default><geom quat="0 0 0 0"/></default><worldbody/></mujoco>"#);
+    assert_zero_quat(&err, "geom");
+}
+
+#[test]
+fn a_composite_joint_with_a_closing_tag_names_its_kind() {
+    let err = refused(
+        r#"<mujoco><worldbody><composite type="cable" count="5 1 1" curve="s 0 0" size="1"><joint damping="1"></joint><geom type="capsule" size="0.01"/></composite></worldbody></mujoco>"#,
+    );
+    assert_missing(&err, "joint", "kind");
+}

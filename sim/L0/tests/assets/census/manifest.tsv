@@ -1916,3 +1916,6 @@ d0192af4fe292869	sim/L0/mjcf/tests/attribute_reader.rs:827
 308a5fe7efecb3bb	sim/L0/mjcf/tests/attribute_reader.rs:922
 5c66ff0876c2252c	sim/L0/mjcf/tests/attribute_reader.rs:964
 a259ab8ef4096dcd	sim/L0/mjcf/tests/attribute_reader.rs:926
+16ac4227fc8555fb	sim/L0/mjcf/tests/attribute_reader.rs:974
+2cd47bcb910c61e4	sim/L0/mjcf/tests/attribute_reader.rs:977
+a034ca8639a23461	sim/L0/mjcf/tests/attribute_reader.rs:984
