@@ -2009,3 +2009,4 @@ ca5a8806109ac20f	sim/L0/mjcf/src/parser/tests.rs:2181
 ca8218d312908549	sim/L0/tests/integration/composite.rs:333
 cb8794bb6cf9702a	sim/L0/tests/integration/composite.rs:423
 f6881ce2578560ae	sim/L0/mjcf/src/parser/tests.rs:2156
+46c67454df1ff9ec	sim/L0/mjcf/tests/keywords.rs:556

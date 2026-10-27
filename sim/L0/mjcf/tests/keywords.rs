@@ -546,3 +546,27 @@ fn the_builder_refuses_a_sleep_or_selfcollide_word_built_in_code() {
     let err = sim_mjcf::model_from_mjcf(&mjcf, None).unwrap_err();
     assert_keyword(&err, "flex", "selfcollide", "bogus");
 }
+
+// ── found untested by L07b's mutants ──
+
+#[test]
+fn a_flag_left_unwritten_keeps_its_default() {
+    // MuJoCo 3.5.0 (measured): `<flag gravity="disable"/>` alone sets no
+    // enable flag.
+    let m = load(r#"<mujoco><option><flag gravity="disable"/></option><worldbody/></mujoco>"#);
+    assert_eq!(m.disableflags, sim_core::DISABLE_GRAVITY);
+    assert_eq!(m.enableflags, 0);
+}
+
+#[test]
+fn a_tendon_written_unlimited_needs_no_range() {
+    // MuJoCo 3.5.0 (measured): `limited="false"` and `limited="auto"` without
+    // a range load, unlimited.
+    for limited in ["false", "auto"] {
+        let m = load(&format!(
+            r#"<mujoco><worldbody><body><joint name="j" type="slide"/><geom size="0.1"/></body></worldbody>
+            <tendon><fixed limited="{limited}"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#
+        ));
+        assert!(!m.tendon_limited[0], "{limited}");
+    }
+}
