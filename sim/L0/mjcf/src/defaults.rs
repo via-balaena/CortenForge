@@ -1055,6 +1055,25 @@ mod tests {
     use nalgebra::Vector4;
 
     #[test]
+    fn apply_equality_defaults_writes_the_element_over_its_class() {
+        let resolver = DefaultResolver::new(&[MjcfDefault {
+            class: String::new(),
+            equality: Some(MjcfEqualityDefaults {
+                solref: Prefix::new(&[0.03, 0.5]),
+                solimp: Prefix::new(&[0.7, 0.8, 0.002, 0.4, 3.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]);
+        let mut active = None;
+        let mut solref = Prefix::new(&[0.05]);
+        let mut solimp = Prefix::new(&[0.6]);
+        resolver.apply_equality_defaults(None, &mut active, &mut solref, &mut solimp);
+        assert_eq!(solref.unwrap().given(), &[0.05, 0.5]);
+        assert_eq!(solimp.unwrap().given(), &[0.6, 0.8, 0.002, 0.4, 3.0]);
+    }
+
+    #[test]
     fn test_empty_resolver() {
         let resolver = DefaultResolver::new(&[]);
         assert!(resolver.joint_defaults(None).is_none());

@@ -815,3 +815,86 @@ fn a_quaternion_of_zeros_is_refused() {
     let err = refused(r#"<mujoco><default><site quat="0 0 0 0"/></default><worldbody/></mujoco>"#);
     assert_zero_quat(&err, "site");
 }
+
+// ── what the mutants of L05's first commit showed untested ──
+
+#[test]
+fn a_malformed_attribute_is_refused_on_an_element_sim_mjcf_does_not_read() {
+    // tinyxml2 refuses the document before MuJoCo reads any element (measured).
+    for xml in [
+        r"<mujoco><visual><global fovy=/></visual><worldbody/></mujoco>",
+        r#"<mujoco><statistic extent="1" extent="2"/><worldbody/></mujoco>"#,
+        r"<mujoco><worldbody><light pos=></light></worldbody></mujoco>",
+    ] {
+        let err = refused(xml);
+        assert!(matches!(&err, MjcfError::Xml { .. }), "{xml}: {err}");
+    }
+}
+
+#[test]
+fn every_equality_keeps_its_class_tail() {
+    let world = r#"<worldbody>
+            <body name="a"><joint name="ja"/><geom size="0.1"/></body>
+            <body name="b" pos="1 0 0"><joint name="jb"/><geom size="0.1"/></body>
+        </worldbody>
+        <tendon>
+            <fixed name="t1"><joint joint="ja" coef="1"/></fixed>
+            <fixed name="t2"><joint joint="jb" coef="1"/></fixed>
+        </tendon>"#;
+    for element in [
+        r#"<connect body1="a" body2="b" anchor="0 0 0" ATTR/>"#,
+        r#"<joint joint1="ja" joint2="jb" ATTR/>"#,
+        r#"<tendon tendon1="t1" tendon2="t2" ATTR/>"#,
+    ] {
+        let doc = |class: &str, written: &str| {
+            format!(
+                "<mujoco><default><equality {class}/></default>{world}<equality>{}</equality></mujoco>",
+                element.replace("ATTR", written)
+            )
+        };
+        let m = load(&doc(r#"solref="0.03 0.5""#, r#"solref="0.05""#));
+        assert_eq!(m.eq_solref[0], [0.05, 0.5], "{element}");
+        let m = load(&doc(r#"solimp="0.7 0.8 0.002 0.4 3""#, r#"solimp="0.6""#));
+        assert_eq!(m.eq_solimp[0], [0.6, 0.8, 0.002, 0.4, 3.0], "{element}");
+    }
+}
+
+#[test]
+fn an_override_written_short_keeps_the_rest_of_the_default() {
+    let m = load(
+        r#"<mujoco><option o_solref="0.05" o_solimp="0.6" o_friction="0.7"><flag override="enable"/></option><worldbody/></mujoco>"#,
+    );
+    assert_eq!(m.o_solref, [0.05, 1.0]);
+    assert_eq!(m.o_solimp, [0.6, 0.95, 0.001, 0.5, 2.0]);
+    assert_eq!(m.o_friction, [0.7, 1.0, 0.005, 0.0001, 0.0001]);
+}
+
+#[test]
+fn at_most_31_actuator_groups_are_disabled() {
+    let groups = vec!["1"; 32].join(" ");
+    let err = refused(&format!(
+        r#"<mujoco><option actuatorgroupdisable="{groups}"/><worldbody/></mujoco>"#
+    ));
+    assert_count(
+        &err,
+        "option",
+        "actuatorgroupdisable",
+        ValueCount::AtMost(31),
+        32,
+    );
+}
+
+#[test]
+fn a_box_flexcomp_spaces_its_grid_along_z() {
+    // sim-mjcf's box generator, not MuJoCo's (ledger L52 U09): the spacing is
+    // read per axis, as MuJoCo reads it.
+    let m = load(
+        r#"<mujoco><worldbody/><deformable><flexcomp name="f" type="box" count="2 2 2" spacing="1 1 3"/></deformable></mujoco>"#,
+    );
+    let mut d = m.make_data();
+    d.forward(&m).unwrap();
+    let zs: Vec<f64> = (0..m.nflexvert).map(|v| d.flexvert_xpos[v].z).collect();
+    let span =
+        zs.iter().copied().fold(f64::MIN, f64::max) - zs.iter().copied().fold(f64::MAX, f64::min);
+    assert!((span - 3.0).abs() < 1e-12, "{zs:?}");
+}

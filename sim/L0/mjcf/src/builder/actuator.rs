@@ -808,6 +808,30 @@ mod tests {
         )
     }
 
+    /// A short biasprm or dynprm on a HillMuscle or MillardMuscle (sim-mjcf
+    /// extensions) keeps that type's defaults past the values written.
+    #[test]
+    fn test_muscle_extension_short_bias_and_dyn_params() {
+        for dyntype in ["hillmuscle", "millardmuscle"] {
+            let xml = general_actuator_model(&format!(
+                r#"<general joint="j" dyntype="{dyntype}" biasprm="7" dynprm="0.02"/>"#
+            ));
+            let model = load_model(&xml).expect("should load");
+            let bias = [7.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+            for (got, want) in model.actuator_biasprm[0].iter().zip(bias) {
+                assert!((got - want).abs() < 1e-10, "{dyntype} biasprm");
+            }
+            assert!(
+                (model.actuator_dynprm[0][0] - 0.02).abs() < 1e-10,
+                "{dyntype}"
+            );
+            assert!(
+                (model.actuator_dynprm[0][1] - 0.04).abs() < 1e-10,
+                "{dyntype}"
+            );
+        }
+    }
+
     /// Criterion 1: Explicit gaintype/biastype on `<general>`.
     #[test]
     fn test_general_explicit_gaintype_biastype() {

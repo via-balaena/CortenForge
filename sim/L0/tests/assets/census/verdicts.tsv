@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1090
+# agree_floor 1091
 001bc4149d608b24	agree
 00308b83da9d8bab	agree
 0032a4ca7e233aec	agree
@@ -212,6 +212,7 @@
 1e7aa253ab67c7af	mj-refuses
 1eb993f02da6c959	agree
 1ef9c65d5832b8e6	model:geom_quat;dyn:e1:t0:sensordata	divergence=D-WORLD-CFRC-INT
+1efc6252f21d2bc6	agree
 1efe8000210fcdee	agree
 1fba4225030df505	agree
 1fdcd7bb9de5a071	mj-refuses
@@ -442,6 +443,7 @@
 3f2d7d3342ce4442	agree
 3f2f458613033e63	agree
 3fd2f37a15d5db93	agree
+3fdb8350e97d8aec	mj-refuses
 3fe6c02e19698995	agree
 3ff2aae4dfa60b53	model:geom_quat;dyn:agree
 40304da35c0c772d	agree
@@ -1306,6 +1308,7 @@ bb644760e47a468a	agree
 bb69b8b2790a4a69	agree
 bb6c01d439f57bb5	model:geom_quat;dyn:agree
 bb8ae7362684356d	agree
+bb9fa64c52ad06aa	both-refuse
 bbdccdfebd2ba65e	mj-refuses
 bbf9d97a7ff2cece	agree
 bc0f03f61170eb5e	model:geom_quat;dyn:agree
@@ -1316,6 +1319,7 @@ bc9d11e0eea99650	model:jnt_limited;dyn:agree
 bcbf72b425d3ab65	model:nsensordata
 bcd2080c5196a90a	agree
 bcec764289ca319c	mj-refuses
+bcfc3e4c6c04c963	both-refuse
 bd0a81225241de7c	agree
 bd0efdf0e9a5354e	model:geom_quat;dyn:agree
 bd3180b529825072	model:geom_quat;dyn:agree
@@ -1464,6 +1468,7 @@ cf224c2bddf9deb3	agree
 cf64ed75113fb614	agree
 cf852ccea721f4d2	model:geom_quat;dyn:agree
 cfb0d6446376494e	both-refuse
+d0192af4fe292869	both-refuse
 d05cc553ff6edf89	mj-refuses
 d0faee34da88b6d9	agree
 d106e445de38b4a3	mj-refuses
