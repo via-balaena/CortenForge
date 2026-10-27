@@ -985,3 +985,46 @@ fn a_composite_joint_with_a_closing_tag_names_its_kind() {
     );
     assert_missing(&err, "joint", "kind");
 }
+
+// ── non-finite numbers (book L06) ──
+
+#[test]
+fn a_written_nan_or_infinity_is_refused_naming_its_attribute() {
+    // MuJoCo 3.5.0 loads each of these (measured); sim-mjcf refuses every
+    // non-finite number it reads (D-NONFINITE).
+    let joint = |attrs: &str| {
+        format!(
+            r#"<mujoco><worldbody><body><joint name="j" {attrs}/><geom size="0.1"/></body></worldbody></mujoco>"#
+        )
+    };
+    let cases = [
+        (r#"<mujoco><worldbody><body pos="nan 0 0"><geom size="0.1"/></body></worldbody></mujoco>"#.to_string(), "body", "pos"),
+        (joint(r#"axis="nan 0 0""#), "joint", "axis"),
+        (joint(r#"damping="nan""#), "joint", "damping"),
+        (joint(r#"limited="true" range="-inf inf""#), "joint", "range"),
+        (r#"<mujoco><worldbody><body quat="nan 0 0 0"><geom size="0.1"/></body></worldbody></mujoco>"#.to_string(), "body", "quat"),
+        (r#"<mujoco><worldbody><body><geom size="0.1" friction="nan 0.005 0.0001"/></body></worldbody></mujoco>"#.to_string(), "geom", "friction"),
+        // A class's geom size is not read until book L18 (MuJoCo loads it too).
+        (r#"<mujoco><default><site size="nan"/></default><worldbody/></mujoco>"#.to_string(), "site", "size"),
+        (
+            r#"<mujoco><worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody><actuator><motor joint="j" ctrlrange="nan 1"/></actuator></mujoco>"#.to_string(),
+            "motor",
+            "ctrlrange",
+        ),
+    ];
+    for (xml, element, attribute) in &cases {
+        let err = refused(xml);
+        assert!(
+            matches!(&err, MjcfError::NonFinite { element: e, attribute: a, .. } if e == element && a == attribute),
+            "{xml}: {err}"
+        );
+        assert!(err.to_string().contains("finite"), "{err}");
+    }
+    // A number that overflows is MuJoCo's own refusal: "number is too large".
+    let err =
+        refused(r#"<mujoco><worldbody><body><geom size="1e400"/></body></worldbody></mujoco>"#);
+    assert!(
+        matches!(&err, MjcfError::OutOfRange { element, attribute, .. } if element == "geom" && attribute == "size"),
+        "{err}"
+    );
+}

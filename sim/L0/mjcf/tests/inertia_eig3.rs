@@ -619,7 +619,24 @@ fn a_full_inertia_mujoco_refuses_is_refused_with_its_text() {
 
 /// Asserts that `xml` is refused for its body 'b''s fullinertia.
 fn assert_full_inertia_refused(xml: &str) {
-    let err = load_model(xml).unwrap_err();
+    assert_full_inertia_error(&load_model(xml).unwrap_err());
+}
+
+/// `xml`, whose first body's inertial writes a finite fullinertia, built in
+/// code with `full` in its place: a not-a-number or an infinity written in a document
+/// is refused by the reader (D-NONFINITE), so a model built in code is how
+/// one reaches the builder.
+fn built_with_full_inertia(xml: &str, full: [f64; 6]) -> sim_mjcf::Result<sim_core::Model> {
+    let mut mjcf = sim_mjcf::parse_mjcf_str(xml).unwrap();
+    mjcf.worldbody.children[0]
+        .inertial
+        .as_mut()
+        .expect("an inertial")
+        .fullinertia = Some(full);
+    sim_mjcf::model_from_mjcf(&mjcf, None)
+}
+
+fn assert_full_inertia_error(err: &MjcfError) {
     assert!(
         matches!(&err, MjcfError::InvalidValue { element, attribute, .. }
             if element == "inertial" && attribute == "fullinertia"),
@@ -630,25 +647,30 @@ fn assert_full_inertia_refused(xml: &str) {
 
 #[test]
 fn a_non_finite_full_inertia_is_refused_not_a_hang() {
-    // MuJoCo 3.5.0 refuses the first two on a moving body (its mass and
+    // MuJoCo 3.5.0 refuses the NaN ones on a moving body (its mass and
     // inertia minimum) and loads them on a jointless one, with a NaN inertia
     // and frame, or for a NaN first value, which it reads as no fullinertia,
-    // a zero inertia. It loads the third with an infinite moment.
+    // a zero inertia. It loads the finite one with an infinite moment.
+    assert_full_inertia_refused(&inertial_doc("1.5e308 1.5e308 1.5e308 1e308 0 0"));
+    let nan = f64::NAN;
     for full in [
-        "1 1 1 nan 0 0",
-        "nan 1 1 0 0 0",
-        "1.5e308 1.5e308 1.5e308 1e308 0 0",
+        [1.0, 1.0, 1.0, nan, 0.0, 0.0],
+        [nan, 1.0, 1.0, 0.0, 0.0, 0.0],
     ] {
-        assert_full_inertia_refused(&inertial_doc(full));
+        let err = built_with_full_inertia(&inertial_doc("1 1 1 0 0 0"), full).unwrap_err();
+        assert_full_inertia_error(&err);
     }
-    for full in ["1 1 1 nan 0 0", "1 1 1 inf 0 0", "nan 1 1 0 0 0"] {
-        assert_full_inertia_refused(&format!(
-            r#"<mujoco>
-                <worldbody>
-                    <body name="b"><inertial pos="0 0 0" mass="1" fullinertia="{full}"/></body>
-                </worldbody>
-            </mujoco>"#
-        ));
+    let jointless = r#"<mujoco>
+        <worldbody>
+            <body name="b"><inertial pos="0 0 0" mass="1" fullinertia="1 1 1 0 0 0"/></body>
+        </worldbody>
+    </mujoco>"#;
+    for full in [
+        [1.0, 1.0, 1.0, nan, 0.0, 0.0],
+        [1.0, 1.0, 1.0, f64::INFINITY, 0.0, 0.0],
+        [nan, 1.0, 1.0, 0.0, 0.0, 0.0],
+    ] {
+        assert_full_inertia_error(&built_with_full_inertia(jointless, full).unwrap_err());
     }
 }
 
@@ -670,7 +692,8 @@ fn an_unnamed_bodys_inertia_error_names_it_by_its_index() {
 fn a_full_inertia_replaced_by_the_geoms_is_still_refused_where_mujoco_refuses_it() {
     // MuJoCo makes every fullinertia principal before inertiafromgeom="true"
     // replaces it: its refusal stands, and a NaN one, which the decomposition
-    // passes, is replaced (both measured on MuJoCo 3.5.0).
+    // passes, is replaced (both measured on MuJoCo 3.5.0). sim-mjcf's reader
+    // refuses a written NaN (D-NONFINITE), so the NaN one is built in code.
     let doc = |inertial: &str| {
         format!(
             r#"<mujoco>
@@ -684,9 +707,10 @@ fn a_full_inertia_replaced_by_the_geoms_is_still_refused_where_mujoco_refuses_it
     assert_full_inertia_refused(&doc(
         r#"<inertial pos="0 0 0" mass="1" fullinertia="1 1 1 2 0 0"/>"#,
     ));
-    let replaced = load_model(&doc(
-        r#"<inertial pos="0 0 0" mass="1" fullinertia="1 1 1 nan 0 0"/>"#,
-    ))
+    let replaced = built_with_full_inertia(
+        &doc(r#"<inertial pos="0 0 0" mass="1" fullinertia="1 1 1 0 0 0"/>"#),
+        [1.0, 1.0, 1.0, f64::NAN, 0.0, 0.0],
+    )
     .unwrap();
     let geoms_only = load_model(&doc("")).unwrap();
     assert_eq!(

@@ -187,9 +187,6 @@ pub(super) fn springlength(parts: &[f64]) -> Result<Option<(f64, f64)>> {
         [low, high, ..] => (*low, *high),
     };
     for v in [low, high] {
-        if !v.is_finite() {
-            return Err(MjcfError::non_finite("tendon", "springlength", v));
-        }
         if v < 0.0 {
             return Err(MjcfError::invalid_value(
                 "tendon",

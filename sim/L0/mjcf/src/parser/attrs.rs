@@ -6,6 +6,9 @@
 //!   each token read whole: a token that is not a number is refused, and so is
 //!   one whose nonzero digits underflow to zero or a subnormal (MuJoCo's
 //!   "number is too large"; `1e-999` and `1e-310` measured);
+//! - a written NaN or infinity is refused, where MuJoCo loads it
+//!   (D-NONFINITE), and a number that overflows is out of range, as MuJoCo's
+//!   "number is too large";
 //! - an empty or all-space number list is the attribute absent, except for an
 //!   integer read alone, which is refused (measured);
 //! - an attribute takes exactly its count, or, where MuJoCo reads it with
@@ -35,6 +38,15 @@ pub(super) fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
 /// C's `isspace` in the "C" locale: Rust's ASCII whitespace and the vertical tab.
 fn is_c_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\u{b}' | '\u{c}' | '\r')
+}
+
+/// Whether a token spells an infinity (`inf`, `-Infinity`), as Rust's parser
+/// reads one, rather than overflowing to it.
+fn names_infinity(token: &str) -> bool {
+    token
+        .trim_start_matches(['+', '-'])
+        .get(..3)
+        .is_some_and(|s| s.eq_ignore_ascii_case("inf"))
 }
 
 /// Whether a decimal number's mantissa has a nonzero digit, so that reading it
@@ -298,10 +310,19 @@ impl Attrs {
 
     fn real_token(&self, name: &str, token: &str) -> Result<f64> {
         let x: f64 = token.parse().map_err(|_| self.bad_number(name, token))?;
-        if x.is_finite() && x.abs() < f64::MIN_POSITIVE && mantissa_is_nonzero(token) {
+        if x.is_finite() {
+            if x.abs() < f64::MIN_POSITIVE && mantissa_is_nonzero(token) {
+                return Err(MjcfError::out_of_range_in(&self.element, name, token));
+            }
+            return Ok(x);
+        }
+        // A literal that overflows (`1e400`) is MuJoCo's "number is too large";
+        // a written NaN or infinity, which MuJoCo loads, is refused
+        // (D-NONFINITE).
+        if x.is_infinite() && !names_infinity(token) {
             return Err(MjcfError::out_of_range_in(&self.element, name, token));
         }
-        Ok(x)
+        Err(MjcfError::non_finite(&self.element, name, x))
     }
 
     pub(super) fn bad_number(&self, name: &str, value: &str) -> MjcfError {

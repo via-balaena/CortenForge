@@ -1919,3 +1919,11 @@ a259ab8ef4096dcd	sim/L0/mjcf/tests/attribute_reader.rs:926
 16ac4227fc8555fb	sim/L0/mjcf/tests/attribute_reader.rs:974
 2cd47bcb910c61e4	sim/L0/mjcf/tests/attribute_reader.rs:977
 a034ca8639a23461	sim/L0/mjcf/tests/attribute_reader.rs:984
+34593f3ba52c2e8a	sim/L0/mjcf/tests/attribute_reader.rs:1025
+39398fd083c71fc4	sim/L0/mjcf/tests/attribute_reader.rs:1010
+3a2fb4d1b2d991a2	sim/L0/mjcf/tests/attribute_reader.rs:1006
+502d336bbeb09d11	sim/L0/mjcf/tests/attribute_reader.rs:1005
+bde3e3ecf7bdfd33	sim/L0/mjcf/tests/attribute_reader.rs:1008
+cd905e7ee23f9c20	sim/L0/mjcf/tests/attribute_reader.rs:1001
+2f8a41e68db57d00	sim/L0/mjcf/tests/errors.rs:223
+616f67db538b6988	sim/L0/mjcf/tests/inertia_eig3.rs:663

@@ -216,14 +216,23 @@ fn an_element_without_a_name_is_named_by_its_body() {
 
 #[test]
 fn a_tendons_bad_coefficient_names_its_joint_and_tendon() {
-    let err = assert_located(
+    // The reader refuses a written NaN first (D-NONFINITE); a model built in
+    // code is checked when it is built, and that check names the joint and
+    // the tendon.
+    let mut mjcf = sim_mjcf::parse_mjcf_str(
         r#"<mujoco>
             <worldbody>
                 <body><joint name="j0"/><joint name="j1"/><geom size="0.1"/></body>
             </worldbody>
-            <tendon><fixed><joint joint="j0" coef="1"/><joint joint="j1" coef="nan"/></fixed></tendon>
+            <tendon><fixed><joint joint="j0" coef="1"/><joint joint="j1" coef="1"/></fixed></tendon>
         </mujoco>"#,
-        "(joint 'j1' in tendon #0)",
+    )
+    .unwrap();
+    mjcf.tendons[0].joints[1].1 = f64::NAN;
+    let err = sim_mjcf::model_from_mjcf(&mjcf, None).unwrap_err();
+    assert!(
+        err.to_string().ends_with("(joint 'j1' in tendon #0)"),
+        "{err}"
     );
     assert!(
         matches!(&err, MjcfError::NonFinite { attribute, .. } if attribute == "coef"),
@@ -299,7 +308,7 @@ fn a_nan_option_or_spring_length_is_non_finite() {
     );
     assert!(
         matches!(&err, MjcfError::NonFinite { element, attribute, .. }
-            if element == "tendon" && attribute == "springlength"),
+            if element == "fixed" && attribute == "springlength"),
         "{err}"
     );
 }

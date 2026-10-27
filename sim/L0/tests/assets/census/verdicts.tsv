@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1092
+# agree_floor 1093
 001bc4149d608b24	agree
 00308b83da9d8bab	agree
 0032a4ca7e233aec	agree
@@ -321,6 +321,7 @@
 2e86702b60d42bf4	agree
 2f427e7a187e0100	agree
 2f46744af28bff7c	agree
+2f8a41e68db57d00	e1:s1:qfrc_passive
 2fac9a084f9e799f	agree
 2fcd4f3996d2c446	agree
 2fd0d3c468f14ad6	agree
@@ -364,6 +365,7 @@
 340567b32d82e767	agree
 3417ef6191afdd9f	agree
 3421581294d1496f	model:geom_quat;dyn:agree
+34593f3ba52c2e8a	both-refuse
 3486dd3e43cb05ca	both-refuse
 3514416898dc1b03	model:geom_quat;dyn:agree
 3536c7249ba8ac62	agree
@@ -400,6 +402,7 @@
 38b3160fe2d0dd71	mj-refuses
 38ea284dbc4b1563	mj-refuses
 38fe8b207e527282	agree
+39398fd083c71fc4	ours-refused	divergence=D-NONFINITE
 393a286d88043d0b	agree
 393b9e7e02bda483	agree
 39530582ccee2c48	agree
@@ -411,6 +414,7 @@
 3a13c90a262a82ab	agree
 3a1e78e0e6a31111	agree
 3a282add3ebb7ed3	agree
+3a2fb4d1b2d991a2	ours-refused	divergence=D-NONFINITE
 3a36709226ba29e0	agree
 3a5b4d1f92139f8c	model:geom_quat;dyn:agree
 3a663b1deb4a7f30	agree
@@ -571,6 +575,7 @@
 50190505b5b9fff2	model:geom_quat;dyn:agree
 501e9494d842aa64	agree
 502c324c5a479e38	both-refuse
+502d336bbeb09d11	ours-refused	divergence=D-NONFINITE
 5049164e3564d01a	both-refuse
 5054f29ff4c3a9e4	agree
 5061ffc1849714ed	ours-refused	divergence=D-GAINPRM-10
@@ -709,6 +714,7 @@
 60ed994645462888	agree
 60ee2361418e38e0	agree
 6104b5bb0a99d01d	agree
+616f67db538b6988	agree
 617024c6bffbd72a	agree
 617feadaa55ecbb9	mj-refuses
 61c303dc2aa0dacc	agree
@@ -1334,6 +1340,7 @@ bd3180b529825072	model:geom_quat;dyn:agree
 bd9a43632714e008	agree
 bd9d79126f46dae2	mj-refuses
 bda6718fd70c2a56	agree
+bde3e3ecf7bdfd33	ours-refused	divergence=D-NONFINITE
 be07776f1145291b	agree
 be54cd4cd4f11295	agree
 be6eee56c82cc94d	agree
@@ -1463,6 +1470,7 @@ cd6e27fe30c8a350	agree
 cd7cab654190ace7	mj-refuses
 cd7f862f75ce74c6	agree
 cd84b52358b834ca	agree
+cd905e7ee23f9c20	ours-refused	divergence=D-NONFINITE
 cdfdb35ace739d28	agree
 ce1fcdc3c5174ece	agree
 ce2320f1fd99fe89	agree
