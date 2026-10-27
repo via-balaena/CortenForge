@@ -42,7 +42,11 @@ use std::fmt::Write;
 
 use crate::error::{Result, UrdfError};
 use crate::parser::parse_urdf_str;
-use crate::types::{UrdfGeometry, UrdfJoint, UrdfJointType, UrdfLink, UrdfOrigin, UrdfRobot};
+use nalgebra::Vector3;
+
+use crate::types::{
+    UrdfGeometry, UrdfJoint, UrdfJointLimit, UrdfJointType, UrdfLink, UrdfOrigin, UrdfRobot,
+};
 
 /// Strip `package://.../<file>` prefix, returning just the filename.
 /// Also strips `file://` prefix. Passes through plain paths unchanged.
@@ -83,8 +87,7 @@ pub fn urdf_to_mjcf(urdf_xml: &str) -> Result<String> {
 
 /// Convert a parsed `UrdfRobot` to MJCF XML string.
 pub fn robot_to_mjcf(robot: &UrdfRobot) -> Result<String> {
-    let mut converter = Converter::new(robot);
-    converter.convert()
+    Converter::new(robot)?.convert()
 }
 
 /// A mimic constraint collected during tree walk.
@@ -96,6 +99,60 @@ struct MimicEntry {
     /// Polynomial coefficients: position = multiplier * leader + offset.
     multiplier: f64,
     offset: f64,
+}
+
+/// A `<limit>`'s MJCF attributes, as MuJoCo 3.5.0's URDF importer reads it
+/// (`xml_urdf.cc`): one bound written, or a lower above the upper, leaves the
+/// joint unlimited; otherwise its limit is automatic, which limits it only
+/// where lower < upper. A bound not written is 0.
+fn limit_attrs(limit: &UrdfJointLimit) -> String {
+    let (lower, upper) = (limit.lower.unwrap_or(0.0), limit.upper.unwrap_or(0.0));
+    let limited = limit.lower.is_some() && limit.upper.is_some() && lower < upper;
+    format!(r#" limited="{limited}" range="{lower} {upper}""#)
+}
+
+/// A `<dynamics>`'s damping and friction as MJCF attributes, each where
+/// positive.
+fn dynamics_attrs(joint: &UrdfJoint) -> String {
+    let mut attrs = String::new();
+    if let Some(dynamics) = &joint.dynamics {
+        if dynamics.damping > 0.0 {
+            write!(attrs, r#" damping="{}""#, dynamics.damping).ok();
+        }
+        if dynamics.friction > 0.0 {
+            write!(attrs, r#" frictionloss="{}""#, dynamics.friction).ok();
+        }
+    }
+    attrs
+}
+
+/// A planar joint's two slide axes: the first two columns of the rotation
+/// taking z to `axis`, as MuJoCo's `mjuu_z2quat` and `mjuu_quat2mat` compute
+/// it (`user_util.cc`). The rotation turns about z × `axis` by
+/// atan2(|z × `axis`|, `axis`.z); where |z × `axis`|² < 1e-14, `mjuu_normvec`
+/// reads the cross product as zero and the rotation turns about x.
+fn planar_axes(axis: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
+    let cross = Vector3::z().cross(axis);
+    let (about, length) = if cross.norm_squared() < 1e-14 {
+        (Vector3::x(), 0.0)
+    } else {
+        let length = cross.norm();
+        (cross / length, length)
+    };
+    let (sin, cos) = (length.atan2(axis.z) / 2.0).sin_cos();
+    let q = [cos, about.x * sin, about.y * sin, about.z * sin];
+    (
+        Vector3::new(
+            q[0] * q[0] + q[1] * q[1] - q[2] * q[2] - q[3] * q[3],
+            2.0 * (q[1] * q[2] + q[0] * q[3]),
+            2.0 * (q[1] * q[3] - q[0] * q[2]),
+        ),
+        Vector3::new(
+            2.0 * (q[1] * q[2] - q[0] * q[3]),
+            q[0] * q[0] - q[1] * q[1] + q[2] * q[2] - q[3] * q[3],
+            2.0 * (q[2] * q[3] + q[0] * q[1]),
+        ),
+    )
 }
 
 /// A mesh asset collected during geom conversion.
@@ -128,7 +185,11 @@ struct Converter<'a> {
 }
 
 impl<'a> Converter<'a> {
-    fn new(robot: &'a UrdfRobot) -> Self {
+    /// Index the robot's links and joints. A link with a second parent joint
+    /// is refused, as MuJoCo 3.5.0's importer refuses it (`xml_urdf.cc`,
+    /// "URDF body has multiple parents") whether or not the joints close a
+    /// loop; so the walk from a link no joint enters reaches each link once.
+    fn new(robot: &'a UrdfRobot) -> Result<Self> {
         // Build lookup maps
         let mut links = HashMap::new();
         for link in &robot.links {
@@ -138,14 +199,19 @@ impl<'a> Converter<'a> {
         let mut child_to_joint = HashMap::new();
         let mut parent_to_joints: HashMap<&str, Vec<&UrdfJoint>> = HashMap::new();
         for joint in &robot.joints {
-            child_to_joint.insert(joint.child.as_str(), joint);
+            if child_to_joint.insert(joint.child.as_str(), joint).is_some() {
+                return Err(UrdfError::KinematicLoop(format!(
+                    "link '{}' has multiple parent joints",
+                    joint.child
+                )));
+            }
             parent_to_joints
                 .entry(joint.parent.as_str())
                 .or_default()
                 .push(joint);
         }
 
-        Self {
+        Ok(Self {
             robot,
             links,
             child_to_joint,
@@ -154,12 +220,11 @@ impl<'a> Converter<'a> {
             indent: 0,
             mesh_assets: Vec::new(),
             mimic_constraints: Vec::new(),
-        }
+        })
     }
 
     fn convert(&mut self) -> Result<String> {
-        // Find root link (not a child of any joint)
-        let root_link = self.find_root_link()?;
+        let roots = self.root_links()?;
 
         // Write MJCF header
         self.write_line(&format!(r#"<mujoco model="{}">"#, self.robot.name));
@@ -201,8 +266,19 @@ impl<'a> Converter<'a> {
         self.write_line("<worldbody>");
         self.indent += 1;
 
-        // Convert the kinematic tree starting from root
-        self.convert_tree(root_link)?;
+        let mut opened = HashSet::new();
+        for root in roots {
+            self.convert_tree(root, &mut opened)?;
+        }
+        // With one parent joint per link, a link no root reaches has parent
+        // joints that lead into a loop; MuJoCo refuses it ("URDF body not
+        // found").
+        if let Some(link) = self.robot.links.iter().find(|l| !opened.contains(&l.name)) {
+            return Err(UrdfError::KinematicLoop(format!(
+                "link '{}' is reached from no root link: its parent joints lead into a loop",
+                link.name
+            )));
+        }
 
         self.indent -= 1;
         self.write_line("</worldbody>");
@@ -230,23 +306,27 @@ impl<'a> Converter<'a> {
         Ok(std::mem::take(&mut self.output))
     }
 
-    fn find_root_link(&self) -> Result<&'a str> {
-        let child_links: HashSet<&str> = self.child_to_joint.keys().copied().collect();
-
-        for link in &self.robot.links {
-            if !child_links.contains(link.name.as_str()) {
-                return Ok(&link.name);
-            }
+    /// Every link no joint enters, in document order: MuJoCo 3.5.0's importer
+    /// writes each one's tree under the world (`xml_urdf.cc`).
+    fn root_links(&self) -> Result<Vec<&'a str>> {
+        let roots: Vec<&'a str> = self
+            .robot
+            .links
+            .iter()
+            .map(|link| link.name.as_str())
+            .filter(|name| !self.child_to_joint.contains_key(name))
+            .collect();
+        if roots.is_empty() {
+            return Err(UrdfError::NoRootLink);
         }
-
-        Err(UrdfError::NoRootLink)
+        Ok(roots)
     }
 
     /// Write a link's `<body>` and its subtree, depth-first, children in
     /// order, without recursing: a URDF chain nests one body per link, and a
     /// recursion per link overflowed a 2-mebibyte caller's stack at 5000 links
-    /// (ledger L303).
-    fn convert_tree(&mut self, root: &str) -> Result<()> {
+    /// (ledger L303). Each link written is added to `opened`.
+    fn convert_tree(&mut self, root: &str, opened: &mut HashSet<String>) -> Result<()> {
         enum Step {
             Open(String, Option<Box<UrdfJoint>>),
             Close,
@@ -256,6 +336,7 @@ impl<'a> Converter<'a> {
             match step {
                 Step::Open(link, joint) => {
                     let children = self.open_link(&link, joint.as_deref())?;
+                    opened.insert(link);
                     stack.push(Step::Close);
                     stack.extend(children.into_iter().rev().map(|(child, child_joint)| {
                         Step::Open(child, Some(Box::new(child_joint)))
@@ -375,10 +456,6 @@ impl<'a> Converter<'a> {
             write!(attrs, r#" axis="{} {} {}""#, axis.x, axis.y, axis.z).ok();
         }
 
-        // Add limits for revolute/prismatic, as MuJoCo 3.5.0's URDF importer
-        // reads them (`xml_urdf.cc`): one bound written, or a lower above the
-        // upper, leaves the joint unlimited; otherwise its limit is automatic,
-        // which limits it only where lower < upper. A bound not written is 0.
         // A continuous joint is left unlimited, as URDF defines it
         // (D-URDF-CONTINUOUS-LIMIT: MuJoCo limits it).
         if let Some(limit) = &joint.limit
@@ -387,20 +464,9 @@ impl<'a> Converter<'a> {
                 UrdfJointType::Revolute | UrdfJointType::Prismatic
             )
         {
-            let (lower, upper) = (limit.lower.unwrap_or(0.0), limit.upper.unwrap_or(0.0));
-            let limited = limit.lower.is_some() && limit.upper.is_some() && lower < upper;
-            write!(attrs, r#" limited="{limited}" range="{lower} {upper}""#).ok();
+            attrs.push_str(&limit_attrs(limit));
         }
-
-        // Add dynamics (damping and friction)
-        if let Some(dynamics) = &joint.dynamics {
-            if dynamics.damping > 0.0 {
-                write!(attrs, r#" damping="{}""#, dynamics.damping).ok();
-            }
-            if dynamics.friction > 0.0 {
-                write!(attrs, r#" frictionloss="{}""#, dynamics.friction).ok();
-            }
-        }
+        attrs.push_str(&dynamics_attrs(joint));
 
         self.write_line(&format!("<joint {attrs}/>"));
 
@@ -417,38 +483,29 @@ impl<'a> Converter<'a> {
         Ok(())
     }
 
-    /// Convert a planar joint into 2 slide joints + 1 hinge joint (3 DOF).
-    ///
-    /// The joint axis defines the plane normal. Two orthogonal in-plane axes
-    /// are computed, giving translation in the plane + rotation about the normal.
+    /// Write a planar joint as MuJoCo 3.5.0's URDF importer builds it
+    /// (`xml_urdf.cc`): slides `_TX` and `_TY` along the first two columns of
+    /// the rotation taking z to the joint's axis, then a hinge `_RZ` about the
+    /// axis. The `<limit>` limits `_TX` alone; the `<dynamics>` goes on all
+    /// three.
     fn convert_planar_joint(&mut self, joint: &UrdfJoint) -> Result<()> {
-        let normal = joint.axis.normalize();
-
-        // Compute two orthogonal in-plane axes
-        let arbitrary = if normal.x.abs() < 0.9 {
-            nalgebra::Vector3::x()
-        } else {
-            nalgebra::Vector3::y()
-        };
-        let in_plane_x = normal.cross(&arbitrary).normalize();
-        let in_plane_y = normal.cross(&in_plane_x).normalize();
-
-        // Slide along in-plane X
+        let (tx, ty) = planar_axes(&joint.axis);
+        let normal = joint.axis;
+        let limit = joint.limit.as_ref().map(limit_attrs).unwrap_or_default();
+        let dynamics = dynamics_attrs(joint);
+        let name = &joint.name;
         self.write_line(&format!(
-            r#"<joint name="{}_slide_x" type="slide" axis="{} {} {}"/>"#,
-            joint.name, in_plane_x.x, in_plane_x.y, in_plane_x.z,
+            r#"<joint name="{name}_TX" type="slide" axis="{} {} {}"{limit}{dynamics}/>"#,
+            tx.x, tx.y, tx.z,
         ));
-        // Slide along in-plane Y
         self.write_line(&format!(
-            r#"<joint name="{}_slide_y" type="slide" axis="{} {} {}"/>"#,
-            joint.name, in_plane_y.x, in_plane_y.y, in_plane_y.z,
+            r#"<joint name="{name}_TY" type="slide" axis="{} {} {}"{dynamics}/>"#,
+            ty.x, ty.y, ty.z,
         ));
-        // Hinge about normal
         self.write_line(&format!(
-            r#"<joint name="{}_hinge" type="hinge" axis="{} {} {}"/>"#,
-            joint.name, normal.x, normal.y, normal.z,
+            r#"<joint name="{name}_RZ" type="hinge" axis="{} {} {}"{dynamics}/>"#,
+            normal.x, normal.y, normal.z,
         ));
-
         Ok(())
     }
 
@@ -774,15 +831,15 @@ mod tests {
         ))
         .expect("conversion should succeed");
 
-        let sx = axis_of(&mjcf, "pj_slide_x");
-        let sy = axis_of(&mjcf, "pj_slide_y");
-        let hinge = axis_of(&mjcf, "pj_hinge");
+        let sx = axis_of(&mjcf, "pj_TX");
+        let sy = axis_of(&mjcf, "pj_TY");
+        let hinge = axis_of(&mjcf, "pj_RZ");
 
-        assert!(mjcf.contains(r#"name="pj_slide_x" type="slide""#));
-        assert!(mjcf.contains(r#"name="pj_slide_y" type="slide""#));
-        assert!(mjcf.contains(r#"name="pj_hinge" type="hinge""#));
+        assert!(mjcf.contains(r#"name="pj_TX" type="slide""#));
+        assert!(mjcf.contains(r#"name="pj_TY" type="slide""#));
+        assert!(mjcf.contains(r#"name="pj_RZ" type="hinge""#));
 
-        for (label, v) in [("slide_x", sx), ("slide_y", sy), ("hinge", hinge)] {
+        for (label, v) in [("TX", sx), ("TY", sy), ("RZ", hinge)] {
             assert!(
                 (v.norm() - 1.0).abs() < 1e-12,
                 "{label} axis must be unit, got norm {}",
@@ -796,22 +853,22 @@ mod tests {
         );
     }
 
-    /// ★ The in-plane basis picks its seed vector from the normal's own X
-    /// component (`normal.x.abs() < 0.9`), because crossing with a parallel
-    /// vector would collapse to zero. A normal along X takes the other branch,
-    /// and it must produce an equally valid basis rather than `NaN`s.
+    /// ★ The in-plane basis turns z onto the normal about z × normal, which
+    /// vanishes for a normal along -z; the basis then turns about x
+    /// ([`planar_axes`]), and it must be as valid as any other rather than
+    /// `NaN`s.
     #[test]
-    fn planar_decomposition_survives_a_normal_along_x() {
+    fn planar_decomposition_survives_a_normal_along_minus_z() {
         let mjcf = urdf_to_mjcf(&robot_with_joint(
             r#"<joint name="pj" type="planar">
                  <parent link="base"/><child link="child"/>
-                 <axis xyz="1 0 0"/>
+                 <axis xyz="0 0 -1"/>
                </joint>"#,
         ))
         .expect("conversion should succeed");
 
-        let sx = axis_of(&mjcf, "pj_slide_x");
-        let sy = axis_of(&mjcf, "pj_slide_y");
+        let sx = axis_of(&mjcf, "pj_TX");
+        let sy = axis_of(&mjcf, "pj_TY");
 
         assert!(
             sx.iter().all(|c| c.is_finite()) && sy.iter().all(|c| c.is_finite()),
