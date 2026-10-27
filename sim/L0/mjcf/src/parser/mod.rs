@@ -223,10 +223,10 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                 let elem_name = e.name().as_ref().to_vec();
                 match elem_name.as_slice() {
                     b"option" => {
-                        model.option = parse_option(reader, e)?;
+                        parse_option(reader, e, &mut model.option)?;
                     }
                     b"compiler" => {
-                        model.compiler = parse_compiler_attrs(e)?;
+                        parse_compiler_attrs(e, &mut model.compiler)?;
                         skip_element(reader, &elem_name)?;
                     }
                     b"default" => {
@@ -315,9 +315,9 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
             Ok(Event::Empty(ref e)) => {
                 // Handle self-closing elements
                 if e.name().as_ref() == b"option" {
-                    model.option = parse_option_attrs(e)?;
+                    parse_option_attrs(e, &mut model.option)?;
                 } else if e.name().as_ref() == b"compiler" {
-                    model.compiler = parse_compiler_attrs(e)?;
+                    parse_compiler_attrs(e, &mut model.compiler)?;
                 } else if e.name().as_ref() == b"contact" {
                     model.contact = MjcfContact::default();
                 } else if e.name().as_ref() == b"keyframe" {

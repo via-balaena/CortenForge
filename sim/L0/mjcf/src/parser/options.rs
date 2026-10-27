@@ -43,12 +43,15 @@ pub(super) fn parse_size_attrs(e: &BytesStart, model: &mut MjcfModel) -> Result<
     Ok(())
 }
 
-/// Parse option element.
+/// An `<option>` element, read onto `option`: MuJoCo reads every
+/// `<option>`, and every `<flag>` in one, onto the same values, each setting
+/// only what it writes (`xml_native_reader.cc`, the Option loop).
 pub(super) fn parse_option<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
-) -> Result<MjcfOption> {
-    let mut option = parse_option_attrs(start)?;
+    option: &mut MjcfOption,
+) -> Result<()> {
+    parse_option_attrs(start, option)?;
     let mut buf = Vec::new();
 
     loop {
@@ -56,7 +59,7 @@ pub(super) fn parse_option<R: BufRead>(
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 // Handle flag element
                 if e.name().as_ref() == b"flag" {
-                    option.flag = parse_flag_attrs(e)?;
+                    parse_flag_attrs(e, &mut option.flag)?;
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"option" => break,
@@ -67,13 +70,12 @@ pub(super) fn parse_option<R: BufRead>(
         buf.clear();
     }
 
-    Ok(option)
+    Ok(())
 }
 
-/// Parse option attributes only.
-pub(super) fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
+/// An `<option>`'s attributes, read onto `option`.
+pub(super) fn parse_option_attrs(e: &BytesStart, option: &mut MjcfOption) -> Result<()> {
     let a = Attrs::new(e)?;
-    let mut option = MjcfOption::default();
 
     // Core simulation
     if let Some(ts) = a.real("timestep")? {
@@ -164,9 +166,20 @@ pub(super) fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     if let Some(o_margin) = a.real("o_margin")? {
         option.o_margin = o_margin;
     }
-    option.o_solimp = a.prefix("o_solimp")?;
-    option.o_solref = a.prefix("o_solref")?;
-    option.o_friction = a.prefix("o_friction")?;
+    // A later <option>'s prefix lies over an earlier one's values.
+    if let Some(given) = a.prefix("o_solimp")? {
+        option.o_solimp = Some(option.o_solimp.map_or(given, |was| given.over_prefix(&was)));
+    }
+    if let Some(given) = a.prefix("o_solref")? {
+        option.o_solref = Some(option.o_solref.map_or(given, |was| given.over_prefix(&was)));
+    }
+    if let Some(given) = a.prefix("o_friction")? {
+        option.o_friction = Some(
+            option
+                .o_friction
+                .map_or(given, |was| given.over_prefix(&was)),
+        );
+    }
 
     // Sleep
     if let Some(st) = a.real("sleep_tolerance")? {
@@ -199,13 +212,13 @@ pub(super) fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
         }
     }
 
-    Ok(option)
+    Ok(())
 }
 
-/// Parse compiler element attributes.
-pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
+/// A `<compiler>`'s attributes, read onto `compiler`: MuJoCo reads every
+/// `<compiler>` onto the same settings, each setting only what it writes.
+pub(super) fn parse_compiler_attrs(e: &BytesStart, compiler: &mut MjcfCompiler) -> Result<()> {
     let a = Attrs::new(e)?;
-    let mut compiler = MjcfCompiler::default();
 
     // A1. angle — angular unit
     if let Some(angle) = a.keyword("angle", keywords::angle)? {
@@ -311,13 +324,13 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
         );
     }
 
-    Ok(compiler)
+    Ok(())
 }
 
-/// Parse flag element attributes.
-pub(super) fn parse_flag_attrs(e: &BytesStart) -> Result<MjcfFlag> {
+/// A `<flag>`'s attributes, read onto `flag`: each flag it does not write
+/// keeps its value.
+pub(super) fn parse_flag_attrs(e: &BytesStart, flag: &mut MjcfFlag) -> Result<()> {
     let a = Attrs::new(e)?;
-    let mut flag = MjcfFlag::default();
 
     // Each flag is MuJoCo's `enable_map` keyword: exactly `disable` or
     // `enable`.
@@ -360,5 +373,5 @@ pub(super) fn parse_flag_attrs(e: &BytesStart) -> Result<MjcfFlag> {
     flag.multiccd = parse_flag("multiccd", flag.multiccd)?;
     flag.sleep = parse_flag("sleep", flag.sleep)?;
 
-    Ok(flag)
+    Ok(())
 }
