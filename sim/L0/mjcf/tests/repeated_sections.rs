@@ -105,3 +105,44 @@ fn a_compiler_with_a_closing_tag_keeps_an_earlier_ones_settings() {
     ));
     assert_eq!(m.jnt_range[0], (-1.0, 1.0));
 }
+
+/// Loads `compilers` over a unit tetrahedron mesh, `tet.obj`, found only in `b/`.
+fn tetrahedron_found_in_b(compilers: &str) -> Result<Model, sim_mjcf::MjcfError> {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("a")).unwrap();
+    std::fs::create_dir(dir.path().join("b")).unwrap();
+    std::fs::write(
+        dir.path().join("b/tet.obj"),
+        "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.xml");
+    std::fs::write(
+        &main,
+        format!(
+            r#"<mujoco>{compilers}<asset><mesh name="t" file="tet.obj"/></asset>
+            <worldbody><body><freejoint/><geom type="mesh" mesh="t"/></body></worldbody></mujoco>"#
+        ),
+    )
+    .unwrap();
+    sim_mjcf::load_model_from_file(&main)
+}
+
+#[test]
+fn a_later_compilers_assetdir_lies_over_an_earlier_meshdir() {
+    // MuJoCo writes assetdir into meshdir and texturedir as it reads it, then
+    // reads meshdir over it (`xml_native_reader.cc`, Compiler). Measured:
+    // meshdir a, then assetdir b, finds the mesh in b (body mass
+    // 166.66666666666666); assetdir b then meshdir a, in two elements or in
+    // one, looks in a ("Error opening file 'a/tet.obj'"). Before: a later
+    // assetdir lost to an earlier meshdir.
+    let m = tetrahedron_found_in_b(r#"<compiler meshdir="a"/><compiler assetdir="b"/>"#)
+        .unwrap_or_else(|e| panic!("refused: {e}"));
+    assert!(
+        (m.body_mass[1] - 166.666_666_666_666_66).abs() < 1e-9,
+        "{}",
+        m.body_mass[1]
+    );
+    assert!(tetrahedron_found_in_b(r#"<compiler assetdir="b"/><compiler meshdir="a"/>"#).is_err());
+    assert!(tetrahedron_found_in_b(r#"<compiler assetdir="b" meshdir="a"/>"#).is_err());
+}

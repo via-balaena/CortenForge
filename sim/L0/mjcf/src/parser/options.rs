@@ -241,15 +241,20 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart, compiler: &mut MjcfCompiler) 
         seq.clone_into(&mut compiler.eulerseq);
     }
 
-    // A3. meshdir / texturedir / assetdir — asset path resolution
+    // A3. assetdir / meshdir / texturedir — asset path resolution. MuJoCo
+    // writes assetdir into meshdir and texturedir as it reads it, then reads
+    // meshdir and texturedir over it (`xml_native_reader.cc`, Compiler), so a
+    // later <compiler>'s assetdir lies over an earlier one's meshdir.
+    if let Some(assetdir) = a.string("assetdir") {
+        compiler.meshdir = Some(assetdir.clone());
+        compiler.texturedir = Some(assetdir.clone());
+        compiler.assetdir = Some(assetdir);
+    }
     if let Some(meshdir) = a.string("meshdir") {
         compiler.meshdir = Some(meshdir);
     }
     if let Some(texturedir) = a.string("texturedir") {
         compiler.texturedir = Some(texturedir);
-    }
-    if let Some(assetdir) = a.string("assetdir") {
-        compiler.assetdir = Some(assetdir);
     }
 
     // A4. autolimits
