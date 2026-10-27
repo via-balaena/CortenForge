@@ -54,7 +54,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 | L15 | M9 (A4 #4) | `fix(sim-mjcf): self-closing elements are not dropped` | no | L12, L10 |
 | L16 | M11 (A3 #2) | `feat(sim-mjcf): defaults resolved in one pass before frames and composites` | **yes** (un-exports) | L15 |
 | L17 | M12 (A3 #3) | `feat(sim-mjcf): explicit values survive their class` | **yes** (`Option` fields) | L05, L07, L16 |
-| L18 | M13 (A3 #4) | `feat(sim-mjcf): default geom size, element-wise overlay, size must be positive` | behaviour (`size`'s type is L05's) | L07, L16 |
+| L18 | M13 (A3 #4) | `feat(sim-mjcf): default geom size, element-wise overlay, size must be positive` | **yes** (geom `size`'s type moves here from L05) | L07, L16 |
 | L19 | M16 (A5 #3) | `feat(sim-mjcf): joint layout as MuJoCo` | behaviour | L16 |
 | L20 | M17 (A5 #4) + A14/A19 | `feat(sim-mjcf): joint axis too small is an error; ball and free axes are (0,0,1)` | behaviour | L16 |
 | L21 | M18 (A5 #5) | `feat(sim-mjcf): one limit helper for joints, tendons, actuators` | behaviour | L17 |
@@ -164,7 +164,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 
 ### L07 · M8 · `feat(sim-mjcf): keywords exact; composite curve keywords as MuJoCo`
 - **Closes:** mjcf-S2 (keywords); the `curve` keyword map (10-scope "also fixed").
-- **Implements:** A4 §2.3 keyword tables (`keywords.rs`; allowlisted extension keywords; dead joint/geom aliases removed; pub `from_str` exact; `TfAuto` for `*limited`) and A9 §4.2's rewrites, including the template arguments at `composites/stress-test/src/main.rs:69,86,114,245` and `:282` (`"s c 0"` → `"sin(s) cos(s) 0"`), which the corpus extractor cannot see. Trailing whitespace in `curve` is accepted, lenient, with a test that it equals the trimmed form (Q117; A9 Q8).
+- **Implements:** A4 §2.3 keyword tables (`keywords.rs`; allowlisted extension keywords; dead joint/geom aliases removed; pub `from_str` exact; the pub `TfAuto` type, added here, for `*limited`: L05 left booleans and keywords to this commit, reading them as before) and A9 §4.2's rewrites, including the template arguments at `composites/stress-test/src/main.rs:69,86,114,245` and `:282` (`"s c 0"` → `"sin(s) cos(s) 0"`), which the corpus extractor cannot see. Trailing whitespace in `curve` is accepted, lenient, with a test that it equals the trimmed form (Q117; A9 Q8).
 - **Must-fail:** A4 §2.5's keyword cases (`integrator="RK45"`, `"euler"`, `solver="newton"`, `angle="RADIAN"`, `<flag gravity="off"/>`/`"true"`, `limited="1"`, `limited="auto"`, `type=" box"`); `cable_curve_keywords_as_mujoco` (A9 §4.4).
 - **Flips:** class D rewrites, 19 docs (A4 §7); with the rewrites 1 doc changes (`composite.rs:25`, passes) and the composite validator's stdout is byte-identical; without them 9 integration and 2 lib tests flip (A9 §4.5).
 - **Census:** with L08, `263f733b` agrees (A20 §1A.2); A9's 17 curve docs move `mj-refuses` → `both-refuse` (A20 §2.10).
@@ -282,7 +282,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Census:** cylinder `bias` 2 docs become refusals (A20 §1A.2).
 
 ### L18 · M13 · `feat(sim-mjcf): default geom size, element-wise overlay, size must be positive`
-- **Closes:** mjcf-S3. **Implements:** A3 §3: default size 0; the overlay through L05's `over_prefix` (`size` is L05's `Option<Prefix<3>>`); `checksize`. This commit is the one owner of MuJoCo's size check (`user_objects.cc:152-167`), plane `size(3)` included.
+- **Closes:** mjcf-S3. **Implements:** A3 §3: default size 0; the overlay through L05's `over_prefix`; `checksize`. A geom's `size` becomes `Option<Prefix<3>>` here: L05 kept its `Vec<f64>`, bounded to three values, so that its type and its class overlay change in one commit (a site's `size` is L05's `Option<Prefix<3>>` already). This commit is the one owner of MuJoCo's size check (`user_objects.cc:152-167`), plane `size(3)` included.
 - **Must-fail:** s3_01, s3_02, ov_class_size_chain, s3_08, s3_03, s3_05, s3_12 (A3 §3); A5 §3.5's geom-size cases `sphere_size_neg`, `box_size_one_zero`, `capsule_no_size_fromto`, `geom_no_size_moving`, `default_geom_no_size_in_class`; A4 §8.4's plane `size(3)` cases. Whether s3_02 and ov_class_size_chain already pass at this commit's parent (after L05's `over_prefix`) was not checked; any that do move to L05.
 - **Flips:** compile-level only; 0 behavioural flips in the static corpus (A3 §3).
 
