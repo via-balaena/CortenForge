@@ -128,7 +128,8 @@ fn dynamics_attrs(joint: &UrdfJoint) -> String {
 
 /// A planar joint's two slide axes: the first two columns of the rotation
 /// taking z to `axis`, as MuJoCo's `mjuu_z2quat` and `mjuu_quat2mat` compute
-/// it (`user_util.cc`). The rotation turns about z × `axis` by
+/// it (`user_util.cc`). `axis` is the unit axis the parser gives; MuJoCo
+/// applies the cut-off below to the axis as written (ledger L316). The rotation turns about z × `axis` by
 /// atan2(|z × `axis`|, `axis`.z); where |z × `axis`|² < 1e-14, `mjuu_normvec`
 /// reads the cross product as zero and the rotation turns about x.
 fn planar_axes(axis: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
@@ -185,20 +186,28 @@ struct Converter<'a> {
 }
 
 impl<'a> Converter<'a> {
-    /// Index the robot's links and joints. A link with a second parent joint
-    /// is refused, as MuJoCo 3.5.0's importer refuses it (`xml_urdf.cc`,
-    /// "URDF body has multiple parents") whether or not the joints close a
-    /// loop; so the walk from a link no joint enters reaches each link once.
+    /// Index the robot's links and joints, refusing what MuJoCo 3.5.0's
+    /// importer refuses (`xml_urdf.cc`; measured): a link name given twice
+    /// ("repeated URDF name"), a joint naming a link the robot has not ("URDF
+    /// joint parent or child missing"), and a link with a second parent joint
+    /// ("URDF body has multiple parents"), whether or not the joints close a
+    /// loop. So the walk from a link no joint enters reaches each link once.
     fn new(robot: &'a UrdfRobot) -> Result<Self> {
-        // Build lookup maps
         let mut links = HashMap::new();
         for link in &robot.links {
-            links.insert(link.name.as_str(), link);
+            if links.insert(link.name.as_str(), link).is_some() {
+                return Err(UrdfError::DuplicateLink(link.name.clone()));
+            }
         }
 
         let mut child_to_joint = HashMap::new();
         let mut parent_to_joints: HashMap<&str, Vec<&UrdfJoint>> = HashMap::new();
         for joint in &robot.joints {
+            for link in [&joint.parent, &joint.child] {
+                if !links.contains_key(link.as_str()) {
+                    return Err(UrdfError::undefined_link(link, &joint.name));
+                }
+            }
             if child_to_joint.insert(joint.child.as_str(), joint).is_some() {
                 return Err(UrdfError::KinematicLoop(format!(
                     "link '{}' has multiple parent joints",

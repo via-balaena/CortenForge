@@ -444,6 +444,34 @@ mod tests {
         }
     }
 
+    /// A joint naming a link the robot has not, and a link name given twice,
+    /// are refused, as MuJoCo 3.5.0's importer refuses them (measured: "URDF
+    /// joint parent or child missing", "repeated URDF name").
+    #[test]
+    fn a_joint_naming_no_link_or_a_repeated_link_name_is_refused() {
+        for (urdf, missing) in [
+            (robot(&["r", "a"], &[("j1", "ghost", "a")]), "ghost"),
+            (robot(&["r"], &[("j1", "r", "ghost")]), "ghost"),
+        ] {
+            let result = urdf_to_mjcf(&urdf);
+            assert!(
+                matches!(&result, Err(UrdfError::UndefinedLink { link_name, joint_name })
+                    if link_name == missing && joint_name == "j1"),
+                "{result:?}"
+            );
+        }
+        for (urdf, repeated) in [
+            (robot(&["r", "r"], &[]), "r"),
+            (robot(&["r", "a", "a"], &[("j1", "r", "a")]), "a"),
+        ] {
+            let result = urdf_to_mjcf(&urdf);
+            assert!(
+                matches!(&result, Err(UrdfError::DuplicateLink(name)) if name == repeated),
+                "{result:?}"
+            );
+        }
+    }
+
     /// Every link no joint enters is a root, its tree under the world, as
     /// MuJoCo 3.5.0's importer writes them (measured: roots r and s, s with a
     /// child t, give nbody 2 and one joint, the jointless roots fused into
