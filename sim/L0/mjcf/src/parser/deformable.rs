@@ -642,13 +642,13 @@ pub(super) fn parse_skin_bone_attrs(e: &BytesStart) -> Result<MjcfSkinBone> {
         .string("body")
         .ok_or_else(|| MjcfError::missing_attribute("bone", "body"))?;
 
-    if let Some(bindpos) = a.vec3("bindpos")? {
-        bone.bindpos = bindpos;
-    }
-
-    if let Some(bindquat) = a.vec4("bindquat")? {
-        bone.bindquat = bindquat;
-    }
+    // MuJoCo 3.5.0 requires the bind pose too (measured).
+    bone.bindpos = a
+        .vec3("bindpos")?
+        .ok_or_else(|| MjcfError::missing_attribute("bone", "bindpos"))?;
+    bone.bindquat = a
+        .vec4("bindquat")?
+        .ok_or_else(|| MjcfError::missing_attribute("bone", "bindquat"))?;
 
     Ok(bone)
 }

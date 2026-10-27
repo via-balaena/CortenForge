@@ -1118,11 +1118,83 @@ fn a_class_takes_one_orientation_and_no_quaternion_of_zeros() {
 }
 
 #[test]
+fn a_skin_bone_names_its_bind_pose() {
+    let skin = |bone: &str| {
+        format!(
+            r#"<mujoco><worldbody><body name="b"><geom size="0.1"/></body></worldbody><deformable><skin name="k" vertex="0 0 0 1 0 0 0 1 0" face="0 1 2"><bone body="b" {bone}/></skin></deformable></mujoco>"#
+        )
+    };
+    assert_missing(&refused(&skin(r#"bindquat="1 0 0 0""#)), "bone", "bindpos");
+    assert_missing(
+        &refused(&skin(r#"bindpos="" bindquat="1 0 0 0""#)),
+        "bone",
+        "bindpos",
+    );
+    assert_missing(&refused(&skin(r#"bindpos="0 0 0""#)), "bone", "bindquat");
+    assert_missing(
+        &refused(&skin(r#"bindquat="" bindpos="0 0 0""#)),
+        "bone",
+        "bindquat",
+    );
+    load(&skin(r#"bindpos="0 0 0" bindquat="1 0 0 0""#));
+}
+
+#[test]
 fn a_composite_joint_with_a_closing_tag_names_its_kind() {
     let err = refused(
         r#"<mujoco><worldbody><composite type="cable" count="5 1 1" curve="s 0 0" size="1"><joint damping="1"></joint><geom type="capsule" size="0.01"/></composite></worldbody></mujoco>"#,
     );
     assert_missing(&err, "joint", "kind");
+}
+
+// ── indices and counts ──
+
+#[test]
+fn an_index_or_a_count_below_zero_or_with_a_fraction_is_refused() {
+    // MuJoCo 3.5.0 refuses each in its own form (measured: a mesh face of -1,
+    // "vertex index -1 does not exist"; a flex dim of -1, "dim must be 1, 2 or
+    // 3"; a flexcomp count of -1, "Count too small"); a flex's child
+    // `<element>` and `<pin>` and a skin's child `<vertex>` are sim-mjcf's
+    // form. A skin face below zero, which MuJoCo loads, is
+    // D-SKIN-FACE-NEGATIVE.
+    let flex = |dim: &str, children: &str| {
+        format!(
+            r#"<mujoco><deformable><flex name="f" dim="{dim}" density="0.1"><vertex pos="0 0 1  0.05 0 1  0.1 0 1"/>{children}</flex></deformable></mujoco>"#
+        )
+    };
+    let skin = |face: &str, children: &str| {
+        format!(
+            r#"<mujoco><worldbody><body name="b"><geom size="0.1"/></body></worldbody><deformable><skin name="k" vertex="0 0 0 1 0 0 0 1 0" face="{face}"><bone body="b" bindpos="0 0 0" bindquat="1 0 0 0"/>{children}</skin></deformable></mujoco>"#
+        )
+    };
+    let cases = [
+        (
+            r#"<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 -1 0 1 3"/></asset><worldbody/></mujoco>"#.to_string(),
+            "mesh",
+            "face",
+        ),
+        (flex("-1", ""), "flex", "dim"),
+        (flex("1", r#"<element data="0 1  1 -2"/>"#), "element", "data"),
+        (flex("1", r#"<element data="0 1  1 2"/><pin id="-1"/>"#), "pin", "id"),
+        (
+            r#"<mujoco><worldbody/><deformable><flexcomp name="f" type="grid" count="-1 3 1" spacing="1 1 1" dim="2"/></deformable></mujoco>"#.to_string(),
+            "flexcomp",
+            "count",
+        ),
+        (skin("0 1 -2", ""), "skin", "face"),
+        (skin("0 1 2", r#"<vertex id="-1" bone="0"/>"#), "vertex", "id"),
+    ];
+    for (xml, element, attribute) in &cases {
+        let err = refused(xml);
+        assert!(
+            matches!(&err, MjcfError::InvalidValue { element: e, attribute: a, .. } if e == element && a == attribute),
+            "{xml}: {err}"
+        );
+    }
+    let err = refused(&flex("1", r#"<element data="0 1  1 2.0"/>"#));
+    assert_bad_number(&err, "element", "data");
+    let err = refused(&flex("1", r#"<element data="0 1  1 2"/><pin id="1.5"/>"#));
+    assert_bad_number(&err, "pin", "id");
 }
 
 // ── non-finite numbers (book L06) ──

@@ -1943,3 +1943,5 @@ a852818bfd1e9129	sim/L0/mjcf/tests/attribute_reader.rs:125
 b5b8a04323241359	sim/L0/mjcf/tests/attribute_reader.rs:220
 cd7c10f6643c3b84	sim/L0/mjcf/tests/attribute_reader.rs:165
 f7beea3bc2acf9e4	sim/L0/mjcf/tests/attribute_reader.rs:175
+777e8d0d42459752	sim/L0/mjcf/tests/attribute_reader.rs:1172
+b39f1afefdef0302	sim/L0/mjcf/tests/attribute_reader.rs:1180
