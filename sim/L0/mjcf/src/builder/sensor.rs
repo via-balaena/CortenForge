@@ -9,6 +9,7 @@ use tracing::warn;
 
 use super::ModelBuilder;
 use crate::error::{ElementKind, Location, MjcfError, Result};
+use crate::keywords;
 use crate::types::{MjcfSensor, MjcfSensorType};
 
 impl ModelBuilder {
@@ -90,9 +91,8 @@ impl ModelBuilder {
 
         // Parse interp keyword → InterpolationType (mirrors actuator.rs)
         let interp = match &mjcf_sensor.interp {
-            Some(s) => s
-                .parse::<InterpolationType>()
-                .map_err(|_| MjcfError::invalid_keyword("sensor", "interp", s))?,
+            Some(s) => keywords::interp(s)
+                .ok_or_else(|| MjcfError::invalid_keyword("sensor", "interp", s))?,
             None => InterpolationType::Zoh,
         };
 

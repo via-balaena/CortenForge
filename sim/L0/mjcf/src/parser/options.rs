@@ -43,9 +43,10 @@ pub(super) fn parse_size_attrs(e: &BytesStart, model: &mut MjcfModel) -> Result<
     Ok(())
 }
 
-/// An `<option>` element, read onto `option`: MuJoCo reads every
-/// `<option>`, and every `<flag>` in one, onto the same values, each setting
-/// only what it writes (`xml_native_reader.cc`, the Option loop).
+/// An `<option>` element, read onto `option`: MuJoCo reads every `<option>`,
+/// and the one `<flag>` it may hold, onto the same values, each setting only
+/// what it writes (`xml_native_reader.cc`, the Option loop; a second `<flag>`
+/// is a schema error, book L47's).
 pub(super) fn parse_option<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
@@ -320,7 +321,8 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart, compiler: &mut MjcfCompiler) 
         compiler.alignfree = alignfree;
     }
 
-    // A13. exactmeshinertia (deprecated — no behavioral effect since MuJoCo 3.5.0)
+    // A13. exactmeshinertia: not a MuJoCo 3.5.0 attribute (its schema refuses
+    // it, book L47); read, warned about and given no effect.
     if let Some(emi) = a.boolean("exactmeshinertia")? {
         compiler.exactmeshinertia = emi;
         tracing::warn!(
@@ -339,13 +341,13 @@ pub(super) fn parse_flag_attrs(e: &BytesStart, flag: &mut MjcfFlag) -> Result<()
 
     // Each flag is MuJoCo's `enable_map` keyword: exactly `disable` or
     // `enable`.
-    let parse_flag = |name: &str, default: bool| -> Result<bool> {
+    let parse_flag = |name: &str, current: bool| -> Result<bool> {
         Ok(a.keyword(name, |s| match s {
             "disable" => Some(false),
             "enable" => Some(true),
             _ => None,
         })?
-        .unwrap_or(default))
+        .unwrap_or(current))
     };
 
     // Disable flags (true = enabled, false = disabled)

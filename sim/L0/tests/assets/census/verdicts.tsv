@@ -71,7 +71,7 @@
 08d8952840bdfbbf	agree
 08efe56133152147	mj-refuses
 08f235d9d9ea15b3	agree
-09352da9b0ac726e	mj-refuses
+09352da9b0ac726e	mj-refuses	divergence=D-CABLE-TWO-BODY
 0967e92dce4068f8	agree
 097a47126e774264	agree
 097d8a7f4f219675	agree
@@ -549,7 +549,7 @@
 4984d5606f8039a7	mj-refuses
 49876f34be2305c4	agree
 499b364df2378dc1	agree
-49b2f19df66d840c	mj-refuses
+49b2f19df66d840c	mj-refuses	divergence=D-CABLE-TWO-BODY
 49c63d4bcdd0691d	model:geom_quat;dyn:agree
 4a042f9877aaca64	agree
 4a4409fcea6ad260	ours-refused	divergence=D-HEX-FLOAT
@@ -1116,7 +1116,7 @@
 98a5ef4a9ba419b4	agree
 98dfc1654f95d5a5	mj-refuses
 98f687e62a86bbe9	agree
-995f27449fbaa4fb	mj-refuses
+995f27449fbaa4fb	mj-refuses	divergence=D-CABLE-TWO-BODY
 9968986b6dfa9f65	agree
 996de36bc1273778	agree
 99aac113082e788d	model:geom_quat;dyn:agree
@@ -1301,7 +1301,7 @@ ae6ec6348ac13540	mj-refuses
 ae8934e681fb8ab3	agree
 aeb763299c7d2303	agree
 aeb829cc18447e0c	agree
-aedf5a82db449d12	mj-refuses
+aedf5a82db449d12	mj-refuses	divergence=D-CABLE-TWO-BODY
 aeed2155d7ad2495	agree
 af29464e8c060446	agree
 af31582a6b281881	agree
@@ -1360,7 +1360,7 @@ b5b8a04323241359	agree
 b5d0a3b1f663195b	agree
 b5df60f53939c8f3	model:geom_quat;dyn:agree
 b600c18069333e95	agree
-b60f39659af4559c	model:nsite
+b60f39659af4559c	model:nsite	divergence=D-CABLE-ONE-BODY
 b6302b9e7d4fff9e	agree
 b645213c19860353	agree
 b673eb8a91dfd645	agree
@@ -1514,10 +1514,10 @@ c9dc03204051238d	agree
 c9ded1b6da906ddb	agree
 ca37817f35fcf4b3	mj-refuses
 ca44c0466416c589	agree
-ca5a8806109ac20f	mj-refuses
+ca5a8806109ac20f	mj-refuses	divergence=D-CABLE-TWO-BODY
 ca6940297f8221f8	agree
 ca7634f88bbe2d54	agree
-ca8218d312908549	mj-refuses
+ca8218d312908549	mj-refuses	divergence=D-CABLE-TWO-BODY
 cab19f0f0209ad60	agree
 cb01b9cc06f2e65e	agree
 cb11abd2594a94a2	agree
@@ -1845,7 +1845,7 @@ f5c9ff3ea509a80a	agree
 f5df7643b057dc0d	mj-refuses
 f5e362d2178a7d93	model:geom_quat;dyn:agree
 f5f3c05e62882a2b	agree
-f6881ce2578560ae	mj-refuses
+f6881ce2578560ae	mj-refuses	divergence=D-CABLE-TWO-BODY
 f6882954f2a1ffda	mj-refuses
 f6b297e7a0e2575e	agree
 f6d9bfb450ea5a7f	agree

@@ -130,9 +130,8 @@ impl ModelBuilder {
 
         // Interpolation attributes: parse interp keyword → InterpolationType enum
         let interp = match &actuator.interp {
-            Some(s) => s
-                .parse::<InterpolationType>()
-                .map_err(|_| MjcfError::invalid_keyword("actuator", "interp", s))?,
+            Some(s) => keywords::interp(s)
+                .ok_or_else(|| MjcfError::invalid_keyword("actuator", "interp", s))?,
             None => InterpolationType::Zoh,
         };
 

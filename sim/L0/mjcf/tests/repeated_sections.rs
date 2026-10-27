@@ -1,6 +1,7 @@
-//! A document's `<compiler>`, `<option>` and `<flag>`, written more than once, as MuJoCo 3.5.0
-//! reads them (`xml_native_reader.cc`, the Compiler and Option loops): each reads onto the same
-//! settings and sets only what it writes. Each expected value was measured on MuJoCo 3.5.0.
+//! A document's `<compiler>` and `<option>`, written more than once, and the one `<flag>` each
+//! `<option>` may hold, as MuJoCo 3.5.0 reads them (`xml_native_reader.cc`, the Compiler and
+//! Option loops): each reads onto the same settings and sets only what it writes. Each expected
+//! value was measured on MuJoCo 3.5.0.
 
 #![allow(
     clippy::unwrap_used,
@@ -81,6 +82,11 @@ fn a_later_options_prefix_lies_over_an_earlier_ones() {
     ));
     assert_eq!(m.o_solref, [0.07, 0.5]);
     assert_eq!(m.o_friction, [0.3, 0.8, 0.1, 0.0001, 0.0001]);
+    // o_solimp likewise (MuJoCo: 0.5 0.9 0.01 0.4 3, measured).
+    let m = load(&with(
+        r#"<option o_solimp="0.8 0.9 0.01 0.4 3"/><option o_solimp="0.5"/>"#,
+    ));
+    assert_eq!(m.o_solimp, [0.5, 0.9, 0.01, 0.4, 3.0]);
 }
 
 #[test]

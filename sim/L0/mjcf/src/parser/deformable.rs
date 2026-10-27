@@ -417,10 +417,14 @@ fn flexcomp_mesh(e: &BytesStart) -> Result<MjcfFlex> {
     match comp_type {
         "grid" => generate_grid(&mut flex, count, spacing),
         "box" => generate_box_mesh(&mut flex, count, spacing),
-        other => {
-            return Err(MjcfError::unsupported(format!(
-                "<flexcomp type='{other}'>: only grid and box are generated"
-            )));
+        // A type of MuJoCo's this `<deformable>` form does not generate (the
+        // form itself is sim-mjcf's, refused by MuJoCo's schema).
+        _ => {
+            return Err(MjcfError::invalid_value(
+                "flexcomp",
+                "type",
+                "sim-mjcf's <deformable><flexcomp> generates only grid and box",
+            ));
         }
     }
 

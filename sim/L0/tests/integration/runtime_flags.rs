@@ -2728,7 +2728,7 @@ fn ac35i_override_end_to_end_xml() {
     assert_ne!(
         model.enableflags & ENABLE_OVERRIDE,
         0,
-        "ENABLE_OVERRIDE must be set from XML <flag override=\"true\"/>"
+        "ENABLE_OVERRIDE must be set from XML <flag override=\"enable\"/>"
     );
 
     // Verify override params wired from XML
