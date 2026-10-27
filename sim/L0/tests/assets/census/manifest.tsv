@@ -1978,3 +1978,12 @@ e9f9e30a78367c7e	sim/L0/mjcf/tests/keywords.rs:307
 98066541a3bd104d	sim/L0/mjcf/tests/keywords.rs:366
 b182a8b33bf6f1b5	sim/L0/mjcf/tests/keywords.rs:405
 f3f829981e954223	sim/L0/tests/integration/runtime_flags.rs:2707
+14229d86e283ac31	sim/L0/mjcf/tests/keywords.rs:486
+3003d57c13de33f0	sim/L0/mjcf/tests/keywords.rs:514
+3d0c5bc13897e0d6	sim/L0/mjcf/tests/keywords.rs:524
+68cfbce7805f60a6	sim/L0/mjcf/tests/keywords.rs:495
+6e8a7a340c2ee0cb	sim/L0/mjcf/tests/keywords.rs:507
+7c781c060da0ecfe	sim/L0/mjcf/tests/keywords.rs:517
+88b2e00f01eff273	sim/L0/mjcf/tests/keywords.rs:502
+d736e327d57f0c46	sim/L0/mjcf/tests/keywords.rs:536
+edd12fc57abf0a25	sim/L0/mjcf/tests/keywords.rs:499

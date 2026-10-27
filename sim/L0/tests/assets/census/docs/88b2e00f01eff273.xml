@@ -1,0 +1,2 @@
+<mujoco><asset><mesh name="m" inertia="Exact" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/></asset>
+        <worldbody/></mujoco>

@@ -465,3 +465,84 @@ fn a_composite_joints_limited_is_read_from_the_joint() {
         "bogus",
     );
 }
+
+// ── found untested by L07a's mutants ──
+
+/// The reader refused it: the error is located by its line, not by the
+/// element the builder was building.
+fn assert_read_refusal(err: &MjcfError) {
+    assert!(err.to_string().contains("(line "), "{err}");
+}
+
+#[test]
+fn a_reader_refusal_is_located_by_its_line() {
+    // The builder refuses these words too, for a model built in code; a
+    // document's are refused when read.
+    let err = refused(
+        r#"<mujoco><worldbody><body sleep="Never"><freejoint/><geom size="0.1"/></body></worldbody></mujoco>"#,
+    );
+    assert_read_refusal(&err);
+    let err = refused(
+        r#"<mujoco><worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>
+        <actuator><general joint="j" gaintype="Fixed"/></actuator></mujoco>"#,
+    );
+    assert_read_refusal(&err);
+}
+
+#[test]
+fn fluidshape_and_mesh_inertia_are_keywords_in_an_element_and_a_class() {
+    let err = refused(
+        r#"<mujoco><worldbody><body><geom size="0.1" fluidshape="Ellipsoid"/></body></worldbody></mujoco>"#,
+    );
+    assert_keyword(&err, "geom", "fluidshape", "Ellipsoid");
+    let err =
+        refused(r#"<mujoco><default><geom fluidshape="box"/></default><worldbody/></mujoco>"#);
+    assert_keyword(&err, "geom", "fluidshape", "box");
+    let err = refused(
+        r#"<mujoco><asset><mesh name="m" inertia="Exact" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/></asset>
+        <worldbody/></mujoco>"#,
+    );
+    assert_keyword(&err, "mesh", "inertia", "Exact");
+    let err =
+        refused(r#"<mujoco><default><mesh inertia="volume"/></default><worldbody/></mujoco>"#);
+    assert_keyword(&err, "mesh", "inertia", "volume");
+}
+
+#[test]
+fn an_actuator_classs_gaintype_and_interp_are_keywords() {
+    let err =
+        refused(r#"<mujoco><default><general gaintype="Muscle"/></default><worldbody/></mujoco>"#);
+    assert_keyword(&err, "general", "gaintype", "Muscle");
+    let err =
+        refused(r#"<mujoco><default><motor interp="spline"/></default><worldbody/></mujoco>"#);
+    assert_keyword(&err, "motor", "interp", "spline");
+}
+
+#[test]
+fn a_composite_geoms_type_is_a_keyword() {
+    let err = refused(
+        r#"<mujoco><worldbody><composite type="cable" count="4 1 1">
+            <geom type="Capsule" size="0.01"/>
+        </composite></worldbody></mujoco>"#,
+    );
+    assert_keyword(&err, "geom", "type", "Capsule");
+}
+
+#[test]
+fn the_builder_refuses_a_sleep_or_selfcollide_word_built_in_code() {
+    // Before: an unknown sleep policy was warned about and dropped, an
+    // unknown selfcollide read as `auto`.
+    let mut mjcf = sim_mjcf::parse_mjcf_str(
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size="0.1"/></body></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    mjcf.worldbody.children[0].sleep = Some("Never".to_owned());
+    let err = sim_mjcf::model_from_mjcf(&mjcf, None).unwrap_err();
+    assert_keyword(&err, "body", "sleep", "Never");
+    assert!(err.to_string().ends_with("(body 'b')"), "{err}");
+
+    let mut mjcf = sim_mjcf::parse_mjcf_str(&flex("")).unwrap();
+    mjcf.flex[0].selfcollide = Some("bogus".to_owned());
+    let err = sim_mjcf::model_from_mjcf(&mjcf, None).unwrap_err();
+    assert_keyword(&err, "flex", "selfcollide", "bogus");
+}
