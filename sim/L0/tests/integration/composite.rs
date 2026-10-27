@@ -419,19 +419,17 @@ fn t12_validation_errors() {
         "Mutual exclusion error: {err_c}"
     );
 
-    // (d) initial="xyz" → invalid initial
+    // (d) initial="xyz" is text MuJoCo reads as a ball joint, not a keyword
+    // (`ReadAttrTxt`; measured, count 4: jnt_type [ball, ball, ball]).
     let xml_d = r#"
         <mujoco><worldbody>
-            <composite type="cable" count="3 1 1" initial="xyz" curve="s 0 0" size="1">
+            <composite type="cable" count="4 1 1" initial="xyz" curve="s 0 0" size="1">
                 <joint kind="main"/><geom type="capsule" size=".005"/>
             </composite>
         </worldbody></mujoco>
     "#;
-    let err_d = try_load_model(xml_d).unwrap_err();
-    assert!(
-        err_d.contains("initial") || err_d.contains("xyz"),
-        "Invalid initial error: {err_d}"
-    );
+    let model_d = load_model(xml_d);
+    assert_eq!(model_d.jnt_type, vec![MjJointType::Ball; 3]);
 
     // (e) size="0 0 0" (no uservert) → too small
     let xml_e = r#"

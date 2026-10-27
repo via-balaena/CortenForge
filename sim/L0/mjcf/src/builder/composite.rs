@@ -110,14 +110,6 @@ fn validate_cable(composite: &MjcfComposite) -> Result<()> {
         }
     }
 
-    // Initial value validation — MuJoCo accepts "ball", "none", "free"
-    match composite.initial.as_str() {
-        "ball" | "none" | "free" => {}
-        other => {
-            return Err(MjcfError::invalid_keyword("composite", "initial", other));
-        }
-    }
-
     // --- MakeCable()-level validations ---
 
     // Cable must be 1D: count[1] and count[2] must be 1 (MakeCable:245)
@@ -516,6 +508,10 @@ fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> MjcfG
 /// Build an `MjcfJoint` for a cable body.
 /// Matches `AddCableBody:417-426` in `user_composite.cc`.
 fn build_cable_joint(composite: &MjcfComposite, name: &str, is_first: bool) -> Option<MjcfJoint> {
+    // `initial` is text, not a keyword (MuJoCo reads it with `ReadAttrTxt`):
+    // `none` leaves the first body without a joint, `free` gives it a free
+    // one, and any other text a ball, as AddCableBody does
+    // (`user_composite.cc`).
     // No joint if first body and initial="none"
     if is_first && composite.initial == "none" {
         return None;

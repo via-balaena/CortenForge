@@ -2015,3 +2015,5 @@ f6881ce2578560ae	sim/L0/mjcf/src/parser/tests.rs:2156
 aedf5a82db449d12	sim/L0/tests/integration/composite.rs:599
 22faa8a3cd28b7a9	sim/L0/mjcf/tests/repeated_sections.rs:37
 ab11668ed3315078	sim/L0/tests/integration/composite.rs:774
+1119524902cc66aa	sim/L0/mjcf/tests/keywords.rs:579
+7342afd89bc662ac	sim/L0/tests/integration/composite.rs:424

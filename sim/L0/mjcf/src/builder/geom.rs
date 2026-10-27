@@ -139,7 +139,7 @@ impl ModelBuilder {
         }
 
         self.site_body.push(body_id);
-        self.site_type.push(site_geom_type(site));
+        self.site_type.push(site_geom_type(site)?);
 
         // The site's class values and its `fromto` are already in it
         // (`resolve_sites`).
@@ -283,15 +283,25 @@ pub fn geom_effective_com(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Ve
     pos
 }
 
-/// A site's type (sphere is the MuJoCo default).
-fn site_geom_type(site: &MjcfSite) -> GeomType {
-    match site.site_type.as_deref().unwrap_or("sphere") {
-        "capsule" => GeomType::Capsule,
-        "cylinder" => GeomType::Cylinder,
-        "box" => GeomType::Box,
-        "ellipsoid" => GeomType::Ellipsoid,
-        _ => GeomType::Sphere, // Default for "sphere" and unknown types
-    }
+/// A site's type (sphere is the MuJoCo default), held to MuJoCo's geom
+/// type words as the reader holds it, so a site built in code is too. A
+/// plane, mesh, height field or signed distance field is a sphere here,
+/// as before; what those words mean for a site is book L18's.
+fn site_geom_type(site: &MjcfSite) -> Result<GeomType> {
+    let word = site.site_type.as_deref().unwrap_or("sphere");
+    let mjcf_type = MjcfGeomType::from_str(word)
+        .ok_or_else(|| MjcfError::invalid_keyword("site", "type", word))?;
+    Ok(match mjcf_type {
+        MjcfGeomType::Capsule => GeomType::Capsule,
+        MjcfGeomType::Cylinder => GeomType::Cylinder,
+        MjcfGeomType::Box => GeomType::Box,
+        MjcfGeomType::Ellipsoid => GeomType::Ellipsoid,
+        MjcfGeomType::Sphere
+        | MjcfGeomType::Plane
+        | MjcfGeomType::Mesh
+        | MjcfGeomType::Hfield
+        | MjcfGeomType::Sdf => GeomType::Sphere,
+    })
 }
 
 /// MuJoCo's site size: 0.005 in each place (`mjs_defaultSite`,
@@ -312,7 +322,7 @@ pub fn resolve_site_fromto(site: &mut MjcfSite) -> Result<()> {
     let Some(fromto) = site.fromto.take() else {
         return Ok(());
     };
-    let geom_type = site_geom_type(site);
+    let geom_type = site_geom_type(site)?;
     let refuse = |what: &str| MjcfError::invalid_value("site", "fromto", what);
     if !matches!(
         geom_type,

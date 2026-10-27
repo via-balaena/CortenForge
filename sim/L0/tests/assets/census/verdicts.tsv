@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1107
+# agree_floor 1108
 001bc4149d608b24	agree
 00308b83da9d8bab	agree
 0032a4ca7e233aec	agree
@@ -122,6 +122,7 @@
 10d41092b86ca59e	agree
 10d89f7d31aa2115	agree
 110676bf88258907	agree
+1119524902cc66aa	agree
 1131fef0a9fb8172	agree
 1158ea65d4d4ee98	agree
 11976cd3f27cf755	model:geom_quat;dyn:agree
@@ -858,6 +859,7 @@
 72ba7c45490289d4	agree
 72c0e7216ac48d7c	both-refuse
 72f88dcfa7841ae5	both-refuse
+7342afd89bc662ac	model:geom_quat;dyn:agree
 739b2abd562b6ebe	agree
 73a181a6f0d79389	agree
 73a406cd4632bb4e	mj-refuses
@@ -1523,7 +1525,7 @@ cb204d19626939a0	agree
 cb2a349c6ab803e7	agree
 cb2e58ac6142fc53	model:geom_pos;dyn:agree
 cb3ce0c4edef5f8f	both-refuse
-cb8794bb6cf9702a	both-refuse
+cb8794bb6cf9702a	mj-refuses	divergence=D-CABLE-TWO-BODY
 cbbca26f345cca27	model:geom_quat;dyn:agree
 cbd7a05e81b3f9b0	agree
 cbd9eb7f3fc4f781	model:geom_quat;dyn:agree

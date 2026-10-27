@@ -570,3 +570,22 @@ fn a_tendon_written_unlimited_needs_no_range() {
         assert!(!m.tendon_limited[0], "{limited}");
     }
 }
+
+#[test]
+fn the_builder_refuses_a_site_type_built_in_code() {
+    // A site's type is held to MuJoCo's geom type words in the builder too.
+    // Before: any word the builder did not know was a sphere.
+    let mut mjcf = sim_mjcf::parse_mjcf_str(
+        r#"<mujoco><worldbody><body><geom size="0.1"/><site name="s"/></body></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    for word in ["bogus", "Box", ""] {
+        mjcf.worldbody.children[0].sites[0].site_type = Some(word.to_owned());
+        let err = sim_mjcf::model_from_mjcf(&mjcf, None).unwrap_err();
+        assert_keyword(&err, "site", "type", word);
+    }
+    // A word MuJoCo's map holds still loads; what plane means for a site is
+    // book L18's.
+    mjcf.worldbody.children[0].sites[0].site_type = Some("plane".to_owned());
+    assert!(sim_mjcf::model_from_mjcf(&mjcf, None).is_ok());
+}
