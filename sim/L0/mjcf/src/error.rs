@@ -98,9 +98,11 @@ pub enum MjcfError {
         at: Location,
     },
 
-    /// A number underflows: its digits are not all zero, but it reads as zero
-    /// or a subnormal. MuJoCo 3.5.0 refuses it as "number is too large"
-    /// (`strtod`'s `ERANGE`).
+    /// A number out of its type's range, which MuJoCo 3.5.0 refuses as
+    /// "number is too large" (`ERANGE`): a literal past a double's range, or
+    /// one whose digits are not all zero that reads as zero or a subnormal; for
+    /// an attribute MuJoCo reads as a `float`, the same against a float's
+    /// range; an integer outside `i32` in a list of integers.
     #[error("number \"{value}\" is out of range in attribute '{attribute}' on <{element}>{at}")]
     #[non_exhaustive]
     OutOfRange {

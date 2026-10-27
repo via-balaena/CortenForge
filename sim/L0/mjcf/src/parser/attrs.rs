@@ -61,7 +61,9 @@ fn mantissa_is_nonzero(token: &str) -> bool {
 /// An attribute's text as tinyxml2 gives it to MuJoCo 3.5.0 (`StrPair::GetStr`):
 /// line ends made `\n`; the five predefined entities and numeric character
 /// references replaced; any other `&` kept as written (measured: `a&amp;b` is
-/// `a&b`, while `a & b` and `a&foo;b` load as written).
+/// `a&b`, while `a & b` and `a&foo;b` load as written). A character reference
+/// of code 0 ends the text, as the NUL tinyxml2 writes ends the C string
+/// MuJoCo reads (measured: `pos="1 2 3&#0;junk"` is 1 2 3).
 fn unescape(raw: &str) -> String {
     const ENTITIES: [(&str, char); 5] = [
         ("quot;", '"'),
@@ -81,9 +83,19 @@ fn unescape(raw: &str) -> String {
                 rest = after.strip_prefix(other).unwrap_or(after);
             }
             '&' => {
-                if let Some((ch, len)) = character_reference(after) {
-                    out.push(ch);
-                    rest = &after[len..];
+                if after.starts_with('#') {
+                    match character_reference(after) {
+                        Reference::Char(ch, len) => {
+                            out.push(ch);
+                            rest = &after[len..];
+                        }
+                        Reference::End => return out,
+                        Reference::Dropped => rest = after,
+                        Reference::Kept => {
+                            out.push('&');
+                            rest = after;
+                        }
+                    }
                 } else if let Some((pattern, ch)) = ENTITIES
                     .iter()
                     .find(|(pattern, _)| after.starts_with(pattern))
@@ -104,17 +116,106 @@ fn unescape(raw: &str) -> String {
     out
 }
 
-/// A numeric character reference after its `&` (`#20013;`, `#x4e2d;`): the
-/// character and the length read.
-fn character_reference(after_amp: &str) -> Option<(char, usize)> {
-    let body = after_amp.strip_prefix('#')?;
-    let (digits, radix, prefix) = match body.strip_prefix('x') {
-        Some(hex) => (hex, 16, 2),
-        None => (body, 10, 1),
+/// What tinyxml2 makes of an `&` before a `#` (`XMLUtil::GetCharacterRef`).
+enum Reference {
+    /// A character, and the length of the text read after the `&`.
+    Char(char, usize),
+    /// Code 0: the text ends there.
+    End,
+    /// `&#` closing the text: the `&` is dropped.
+    Dropped,
+    /// Anything else: the `&` is kept as written.
+    Kept,
+}
+
+/// A numeric character reference, `after_amp` being the text after its `&`
+/// and starting with `#`, as tinyxml2 reads it: hexadecimal after a lowercase
+/// `x`; its digits are those back from the next `;` to the nearest `#` (or
+/// `x`), so `&#1#53;` is `5`; a code past U+10FFFF is kept as written
+/// (measured, each case). A surrogate code, which tinyxml2 writes as bytes no
+/// Rust string holds, is kept as written too.
+fn character_reference(after_amp: &str) -> Reference {
+    const MAX_CODE_POINT: u32 = 0x10_FFFF;
+    let bytes = after_amp.as_bytes();
+    if bytes.len() < 2 {
+        return Reference::Dropped;
+    }
+    let (start, terminator, radix) = if bytes[1] == b'x' {
+        (2, b'x', 16)
+    } else {
+        (1, b'#', 10)
     };
-    let end = digits.find(';')?;
-    let code = u32::from_str_radix(&digits[..end], radix).ok()?;
-    Some((char::from_u32(code)?, prefix + end + 1))
+    let Some(semicolon) = after_amp
+        .get(start..)
+        .and_then(|digits| digits.find(';'))
+        .map(|i| start + i)
+    else {
+        return Reference::Kept;
+    };
+    let first = bytes[..semicolon]
+        .iter()
+        .rposition(|&b| b == terminator)
+        .map_or(start, |i| i + 1);
+    let (mut code, mut mult) = (0_u32, 1_u32);
+    for &b in bytes[first..semicolon].iter().rev() {
+        let digit = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' if radix == 16 => b - b'a' + 10,
+            b'A'..=b'F' if radix == 16 => b - b'A' + 10,
+            _ => return Reference::Kept,
+        };
+        code = code.wrapping_add(mult * u32::from(digit));
+        mult = (mult * radix).min(MAX_CODE_POINT);
+    }
+    if code > MAX_CODE_POINT {
+        return Reference::Kept;
+    }
+    if code == 0 {
+        return Reference::End;
+    }
+    char::from_u32(code).map_or(Reference::Kept, |ch| Reference::Char(ch, semicolon + 1))
+}
+
+/// The attributes MuJoCo 3.5.0 reads as a `float` (`mjspec.h`), as
+/// (element, attribute): their numbers keep to a float's range, where
+/// `strtof` reports one past it as "number is too large" (measured on each).
+const SINGLE_PRECISION: [(&str, &str); 12] = [
+    ("geom", "rgba"),
+    ("site", "rgba"),
+    ("tendon", "rgba"),
+    ("spatial", "rgba"),
+    ("mesh", "vertex"),
+    ("hfield", "elevation"),
+    ("composite", "vertex"),
+    ("skin", "rgba"),
+    ("skin", "inflate"),
+    ("skin", "vertex"),
+    ("bone", "bindpos"),
+    ("bone", "bindquat"),
+];
+
+/// Whether `token`, read as a `float`, is neither past the largest float nor,
+/// with digits not all zero, below the smallest normal one. Rust's parser
+/// rounds as `strtof` does.
+fn fits_a_float(token: &str) -> bool {
+    token.parse::<f32>().is_ok_and(|x| {
+        x.is_finite() && !(x.abs() < f32::MIN_POSITIVE && mantissa_is_nonzero(token))
+    })
+}
+
+/// Whether `token` is a NaN written with a payload, `nan(…)` in any case and
+/// with a sign or none: `strtod` reads it as NaN, where Rust's parser refuses
+/// it (measured: `nan(1)`, `nan()`, `-nan(1)` and `+NAN(x)` load; `nan(1` and
+/// `nan(1)x` are a bad format). A payload with a space in it spans two of the
+/// reader's tokens, and stays a bad number.
+fn names_nan_with_payload(token: &str) -> bool {
+    let unsigned = token.strip_prefix(['+', '-']).unwrap_or(token);
+    unsigned
+        .get(..4)
+        .is_some_and(|nan| nan.eq_ignore_ascii_case("nan("))
+        && unsigned[4..]
+            .strip_suffix(')')
+            .is_some_and(|payload| !payload.contains(')'))
 }
 
 /// The attributes of one element, each read once, as tinyxml2 gives them.
@@ -260,8 +361,9 @@ impl Attrs {
     }
 
     /// One integer, as MuJoCo's `ReadAttrInt` reads it: spaces around it and a
-    /// sign are taken; empty text, a fraction, an exponent, a second number or
-    /// a value outside `i32` are refused (measured).
+    /// sign are taken; empty text, a fraction, an exponent or a value outside
+    /// `i32` is a bad number, as MuJoCo's "problem reading attribute", and a
+    /// second number a wrong count (measured).
     pub(super) fn int(&self, name: &str) -> Result<Option<i32>> {
         let Some(text) = self.text(name) else {
             return Ok(None);
@@ -309,9 +411,17 @@ impl Attrs {
     }
 
     fn real_token(&self, name: &str, token: &str) -> Result<f64> {
-        let x: f64 = token.parse().map_err(|_| self.bad_number(name, token))?;
+        let x: f64 = token.parse().map_err(|_| {
+            if names_nan_with_payload(token) {
+                MjcfError::non_finite(&self.element, name, f64::NAN)
+            } else {
+                self.bad_number(name, token)
+            }
+        })?;
         if x.is_finite() {
-            if x.abs() < f64::MIN_POSITIVE && mantissa_is_nonzero(token) {
+            let underflows = x.abs() < f64::MIN_POSITIVE && mantissa_is_nonzero(token);
+            let single = SINGLE_PRECISION.contains(&(self.element.as_str(), name));
+            if underflows || single && !fits_a_float(token) {
                 return Err(MjcfError::out_of_range_in(&self.element, name, token));
             }
             return Ok(x);

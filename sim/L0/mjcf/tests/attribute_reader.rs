@@ -18,7 +18,7 @@ fn load(xml: &str) -> Model {
 
 fn refused(xml: &str) -> MjcfError {
     match load_model(xml) {
-        Ok(_) => panic!("loaded; MuJoCo 3.5.0 refuses it"),
+        Ok(_) => panic!("loaded; the test expects a refusal"),
         Err(e) => e,
     }
 }
@@ -114,6 +114,111 @@ fn a_number_that_underflows_is_out_of_range() {
             "{mass}: {err}"
         );
     }
+}
+
+/// Each attribute sim-mjcf reads that MuJoCo 3.5.0 reads as a `float`: its
+/// element, its name, and a document where `@` stands for its value.
+const FLOAT_ATTRIBUTES: &[(&str, &str, &str)] = &[
+    (
+        "geom",
+        "rgba",
+        r#"<mujoco><worldbody><geom size="0.1" rgba="@ 0 0 1"/></worldbody></mujoco>"#,
+    ),
+    (
+        "site",
+        "rgba",
+        r#"<mujoco><worldbody><site rgba="@ 0 0 1"/></worldbody></mujoco>"#,
+    ),
+    (
+        "geom",
+        "rgba",
+        r#"<mujoco><default><geom rgba="@ 0 0 1"/></default><worldbody><geom size="0.1"/></worldbody></mujoco>"#,
+    ),
+    (
+        "site",
+        "rgba",
+        r#"<mujoco><default><site rgba="@ 0 0 1"/></default><worldbody><site/></worldbody></mujoco>"#,
+    ),
+    (
+        "tendon",
+        "rgba",
+        r#"<mujoco><default><tendon rgba="@ 0 0 1"/></default><worldbody/></mujoco>"#,
+    ),
+    (
+        "spatial",
+        "rgba",
+        r#"<mujoco><worldbody><site name="s1"/><body><joint/><geom size="0.1"/><site name="s2" pos="0 0 1"/></body></worldbody><tendon><spatial rgba="@ 0 0 1"><site site="s1"/><site site="s2"/></spatial></tendon></mujoco>"#,
+    ),
+    (
+        "mesh",
+        "vertex",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 @"/></asset><worldbody/></mujoco>"#,
+    ),
+    (
+        "hfield",
+        "elevation",
+        r#"<mujoco><asset><hfield name="h" nrow="2" ncol="2" size="1 1 1 0.1" elevation="0 0 0 @"/></asset><worldbody/></mujoco>"#,
+    ),
+    (
+        "composite",
+        "vertex",
+        r#"<mujoco><worldbody><composite type="cable" curve="s 0 0" count="3 1 1" vertex="0 0 0 0.1 0 0 @ 0 0"><geom type="capsule" size="0.01"/></composite></worldbody></mujoco>"#,
+    ),
+    (
+        "skin",
+        "rgba",
+        r#"<mujoco><worldbody><body name="b"><geom size="0.1"/></body></worldbody><deformable><skin name="k" vertex="0 0 0 1 0 0 0 1 0" face="0 1 2" rgba="@ 0 0 1"/></deformable></mujoco>"#,
+    ),
+    (
+        "skin",
+        "inflate",
+        r#"<mujoco><worldbody><body name="b"><geom size="0.1"/></body></worldbody><deformable><skin name="k" vertex="0 0 0 1 0 0 0 1 0" face="0 1 2" inflate="@"/></deformable></mujoco>"#,
+    ),
+    (
+        "skin",
+        "vertex",
+        r#"<mujoco><worldbody><body name="b"><geom size="0.1"/></body></worldbody><deformable><skin name="k" vertex="0 0 0 1 0 0 0 1 @" face="0 1 2"/></deformable></mujoco>"#,
+    ),
+    (
+        "bone",
+        "bindpos",
+        r#"<mujoco><worldbody><body name="b"><geom size="0.1"/></body></worldbody><deformable><skin name="k" vertex="0 0 0 1 0 0 0 1 0" face="0 1 2"><bone body="b" bindpos="0 0 @" bindquat="1 0 0 0"/></skin></deformable></mujoco>"#,
+    ),
+    (
+        "bone",
+        "bindquat",
+        r#"<mujoco><worldbody><body name="b"><geom size="0.1"/></body></worldbody><deformable><skin name="k" vertex="0 0 0 1 0 0 0 1 0" face="0 1 2"><bone body="b" bindpos="0 0 0" bindquat="1 0 0 @"/></skin></deformable></mujoco>"#,
+    ),
+];
+
+#[test]
+fn a_number_mujoco_reads_as_a_float_keeps_to_a_floats_range() {
+    // Past the largest float, or below the smallest normal one and not zero:
+    // MuJoCo's "number is too large", on each attribute (measured).
+    for (element, attribute, doc) in FLOAT_ATTRIBUTES {
+        for value in [
+            "1e39",
+            "-1e39",
+            "3.4028236e38",
+            "1e-40",
+            "1.1754942e-38",
+            "1e-46",
+        ] {
+            let err = refused(&doc.replace('@', value));
+            assert!(
+                matches!(&err, MjcfError::OutOfRange { element: e, attribute: a, .. } if e == element && a == attribute),
+                "{element} {attribute}={value}: {err}"
+            );
+        }
+    }
+    // The largest float, the smallest normal one and a zero load (measured),
+    // and a double keeps a double's range.
+    for value in ["3.4028235e38", "1.17549435e-38", "0e5"] {
+        let m = load(&FLOAT_ATTRIBUTES[0].2.replace('@', value));
+        assert_eq!(m.geom_rgba[0][0], value.parse::<f64>().unwrap(), "{value}");
+    }
+    let m = load(r#"<mujoco><worldbody><geom size="0.1" pos="0 0 1e39"/></worldbody></mujoco>"#);
+    assert_eq!(m.geom_pos[0].z, 1e39);
 }
 
 #[test]
@@ -460,6 +565,40 @@ fn a_hexadecimal_float_is_a_stated_limitation() {
         r#"<mujoco><worldbody><body><freejoint/><geom size="0.1" mass="0x1p1"/></body></worldbody></mujoco>"#,
     );
     assert_bad_number(&err, "geom", "mass");
+}
+
+#[test]
+fn a_character_reference_is_read_as_tinyxml2_reads_it() {
+    // Each site name as MuJoCo 3.5.0 reads it (measured).
+    let cases = [
+        // The digits back from the `;` to the nearest `#`.
+        ("a&#1#53;", "a5"),
+        ("a&#00000000000000053;", "a5"),
+        ("a&#53;&#54;", "a56"),
+        ("a&#x4e2d;", "a\u{4e2d}"),
+        // `&#` closing the text drops its `&`; code 0 ends the text.
+        ("a&#", "a#"),
+        ("a&#;b", "a"),
+        ("a&#0;b", "a"),
+        ("a&#x;b", "a"),
+        // Kept as written.
+        ("a&#x", "a&#x"),
+        ("a&#53", "a&#53"),
+        ("a&#X35;", "a&#X35;"),
+        ("a&#x+33;", "a&#x+33;"),
+        ("a&#+53;", "a&#+53;"),
+        ("a&#1114112;", "a&#1114112;"),
+    ];
+    for (written, read) in cases {
+        let m = load(&format!(
+            r#"<mujoco><worldbody><site name="{written}"/></worldbody></mujoco>"#
+        ));
+        assert_eq!(m.site_name[0].as_deref(), Some(read), "{written}");
+    }
+    let m = load(
+        r#"<mujoco><worldbody><body pos="1 2 3&#0;junk"><geom size="0.1"/></body></worldbody></mujoco>"#,
+    );
+    assert_eq!(m.body_pos[1], nalgebra::Vector3::new(1.0, 2.0, 3.0));
 }
 
 #[test]
@@ -1001,6 +1140,9 @@ fn a_written_nan_or_infinity_is_refused_naming_its_attribute() {
         (r#"<mujoco><worldbody><body pos="nan 0 0"><geom size="0.1"/></body></worldbody></mujoco>"#.to_string(), "body", "pos"),
         (joint(r#"axis="nan 0 0""#), "joint", "axis"),
         (joint(r#"damping="nan""#), "joint", "damping"),
+        // A NaN with a payload, which `strtod` reads as NaN.
+        (joint(r#"armature="nan(1)""#), "joint", "armature"),
+        (joint(r#"frictionloss="-NAN(x)""#), "joint", "frictionloss"),
         (joint(r#"stiffness="Infinity""#), "joint", "stiffness"),
         (joint(r#"limited="true" range="-inf inf""#), "joint", "range"),
         (r#"<mujoco><worldbody><body quat="nan 0 0 0"><geom size="0.1"/></body></worldbody></mujoco>"#.to_string(), "body", "quat"),
@@ -1021,6 +1163,8 @@ fn a_written_nan_or_infinity_is_refused_naming_its_attribute() {
         );
         assert!(err.to_string().contains("finite"), "{err}");
     }
+    // An unclosed payload is a bad format to MuJoCo too.
+    assert_bad_number(&refused(&joint(r#"armature="nan(1""#)), "joint", "armature");
     // A number that overflows is MuJoCo's own refusal: "number is too large".
     let err =
         refused(r#"<mujoco><worldbody><body><geom size="1e400"/></body></worldbody></mujoco>"#);

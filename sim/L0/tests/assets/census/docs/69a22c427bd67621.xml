@@ -1,0 +1,1 @@
+<mujoco><worldbody><site name="s1"/><body><joint/><geom size="0.1"/><site name="s2" pos="0 0 1"/></body></worldbody><tendon><spatial rgba="@ 0 0 1"><site site="s1"/><site site="s2"/></spatial></tendon></mujoco>
