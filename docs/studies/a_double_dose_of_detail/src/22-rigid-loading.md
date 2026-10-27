@@ -177,13 +177,14 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 
 ### L09 · M10 · `fix(sim-mjcf): repeated <compiler>/<option> merge`
 - **Closes:** mjcf-S5. **Implements:** A4 §8.3. **Must-fail:** the two measured cases. **Flips:** none (A4 §8.3).
+- **Also (from L05's review):** `o_solref`, `o_solimp` and `o_friction` are prefixes since L05 (`Option<Prefix<N>>`), so a later `<option>` lies over the earlier one's values with `defaults::over`, not in place of them (measured: `o_solref="0.05 0.5"` then `o_solref="0.07"` give 0.07 0.5; `o_friction="0.7 0.8 0.1"` then `"0.3"` give 0.3 0.8 0.1 0.0001 0.0001).
 
 ### L10 · M14 part + C7 · `feat(sim-mjcf): <flex body= vertex= element=> with MuJoCo's meaning; in-tree docs declare their vertex bodies` — cross-layer (sim-core: one deletion)
 - **Split from M14** (A4 §9 commit 6 bundles six unrelated forms; each touches different elements). R4's draft.
 - **Also (ledger-L141, ledger-L144):** a flexcomp of mass 0 refused, as MuJoCo; whether any vertex body this entry loads can make an all-zero edge row, which MuJoCo drops at the dense size; and `flexedge_rigid` by MuJoCo's rule (`user_model.cc:3512-3520`), not both inverse masses 0.
 - **Also (ledger-L125):** a pinned vertex's passive flex force goes to its body as MuJoCo's does (`mj_applyFT`, `engine_passive.c:394-408`), with a must-fail against MuJoCo.
 - **Also** (ledger-L63): in 73 flex docs the per-joint arrays `jnt_name`, `jnt_margin`, `jnt_solref`, `jnt_solimp`, `jnt_group`, `jnt_actgravcomp`, `jnt_user` are empty, and in 77 `body_gravcomp` and `body_user` are short: the flex child form's generated bodies and joints skip those pushes. Run the per-element length check of sim-core's factory test (`factory_models_size_every_per_element_array`) over the loadable census docs; 0 short is the gate.
-- **Also (from L02's review):** the child form's reader drops a trailing partial element and non-integer or negative vertex ids, and reads `dim="-1"` as 2 (`parser/deformable.rs`), so L02's element checks never see them in a document; MuJoCo 3.5.0 refuses all three. L02's review moved the two flex contact-attribute tests (`builder/mod.rs`, `test_flex_contact_runtime_attrs_parsed` and `_defaults`) to the child form, because the attribute form built a flex of no vertices, now refused; they return to the attribute form here.
+- **Also (from L02's review):** the child form's reader drops a trailing partial element (`parser/deformable.rs`), so L02's element checks never see it in a document; MuJoCo 3.5.0 refuses it. (A non-integer or negative vertex id and `dim="-1"` are refused since L05.) L02's review moved the two flex contact-attribute tests (`builder/mod.rs`, `test_flex_contact_runtime_attrs_parsed` and `_defaults`) to the child form, because the attribute form built a flex of no vertices, now refused; they return to the attribute form here.
 - **Closes:** C7 / Q81 (MuJoCo's flex meaning; A4-Q1's "same meaning" is superseded); A6 §1.10 / A20 §1B.3 C4 (`vertex=`/`element=` ignored today); U07 (an empty `element` loads a 1-vertex flex; MuJoCo refuses).
 - **Now.**
   - The parser reads `body` (`parser/deformable.rs:233-235`) and `node` (`:237-239`) as name lists and reads the `<vertex>`/`<element>` children (A4 §3). It ignores `vertex=`/`element=`; A20 measured 72 of 79 docs loading with `nflexvert = 0`.
@@ -283,7 +284,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 
 ### L18 · M13 · `feat(sim-mjcf): default geom size, element-wise overlay, size must be positive`
 - **Closes:** mjcf-S3. **Implements:** A3 §3: default size 0; the overlay through L05's `over_prefix`; `checksize`. A geom's `size` becomes `Option<Prefix<3>>` here: L05 kept its `Vec<f64>`, bounded to three values, so that its type and its class overlay change in one commit (a site's `size` is L05's `Option<Prefix<3>>` already). This commit is the one owner of MuJoCo's size check (`user_objects.cc:152-167`), plane `size(3)` included.
-- **Must-fail:** s3_01, s3_02, ov_class_size_chain, s3_08, s3_03, s3_05, s3_12 (A3 §3); A5 §3.5's geom-size cases `sphere_size_neg`, `box_size_one_zero`, `capsule_no_size_fromto`, `geom_no_size_moving`, `default_geom_no_size_in_class`; A4 §8.4's plane `size(3)` cases. Whether s3_02 and ov_class_size_chain already pass at this commit's parent (after L05's `over_prefix`) was not checked; any that do move to L05.
+- **Must-fail:** s3_01, s3_02, ov_class_size_chain, s3_08, s3_03, s3_05, s3_12 (A3 §3); A5 §3.5's geom-size cases `sphere_size_neg`, `box_size_one_zero`, `capsule_no_size_fromto`, `geom_no_size_moving`, `default_geom_no_size_in_class`; A4 §8.4's plane `size(3)` cases. Whether s3_02 and ov_class_size_chain already pass at this commit's parent was not checked; L05 has landed, so one that does is a pin here.
 - **Flips:** compile-level only; 0 behavioural flips in the static corpus (A3 §3).
 
 ### L19 · M16 · `feat(sim-mjcf): joint layout as MuJoCo`
@@ -529,7 +530,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 | unplaced → L46 | A8 SP-3 / Q3 MJCF half | A8 assigns it to the MJCF series; R4 wrote the commit |
 | moved → P36a (chapter 20) | L31's core rule (A13 §3.5, sim-core) | it is green alone: `ISO_FLEX=1`, 0 failures (A13 §3.6; R5) |
 | moved → L05 | the sim-urdf inertial `pos` fix, from L22 | L05 makes `pos` required, so L05 is not green without it (R2) |
-| one owner | non-finite → L06; d15 → L15; `checksize`, plane `size(3)` included → L18; `<inertial>` `pos`/`mass` required → L05; the `gear`/`size` types → L05 | each was placed twice (R2) |
+| one owner | non-finite → L06; d15 → L15; `checksize`, plane `size(3)` included → L18; `<inertial>` `pos`/`mass` required → L05; the `gear` type and a site's `size` type → L05, a geom's `size` type → L18 | each was placed twice (R2) |
 | reordered | L49 before L47 | L47 needed L49 and L49 depended on L47 (R2, R3, R5) |
 
 ## Conflicts that touch this PR
