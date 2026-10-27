@@ -167,12 +167,10 @@ fn character_reference(after_amp: &str) -> Reference {
         code = code.wrapping_add(mult * u32::from(digit));
         mult = (mult * radix).min(MAX_CODE_POINT);
     }
-    if code > MAX_CODE_POINT {
-        return Reference::Kept;
-    }
     if code == 0 {
         return Reference::End;
     }
+    // `from_u32` refuses a code past U+10FFFF, as tinyxml2 does.
     char::from_u32(code).map_or(Reference::Kept, |ch| Reference::Char(ch, semicolon + 1))
 }
 

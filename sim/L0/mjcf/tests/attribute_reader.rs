@@ -1247,6 +1247,7 @@ fn a_written_nan_or_infinity_is_refused_naming_its_attribute() {
         // A NaN with a payload, which `strtod` reads as NaN.
         (joint(r#"armature="nan(1)""#), "joint", "armature"),
         (joint(r#"frictionloss="-NAN(x)""#), "joint", "frictionloss"),
+        (joint(r#"damping="nan(()""#), "joint", "damping"),
         (joint(r#"stiffness="Infinity""#), "joint", "stiffness"),
         (joint(r#"limited="true" range="-inf inf""#), "joint", "range"),
         (r#"<mujoco><worldbody><body quat="nan 0 0 0"><geom size="0.1"/></body></worldbody></mujoco>"#.to_string(), "body", "quat"),
@@ -1269,6 +1270,11 @@ fn a_written_nan_or_infinity_is_refused_naming_its_attribute() {
     }
     // An unclosed payload is a bad format to MuJoCo too.
     assert_bad_number(&refused(&joint(r#"armature="nan(1""#)), "joint", "armature");
+    assert_bad_number(
+        &refused(&joint(r#"armature="nan(1))""#)),
+        "joint",
+        "armature",
+    );
     // A number that overflows is MuJoCo's own refusal: "number is too large".
     let err =
         refused(r#"<mujoco><worldbody><body><geom size="1e400"/></body></worldbody></mujoco>"#);
