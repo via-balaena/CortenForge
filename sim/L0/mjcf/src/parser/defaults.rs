@@ -170,7 +170,8 @@ pub(super) fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
     defaults.solimp = a.prefix("solimp")?;
     defaults.group = a.int("group")?;
     defaults.pos = a.vec3("pos")?;
-    defaults.quat = a.vec4("quat")?;
+    defaults.quat = a.quat("quat")?;
+    a.one_orientation()?;
     defaults.euler = a.vec3("euler")?;
     defaults.axisangle = a.vec4("axisangle")?;
     defaults.xyaxes = a.array("xyaxes")?;
@@ -367,7 +368,8 @@ pub(super) fn parse_site_defaults(e: &BytesStart) -> Result<MjcfSiteDefaults> {
     defaults.rgba = a.vec4("rgba")?;
     defaults.group = a.int("group")?;
     defaults.pos = a.vec3("pos")?;
-    defaults.quat = a.vec4("quat")?;
+    defaults.quat = a.quat("quat")?;
+    a.one_orientation()?;
     defaults.euler = a.vec3("euler")?;
     defaults.axisangle = a.vec4("axisangle")?;
     defaults.xyaxes = a.array("xyaxes")?;

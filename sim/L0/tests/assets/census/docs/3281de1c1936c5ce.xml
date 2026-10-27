@@ -1,0 +1,1 @@
+<mujoco><worldbody><body><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" quat="0 0 0 0"/></body></worldbody></mujoco>

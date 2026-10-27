@@ -212,9 +212,10 @@ pub(super) fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
     if let Some(pos) = a.vec3("pos")? {
         body.pos = pos;
     }
-    if let Some(quat) = a.vec4("quat")? {
+    if let Some(quat) = a.quat("quat")? {
         body.quat = quat;
     }
+    a.one_orientation()?;
     body.euler = a.vec3("euler")?;
     body.axisangle = a.vec4("axisangle")?;
     body.childclass = a.string("childclass");
@@ -358,7 +359,8 @@ pub(super) fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
     }
 
     geom.pos = a.vec3("pos")?;
-    geom.quat = a.vec4("quat")?;
+    geom.quat = a.quat("quat")?;
+    a.one_orientation()?;
     geom.euler = a.vec3("euler")?;
     geom.axisangle = a.vec4("axisangle")?;
     geom.xyaxes = a.array("xyaxes")?;
@@ -443,9 +445,10 @@ pub(super) fn parse_inertial_attrs(e: &BytesStart) -> Result<MjcfInertial> {
     if let Some(pos) = a.vec3("pos")? {
         inertial.pos = pos;
     }
-    if let Some(quat) = a.vec4("quat")? {
+    if let Some(quat) = a.quat("quat")? {
         inertial.quat = quat;
     }
+    a.one_orientation()?;
     if let Some(mass) = a.real("mass")? {
         inertial.mass = mass;
     }
@@ -486,7 +489,8 @@ pub(super) fn parse_site_attrs(e: &BytesStart) -> Result<MjcfSite> {
 
     site.site_type = a.string("type");
     site.pos = a.vec3("pos")?;
-    site.quat = a.vec4("quat")?;
+    site.quat = a.quat("quat")?;
+    a.one_orientation()?;
     site.euler = a.vec3("euler")?;
     site.axisangle = a.vec4("axisangle")?;
     site.xyaxes = a.array("xyaxes")?;
@@ -597,9 +601,10 @@ pub(super) fn parse_frame_attrs(e: &BytesStart) -> Result<MjcfFrame> {
     if let Some(pos) = a.vec3("pos")? {
         frame.pos = pos;
     }
-    if let Some(quat) = a.vec4("quat")? {
+    if let Some(quat) = a.quat("quat")? {
         frame.quat = quat;
     }
+    a.one_orientation()?;
     frame.euler = a.vec3("euler")?;
     frame.axisangle = a.vec4("axisangle")?;
     frame.xyaxes = a.array("xyaxes")?;

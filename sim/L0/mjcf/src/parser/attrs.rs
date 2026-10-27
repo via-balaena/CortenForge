@@ -196,6 +196,47 @@ impl Attrs {
         Ok(self.array::<4>(name)?.map(Vector4::from))
     }
 
+    /// A quaternion, as MuJoCo's `ReadQuat` reads one (`xml_util.cc:830-843`):
+    /// exactly four numbers, not all zero (measured: "zero quaternion is not
+    /// allowed").
+    pub(super) fn quat(&self, name: &str) -> Result<Option<Vector4<f64>>> {
+        let Some(q) = self.vec4(name)? else {
+            return Ok(None);
+        };
+        if q.iter().all(|&x| x == 0.0) {
+            return Err(MjcfError::invalid_value(
+                &self.element,
+                name,
+                "zero quaternion is not allowed",
+            ));
+        }
+        Ok(Some(q))
+    }
+
+    /// At most one orientation, as MuJoCo's `ReadAlternative` counts them
+    /// (`xml_base.cc:54-77`): `quat` when it is written, even empty, and
+    /// `axisangle`, `xyaxes`, `zaxis` and `euler` when they hold a value
+    /// (measured: `quat="" euler="0 0 30"` is refused, `quat="1 0 0 0"
+    /// euler=""` loads).
+    pub(super) fn one_orientation(&self) -> Result<()> {
+        let mut given = Vec::new();
+        if self.has("quat") {
+            given.push("quat");
+        }
+        for name in ["axisangle", "xyaxes", "zaxis", "euler"] {
+            if self
+                .text(name)
+                .is_some_and(|t| t.split(is_c_space).any(|s| !s.is_empty()))
+            {
+                given.push(name);
+            }
+        }
+        if given.len() > 1 {
+            return Err(MjcfError::conflicting(&self.element, &given));
+        }
+        Ok(())
+    }
+
     /// One up to `N` numbers (MuJoCo's `exact = false`).
     pub(super) fn prefix<const N: usize>(&self, name: &str) -> Result<Option<Prefix<N>>> {
         let Some(values) = self.vector(name)? else {

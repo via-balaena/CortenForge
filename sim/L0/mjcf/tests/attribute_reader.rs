@@ -725,3 +725,93 @@ fn an_integer_list_and_text_follow_the_rest_of_the_reader() {
         .collect();
     assert_eq!(names, ["a\nb", "a>b"]);
 }
+
+// ── quaternions and orientations (book L05, `ReadQuat` and `ReadAlternative`) ──
+
+/// The error is a quaternion of zeros on `element`.
+fn assert_zero_quat(err: &MjcfError, element: &str) {
+    assert!(
+        matches!(err, MjcfError::InvalidValue { element: e, attribute, reason, .. }
+            if e == element && attribute == "quat" && reason.contains("zero quaternion")),
+        "{err}"
+    );
+}
+
+/// The error is two orientations, `first` and `second`, on `element`.
+fn assert_two_orientations(err: &MjcfError, element: &str, first: &str, second: &str) {
+    assert!(
+        matches!(err, MjcfError::ConflictingAttributes { element: e, attributes, .. }
+            if e == element && attributes == &[first, second]),
+        "{err}"
+    );
+}
+
+#[test]
+fn an_element_takes_one_orientation() {
+    let err = refused(
+        r#"<mujoco><worldbody><body euler="0 0 30" zaxis="1 0 0"><geom size="0.1"/></body></worldbody></mujoco>"#,
+    );
+    assert_two_orientations(&err, "body", "zaxis", "euler");
+    let err = refused(
+        r#"<mujoco><worldbody><body><geom size="0.1" quat="1 0 0 0" euler="0 0 30"/></body></worldbody></mujoco>"#,
+    );
+    assert_two_orientations(&err, "geom", "quat", "euler");
+    let err = refused(
+        r#"<mujoco><worldbody><body><geom size="0.1"/><site axisangle="0 0 1 30" xyaxes="1 0 0 0 1 0"/></body></worldbody></mujoco>"#,
+    );
+    assert_two_orientations(&err, "site", "axisangle", "xyaxes");
+    let err = refused(
+        r#"<mujoco><worldbody><frame quat="1 0 0 0" euler="0 0 30"><body><geom size="0.1"/></body></frame></worldbody></mujoco>"#,
+    );
+    assert_two_orientations(&err, "frame", "quat", "euler");
+    let err = refused(
+        r#"<mujoco><worldbody><body><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" quat="1 0 0 0" euler="0 0 30"/></body></worldbody></mujoco>"#,
+    );
+    assert_two_orientations(&err, "inertial", "quat", "euler");
+    let err = refused(
+        r#"<mujoco><default><geom quat="1 0 0 0" euler="0 0 1"/></default><worldbody/></mujoco>"#,
+    );
+    assert_two_orientations(&err, "geom", "quat", "euler");
+}
+
+#[test]
+fn a_written_quat_counts_and_an_empty_alternative_does_not() {
+    let err = refused(
+        r#"<mujoco><worldbody><body quat="" euler="0 0 30"><geom size="0.1"/></body></worldbody></mujoco>"#,
+    );
+    assert_two_orientations(&err, "body", "quat", "euler");
+    load(
+        r#"<mujoco><worldbody><body quat="1 0 0 0" euler=""><geom size="0.1"/></body></worldbody></mujoco>"#,
+    );
+    load(r#"<mujoco><worldbody><body quat=""><geom size="0.1"/></body></worldbody></mujoco>"#);
+    // A class's quat and an element's euler are not two on one element.
+    load(
+        r#"<mujoco><default><geom quat="1 0 0 0"/></default><worldbody><body><geom size="0.1" euler="0 0 30"/></body></worldbody></mujoco>"#,
+    );
+}
+
+#[test]
+fn a_quaternion_of_zeros_is_refused() {
+    let err = refused(
+        r#"<mujoco><worldbody><body quat="0 0 0 0"><geom size="0.1"/></body></worldbody></mujoco>"#,
+    );
+    assert_zero_quat(&err, "body");
+    let err = refused(
+        r#"<mujoco><worldbody><body><geom size="0.1" quat="0 0 0 0"/></body></worldbody></mujoco>"#,
+    );
+    assert_zero_quat(&err, "geom");
+    let err = refused(
+        r#"<mujoco><worldbody><body><geom size="0.1"/><site quat="0 0 0 0"/></body></worldbody></mujoco>"#,
+    );
+    assert_zero_quat(&err, "site");
+    let err = refused(
+        r#"<mujoco><worldbody><frame quat="0 0 0 0"><body><geom size="0.1"/></body></frame></worldbody></mujoco>"#,
+    );
+    assert_zero_quat(&err, "frame");
+    let err = refused(
+        r#"<mujoco><worldbody><body><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" quat="0 0 0 0"/></body></worldbody></mujoco>"#,
+    );
+    assert_zero_quat(&err, "inertial");
+    let err = refused(r#"<mujoco><default><site quat="0 0 0 0"/></default><worldbody/></mujoco>"#);
+    assert_zero_quat(&err, "site");
+}

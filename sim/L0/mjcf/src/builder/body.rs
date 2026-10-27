@@ -698,10 +698,12 @@ mod tests {
         );
     }
 
-    /// AC13: Orientation priority — euler takes precedence over quat when both specified.
+    /// AC13: a site with both an euler and a quat is refused, as MuJoCo
+    /// 3.5.0's `ReadAlternative` refuses it ("multiple orientation specifiers
+    /// are not allowed").
     #[test]
-    fn test_site_orientation_priority_euler_over_quat() {
-        let model = load_model(
+    fn test_site_with_euler_and_quat_is_refused() {
+        let err = load_model(
             r#"
             <mujoco>
                 <worldbody>
@@ -713,15 +715,10 @@ mod tests {
             </mujoco>
             "#,
         )
-        .expect("should load");
-
-        // euler wins over quat per priority chain. quat=(1,0,0,0) is identity;
-        // euler="90 0 0" is 90deg X. Result must be 90deg X, NOT identity.
-        let expected = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 90.0_f64.to_radians());
-        let got = model.site_quat[0];
+        .unwrap_err();
         assert!(
-            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
-            "euler should take priority over quat: got {got:?}, expected {expected:?}"
+            matches!(err, crate::error::MjcfError::ConflictingAttributes { .. }),
+            "{err}"
         );
     }
 

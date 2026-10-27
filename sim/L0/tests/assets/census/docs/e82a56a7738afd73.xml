@@ -1,0 +1,1 @@
+<mujoco><worldbody><body euler="0 0 30" zaxis="1 0 0"><geom size="0.1"/></body></worldbody></mujoco>

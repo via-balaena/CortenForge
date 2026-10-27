@@ -1,0 +1,1 @@
+<mujoco><worldbody><body><geom size="0.1" quat="1 0 0 0" euler="0 0 30"/></body></worldbody></mujoco>
