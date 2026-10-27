@@ -762,3 +762,54 @@ fn one_body_cable_frame_is_defined() {
         assert!(data.qpos.iter().all(|x| x.is_finite()), "{v}");
     }
 }
+
+#[test]
+fn cable_edges_are_float_differences() {
+    // MuJoCo 3.5.0's cable vertices are floats, and so are their differences
+    // (`user_composite.cc`, AddCableBody). Measured on the oracle: CB_2 at x
+    // 0.44721360216395983, CB_last at x 1.0488088517220766, CB_1's quat
+    // (0.2297529205473612, 0, 0, 0.9732489894677301). Before: the edges
+    // were differences of doubles, CB_2 at x 0.4472136088279617.
+    let model = load_model(
+        r#"<mujoco><worldbody>
+            <composite type="cable" prefix="C" vertex="0 0 0 0.1 0 0 -0.3 0.2 0 0.7 0.1 0.3 -0.9 -0.4 0.2">
+                <geom type="capsule" size="0.01"/>
+            </composite>
+        </worldbody></mujoco>"#,
+    );
+    let at = |name: &str| model.name2id(ElementType::Body, name).expect(name);
+    assert!((model.body_pos[at("CB_2")].x - 0.447_213_602_163_959_83).abs() < 1e-15);
+    assert!((model.body_pos[at("CB_last")].x - 1.048_808_851_722_076_6).abs() < 1e-15);
+    let q = model.body_quat[at("CB_1")];
+    assert!((q.w - 0.229_752_920_547_361_2).abs() < 1e-15, "{q}");
+    assert!((q.k - 0.973_248_989_467_730_1).abs() < 1e-15, "{q}");
+}
+
+#[test]
+fn a_composite_quat_turns_its_vertices_as_written() {
+    // MuJoCo 3.5.0 turns generated vertices by the quat as written
+    // (`user_util.cc` mjuu_rotVecQuat): a quaternion that is not a unit one
+    // scales as it turns, and the zero quaternion leaves them. Measured on the
+    // oracle: quat "0 0 0 2" puts CB_1 at x 1.75 (seven times 0.25), CB_first's
+    // quat (0, 0, 0, 1); "0 0 0 0" puts CB_1 at x 0.25. Before: the quat was
+    // normalised (CB_1 at 0.25), and "0 0 0 0" was refused.
+    let cable = |quat: &str| {
+        load_model(&format!(
+            r#"<mujoco><worldbody>
+                <composite type="cable" prefix="C" count="5 1 1" curve="s 0 0" size="1" quat="{quat}">
+                    <geom type="capsule" size="0.01"/>
+                </composite>
+            </worldbody></mujoco>"#
+        ))
+    };
+    let model = cable("0 0 0 2");
+    let b1 = model.name2id(ElementType::Body, "CB_1").expect("CB_1");
+    assert_eq!(model.body_pos[b1].x, 1.75);
+    let first = model
+        .name2id(ElementType::Body, "CB_first")
+        .expect("CB_first");
+    let q = model.body_quat[first];
+    assert!((q.k - 1.0).abs() < 1e-15 && q.w.abs() < 1e-15, "{q}");
+    let model = cable("0 0 0 0");
+    assert_eq!(model.body_pos[b1].x, 0.25);
+}

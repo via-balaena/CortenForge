@@ -2014,3 +2014,4 @@ f6881ce2578560ae	sim/L0/mjcf/src/parser/tests.rs:2156
 2d93e04c8c0f6943	sim/L0/mjcf/tests/attribute_reader.rs:242
 aedf5a82db449d12	sim/L0/tests/integration/composite.rs:599
 22faa8a3cd28b7a9	sim/L0/mjcf/tests/repeated_sections.rs:37
+ab11668ed3315078	sim/L0/tests/integration/composite.rs:774

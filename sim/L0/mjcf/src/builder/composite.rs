@@ -178,12 +178,6 @@ fn generate_vertices(composite: &MjcfComposite) -> Vec<[f64; 3]> {
     // parsed `<composite count="...">` attribute (validated >= 0 upstream).
     #[allow(clippy::cast_possible_wrap)]
     let n = composite.count[0] as usize;
-    let quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-        composite.quat[0],
-        composite.quat[1],
-        composite.quat[2],
-        composite.quat[3],
-    ));
 
     let nf = n as f64;
     (0..n)
@@ -202,15 +196,52 @@ fn generate_vertices(composite: &MjcfComposite) -> Vec<[f64; 3]> {
                 }
             };
             let v = [curve_val(0), curve_val(1), curve_val(2)];
-            // Rotated, then stored as a float, as MuJoCo's `uservert` is
-            // (`user_composite.h`); a written vertex is read as one.
-            let point = Vector3::new(v[0], v[1], v[2]);
-            let rotated = quat * point;
+            // Rotated by the quat as written, then stored as a float, as
+            // MuJoCo's `uservert` is (`user_composite.h`); a written vertex is
+            // read as one.
+            let rotated = rot_vec_quat(v, composite.quat);
             // The rounding to a float is the point: MuJoCo stores the vertex as one.
             #[allow(clippy::cast_possible_truncation)]
-            [rotated.x, rotated.y, rotated.z].map(|x| f64::from(x as f32))
+            rotated.map(|x| f64::from(x as f32))
         })
         .collect()
+}
+
+/// MuJoCo's `mjuu_rotVecQuat` (`user_util.cc`): `quat` as written, not
+/// normalised, turns `vec`, so a quaternion that is not a unit one scales it
+/// too; a zero vector stays zero, and the quaternion (1, 0, 0, 0) copies it.
+// The two shortcuts compare exactly, as MuJoCo's (`vec[0] == 0 && …`).
+#[allow(clippy::float_cmp)]
+fn rot_vec_quat(vec: [f64; 3], quat: [f64; 4]) -> [f64; 3] {
+    if vec == [0.0; 3] {
+        return [0.0; 3];
+    }
+    if quat == [1.0, 0.0, 0.0, 0.0] {
+        return vec;
+    }
+    let [w, x, y, z] = quat;
+    let tmp = [
+        w * vec[0] + y * vec[2] - z * vec[1],
+        w * vec[1] + z * vec[0] - x * vec[2],
+        w * vec[2] + x * vec[1] - y * vec[0],
+    ];
+    [
+        vec[0] + 2.0 * (y * tmp[2] - z * tmp[1]),
+        vec[1] + 2.0 * (z * tmp[0] - x * tmp[2]),
+        vec[2] + 2.0 * (x * tmp[1] - y * tmp[0]),
+    ]
+}
+
+/// `to - from` as MuJoCo computes it: a cable's vertices are floats
+/// (`uservert`), so their difference is a float subtraction, then widened.
+// The rounding to a float is the point: the vertices are floats.
+#[allow(clippy::cast_possible_truncation)]
+fn float_difference(to: [f64; 3], from: [f64; 3]) -> Vector3<f64> {
+    Vector3::new(
+        f64::from(to[0] as f32 - from[0] as f32),
+        f64::from(to[1] as f32 - from[1] as f32),
+        f64::from(to[2] as f32 - from[2] as f32),
+    )
 }
 
 /// Discrete Bishop frame: compute quaternion orientation for a cable segment.
@@ -298,21 +329,13 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
         let is_last = ix == last_idx;
 
         // Compute edge vector (current vertex to next vertex)
-        let edge = Vector3::new(
-            verts[ix + 1][0] - verts[ix][0],
-            verts[ix + 1][1] - verts[ix][1],
-            verts[ix + 1][2] - verts[ix][2],
-        );
+        let edge = float_difference(verts[ix + 1], verts[ix]);
 
         // Previous tangent (for Darboux frame rotation)
         let mut tprev = Vector3::zeros();
         let mut length_prev = 0.0;
         if !is_first {
-            tprev = Vector3::new(
-                verts[ix][0] - verts[ix - 1][0],
-                verts[ix][1] - verts[ix - 1][1],
-                verts[ix][2] - verts[ix - 1][2],
-            );
+            tprev = float_difference(verts[ix], verts[ix - 1]);
             length_prev = tprev.norm();
             if length_prev > 1e-10 {
                 tprev /= length_prev;
@@ -322,11 +345,7 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
         // Next tangent (for initial frame computation)
         let mut tnext = Vector3::zeros();
         if !is_last {
-            tnext = Vector3::new(
-                verts[ix + 2][0] - verts[ix + 1][0],
-                verts[ix + 2][1] - verts[ix + 1][1],
-                verts[ix + 2][2] - verts[ix + 1][2],
-            );
+            tnext = float_difference(verts[ix + 2], verts[ix + 1]);
             let tn = tnext.norm();
             if tn > 1e-10 {
                 tnext /= tn;
