@@ -95,3 +95,13 @@ fn a_later_options_disabled_actuator_groups_add_to_an_earlier_ones() {
     ));
     assert_eq!(m.disableactuator, 0b0110);
 }
+
+#[test]
+fn a_compiler_with_a_closing_tag_keeps_an_earlier_ones_settings() {
+    // Found untested by 0a1d7075's mutants: `<compiler>…</compiler>` takes
+    // its own path through the parser. MuJoCo (measured): range -1 1.
+    let m = load(&with(
+        r#"<compiler angle="radian"></compiler><compiler autolimits="true"></compiler>"#,
+    ));
+    assert_eq!(m.jnt_range[0], (-1.0, 1.0));
+}
