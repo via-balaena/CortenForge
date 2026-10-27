@@ -664,6 +664,8 @@ image = "0.25"
 # Logging & Tracing
 # ---------------------------------------------------------------------------
 tracing = "0.1"
+# tracing's core types; sim-mjcf's tests implement a subscriber with them
+tracing-core = "0.1"
 # (tracing-subscriber removed — was only used by removed crates)
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,9 @@
+<mujoco>
+            <worldbody>
+                <body name="holder">
+                    <composite type="cable" count="4097 1 1" size="1 0 0">
+                        <geom type="capsule" size="0.01"/>
+                    </composite>
+                </body>
+            </worldbody>
+        </mujoco>

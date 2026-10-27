@@ -6,7 +6,6 @@
 
 use std::path::{Path, PathBuf};
 
-use super::ModelConversionError;
 use crate::types::MjcfCompiler;
 
 /// Asset type for path resolution.
@@ -30,7 +29,7 @@ pub enum AssetKind {
 ///
 /// # Errors
 ///
-/// Returns `ModelConversionError` if:
+/// Returns why, for the caller to name its asset, if:
 /// - Path is relative but no base path or directory is available
 /// - Resolved path does not exist
 pub fn resolve_asset_path(
@@ -38,7 +37,7 @@ pub fn resolve_asset_path(
     base_path: Option<&Path>,
     compiler: &MjcfCompiler,
     kind: AssetKind,
-) -> std::result::Result<PathBuf, ModelConversionError> {
+) -> Result<PathBuf, String> {
     // A9. strippath: strip directory components, keeping only the base filename.
     let file_name = if compiler.strippath {
         Path::new(file_path)
@@ -54,9 +53,7 @@ pub fn resolve_asset_path(
     // Absolute paths are used directly
     if path.is_absolute() {
         if !path.exists() {
-            return Err(ModelConversionError {
-                message: format!("asset file not found: '{}'", path.display()),
-            });
+            return Err(format!("asset file not found: '{}'", path.display()));
         }
         return Ok(path.to_path_buf());
     }
@@ -81,21 +78,17 @@ pub fn resolve_asset_path(
     } else if let Some(base) = base_path {
         base.join(path)
     } else {
-        return Err(ModelConversionError {
-            message: format!(
-                "asset file '{file_path}' is relative but no base path provided (use load_model_from_file or pass base_path to model_from_mjcf)"
-            ),
-        });
+        return Err(format!(
+            "asset file '{file_path}' is relative but no base path provided (use load_model_from_file or pass base_path to model_from_mjcf)"
+        ));
     };
 
     if !resolved.exists() {
-        return Err(ModelConversionError {
-            message: format!(
-                "asset file not found: '{}' (resolved to '{}')",
-                file_path,
-                resolved.display()
-            ),
-        });
+        return Err(format!(
+            "asset file not found: '{}' (resolved to '{}')",
+            file_path,
+            resolved.display()
+        ));
     }
 
     Ok(resolved)
@@ -136,7 +129,7 @@ mod tests {
         let result = resolve_asset_path(nonexistent_path, None, &compiler, AssetKind::Mesh);
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().to_string().contains("not found"),
+            result.unwrap_err().contains("not found"),
             "Error should mention 'not found' for non-existent absolute path"
         );
     }
@@ -166,7 +159,7 @@ mod tests {
         let compiler = MjcfCompiler::default();
         let result = resolve_asset_path("meshes/test.stl", None, &compiler, AssetKind::Mesh);
         assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
+        let err = result.unwrap_err();
         assert!(err.contains("relative"));
         assert!(err.contains("no base path"));
     }
@@ -183,7 +176,7 @@ mod tests {
             AssetKind::Mesh,
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
+        assert!(result.unwrap_err().contains("not found"));
     }
 
     /// Test resolve_asset_path with meshdir setting.

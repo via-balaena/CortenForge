@@ -147,6 +147,9 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
+// Model construction must not depend on hash order (ledger L27). The lint
+// sees a `for` loop over a hash map or set, not an iterator chain over one.
+#![deny(clippy::iter_over_hash_type)]
 #![warn(missing_docs)]
 #![allow(
     clippy::missing_const_for_fn,
@@ -184,12 +187,13 @@ mod include;
 #[cfg(feature = "mjb")]
 mod mjb;
 mod parser;
+mod stack;
 mod types;
 mod validation;
 
 // Re-export main types
 pub use defaults::DefaultResolver;
-pub use error::{MjcfError, Result};
+pub use error::{ElementKind, Location, MjcfError, Result, ValueCount};
 pub use parser::parse_mjcf_str;
 pub use types::{
     AngleUnit, CompositeGeom, CompositeJoint, CompositeShape, CompositeType, EqualityKind,
@@ -204,7 +208,7 @@ pub use types::{
 pub use validation::{ValidationResult, validate, validate_tendons};
 
 // MuJoCo-aligned Model conversion (primary API)
-pub use builder::{ModelConversionError, load_model, load_model_from_file, model_from_mjcf};
+pub use builder::{load_model, load_model_from_file, model_from_mjcf};
 
 // MJB binary format support (requires "mjb" feature)
 #[cfg(feature = "mjb")]
@@ -276,7 +280,11 @@ mod tests {
             </mujoco>
         "#,
         );
-        assert!(matches!(result, Err(MjcfError::UnknownJointType(_))));
+        assert!(matches!(
+            result,
+            Err(MjcfError::InvalidKeyword { ref attribute, ref value, .. })
+                if attribute == "type" && value == "invalid"
+        ));
     }
 
     /// Test validation catches kinematic issues.
@@ -303,7 +311,7 @@ mod tests {
         let result = load_model(mjcf);
         assert!(matches!(
             result,
-            Err(crate::error::MjcfError::Unsupported(msg)) if msg.contains("validation failed")
+            Err(MjcfError::DuplicateName { kind: ElementKind::Body, ref name, .. }) if name == "a"
         ));
     }
 

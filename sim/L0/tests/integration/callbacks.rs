@@ -286,12 +286,9 @@ fn sensor_callback_fires_for_user_sensor() {
     );
 }
 
-/// T5/G18: actuator user callbacks — dyntype, gaintype, biastype all User.
-///
-/// MJCF parser doesn't yet support `dyntype/gaintype/biastype="user"`,
-/// so we build a motor actuator via MJCF and then patch the model fields
-/// to `User` programmatically. This exercises the exact same actuation
-/// codepath as a fully-wired User actuator.
+/// T5/G18: actuator user callbacks — dyntype, gaintype, biastype all User,
+/// loaded from `<general dyntype="user" gaintype="user" biastype="user">`
+/// (one activation, as MuJoCo 3.5.0 compiles it).
 ///
 /// Verifies:
 /// 1. cb_act_dyn fires and act_dot[0] == 1.5
@@ -313,21 +310,22 @@ fn actuator_user_callbacks_invoked() {
         </body>
       </worldbody>
       <actuator>
-        <motor name="m1" joint="hinge" gear="1"/>
+        <general name="m1" joint="hinge" gear="1" dyntype="user" gaintype="user" biastype="user"/>
       </actuator>
     </mujoco>"#;
 
     let mut model = sim_mjcf::load_model(xml).expect("load");
-
-    // Patch actuator to use User dynamics/gain/bias callbacks
-    model.actuator_dyntype[0] = ActuatorDynamics::User;
-    model.actuator_gaintype[0] = GainType::User;
-    model.actuator_biastype[0] = BiasType::User;
-
-    // User dynamics requires an activation state — patch model
-    model.actuator_act_adr[0] = 0;
-    model.actuator_act_num[0] = 1;
-    model.na = 1;
+    assert_eq!(model.actuator_dyntype[0], ActuatorDynamics::User);
+    assert_eq!(model.actuator_gaintype[0], GainType::User);
+    assert_eq!(model.actuator_biastype[0], BiasType::User);
+    assert_eq!(
+        (
+            model.actuator_act_adr[0],
+            model.actuator_act_num[0],
+            model.na
+        ),
+        (0, 1, 1)
+    );
 
     let dyn_called = Arc::new(AtomicBool::new(false));
     let gain_called = Arc::new(AtomicBool::new(false));
@@ -451,8 +449,8 @@ fn control_callback_skipped_when_actuation_disabled() {
 /// T5 safe-defaults: no user callbacks → act_dot=0, gain=1 (MuJoCo's), bias=0.
 #[test]
 fn actuator_user_callbacks_safe_defaults() {
-    use sim_core::{ActuatorDynamics, BiasType, GainType};
-
+    // User types loaded from MJCF, no callbacks set; gainprm and biasprm are
+    // parameters a user gain and bias do not read.
     let xml = r#"
     <mujoco>
       <option gravity="0 0 0"/>
@@ -463,22 +461,12 @@ fn actuator_user_callbacks_safe_defaults() {
         </body>
       </worldbody>
       <actuator>
-        <motor name="m1" joint="hinge" gear="1"/>
+        <general name="m1" joint="hinge" gear="1" dyntype="user" gaintype="user" biastype="user"
+                 gainprm="3" biasprm="0.7"/>
       </actuator>
     </mujoco>"#;
 
-    let mut model = sim_mjcf::load_model(xml).expect("load");
-
-    // Patch to User types but do NOT set any callbacks
-    model.actuator_dyntype[0] = ActuatorDynamics::User;
-    model.actuator_gaintype[0] = GainType::User;
-    model.actuator_biastype[0] = BiasType::User;
-    model.actuator_act_adr[0] = 0;
-    model.actuator_act_num[0] = 1;
-    model.na = 1;
-    // Parameters a user gain and bias do not read.
-    model.actuator_gainprm[0][0] = 3.0;
-    model.actuator_biasprm[0][0] = 0.7;
+    let model = sim_mjcf::load_model(xml).expect("load");
 
     let mut data = model.make_data();
     data.ctrl[0] = 1.0;

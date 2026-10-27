@@ -8,14 +8,12 @@
 use sim_core::{ActuatorDynamics, ActuatorTransmission, BiasType, GainType, InterpolationType};
 use tracing::warn;
 
-use super::{ModelBuilder, ModelConversionError};
+use super::ModelBuilder;
+use crate::error::{ElementKind, MjcfError, Result};
 use crate::types::{MjcfActuator, MjcfActuatorType};
 
 impl ModelBuilder {
-    pub(crate) fn process_actuator(
-        &mut self,
-        actuator: &MjcfActuator,
-    ) -> std::result::Result<usize, ModelConversionError> {
+    pub(crate) fn process_actuator(&mut self, actuator: &MjcfActuator) -> Result<usize> {
         let act_id = self.actuator_trntype.len();
 
         // Register actuator name for sensor wiring
@@ -140,7 +138,7 @@ impl ModelBuilder {
         let interp = match &actuator.interp {
             Some(s) => s
                 .parse::<InterpolationType>()
-                .map_err(|e| ModelConversionError { message: e })?,
+                .map_err(|_| MjcfError::invalid_keyword("actuator", "interp", s))?,
             None => InterpolationType::Zoh,
         };
 
@@ -148,9 +146,11 @@ impl ModelBuilder {
         let nsample = actuator.nsample.unwrap_or(0);
         let delay = actuator.delay.unwrap_or(0.0);
         if delay > 0.0 && nsample <= 0 {
-            return Err(ModelConversionError {
-                message: "setting delay > 0 without a history buffer (nsample must be > 0)".into(),
-            });
+            return Err(MjcfError::invalid_value(
+                "actuator",
+                "delay",
+                "setting delay > 0 without a history buffer (nsample must be > 0)",
+            ));
         }
 
         self.actuator_nsample.push(nsample);
@@ -204,32 +204,39 @@ impl ModelBuilder {
             let penn = gainprm[7];
             let stiff = gainprm[8];
             if opt_len <= 0.0 {
-                return Err(ModelConversionError {
-                    message: "HillMuscle: optimal_fiber_length (gainprm[4]) must be positive"
-                        .into(),
-                });
+                return Err(MjcfError::invalid_value(
+                    "general",
+                    "gainprm",
+                    "HillMuscle: optimal_fiber_length (gainprm[4]) must be positive",
+                ));
             }
             if slack_len < 0.0 {
-                return Err(ModelConversionError {
-                    message: "HillMuscle: tendon_slack_length (gainprm[5]) must be non-negative"
-                        .into(),
-                });
+                return Err(MjcfError::invalid_value(
+                    "general",
+                    "gainprm",
+                    "HillMuscle: tendon_slack_length (gainprm[5]) must be non-negative",
+                ));
             }
             if vmax <= 0.0 {
-                return Err(ModelConversionError {
-                    message: "HillMuscle: max_contraction_velocity (gainprm[6]) must be positive"
-                        .into(),
-                });
+                return Err(MjcfError::invalid_value(
+                    "general",
+                    "gainprm",
+                    "HillMuscle: max_contraction_velocity (gainprm[6]) must be positive",
+                ));
             }
             if !(0.0..std::f64::consts::FRAC_PI_2).contains(&penn) {
-                return Err(ModelConversionError {
-                    message: "HillMuscle: pennation_angle (gainprm[7]) must be in [0, π/2)".into(),
-                });
+                return Err(MjcfError::invalid_value(
+                    "general",
+                    "gainprm",
+                    "HillMuscle: pennation_angle (gainprm[7]) must be in [0, π/2)",
+                ));
             }
             if stiff <= 0.0 {
-                return Err(ModelConversionError {
-                    message: "HillMuscle: tendon_stiffness (gainprm[8]) must be positive".into(),
-                });
+                return Err(MjcfError::invalid_value(
+                    "general",
+                    "gainprm",
+                    "HillMuscle: tendon_stiffness (gainprm[8]) must be positive",
+                ));
             }
         }
 
@@ -237,29 +244,32 @@ impl ModelBuilder {
         // no tendon-stiffness term, so gainprm[8] is unchecked (unlike HillMuscle).
         if dyntype == ActuatorDynamics::MillardMuscle {
             if gainprm[4] <= 0.0 {
-                return Err(ModelConversionError {
-                    message: "MillardMuscle: optimal_fiber_length (gainprm[4]) must be positive"
-                        .into(),
-                });
+                return Err(MjcfError::invalid_value(
+                    "general",
+                    "gainprm",
+                    "MillardMuscle: optimal_fiber_length (gainprm[4]) must be positive",
+                ));
             }
             if gainprm[5] < 0.0 {
-                return Err(ModelConversionError {
-                    message: "MillardMuscle: tendon_slack_length (gainprm[5]) must be non-negative"
-                        .into(),
-                });
+                return Err(MjcfError::invalid_value(
+                    "general",
+                    "gainprm",
+                    "MillardMuscle: tendon_slack_length (gainprm[5]) must be non-negative",
+                ));
             }
             if gainprm[6] <= 0.0 {
-                return Err(ModelConversionError {
-                    message:
-                        "MillardMuscle: max_contraction_velocity (gainprm[6]) must be positive"
-                            .into(),
-                });
+                return Err(MjcfError::invalid_value(
+                    "general",
+                    "gainprm",
+                    "MillardMuscle: max_contraction_velocity (gainprm[6]) must be positive",
+                ));
             }
             if !(0.0..std::f64::consts::FRAC_PI_2).contains(&gainprm[7]) {
-                return Err(ModelConversionError {
-                    message: "MillardMuscle: pennation_angle (gainprm[7]) must be in [0, π/2)"
-                        .into(),
-                });
+                return Err(MjcfError::invalid_value(
+                    "general",
+                    "gainprm",
+                    "MillardMuscle: pennation_angle (gainprm[7]) must be in [0, π/2)",
+                ));
             }
         }
 
@@ -287,14 +297,12 @@ impl ModelBuilder {
     fn resolve_transmission(
         &self,
         actuator: &MjcfActuator,
-    ) -> std::result::Result<(ActuatorTransmission, [usize; 2]), ModelConversionError> {
+    ) -> Result<(ActuatorTransmission, [usize; 2])> {
         if let Some(ref joint_name) = actuator.joint {
-            let jnt_id =
-                self.joint_name_to_id
-                    .get(joint_name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!("Actuator references unknown joint: {joint_name}"),
-                    })?;
+            let jnt_id = self
+                .joint_name_to_id
+                .get(joint_name)
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Joint, joint_name))?;
             if actuator.refsite.is_some() {
                 warn!(
                     "Actuator '{}' has refsite but uses joint transmission — \
@@ -307,12 +315,7 @@ impl ModelBuilder {
             let tendon_idx = *self
                 .tendon_name_to_id
                 .get(tendon_name.as_str())
-                .ok_or_else(|| ModelConversionError {
-                    message: format!(
-                        "Actuator '{}' references unknown tendon '{}'",
-                        actuator.name, tendon_name
-                    ),
-                })?;
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Tendon, tendon_name))?;
             if actuator.refsite.is_some() {
                 warn!(
                     "Actuator '{}' has refsite but uses tendon transmission — \
@@ -322,23 +325,15 @@ impl ModelBuilder {
             }
             Ok((ActuatorTransmission::Tendon, [tendon_idx, usize::MAX]))
         } else if let Some(ref site_name) = actuator.site {
-            let site_id =
-                *self
-                    .site_name_to_id
-                    .get(site_name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!("Actuator references unknown site: {site_name}"),
-                    })?;
+            let site_id = *self
+                .site_name_to_id
+                .get(site_name)
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Site, site_name))?;
             let refsite_id = if let Some(ref refsite_name) = actuator.refsite {
                 *self
                     .site_name_to_id
                     .get(refsite_name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!(
-                            "Actuator '{}' references unknown refsite: {refsite_name}",
-                            actuator.name
-                        ),
-                    })?
+                    .ok_or_else(|| MjcfError::undefined(ElementKind::Site, refsite_name))?
             } else {
                 usize::MAX
             };
@@ -347,70 +342,40 @@ impl ModelBuilder {
             let body_id = *self
                 .body_name_to_id
                 .get(body_name.as_str())
-                .ok_or_else(|| ModelConversionError {
-                    message: format!(
-                        "Actuator '{}': body '{}' not found",
-                        actuator.name, body_name
-                    ),
-                })?;
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Body, body_name))?;
             Ok((ActuatorTransmission::Body, [body_id, usize::MAX]))
         } else if let Some(ref joint_name) = actuator.jointinparent {
-            let jnt_id =
-                self.joint_name_to_id
-                    .get(joint_name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!(
-                            "Actuator '{}' references unknown joint: {joint_name}",
-                            actuator.name
-                        ),
-                    })?;
+            let jnt_id = self
+                .joint_name_to_id
+                .get(joint_name)
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Joint, joint_name))?;
             Ok((ActuatorTransmission::JointInParent, [*jnt_id, usize::MAX]))
         } else if let Some(ref crank_name) = actuator.cranksite {
-            let slider_name = actuator
-                .slidersite
-                .as_ref()
-                .ok_or_else(|| ModelConversionError {
-                    message: format!(
-                        "Actuator '{}': cranksite specified without slidersite",
-                        actuator.name
-                    ),
-                })?;
+            let slider_name = actuator.slidersite.as_ref().ok_or_else(|| {
+                MjcfError::invalid_model("cranksite specified without slidersite")
+            })?;
             let crank_id = *self
                 .site_name_to_id
                 .get(crank_name.as_str())
-                .ok_or_else(|| ModelConversionError {
-                    message: format!(
-                        "Actuator '{}': cranksite '{}' not found",
-                        actuator.name, crank_name
-                    ),
-                })?;
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Site, crank_name))?;
             let slider_id = *self
                 .site_name_to_id
                 .get(slider_name.as_str())
-                .ok_or_else(|| ModelConversionError {
-                    message: format!(
-                        "Actuator '{}': slidersite '{}' not found",
-                        actuator.name, slider_name
-                    ),
-                })?;
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Site, slider_name))?;
             let rod = actuator.cranklength.unwrap_or(0.0);
             if rod <= 0.0 {
-                return Err(ModelConversionError {
-                    message: format!(
-                        "Actuator '{}': cranklength must be positive, got {}",
-                        actuator.name, rod
-                    ),
-                });
+                return Err(MjcfError::invalid_value(
+                    "actuator",
+                    "cranklength",
+                    format!("must be positive, got {rod}"),
+                ));
             }
             Ok((ActuatorTransmission::SliderCrank, [crank_id, slider_id]))
         } else {
-            Err(ModelConversionError {
-                message: format!(
-                    "Actuator '{}' has no transmission target \
-                     (joint, tendon, site, body, jointinparent, or cranksite)",
-                    actuator.name
-                ),
-            })
+            Err(MjcfError::invalid_model(
+                "actuator has no transmission target \
+                 (joint, tendon, site, body, jointinparent, or cranksite)",
+            ))
         }
     }
 }
@@ -425,8 +390,7 @@ fn compute_gain_bias_params(
     dyntype: ActuatorDynamics,
     timeconst: f64,
     kv: f64,
-) -> std::result::Result<(GainType, BiasType, [f64; 9], [f64; 9], [f64; 10]), ModelConversionError>
-{
+) -> Result<(GainType, BiasType, [f64; 9], [f64; 9], [f64; 10])> {
     match actuator.actuator_type {
         MjcfActuatorType::Motor => Ok((
             GainType::Fixed,
@@ -547,8 +511,7 @@ fn compute_gain_bias_params(
 /// Gain/bias/dynprm for `<general dyntype="hillmuscle">`.
 fn compute_general_hillmuscle(
     actuator: &MjcfActuator,
-) -> std::result::Result<(GainType, BiasType, [f64; 9], [f64; 9], [f64; 10]), ModelConversionError>
-{
+) -> Result<(GainType, BiasType, [f64; 9], [f64; 9], [f64; 10])> {
     // HillMuscle auto-sets: gaintype/biastype default to HillMuscle
     // unless explicitly overridden by the user.
     let gt = match &actuator.gaintype {
@@ -594,8 +557,7 @@ fn compute_general_hillmuscle(
 /// activation dynamics are the standard `[tau_act, tau_deact]`.
 fn compute_general_millardmuscle(
     actuator: &MjcfActuator,
-) -> std::result::Result<(GainType, BiasType, [f64; 9], [f64; 9], [f64; 10]), ModelConversionError>
-{
+) -> Result<(GainType, BiasType, [f64; 9], [f64; 9], [f64; 10])> {
     let gt = match &actuator.gaintype {
         Some(s) => parse_gaintype(s)?,
         None => GainType::MillardMuscle,
@@ -633,8 +595,7 @@ fn compute_general_millardmuscle(
 /// Gain/bias/dynprm for standard `<general>` (non-HillMuscle).
 fn compute_general_standard(
     actuator: &MjcfActuator,
-) -> std::result::Result<(GainType, BiasType, [f64; 9], [f64; 9], [f64; 10]), ModelConversionError>
-{
+) -> Result<(GainType, BiasType, [f64; 9], [f64; 9], [f64; 10])> {
     let gt = match &actuator.gaintype {
         Some(s) => parse_gaintype(s)?,
         None => GainType::Fixed,
@@ -671,37 +632,31 @@ fn compute_general_standard(
     Ok((gt, bt, gp, bp, dp))
 }
 
-fn parse_gaintype(s: &str) -> std::result::Result<GainType, ModelConversionError> {
+fn parse_gaintype(s: &str) -> Result<GainType> {
     match s {
         "fixed" => Ok(GainType::Fixed),
         "affine" => Ok(GainType::Affine),
         "muscle" => Ok(GainType::Muscle),
         "hillmuscle" => Ok(GainType::HillMuscle),
         "millardmuscle" => Ok(GainType::MillardMuscle),
-        _ => Err(ModelConversionError {
-            message: format!(
-                "unknown gaintype '{s}' (valid: fixed, affine, muscle, hillmuscle, millardmuscle)"
-            ),
-        }),
+        "user" => Ok(GainType::User),
+        _ => Err(MjcfError::invalid_keyword("general", "gaintype", s)),
     }
 }
 
-fn parse_biastype(s: &str) -> std::result::Result<BiasType, ModelConversionError> {
+fn parse_biastype(s: &str) -> Result<BiasType> {
     match s {
         "none" => Ok(BiasType::None),
         "affine" => Ok(BiasType::Affine),
         "muscle" => Ok(BiasType::Muscle),
         "hillmuscle" => Ok(BiasType::HillMuscle),
         "millardmuscle" => Ok(BiasType::MillardMuscle),
-        _ => Err(ModelConversionError {
-            message: format!(
-                "unknown biastype '{s}' (valid: none, affine, muscle, hillmuscle, millardmuscle)"
-            ),
-        }),
+        "user" => Ok(BiasType::User),
+        _ => Err(MjcfError::invalid_keyword("general", "biastype", s)),
     }
 }
 
-fn parse_dyntype(s: &str) -> std::result::Result<ActuatorDynamics, ModelConversionError> {
+fn parse_dyntype(s: &str) -> Result<ActuatorDynamics> {
     match s {
         "none" => Ok(ActuatorDynamics::None),
         "integrator" => Ok(ActuatorDynamics::Integrator),
@@ -710,11 +665,8 @@ fn parse_dyntype(s: &str) -> std::result::Result<ActuatorDynamics, ModelConversi
         "muscle" => Ok(ActuatorDynamics::Muscle),
         "hillmuscle" => Ok(ActuatorDynamics::HillMuscle),
         "millardmuscle" => Ok(ActuatorDynamics::MillardMuscle),
-        _ => Err(ModelConversionError {
-            message: format!(
-                "unknown dyntype '{s}' (valid: none, integrator, filter, filterexact, muscle, hillmuscle, millardmuscle)"
-            ),
-        }),
+        "user" => Ok(ActuatorDynamics::User),
+        _ => Err(MjcfError::invalid_keyword("general", "dyntype", s)),
     }
 }
 
@@ -732,6 +684,7 @@ fn floats_to_array<const N: usize>(input: &[f64], default: [f64; N]) -> [f64; N]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use crate::builder::load_model;
+    use crate::error::MjcfError;
     use sim_core::{ActuatorDynamics, ActuatorTransmission, BiasType, GainType};
 
     /// Test that tendon actuators return proper error.
@@ -1088,28 +1041,33 @@ mod tests {
         assert!((model.actuator_dynprm[0][2]).abs() < 1e-10);
     }
 
-    /// Criterion 9: Invalid enum produces ModelConversionError.
+    /// Criterion 9: Invalid enum produces an invalid-keyword error.
     #[test]
     fn test_general_invalid_gaintype_error() {
         let xml = general_actuator_model(r#"<general joint="j" gaintype="invalid"/>"#);
         let err = load_model(&xml).unwrap_err();
-        let msg = format!("{err}");
         assert!(
-            msg.contains("unknown gaintype"),
-            "error should contain 'unknown gaintype', got: {msg}"
+            matches!(
+                &err,
+                MjcfError::InvalidKeyword { attribute, value, .. }
+                    if attribute == "gaintype" && value == "invalid"
+            ),
+            "{err}"
         );
     }
 
-    /// Criterion 10: "user" type produces error (not special-cased).
+    /// Criterion 10: the "user" types are MuJoCo's callback types
+    /// (mjGAIN_USER, mjBIAS_USER, mjDYN_USER), which MuJoCo 3.5.0 loads.
     #[test]
-    fn test_general_user_gaintype_error() {
-        let xml = general_actuator_model(r#"<general joint="j" gaintype="user"/>"#);
-        let err = load_model(&xml).unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("unknown gaintype 'user'"),
-            "error should contain \"unknown gaintype 'user'\", got: {msg}"
+    fn test_general_user_types_are_the_callback_types() {
+        let xml = general_actuator_model(
+            r#"<general joint="j" gaintype="user" biastype="user" dyntype="user"/>"#,
         );
+        let model = load_model(&xml).expect("user types load");
+        assert_eq!(model.actuator_gaintype[0], GainType::User);
+        assert_eq!(model.actuator_biastype[0], BiasType::User);
+        assert_eq!(model.actuator_dyntype[0], ActuatorDynamics::User);
+        assert_eq!(model.actuator_act_num[0], 1);
     }
 
     /// Criterion 11: Shortcut types ignore gaintype/biastype/dyntype attributes.
@@ -1137,6 +1095,7 @@ mod tests {
             ("muscle", ActuatorDynamics::Muscle, 1),
             ("hillmuscle", ActuatorDynamics::HillMuscle, 1),
             ("millardmuscle", ActuatorDynamics::MillardMuscle, 1),
+            ("user", ActuatorDynamics::User, 1),
         ];
         for (dyntype_str, expected_dyn, expected_act_num) in &cases {
             let xml =

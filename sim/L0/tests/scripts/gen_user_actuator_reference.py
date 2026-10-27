@@ -23,8 +23,9 @@ mj_forward the actuator's force, qfrc_actuator and act_dot, and after one
 mj_step qDeriv on D's pattern (D_rownnz, D_rowadr, D_colind), qpos, qvel
 and act.
 
-sim-mjcf refuses a user gain, bias or dynamics, so each case also holds a
-stand-in (`xml`): the same model with a type sim-mjcf loads in place of the
+sim-mjcf refuses `actdim` (and refused a user gain, bias or dynamics when
+this golden was made), so each case also holds a stand-in (`xml`): the same
+model with a type sim-mjcf loads in place of the
 user's, which the test changes to the user's (`patch`) and checks against
 MuJoCo's compiled types (`gaintype`, `biastype`, `dyntype`, `actnum`). The
 test's callbacks are GAIN, BIAS and DYN below, in the same operations; the

@@ -42,9 +42,9 @@ pub(super) fn parse_sensors<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<Mj
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"sensor" => break,
-            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in sensor".into())),
+            Ok(Event::Eof) => return Err(MjcfError::eof_in("sensor")),
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -154,13 +154,10 @@ pub(super) fn parse_sensor_children<R: BufRead>(
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == parent_tag => break,
             Ok(Event::Eof) => {
-                return Err(MjcfError::XmlParse(format!(
-                    "unexpected EOF in {}",
-                    String::from_utf8_lossy(parent_tag)
-                )));
+                return Err(MjcfError::eof_in(String::from_utf8_lossy(parent_tag)));
             }
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }

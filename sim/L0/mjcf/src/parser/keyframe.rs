@@ -38,10 +38,10 @@ pub(super) fn parse_keyframes<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"keyframe" => break,
             Ok(Event::Eof) => {
-                return Err(MjcfError::XmlParse("unexpected EOF in keyframe".into()));
+                return Err(MjcfError::eof_in("keyframe"));
             }
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }

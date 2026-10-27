@@ -13,8 +13,9 @@ use std::path::Path;
 use std::sync::Arc;
 use tracing::warn;
 
+use super::ModelBuilder;
 use super::asset::{AssetKind, resolve_asset_path};
-use super::{ModelBuilder, ModelConversionError};
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{MeshInertia, MjcfCompiler, MjcfGeom, MjcfGeomType, MjcfHfield, MjcfMesh};
 
 /// Cached mesh mass properties: `(volume, com, inertia_at_com_unit_density)`.
@@ -34,19 +35,20 @@ impl ModelBuilder {
     ///
     /// # Errors
     ///
-    /// Returns `ModelConversionError` if:
-    /// - Mesh name is a duplicate of an already-processed mesh
-    /// - Mesh conversion fails (see [`convert_mjcf_mesh`] for details)
+    /// Returns [`MjcfError::DuplicateName`] if the mesh's name is an
+    /// already-processed mesh's, and the conversion's error if it fails (see
+    /// [`convert_mjcf_mesh`]).
     pub(crate) fn process_mesh(
         &mut self,
         mjcf_mesh: &MjcfMesh,
         base_path: Option<&Path>,
-    ) -> std::result::Result<(), ModelConversionError> {
+    ) -> Result<()> {
         // Check for duplicate mesh names
         if self.mesh_name_to_id.contains_key(&mjcf_mesh.name) {
-            return Err(ModelConversionError {
-                message: format!("mesh '{}': duplicate mesh name", mjcf_mesh.name),
-            });
+            return Err(MjcfError::duplicate_name(
+                ElementKind::Mesh,
+                &mjcf_mesh.name,
+            ));
         }
 
         // Convert MJCF mesh to TriangleMeshData
@@ -62,12 +64,11 @@ impl ModelBuilder {
         if mode == MeshInertia::Exact {
             let (volume, _, _) = compute_mesh_inertia(&mesh_data);
             if volume < 0.0 {
-                return Err(ModelConversionError {
-                    message: format!(
-                        "mesh volume is negative (misoriented triangles): {}",
-                        mjcf_mesh.name
-                    ),
-                });
+                return Err(MjcfError::asset(
+                    ElementKind::Mesh,
+                    &mjcf_mesh.name,
+                    "mesh volume is negative (misoriented triangles)",
+                ));
             }
         }
 
@@ -90,11 +91,9 @@ impl ModelBuilder {
         &mut self,
         hfield: &MjcfHfield,
         base_path: Option<&Path>,
-    ) -> std::result::Result<(), ModelConversionError> {
+    ) -> Result<()> {
         if self.hfield_name_to_id.contains_key(&hfield.name) {
-            return Err(ModelConversionError {
-                message: format!("duplicate hfield '{}'", hfield.name),
-            });
+            return Err(MjcfError::duplicate_name(ElementKind::Hfield, &hfield.name));
         }
         let data = convert_mjcf_hfield(hfield, base_path, &self.compiler)?;
         let id = self.hfield_data.len();
@@ -122,7 +121,7 @@ impl ModelBuilder {
 ///
 /// # Errors
 ///
-/// Returns `ModelConversionError` if:
+/// Returns an [`MjcfError::Asset`] if:
 /// - Path resolution fails (see [`resolve_asset_path`])
 /// - File format is unsupported or corrupt
 /// - Mesh contains no vertices or faces
@@ -132,25 +131,22 @@ pub fn load_mesh_file(
     compiler: &MjcfCompiler,
     scale: Vector3<f64>,
     mesh_name: &str,
-) -> std::result::Result<TriangleMeshData, ModelConversionError> {
+) -> Result<TriangleMeshData> {
     // 1. Resolve path using compiler path settings
-    let resolved_path = resolve_asset_path(file_path, base_path, compiler, AssetKind::Mesh)?;
+    let refuse = |reason: String| MjcfError::asset(ElementKind::Mesh, mesh_name, reason);
+    let resolved_path =
+        resolve_asset_path(file_path, base_path, compiler, AssetKind::Mesh).map_err(refuse)?;
 
     // 2. Load mesh via mesh-io
-    let indexed_mesh = mesh_io::load_mesh(&resolved_path).map_err(|e| ModelConversionError {
-        message: format!("mesh '{mesh_name}': failed to load '{file_path}': {e}"),
-    })?;
+    let indexed_mesh = mesh_io::load_mesh(&resolved_path)
+        .map_err(|e| refuse(format!("failed to load '{file_path}': {e}")))?;
 
     // 3. Validate non-empty
     if indexed_mesh.vertices.is_empty() {
-        return Err(ModelConversionError {
-            message: format!("mesh '{mesh_name}': file '{file_path}' contains no vertices"),
-        });
+        return Err(refuse(format!("file '{file_path}' contains no vertices")));
     }
     if indexed_mesh.faces.is_empty() {
-        return Err(ModelConversionError {
-            message: format!("mesh '{mesh_name}': file '{file_path}' contains no faces"),
-        });
+        return Err(refuse(format!("file '{file_path}' contains no faces")));
     }
 
     // 4. Convert vertices with scale applied
@@ -194,23 +190,18 @@ pub fn convert_mjcf_hfield(
     hfield: &MjcfHfield,
     base_path: Option<&Path>,
     compiler: &MjcfCompiler,
-) -> std::result::Result<HeightFieldData, ModelConversionError> {
+) -> Result<HeightFieldData> {
     // Resolve data source: file-based or inline
     let (ncol, nrow, elevation) = match (&hfield.file, &hfield.elevation) {
         // Inline elevation data takes precedence (consistent with mesh semantics)
         (_, Some(elev)) => {
-            let nr = hfield.nrow.ok_or_else(|| ModelConversionError {
-                message: format!(
-                    "hfield '{}': nrow required with inline elevation",
-                    hfield.name
-                ),
-            })?;
-            let nc = hfield.ncol.ok_or_else(|| ModelConversionError {
-                message: format!(
-                    "hfield '{}': ncol required with inline elevation",
-                    hfield.name
-                ),
-            })?;
+            let at = || Location::named(ElementKind::Hfield, &hfield.name);
+            let nr = hfield
+                .nrow
+                .ok_or_else(|| MjcfError::missing_attribute("hfield", "nrow").at(at()))?;
+            let nc = hfield
+                .ncol
+                .ok_or_else(|| MjcfError::missing_attribute("hfield", "ncol").at(at()))?;
             (nc, nr, elev.clone())
         }
         // File-based loading (requires `hfields` feature)
@@ -220,23 +211,20 @@ pub fn convert_mjcf_hfield(
         (Some(file_path), None) => {
             // Suppress unused-parameter warnings; load_hfield_png isn't compiled in.
             let _ = (base_path, compiler);
-            return Err(ModelConversionError {
-                message: format!(
-                    "hfield '{}': file=\"{}\" requires the `hfields` feature \
-                     (currently disabled — enable `sim-mjcf/hfields` to load \
-                     PNG height fields, or use inline `elevation=\"...\"` data)",
-                    hfield.name, file_path,
-                ),
-            });
+            return Err(MjcfError::unsupported(format!(
+                "hfield file=\"{file_path}\" without the `hfields` feature \
+                 (enable `sim-mjcf/hfields` to load PNG height fields, or use \
+                 inline `elevation=\"...\"` data)",
+            ))
+            .at(Location::named(ElementKind::Hfield, &hfield.name)));
         }
         // Neither (should not happen — parser validates)
         (None, None) => {
-            return Err(ModelConversionError {
-                message: format!(
-                    "hfield '{}': no elevation data and no file specified",
-                    hfield.name,
-                ),
-            });
+            return Err(MjcfError::asset(
+                ElementKind::Hfield,
+                &hfield.name,
+                "no elevation data and no file specified",
+            ));
         }
     };
 
@@ -306,14 +294,15 @@ fn load_hfield_png(
     base_path: Option<&Path>,
     compiler: &MjcfCompiler,
     hfield_name: &str,
-) -> std::result::Result<(usize, usize, Vec<f64>), ModelConversionError> {
+) -> Result<(usize, usize, Vec<f64>)> {
     // Resolve path using the same rules as mesh files (hfields use meshdir)
-    let resolved_path = resolve_asset_path(file_path, base_path, compiler, AssetKind::Mesh)?;
+    let refuse = |reason: String| MjcfError::asset(ElementKind::Hfield, hfield_name, reason);
+    let resolved_path =
+        resolve_asset_path(file_path, base_path, compiler, AssetKind::Mesh).map_err(refuse)?;
 
     // Load image
-    let img = image::open(&resolved_path).map_err(|e| ModelConversionError {
-        message: format!("hfield '{hfield_name}': failed to load '{file_path}': {e}"),
-    })?;
+    let img = image::open(&resolved_path)
+        .map_err(|e| refuse(format!("failed to load '{file_path}': {e}")))?;
 
     // Convert to 16-bit grayscale for maximum precision
     let gray = img.into_luma16();
@@ -321,11 +310,9 @@ fn load_hfield_png(
     let nrow = gray.height() as usize;
 
     if nrow < 2 || ncol < 2 {
-        return Err(ModelConversionError {
-            message: format!(
-                "hfield '{hfield_name}': image dimensions ({ncol}x{nrow}) must be >= 2x2",
-            ),
-        });
+        return Err(refuse(format!(
+            "image dimensions ({ncol}x{nrow}) must be >= 2x2"
+        )));
     }
 
     // Normalize to [0.0, 1.0]
@@ -346,7 +333,7 @@ pub fn convert_mjcf_mesh(
     mjcf_mesh: &MjcfMesh,
     base_path: Option<&Path>,
     compiler: &MjcfCompiler,
-) -> std::result::Result<TriangleMeshData, ModelConversionError> {
+) -> Result<TriangleMeshData> {
     // Dispatch based on data source
     match (&mjcf_mesh.vertex, &mjcf_mesh.file) {
         // Embedded vertex data takes precedence (MuJoCo semantics)
@@ -360,12 +347,11 @@ pub fn convert_mjcf_mesh(
             &mjcf_mesh.name,
         ),
         // Neither specified
-        (None, None) => Err(ModelConversionError {
-            message: format!(
-                "mesh '{}': no vertex data and no file specified",
-                mjcf_mesh.name
-            ),
-        }),
+        (None, None) => Err(MjcfError::asset(
+            ElementKind::Mesh,
+            &mjcf_mesh.name,
+            "no vertex data and no file specified",
+        )),
     }
 }
 
@@ -373,19 +359,14 @@ pub fn convert_mjcf_mesh(
 ///
 /// This handles the case where vertex and face data are embedded directly
 /// in the MJCF XML via `vertex="..."` and `face="..."` attributes.
-pub fn convert_embedded_mesh(
-    mjcf_mesh: &MjcfMesh,
-    verts: &[f64],
-) -> std::result::Result<TriangleMeshData, ModelConversionError> {
+pub fn convert_embedded_mesh(mjcf_mesh: &MjcfMesh, verts: &[f64]) -> Result<TriangleMeshData> {
+    let refuse = |reason: String| MjcfError::asset(ElementKind::Mesh, &mjcf_mesh.name, reason);
     // Validate vertex data
     if !verts.len().is_multiple_of(3) {
-        return Err(ModelConversionError {
-            message: format!(
-                "mesh '{}': vertex count ({}) not divisible by 3",
-                mjcf_mesh.name,
-                verts.len()
-            ),
-        });
+        return Err(refuse(format!(
+            "vertex count ({}) not divisible by 3",
+            verts.len()
+        )));
     }
 
     // Apply scale while converting to Point3
@@ -399,51 +380,34 @@ pub fn convert_embedded_mesh(
     let indices: Vec<usize> = match &mjcf_mesh.face {
         Some(face_data) => {
             if face_data.len() % 3 != 0 {
-                return Err(ModelConversionError {
-                    message: format!(
-                        "mesh '{}': face index count ({}) not divisible by 3",
-                        mjcf_mesh.name,
-                        face_data.len()
-                    ),
-                });
+                return Err(refuse(format!(
+                    "face index count ({}) not divisible by 3",
+                    face_data.len()
+                )));
             }
             face_data.iter().map(|&idx| idx as usize).collect()
         }
         None => {
-            return Err(ModelConversionError {
-                message: format!(
-                    "mesh '{}': embedded vertex data requires face data",
-                    mjcf_mesh.name
-                ),
-            });
+            return Err(refuse("embedded vertex data requires face data".into()));
         }
     };
 
     // Validate non-empty
     if vertices.is_empty() {
-        return Err(ModelConversionError {
-            message: format!("mesh '{}': empty vertex array", mjcf_mesh.name),
-        });
+        return Err(refuse("empty vertex array".into()));
     }
     if indices.is_empty() {
-        return Err(ModelConversionError {
-            message: format!("mesh '{}': empty face array", mjcf_mesh.name),
-        });
+        return Err(refuse("empty face array".into()));
     }
 
     // Validate index bounds
     let max_idx = vertices.len();
     for (i, &idx) in indices.iter().enumerate() {
         if idx >= max_idx {
-            return Err(ModelConversionError {
-                message: format!(
-                    "mesh '{}': face index {} at position {} out of bounds (max: {})",
-                    mjcf_mesh.name,
-                    idx,
-                    i,
-                    max_idx - 1
-                ),
-            });
+            return Err(refuse(format!(
+                "face index {idx} at position {i} out of bounds (max: {})",
+                max_idx - 1
+            )));
         }
     }
 

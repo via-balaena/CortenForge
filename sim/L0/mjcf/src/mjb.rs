@@ -37,6 +37,14 @@
 //! let loaded = load_mjb_file("robot.mjb").expect("should load");
 //! assert_eq!(loaded.name, "robot");
 //! ```
+//!
+//! # Stack
+//!
+//! The readers and writers encode and decode the body tree recursively on the
+//! caller's stack, to whatever depth the model or file holds: a tree deep
+//! enough overflows it. Unlike the XML loaders, they do not run on the
+//! loader's own stack (`stack`) or bound the depth; that is the spec book's
+//! Rigid-loading L27.
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -107,10 +115,13 @@ impl MjbHeader {
     /// Validate the header.
     fn validate(&self) -> Result<()> {
         if self.magic != MJB_MAGIC {
-            return Err(MjcfError::InvalidMjbMagic(self.magic));
+            return Err(MjcfError::MjbMagic { found: self.magic });
         }
         if self.version != MJB_VERSION {
-            return Err(MjcfError::UnsupportedMjbVersion(self.version));
+            return Err(MjcfError::MjbVersion {
+                found: self.version,
+                supported: MJB_VERSION,
+            });
         }
         Ok(())
     }
@@ -147,7 +158,8 @@ impl Default for MjbHeader {
 /// save_mjb_file(&model, "model.mjb").unwrap();
 /// ```
 pub fn save_mjb_file(model: &MjcfModel, path: impl AsRef<Path>) -> Result<()> {
-    let file = File::create(path)?;
+    let path = path.as_ref();
+    let file = File::create(path).map_err(|e| MjcfError::io(path, e))?;
     let mut writer = BufWriter::new(file);
     save_mjb_writer(model, &mut writer)
 }
@@ -168,13 +180,16 @@ pub fn save_mjb_file(model: &MjcfModel, path: impl AsRef<Path>) -> Result<()> {
 pub fn save_mjb_writer<W: Write>(model: &MjcfModel, writer: &mut W) -> Result<()> {
     // Write header
     let header = MjbHeader::new();
-    header
-        .write_to(writer)
-        .map_err(|e| MjcfError::MjbSerialize(e.to_string()))?;
+    header.write_to(writer).map_err(|e| MjcfError::MjbEncode {
+        message: e.to_string(),
+    })?;
 
     // Serialize model using bincode (serde compat layer)
-    bincode::serde::encode_into_std_write(model, writer, bincode::config::standard())
-        .map_err(|e| MjcfError::MjbSerialize(e.to_string()))?;
+    bincode::serde::encode_into_std_write(model, writer, bincode::config::standard()).map_err(
+        |e| MjcfError::MjbEncode {
+            message: e.to_string(),
+        },
+    )?;
 
     Ok(())
 }
@@ -241,7 +256,8 @@ pub fn save_mjb_bytes(model: &MjcfModel) -> Result<Vec<u8>> {
 /// println!("Loaded model: {}", model.name);
 /// ```
 pub fn load_mjb_file(path: impl AsRef<Path>) -> Result<MjcfModel> {
-    let file = File::open(path)?;
+    let path = path.as_ref();
+    let file = File::open(path).map_err(|e| MjcfError::io(path, e))?;
     let mut reader = BufReader::new(file);
     load_mjb_reader(&mut reader)
 }
@@ -267,14 +283,18 @@ pub fn load_mjb_file(path: impl AsRef<Path>) -> Result<MjcfModel> {
 /// - Deserialization fails
 pub fn load_mjb_reader<R: Read>(reader: &mut R) -> Result<MjcfModel> {
     // Read and validate header
-    let header = MjbHeader::read_from(reader)
-        .map_err(|e| MjcfError::MjbDeserialize(format!("failed to read header: {e}")))?;
+    let header = MjbHeader::read_from(reader).map_err(|e| MjcfError::MjbDecode {
+        message: format!("failed to read header: {e}"),
+    })?;
     header.validate()?;
 
     // Deserialize model using bincode (serde compat layer)
     let model: MjcfModel =
-        bincode::serde::decode_from_std_read(reader, bincode::config::standard())
-            .map_err(|e| MjcfError::MjbDeserialize(e.to_string()))?;
+        bincode::serde::decode_from_std_read(reader, bincode::config::standard()).map_err(|e| {
+            MjcfError::MjbDecode {
+                message: e.to_string(),
+            }
+        })?;
 
     Ok(model)
 }
@@ -431,17 +451,14 @@ mod tests {
 
         // Invalid magic
         header.magic = *b"NOPE";
-        assert!(matches!(
-            header.validate(),
-            Err(MjcfError::InvalidMjbMagic(_))
-        ));
+        assert!(matches!(header.validate(), Err(MjcfError::MjbMagic { .. })));
 
         // Invalid version
         header.magic = MJB_MAGIC;
         header.version = 999;
         assert!(matches!(
             header.validate(),
-            Err(MjcfError::UnsupportedMjbVersion(999))
+            Err(MjcfError::MjbVersion { found: 999, .. })
         ));
     }
 
@@ -568,7 +585,7 @@ mod tests {
     fn test_invalid_magic_bytes() {
         let bad_data = b"NOPE1234567890";
         let result = load_mjb_bytes(bad_data);
-        assert!(matches!(result, Err(MjcfError::InvalidMjbMagic(_))));
+        assert!(matches!(result, Err(MjcfError::MjbMagic { .. })));
     }
 
     #[test]
@@ -581,7 +598,10 @@ mod tests {
         buffer.extend_from_slice(&[0u8; 100]);
 
         let result = load_mjb_bytes(&buffer);
-        assert!(matches!(result, Err(MjcfError::UnsupportedMjbVersion(999))));
+        assert!(matches!(
+            result,
+            Err(MjcfError::MjbVersion { found: 999, .. })
+        ));
     }
 
     #[test]
@@ -592,7 +612,7 @@ mod tests {
         // Truncate to just the header
         let truncated = &bytes[..MJB_HEADER_SIZE + 10];
         let result = load_mjb_bytes(truncated);
-        assert!(matches!(result, Err(MjcfError::MjbDeserialize(_))));
+        assert!(matches!(result, Err(MjcfError::MjbDecode { .. })));
     }
 
     #[test]

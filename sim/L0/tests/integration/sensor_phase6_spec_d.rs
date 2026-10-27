@@ -4,7 +4,7 @@
 //! validation, and historyadr/nhistory computation for sensors.
 
 use sim_core::InterpolationType;
-use sim_mjcf::load_model;
+use sim_mjcf::{MjcfError, load_model};
 
 // ============================================================================
 // T1: Parse basic history attributes → AC1, AC2, AC3
@@ -247,10 +247,13 @@ fn spec_d_t08_invalid_interp_keywords() {
             "#
         );
         let err = load_model(&mjcf).unwrap_err();
-        let msg = format!("{err}");
         assert!(
-            msg.contains("invalid interp keyword"),
-            "interp=\"{bad}\" should fail with 'invalid interp keyword', got: {msg}"
+            matches!(
+                &err,
+                MjcfError::InvalidKeyword { attribute, value, .. }
+                    if attribute == "interp" && value == bad
+            ),
+            "interp=\"{bad}\" should fail as an invalid keyword, got: {err}"
         );
     }
 }

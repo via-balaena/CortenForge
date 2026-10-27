@@ -1195,7 +1195,7 @@ fn t38_invalid_fluidshape() {
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
-        MjcfError::InvalidFluidShape(_)
+        MjcfError::InvalidKeyword { attribute, .. } if attribute == "fluidshape"
     ));
 }
 
@@ -1215,7 +1215,7 @@ fn t39_partial_fluidcoef() {
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
-        MjcfError::InvalidFluidCoef(_)
+        MjcfError::WrongValueCount { found: 2, .. }
     ));
 }
 

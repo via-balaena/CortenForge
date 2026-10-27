@@ -1,0 +1,8 @@
+<mujoco>
+            <worldbody>
+                <body><joint name="j" type="hinge"/><geom size="0.1"/></body>
+            </worldbody>
+            <tendon>
+                <fixed name="t"><joint joint="nope" coef="1"/></fixed>
+            </tendon>
+        </mujoco>

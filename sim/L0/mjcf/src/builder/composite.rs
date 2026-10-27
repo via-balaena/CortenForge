@@ -9,7 +9,8 @@
 use nalgebra::{Rotation3, UnitQuaternion, Vector3};
 use std::f64::consts::PI;
 
-use crate::error::{MjcfError, Result};
+use crate::error::{ElementKind, Location, MjcfError, Result};
+use crate::stack::MAX_BODY_TREE_DEPTH;
 use crate::types::{
     CompositeType, MjcfBody, MjcfComposite, MjcfContactExclude, MjcfGeom, MjcfGeomType, MjcfJoint,
     MjcfJointType, MjcfSite,
@@ -32,53 +33,35 @@ fn expand_composites_recursive(
         expand_composites_recursive(child, excludes)?;
     }
 
-    // Then expand composites on this body
+    // Then expand composites on this body; an error names the body that
+    // holds the composite.
     let composites = std::mem::take(&mut body.composites);
     for composite in composites {
-        match composite.comp_type {
-            CompositeType::Cable => {
-                let (bodies, excl) = make_cable(&composite)?;
-                body.children.extend(bodies);
-                excludes.extend(excl);
-            }
-            CompositeType::Particle => {
-                return Err(MjcfError::Unsupported(
-                    "The \"particle\" composite type is deprecated. \
-                     Please use \"replicate\" instead."
-                        .to_string(),
-                ));
-            }
-            CompositeType::Grid => {
-                return Err(MjcfError::Unsupported(
-                    "The \"grid\" composite type is deprecated. \
-                     Please use \"flex\" instead."
-                        .to_string(),
-                ));
-            }
-            CompositeType::Rope => {
-                return Err(MjcfError::Unsupported(
-                    "The \"rope\" composite type is deprecated. \
-                     Please use \"cable\" instead."
-                        .to_string(),
-                ));
-            }
-            CompositeType::Loop => {
-                return Err(MjcfError::Unsupported(
-                    "The \"loop\" composite type is deprecated. \
-                     Please use \"flexcomp\" instead."
-                        .to_string(),
-                ));
-            }
-            CompositeType::Cloth => {
-                return Err(MjcfError::Unsupported(
-                    "The \"cloth\" composite type is deprecated. \
-                     Please use \"shell\" instead."
-                        .to_string(),
-                ));
-            }
-        }
+        let (bodies, excl) = expand_composite(&composite).map_err(|e| {
+            e.with_location_if_unknown(Location::named(ElementKind::Body, &body.name))
+        })?;
+        body.children.extend(bodies);
+        excludes.extend(excl);
     }
     Ok(())
+}
+
+/// One composite's bodies and contact excludes: a cable's, or MuJoCo's
+/// refusal of a deprecated type.
+fn expand_composite(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfContactExclude>)> {
+    let (kind, instead) = match composite.comp_type {
+        CompositeType::Cable => return make_cable(composite),
+        CompositeType::Particle => ("particle", "replicate"),
+        CompositeType::Grid => ("grid", "flex"),
+        CompositeType::Rope => ("rope", "cable"),
+        CompositeType::Loop => ("loop", "flexcomp"),
+        CompositeType::Cloth => ("cloth", "shell"),
+    };
+    Err(MjcfError::invalid_value(
+        "composite",
+        "type",
+        format!("The \"{kind}\" composite type is deprecated. Please use \"{instead}\" instead."),
+    ))
 }
 
 /// Validate cable composite constraints before generation.
@@ -90,15 +73,17 @@ fn validate_cable(composite: &MjcfComposite) -> Result<()> {
     // Uservert/count mutual exclusion (Make:147-153).
     // If uservert is non-empty, count[0] must be 1 (the default).
     if !composite.uservert.is_empty() && composite.count[0] != 1 {
-        return Err(MjcfError::Unsupported(
-            "Cannot specify both vertex and count for composite".to_string(),
+        return Err(MjcfError::invalid_model(
+            "Cannot specify both vertex and count for composite",
         ));
     }
 
     // Uservert length must be a multiple of 3 (xyz triples)
     if !composite.uservert.is_empty() && !composite.uservert.len().is_multiple_of(3) {
-        return Err(MjcfError::Unsupported(
-            "Composite vertex data must have length divisible by 3".to_string(),
+        return Err(MjcfError::invalid_value(
+            "composite",
+            "vertex",
+            "Composite vertex data must have length divisible by 3",
         ));
     }
 
@@ -117,8 +102,10 @@ fn validate_cable(composite: &MjcfComposite) -> Result<()> {
             + composite.size[1] * composite.size[1]
             + composite.size[2] * composite.size[2];
         if size_sq < 1e-15 {
-            return Err(MjcfError::Unsupported(
-                "Composite size is too small".to_string(),
+            return Err(MjcfError::invalid_value(
+                "composite",
+                "size",
+                "Composite size is too small",
             ));
         }
     }
@@ -127,10 +114,7 @@ fn validate_cable(composite: &MjcfComposite) -> Result<()> {
     match composite.initial.as_str() {
         "ball" | "none" | "free" => {}
         other => {
-            return Err(MjcfError::Unsupported(format!(
-                "Invalid composite initial value: \"{other}\". \
-                 Must be \"ball\", \"none\", or \"free\""
-            )));
+            return Err(MjcfError::invalid_keyword("composite", "initial", other));
         }
     }
 
@@ -138,16 +122,23 @@ fn validate_cable(composite: &MjcfComposite) -> Result<()> {
 
     // Cable must be 1D: count[1] and count[2] must be 1 (MakeCable:245)
     if composite.count[1] != 1 || composite.count[2] != 1 {
-        return Err(MjcfError::Unsupported(
-            "Cable must be one-dimensional".to_string(),
-        ));
+        return Err(MjcfError::invalid_model("Cable must be one-dimensional"));
     }
 
     // Need at least 2 vertices (1 segment)
     if effective_count0 < 2 {
-        return Err(MjcfError::Unsupported(
-            "Cable requires count >= 2 or at least 2 user-specified vertices".to_string(),
+        return Err(MjcfError::invalid_value(
+            "composite",
+            "count",
+            "Cable requires count >= 2 or at least 2 user-specified vertices",
         ));
+    }
+
+    // Its bodies (one fewer than its vertices) nest one in the next: refuse a
+    // chain deeper than the loader takes before building one.
+    #[allow(clippy::cast_sign_loss)] // `effective_count0 >= 2` above.
+    if effective_count0 as usize - 1 > MAX_BODY_TREE_DEPTH {
+        return Err(MjcfError::too_deep(MAX_BODY_TREE_DEPTH));
     }
 
     // Validate geom type: must be cylinder, capsule, or box (MakeCable:250-253).
@@ -155,14 +146,16 @@ fn validate_cable(composite: &MjcfComposite) -> Result<()> {
         match geom.geom_type {
             MjcfGeomType::Cylinder | MjcfGeomType::Capsule | MjcfGeomType::Box => {}
             _ => {
-                return Err(MjcfError::Unsupported(
-                    "Cable geom type must be cylinder, capsule or box".to_string(),
+                return Err(MjcfError::invalid_value(
+                    "geom",
+                    "type",
+                    "Cable geom type must be cylinder, capsule or box",
                 ));
             }
         }
     } else {
-        return Err(MjcfError::Unsupported(
-            "Cable composite requires a <geom> child element".to_string(),
+        return Err(MjcfError::invalid_model(
+            "Cable composite requires a <geom> child element",
         ));
     }
 
@@ -431,36 +424,17 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
 
         prev_quat = this_quat;
 
-        // Chain: each body is a child of the previous
-        if bodies.is_empty() {
-            bodies.push(cable_body);
-        } else {
-            // Append to the deepest leaf of the chain
-            append_to_chain(
-                bodies
-                    .last_mut()
-                    .unwrap_or_else(|| unreachable!("bodies is non-empty after first push")),
-                cable_body,
-            );
-        }
+        bodies.push(cable_body);
     }
 
-    Ok((bodies, excludes))
-}
-
-/// Append a body to the deepest leaf of a body chain.
-/// Produces linear chain: B_first → B_1 → ... → B_last.
-#[allow(clippy::unreachable)] // unwrap_or_else fallback: children is non-empty in else branch
-fn append_to_chain(parent: &mut MjcfBody, child: MjcfBody) {
-    if parent.children.is_empty() {
-        parent.children.push(child);
-    } else {
-        let last = parent
-            .children
-            .last_mut()
-            .unwrap_or_else(|| unreachable!("children is non-empty in else branch"));
-        append_to_chain(last, child);
+    // Chain: each body a child of the one before it, nested from the last.
+    let mut chain: Option<MjcfBody> = None;
+    while let Some(mut body) = bodies.pop() {
+        body.children.extend(chain.take());
+        chain = Some(body);
     }
+
+    Ok((chain.into_iter().collect(), excludes))
 }
 
 /// Build an `MjcfGeom` from the composite's geom template.
@@ -604,6 +578,16 @@ mod tests {
                 priority: None,
             }),
         }
+    }
+
+    #[test]
+    fn validate_cable_takes_4096_bodies_and_refuses_4097() {
+        // Bodies are one fewer than vertices; only the count is checked here.
+        assert!(validate_cable(&make_simple_cable(4097)).is_ok());
+        assert!(matches!(
+            validate_cable(&make_simple_cable(4098)),
+            Err(MjcfError::TooDeep { limit: 4096, .. })
+        ));
     }
 
     #[test]

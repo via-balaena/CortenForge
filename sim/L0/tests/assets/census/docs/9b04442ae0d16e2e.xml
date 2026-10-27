@@ -1,0 +1,4 @@
+<mujoco>
+            <worldbody><body><joint/><geom size="0.1"/></body></worldbody>
+            <keyframe><key name="k" qpos="1 2 3"/></keyframe>
+        </mujoco>

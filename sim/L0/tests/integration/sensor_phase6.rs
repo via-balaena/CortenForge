@@ -6,7 +6,7 @@
 use approx::assert_relative_eq;
 use nalgebra::{DVector, UnitQuaternion, Vector3};
 use sim_core::{ConstraintType, Contact, MjObjectType, MjSensorType};
-use sim_mjcf::load_model;
+use sim_mjcf::{MjcfError, load_model};
 
 // ============================================================================
 // T1: Parser objtype attribute → AC1
@@ -926,7 +926,7 @@ fn t30_sensor_dim_adr_invariance() {
 }
 
 // ============================================================================
-// T31: Invalid reftype → ModelConversionError → AC11
+// T31: Invalid reftype → MjcfError::InvalidKeyword → AC11
 // ============================================================================
 
 #[test]
@@ -947,15 +947,18 @@ fn t31_invalid_reftype_error() {
     "#;
 
     let err = load_model(mjcf).unwrap_err();
-    let msg = format!("{err}");
     assert!(
-        msg.contains("invalid reftype"),
-        "expected 'invalid reftype' in error, got: {msg}"
+        matches!(
+            &err,
+            MjcfError::InvalidKeyword { attribute, value, .. }
+                if attribute == "reftype" && value == "invalid"
+        ),
+        "{err}"
     );
 }
 
 // ============================================================================
-// T32: Unknown refname → ModelConversionError → AC12
+// T32: Unknown refname → MjcfError::UndefinedReference → AC12
 // ============================================================================
 
 #[test]

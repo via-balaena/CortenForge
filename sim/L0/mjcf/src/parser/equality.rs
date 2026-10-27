@@ -99,9 +99,9 @@ pub(super) fn parse_equality<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfE
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"equality" => break,
-            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in equality".into())),
+            Ok(Event::Eof) => return Err(MjcfError::eof_in("equality")),
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -118,7 +118,7 @@ pub(super) fn parse_connect_attrs(e: &BytesStart) -> Result<MjcfConnect> {
 
     // body1 is required
     connect.body1 = get_attribute_opt(e, "body1")
-        .ok_or_else(|| MjcfError::missing_attribute("body1", "connect"))?;
+        .ok_or_else(|| MjcfError::missing_attribute("connect", "body1"))?;
 
     // body2 is optional (defaults to world)
     connect.body2 = get_attribute_opt(e, "body2");
@@ -147,7 +147,7 @@ pub(super) fn parse_weld_attrs(e: &BytesStart) -> Result<MjcfWeld> {
 
     // body1 is required
     weld.body1 = get_attribute_opt(e, "body1")
-        .ok_or_else(|| MjcfError::missing_attribute("body1", "weld"))?;
+        .ok_or_else(|| MjcfError::missing_attribute("weld", "body1"))?;
 
     // body2 is optional (defaults to world)
     weld.body2 = get_attribute_opt(e, "body2");
@@ -179,7 +179,7 @@ pub(super) fn parse_joint_equality_attrs(e: &BytesStart) -> Result<MjcfJointEqua
 
     // joint1 is required
     joint_eq.joint1 = get_attribute_opt(e, "joint1")
-        .ok_or_else(|| MjcfError::missing_attribute("joint1", "joint equality"))?;
+        .ok_or_else(|| MjcfError::missing_attribute("joint", "joint1"))?;
 
     // joint2 is optional (for coupling constraints)
     joint_eq.joint2 = get_attribute_opt(e, "joint2");
@@ -208,7 +208,7 @@ pub(super) fn parse_distance_attrs(e: &BytesStart) -> Result<MjcfDistance> {
 
     // geom1 is required
     distance.geom1 = get_attribute_opt(e, "geom1")
-        .ok_or_else(|| MjcfError::missing_attribute("geom1", "distance"))?;
+        .ok_or_else(|| MjcfError::missing_attribute("distance", "geom1"))?;
 
     // geom2 is optional (defaults to world origin)
     distance.geom2 = get_attribute_opt(e, "geom2");
@@ -237,7 +237,7 @@ pub(super) fn parse_tendon_equality_attrs(e: &BytesStart) -> Result<MjcfTendonEq
 
     // tendon1 is required
     ten_eq.tendon1 = get_attribute_opt(e, "tendon1")
-        .ok_or_else(|| MjcfError::missing_attribute("tendon1", "tendon equality"))?;
+        .ok_or_else(|| MjcfError::missing_attribute("tendon", "tendon1"))?;
 
     // tendon2 is optional (for coupling constraints)
     ten_eq.tendon2 = get_attribute_opt(e, "tendon2");

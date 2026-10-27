@@ -1,0 +1,4 @@
+<mujoco>
+            <size nuser_jnt="1"/>
+            <worldbody><body><joint name="j" user="1 2"/><geom size="0.1"/></body></worldbody>
+        </mujoco>

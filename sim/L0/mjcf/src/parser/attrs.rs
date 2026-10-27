@@ -5,7 +5,7 @@ use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
-use crate::error::{MjcfError, Result};
+use crate::error::{MjcfError, Result, ValueCount};
 
 /// Safe axis normalization with Z fallback for zero-length vectors.
 #[inline]
@@ -17,10 +17,7 @@ pub(super) fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
 /// Parse a space-separated array of unsigned integers.
 pub(super) fn parse_int_array(s: &str) -> Result<Vec<u32>> {
     s.split_whitespace()
-        .map(|p| {
-            p.parse::<u32>()
-                .map_err(|_| MjcfError::XmlParse(format!("invalid integer: {p}")))
-        })
+        .map(|p| p.parse::<u32>().map_err(|_| MjcfError::bad_number(p)))
         .collect()
 }
 
@@ -58,8 +55,10 @@ pub(super) fn parse_maxhullvert(n: i32) -> Result<Option<usize>> {
         #[allow(clippy::cast_sign_loss)]
         Ok(Some(n as usize))
     } else {
-        Err(MjcfError::XmlParse(
-            "maxhullvert must be larger than 3".to_string(),
+        Err(MjcfError::invalid_value(
+            "mesh",
+            "maxhullvert",
+            "maxhullvert must be larger than 3",
         ))
     }
 }
@@ -69,10 +68,7 @@ pub(super) fn parse_vector3(s: &str) -> Result<Vector3<f64>> {
     let parts = parse_float_array(s)?;
 
     if parts.len() < 3 {
-        return Err(MjcfError::XmlParse(format!(
-            "expected 3 values in vector, got {}: {s}",
-            parts.len()
-        )));
+        return Err(MjcfError::wrong_count(ValueCount::AtLeast(3), parts.len()));
     }
 
     Ok(Vector3::new(parts[0], parts[1], parts[2]))
@@ -83,10 +79,7 @@ pub(super) fn parse_vector4(s: &str) -> Result<Vector4<f64>> {
     let parts = parse_float_array(s)?;
 
     if parts.len() < 4 {
-        return Err(MjcfError::XmlParse(format!(
-            "expected 4 values in vector, got {}: {s}",
-            parts.len()
-        )));
+        return Err(MjcfError::wrong_count(ValueCount::AtLeast(4), parts.len()));
     }
 
     Ok(Vector4::new(parts[0], parts[1], parts[2], parts[3]))
@@ -95,10 +88,7 @@ pub(super) fn parse_vector4(s: &str) -> Result<Vector4<f64>> {
 /// Parse a space-separated array of floats.
 pub(super) fn parse_float_array(s: &str) -> Result<Vec<f64>> {
     s.split_whitespace()
-        .map(|p| {
-            p.parse::<f64>()
-                .map_err(|_| MjcfError::XmlParse(format!("invalid float: {p}")))
-        })
+        .map(|p| p.parse::<f64>().map_err(|_| MjcfError::bad_number(p)))
         .collect()
 }
 
@@ -179,7 +169,7 @@ pub(super) fn skip_element<R: BufRead>(reader: &mut Reader<R>, name: &[u8]) -> R
             }
             Ok(Event::Eof) => break,
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }

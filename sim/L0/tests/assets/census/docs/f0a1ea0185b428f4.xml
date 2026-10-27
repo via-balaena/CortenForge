@@ -1,0 +1,6 @@
+<mujoco>
+            <deformable>
+                <flex name="a" dim="2"><vertex pos="0 0 0  1 0 0  0 1 0"/><element data="0 1 2"/></flex>
+                <flex dim="4"><vertex pos="0 0 0  1 0 0  0 1 0  0 0 1  1 1 1"/><element data="0 1 2 3 4"/></flex>
+            </deformable>
+        </mujoco>

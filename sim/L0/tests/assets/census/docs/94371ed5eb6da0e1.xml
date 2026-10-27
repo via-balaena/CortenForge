@@ -1,0 +1,3 @@
+<mujoco><worldbody>
+            <body name="b"><geom size="0.1"/><site type="sphere" fromto="0 0 0 0 0 1"/></body>
+        </worldbody></mujoco>

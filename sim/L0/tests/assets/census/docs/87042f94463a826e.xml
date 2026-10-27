@@ -1,0 +1,5 @@
+<mujoco>
+            <worldbody>
+                <body><composite type="grid" count="3 3 1"><geom size="0.1"/></composite></body>
+            </worldbody>
+        </mujoco>

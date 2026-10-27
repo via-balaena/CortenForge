@@ -7,16 +7,15 @@
 use sim_core::{GeomType, MjJointType, TendonType, WrapType};
 use tracing::warn;
 
-use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, ModelConversionError};
+use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{MjcfTendon, MjcfTendonType, SpatialPathElement};
 
 impl ModelBuilder {
-    pub(crate) fn process_tendons(
-        &mut self,
-        tendons: &[MjcfTendon],
-    ) -> std::result::Result<(), ModelConversionError> {
+    pub(crate) fn process_tendons(&mut self, tendons: &[MjcfTendon]) -> Result<()> {
         for (t_idx, tendon) in tendons.iter().enumerate() {
             let tendon = self.resolver.apply_to_tendon(tendon);
+            let at = || Location::nth(ElementKind::Tendon, Some(&tendon.name), t_idx);
             if !tendon.name.is_empty() {
                 self.tendon_name_to_id.insert(tendon.name.clone(), t_idx);
             }
@@ -80,11 +79,8 @@ impl ModelBuilder {
                             *self
                                 .joint_name_to_id
                                 .get(joint_name.as_str())
-                                .ok_or_else(|| ModelConversionError {
-                                    message: format!(
-                                        "Tendon '{}' references unknown joint '{}'",
-                                        tendon.name, joint_name
-                                    ),
+                                .ok_or_else(|| {
+                                    MjcfError::undefined(ElementKind::Joint, joint_name).at(at())
                                 })?;
                         // Fixed tendons couple to the first qpos component of the joint
                         // (MuJoCo ref: mj_tendon() in engine_core_smooth.c).
@@ -118,14 +114,9 @@ impl ModelBuilder {
                     for elem in &tendon.path_elements {
                         match elem {
                             SpatialPathElement::Site { site } => {
-                                let site_idx = *self
-                                    .site_name_to_id
-                                    .get(site.as_str())
-                                    .ok_or_else(|| ModelConversionError {
-                                        message: format!(
-                                            "Tendon '{}' references unknown site '{}'",
-                                            tendon.name, site
-                                        ),
+                                let site_idx =
+                                    *self.site_name_to_id.get(site.as_str()).ok_or_else(|| {
+                                        MjcfError::undefined(ElementKind::Site, site).at(at())
                                     })?;
                                 self.wrap_type.push(WrapType::Site);
                                 self.wrap_objid.push(site_idx);
@@ -135,43 +126,28 @@ impl ModelBuilder {
                             SpatialPathElement::Geom { geom, sidesite } => {
                                 let geom_id =
                                     *self.geom_name_to_id.get(geom.as_str()).ok_or_else(|| {
-                                        ModelConversionError {
-                                            message: format!(
-                                                "Tendon '{}' references unknown geom '{}'",
-                                                tendon.name, geom
-                                            ),
-                                        }
+                                        MjcfError::undefined(ElementKind::Geom, geom).at(at())
                                     })?;
                                 // Validate geom type: must be Sphere or Cylinder
                                 let gt = self.geom_type[geom_id];
                                 if gt != GeomType::Sphere && gt != GeomType::Cylinder {
-                                    return Err(ModelConversionError {
-                                        message: format!(
-                                            "Tendon '{}' wrapping geom '{}' has type {:?}, \
-                                             but only Sphere and Cylinder are supported",
-                                            tendon.name, geom, gt
-                                        ),
-                                    });
+                                    return Err(MjcfError::invalid_model(format!(
+                                        "wrapping geom '{geom}' is not a sphere or a cylinder \
+                                         (its type is {gt:?})"
+                                    ))
+                                    .at(at()));
                                 }
                                 // Validate geom radius > 0 (rule 5)
                                 let radius = self.geom_size[geom_id].x;
                                 if radius <= 0.0 {
-                                    return Err(ModelConversionError {
-                                        message: format!(
-                                            "Tendon '{}' wrapping geom '{}' has zero or \
-                                             negative radius {}",
-                                            tendon.name, geom, radius
-                                        ),
-                                    });
+                                    return Err(MjcfError::invalid_model(format!(
+                                        "wrapping geom '{geom}' has zero or negative radius {radius}"
+                                    ))
+                                    .at(at()));
                                 }
                                 let ss_id = if let Some(ss) = sidesite {
                                     *self.site_name_to_id.get(ss.as_str()).ok_or_else(|| {
-                                        ModelConversionError {
-                                            message: format!(
-                                                "Tendon '{}' references unknown sidesite '{}'",
-                                                tendon.name, ss
-                                            ),
-                                        }
+                                        MjcfError::undefined(ElementKind::Site, ss).at(at())
                                     })?
                                 } else {
                                     usize::MAX

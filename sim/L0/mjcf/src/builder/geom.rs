@@ -10,29 +10,35 @@ use sim_core::GeomType;
 use super::fluid::compute_geom_fluid;
 use super::mesh::MeshProps;
 use super::orientation::{MJ_EPS, normvec, resolve_orientation, site_orientation, z2quat};
-use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, ModelConversionError};
+use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{FluidShape, MjcfGeom, MjcfGeomType, MjcfSite};
 
 impl ModelBuilder {
-    pub(crate) fn process_geom(
-        &mut self,
-        geom: &MjcfGeom,
-        body_id: usize,
-    ) -> std::result::Result<usize, ModelConversionError> {
+    pub(crate) fn process_geom(&mut self, geom: &MjcfGeom, body_id: usize) -> Result<usize> {
         let geom_id = self.geom_type.len();
         let geom_type = convert_geom_type(geom.geom_type);
+        let at = || {
+            Location::nth(ElementKind::Geom, geom.name.as_deref(), geom_id).within_nth(
+                ElementKind::Body,
+                self.body_name.get(body_id).and_then(Option::as_deref),
+                body_id,
+            )
+        };
 
         // Reject shellinertia on mesh geoms (MuJoCo 3.5.0 behavior)
         if geom.shellinertia == Some(true) && geom_type == GeomType::Mesh {
-            return Err(ModelConversionError {
-                message: format!(
-                    "geom '{}': for mesh geoms, inertia should be specified in the mesh asset",
-                    geom.name.as_deref().unwrap_or("<unnamed>")
-                ),
-            });
+            return Err(MjcfError::invalid_value(
+                "geom",
+                "shellinertia",
+                "for mesh geoms, inertia should be specified in the mesh asset",
+            )
+            .at(at()));
         }
 
-        let (geom_mesh_ref, geom_hfield_ref) = self.resolve_geom_asset_links(geom, geom_type)?;
+        let (geom_mesh_ref, geom_hfield_ref) = self
+            .resolve_geom_asset_links(geom, geom_type)
+            .map_err(|e| e.with_location_if_unknown(at()))?;
 
         // Handle fromto for capsules/cylinders
         let (pos, quat, size) = if let Some(fromto) = geom.fromto {
@@ -120,11 +126,7 @@ impl ModelBuilder {
         Ok(geom_id)
     }
 
-    pub(crate) fn process_site(
-        &mut self,
-        site: &MjcfSite,
-        body_id: usize,
-    ) -> std::result::Result<usize, ModelConversionError> {
+    pub(crate) fn process_site(&mut self, site: &MjcfSite, body_id: usize) -> Result<usize> {
         let site_id = self.site_body.len();
 
         // Store name mapping for actuator site transmission
@@ -156,33 +158,24 @@ impl ModelBuilder {
         Ok(site_id)
     }
 
-    /// Resolve mesh and hfield asset references for a geom.
+    /// Resolve mesh and hfield asset references for a geom; the caller
+    /// locates the errors.
     fn resolve_geom_asset_links(
         &self,
         geom: &MjcfGeom,
         geom_type: GeomType,
-    ) -> std::result::Result<(Option<usize>, Option<usize>), ModelConversionError> {
+    ) -> Result<(Option<usize>, Option<usize>)> {
         let geom_mesh_ref = if geom_type == GeomType::Mesh {
             match &geom.mesh {
                 Some(mesh_name) => {
-                    let mesh_id = self.mesh_name_to_id.get(mesh_name).ok_or_else(|| {
-                        ModelConversionError {
-                            message: format!(
-                                "geom '{}': references undefined mesh '{}'",
-                                geom.name.as_deref().unwrap_or("<unnamed>"),
-                                mesh_name
-                            ),
-                        }
-                    })?;
+                    let mesh_id = self
+                        .mesh_name_to_id
+                        .get(mesh_name)
+                        .ok_or_else(|| MjcfError::undefined(ElementKind::Mesh, mesh_name))?;
                     Some(*mesh_id)
                 }
                 None => {
-                    return Err(ModelConversionError {
-                        message: format!(
-                            "geom '{}': type is mesh but no mesh attribute specified",
-                            geom.name.as_deref().unwrap_or("<unnamed>")
-                        ),
-                    });
+                    return Err(MjcfError::missing_attribute("geom", "mesh"));
                 }
             }
         } else {
@@ -192,25 +185,14 @@ impl ModelBuilder {
         let geom_hfield_ref = if geom_type == GeomType::Hfield {
             match &geom.hfield {
                 Some(name) => {
-                    let hfield_id =
-                        self.hfield_name_to_id
-                            .get(name)
-                            .ok_or_else(|| ModelConversionError {
-                                message: format!(
-                                    "geom '{}': references undefined hfield '{}'",
-                                    geom.name.as_deref().unwrap_or("<unnamed>"),
-                                    name
-                                ),
-                            })?;
+                    let hfield_id = self
+                        .hfield_name_to_id
+                        .get(name)
+                        .ok_or_else(|| MjcfError::undefined(ElementKind::Hfield, name))?;
                     Some(*hfield_id)
                 }
                 None => {
-                    return Err(ModelConversionError {
-                        message: format!(
-                            "geom '{}': type is hfield but no hfield attribute specified",
-                            geom.name.as_deref().unwrap_or("<unnamed>")
-                        ),
-                    });
+                    return Err(MjcfError::missing_attribute("geom", "hfield"));
                 }
             }
         } else {
@@ -326,19 +308,12 @@ fn site_size(site: &MjcfSite) -> Vector3<f64> {
 /// in `size[1]` (in `size[2]` for an ellipsoid or a box, whose `size[1]` takes
 /// `size[0]`), its middle the position, and the turn of z onto `from − to` the
 /// orientation, in place of any other the site or its class gives.
-pub fn resolve_site_fromto(site: &mut MjcfSite) -> std::result::Result<(), ModelConversionError> {
+pub fn resolve_site_fromto(site: &mut MjcfSite) -> Result<()> {
     let Some(fromto) = site.fromto.take() else {
         return Ok(());
     };
     let geom_type = site_geom_type(site);
-    let name = if site.name.is_empty() {
-        "<unnamed>"
-    } else {
-        site.name.as_str()
-    };
-    let refuse = |what: &str| ModelConversionError {
-        message: format!("site '{name}': {what}"),
-    };
+    let refuse = |what: &str| MjcfError::invalid_value("site", "fromto", what);
     if !matches!(
         geom_type,
         GeomType::Capsule | GeomType::Cylinder | GeomType::Ellipsoid | GeomType::Box

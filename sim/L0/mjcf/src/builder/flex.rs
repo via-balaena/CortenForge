@@ -10,7 +10,8 @@
 
 use nalgebra::{UnitQuaternion, Vector3};
 
-use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, ModelConversionError};
+use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::MjcfFlex;
 use sim_core::{EqualityType, FlexSelfCollide, MjJointType};
 
@@ -28,11 +29,9 @@ impl ModelBuilder {
     ///
     /// MuJoCo architecture: flex vertices ARE bodies in the kinematic tree. `mj_crb`/`mj_rne`
     /// have zero flex-specific code — the standard rigid-body pipeline handles everything.
-    pub(crate) fn process_flex_bodies(
-        &mut self,
-        flex_list: &[MjcfFlex],
-    ) -> std::result::Result<(), ModelConversionError> {
-        for flex_orig in flex_list {
+    pub(crate) fn process_flex_bodies(&mut self, flex_list: &[MjcfFlex]) -> Result<()> {
+        for (index, flex_orig) in flex_list.iter().enumerate() {
+            let at = || Location::nth(ElementKind::Flex, Some(&flex_orig.name), index);
             // Resolve `node` attribute: if `node` names are present and no vertices
             // exist, use the named bodies as flex vertices (MuJoCo semantics).
             //
@@ -49,12 +48,7 @@ impl ModelBuilder {
                     let mut f = flex_orig.clone();
                     for node_name in &flex_orig.node {
                         let &bid = self.body_name_to_id.get(node_name).ok_or_else(|| {
-                            ModelConversionError {
-                                message: format!(
-                                    "flex '{}' node references undefined body '{}'",
-                                    flex_orig.name, node_name
-                                ),
-                            }
+                            MjcfError::undefined(ElementKind::Body, node_name).at(at())
                         })?;
                         // World position for geometry (rest-lengths, mass lumping).
                         // body_world_pos is indexed by (body_id - 1) since worldbody
@@ -75,6 +69,7 @@ impl ModelBuilder {
                 is_node_flex = false;
                 flex_orig
             };
+            check_flex_elements(flex).map_err(|e| e.with_location_if_unknown(at()))?;
             // Before the masses, edges, hinges and elements read the order.
             let oriented;
             let flex = if flex.dim == 3 {
@@ -422,9 +417,11 @@ impl ModelBuilder {
 
     /// Extract edges from element connectivity for one flex.
     ///
-    /// Iterates over all element pairs, deduplicates directed edges, and pushes
-    /// `flexedge_*` arrays. Returns `(edge_start, edge_key_to_global)` for use
-    /// by bending hinge extraction.
+    /// Numbers the edges as MuJoCo's compiler does (`mjCFlex::Compile`,
+    /// `user_mesh.cc:4297-4321`): each edge, `(min, max)` of its two vertices,
+    /// where it first appears, the elements in order and each element's edges in
+    /// [`ELEMENT_EDGES`] order. Pushes the `flexedge_*` arrays and returns
+    /// `(edge_start, edge_key_to_global)`, the map read only to look an edge up.
     fn extract_flex_edges(
         &mut self,
         flex: &MjcfFlex,
@@ -434,41 +431,45 @@ impl ModelBuilder {
         use std::collections::HashMap;
 
         let edge_start = self.nflexedge;
-        let mut edge_set: HashMap<(usize, usize), bool> = HashMap::new();
         let mut edge_key_to_global: HashMap<(usize, usize), usize> = HashMap::new();
+        let element_edges = ELEMENT_EDGES[flex.dim - 1];
         for elem in &flex.elements {
-            let n = elem.len();
-            for i_v in 0..n {
-                for j_v in (i_v + 1)..n {
-                    let (a, b) = if elem[i_v] < elem[j_v] {
-                        (elem[i_v], elem[j_v])
-                    } else {
-                        (elem[j_v], elem[i_v])
-                    };
-                    edge_set.entry((a, b)).or_insert(true);
+            for &(i, j) in element_edges {
+                let (a, b) = (elem[i].min(elem[j]), elem[i].max(elem[j]));
+                if edge_key_to_global.contains_key(&(a, b)) {
+                    continue;
                 }
+                self.push_flex_edge(flex, vert_start, flex_id, a, b);
+                edge_key_to_global.insert((a, b), self.nflexedge);
+                self.nflexedge += 1;
             }
-        }
-        for &(a, b) in edge_set.keys() {
-            let rest_len = (flex.vertices[b] - flex.vertices[a]).norm();
-            self.flexedge_vert.push([vert_start + a, vert_start + b]);
-            self.flexedge_length0.push(rest_len);
-            self.flexedge_flexid.push(flex_id);
-            // §42A-ii: flexedge_rigid — both endpoints pinned (invmass == 0).
-            let va = vert_start + a;
-            let vb = vert_start + b;
-            self.flexedge_rigid
-                .push(self.flexvert_invmass[va] == 0.0 && self.flexvert_invmass[vb] == 0.0);
-            // §42B S1: Initialize flexedge_flap to [-1, -1] (boundary default).
-            self.flexedge_flap.push([-1, -1]);
-            // §42B S2+S3: Initialize flex_bending to zeros per edge.
-            self.flex_bending.extend_from_slice(&[0.0; BENDING_COEFFS]);
-            // Track edge key → global index for flap topology.
-            edge_key_to_global.insert((a, b), self.nflexedge);
-            self.nflexedge += 1;
         }
 
         (edge_start, edge_key_to_global)
+    }
+
+    /// One edge's `flexedge_*` entries, between the flex's vertices `a < b`.
+    fn push_flex_edge(
+        &mut self,
+        flex: &MjcfFlex,
+        vert_start: usize,
+        flex_id: usize,
+        a: usize,
+        b: usize,
+    ) {
+        let rest_len = (flex.vertices[b] - flex.vertices[a]).norm();
+        self.flexedge_vert.push([vert_start + a, vert_start + b]);
+        self.flexedge_length0.push(rest_len);
+        self.flexedge_flexid.push(flex_id);
+        // §42A-ii: flexedge_rigid — both endpoints pinned (invmass == 0).
+        let va = vert_start + a;
+        let vb = vert_start + b;
+        self.flexedge_rigid
+            .push(self.flexvert_invmass[va] == 0.0 && self.flexvert_invmass[vb] == 0.0);
+        // §42B S1: Initialize flexedge_flap to [-1, -1] (boundary default).
+        self.flexedge_flap.push([-1, -1]);
+        // §42B S2+S3: Initialize flex_bending to zeros per edge.
+        self.flex_bending.extend_from_slice(&[0.0; BENDING_COEFFS]);
     }
 
     /// Extract bending hinges from adjacent elements and compute bending coefficients.
@@ -485,44 +486,41 @@ impl ModelBuilder {
         edge_start: usize,
         edge_key_to_global: &std::collections::HashMap<(usize, usize), usize>,
     ) {
-        use std::collections::HashMap;
-
-        let mut edge_elements: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+        // Each edge's elements, in element order, the edges in their order.
+        let mut edge_elements: Vec<Vec<usize>> = vec![Vec::new(); self.nflexedge - edge_start];
         for (elem_idx, verts) in flex.elements.iter().enumerate() {
-            let n = verts.len();
-            for i_v in 0..n {
-                for j_v in (i_v + 1)..n {
-                    let (a, b) = if verts[i_v] < verts[j_v] {
-                        (verts[i_v], verts[j_v])
-                    } else {
-                        (verts[j_v], verts[i_v])
-                    };
-                    edge_elements.entry((a, b)).or_default().push(elem_idx);
+            for &(i, j) in ELEMENT_EDGES[flex.dim - 1] {
+                let key = (verts[i].min(verts[j]), verts[i].max(verts[j]));
+                if let Some(&global_e) = edge_key_to_global.get(&key) {
+                    edge_elements[global_e - edge_start].push(elem_idx);
                 }
             }
         }
-        for ((ve0, ve1), elems) in &edge_elements {
+        for (local_e, elems) in edge_elements.iter().enumerate() {
             if elems.len() != 2 {
                 continue; // boundary edge
             }
+            let global_e = edge_start + local_e;
+            let ve0 = self.flexedge_vert[global_e][0] - vert_start;
+            let ve1 = self.flexedge_vert[global_e][1] - vert_start;
             let opp_a = flex.elements[elems[0]]
                 .iter()
-                .find(|&&v| v != *ve0 && v != *ve1)
+                .find(|&&v| v != ve0 && v != ve1)
                 .copied();
             let opp_b = flex.elements[elems[1]]
                 .iter()
-                .find(|&&v| v != *ve0 && v != *ve1)
+                .find(|&&v| v != ve0 && v != ve1)
                 .copied();
             if let (Some(va), Some(vb)) = (opp_a, opp_b) {
                 let rest_angle = compute_dihedral_angle(
-                    flex.vertices[*ve0],
-                    flex.vertices[*ve1],
+                    flex.vertices[ve0],
+                    flex.vertices[ve1],
                     flex.vertices[va],
                     flex.vertices[vb],
                 );
                 self.flexhinge_vert.push([
-                    vert_start + *ve0,
-                    vert_start + *ve1,
+                    vert_start + ve0,
+                    vert_start + ve1,
                     vert_start + va,
                     vert_start + vb,
                 ]);
@@ -531,12 +529,10 @@ impl ModelBuilder {
                 self.nflexhinge += 1;
 
                 // §42B S1: Populate flexedge_flap for this interior edge.
-                if let Some(&global_e) = edge_key_to_global.get(&(*ve0, *ve1)) {
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-                    {
-                        self.flexedge_flap[global_e] =
-                            [(vert_start + va) as i32, (vert_start + vb) as i32];
-                    }
+                #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                {
+                    self.flexedge_flap[global_e] =
+                        [(vert_start + va) as i32, (vert_start + vb) as i32];
                 }
             }
         }
@@ -570,6 +566,49 @@ impl ModelBuilder {
 // ============================================================================
 // Flex helper functions
 // ============================================================================
+
+/// The edges of an element of each dimension, as pairs of its vertex slots, in
+/// MuJoCo's order (`eledge`, `user_mesh.cc:3447-3452`): a cable `(0,1)`, a
+/// triangle `(1,2) (2,0) (0,1)`, a tetrahedron `(0,1) (1,2) (2,0) (2,3) (0,3)
+/// (1,3)`. Indexed by `dim - 1`.
+const ELEMENT_EDGES: [&[(usize, usize)]; 3] = [
+    &[(0, 1)],
+    &[(1, 2), (2, 0), (0, 1)],
+    &[(0, 1), (1, 2), (2, 0), (2, 3), (0, 3), (1, 3)],
+];
+
+/// MuJoCo's checks of a flex's elements before anything is built from them
+/// (`mjCFlex::Compile`, `user_mesh.cc`), in its order: a dimension of 1, 2 or
+/// 3 (`:4108-4110`), each element of `dim + 1` vertices (`:4114-4116`), at
+/// least `dim + 1` vertices (`:4147-4149`), each element's vertices among
+/// them (`:4160-4165`), and none twice in an element (`:4189-4202`). Its
+/// "elem is empty" (`:4111-4113`) is Rigid-loading L10's; the other checks it
+/// makes between these are not this function's.
+fn check_flex_elements(flex: &MjcfFlex) -> Result<()> {
+    let refuse =
+        |attribute: &str, reason: &str| MjcfError::invalid_value("flex", attribute, reason);
+    if !(1..=3).contains(&flex.dim) {
+        return Err(refuse("dim", "dim must be 1, 2 or 3"));
+    }
+    if flex.elements.iter().any(|e| e.len() != flex.dim + 1) {
+        return Err(refuse("element", "elem size must be multiple of (dim+1)"));
+    }
+    let nvert = flex.vertices.len();
+    if nvert < flex.dim + 1 {
+        return Err(refuse("vertex", "not enough vertices"));
+    }
+    if flex.elements.iter().flatten().any(|&v| v >= nvert) {
+        return Err(refuse("element", "elem vertex id out of range"));
+    }
+    for element in &flex.elements {
+        let mut sorted = element.clone();
+        sorted.sort_unstable();
+        if sorted.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(refuse("element", "repeated vertex in element"));
+        }
+    }
+    Ok(())
+}
 
 /// Each tetrahedron of `elements` turned as MuJoCo's compiler turns it, so
 /// its faces (0,1,2) (0,2,3) (0,3,1) (1,3,2) are right-handed outward

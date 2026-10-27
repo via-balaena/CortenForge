@@ -7,8 +7,9 @@
 //! the second, a user gain's or bias's own parameters written (MuJoCo's reads
 //! none of them), 12 drawn states each, `act_dot` set before each pass
 //! (MuJoCo zeroes an actuator's before its dynamics write it). sim-mjcf
-//! refuses a user type and has no `actdim`, so each case loads a stand-in and
-//! changes it to the user's (`patch`), checked against MuJoCo's compiled
+//! refuses `actdim`, and refused a user type when the golden was made, so
+//! each case loads a stand-in and changes it to the user's (`patch`),
+//! checked against MuJoCo's compiled
 //! types; the callbacks below are the script's, in the same operations, the
 //! dynamics' reading its own `act_dot` (0 in MuJoCo's when it is called) and,
 //! with two activations, writing the last one's or both and returning a value

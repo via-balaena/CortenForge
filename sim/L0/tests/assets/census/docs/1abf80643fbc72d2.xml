@@ -1,0 +1,7 @@
+<mujoco>
+            <worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>
+            <actuator>
+                <motor joint="j"/>
+                <general joint="j" gaintype="bogus"/>
+            </actuator>
+        </mujoco>

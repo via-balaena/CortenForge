@@ -1,0 +1,3 @@
+<mujoco><worldbody>
+            <body name="b"><geom size="0.1"/><frame childclass="nope"/></body>
+        </worldbody></mujoco>

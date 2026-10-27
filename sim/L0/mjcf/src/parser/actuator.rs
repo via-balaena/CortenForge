@@ -39,9 +39,9 @@ pub(super) fn parse_actuators<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"actuator" => break,
-            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in actuator".into())),
+            Ok(Event::Eof) => return Err(MjcfError::eof_in("actuator")),
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -49,11 +49,22 @@ pub(super) fn parse_actuators<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<
     Ok(actuators)
 }
 
+/// An actuator's `actdim` is not read: the builder gives a stateful actuator
+/// one activation, so a written count, which MuJoCo honours for `user`
+/// dynamics, is refused rather than ignored.
+pub(super) fn refuse_actdim(e: &BytesStart) -> Result<()> {
+    if get_attribute_opt(e, "actdim").is_some() {
+        return Err(MjcfError::unsupported("an actuator's actdim"));
+    }
+    Ok(())
+}
+
 /// Parse actuator attributes.
 pub(super) fn parse_actuator_attrs(
     e: &BytesStart,
     actuator_type: MjcfActuatorType,
 ) -> Result<MjcfActuator> {
+    refuse_actdim(e)?;
     let mut actuator = MjcfActuator {
         actuator_type,
         ..Default::default()
@@ -246,13 +257,10 @@ pub(super) fn parse_actuator_children<R: BufRead>(
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == parent_tag => break,
             Ok(Event::Eof) => {
-                return Err(MjcfError::XmlParse(format!(
-                    "unexpected EOF in {}",
-                    String::from_utf8_lossy(parent_tag)
-                )));
+                return Err(MjcfError::eof_in(String::from_utf8_lossy(parent_tag)));
             }
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }

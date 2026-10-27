@@ -1,0 +1,6 @@
+<mujoco>
+            <worldbody>
+                <body><joint name="j0"/><joint name="j1"/><geom size="0.1"/></body>
+            </worldbody>
+            <tendon><fixed><joint joint="j0" coef="1"/><joint joint="j1" coef="nan"/></fixed></tendon>
+        </mujoco>

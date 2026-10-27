@@ -1,0 +1,5 @@
+<mujoco>
+            <worldbody>
+                <body><inertial pos="0 0 0" mass="1" fullinertia="1 1 1 2 0 0"/></body>
+            </worldbody>
+        </mujoco>

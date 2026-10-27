@@ -30,6 +30,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Hazards:** a must-fail whose parent side hangs or grows is marked either "established by reading; do not run at the parent" or "run only under the 2.5 GB RSS watchdog (40-verification)".
 - A research sketch that returns `ModelConversionError` means L01's `MjcfError`.
 - Per-commit greenness in this order was not run by any section (A3 says each of its four is "green on its own" as a design statement; A4 §9 likewise; A5 §5; none ran a series).
+- **Decided in L01's pull request.** An `MjcfError` variant is added by the commit that first constructs it, not all by L01: an entry below that names an L01 variant (`TooDeep` aside, added by L04) adds it. `MJB_VERSION` stayed 3 through L01, whose change left `MjcfModel`'s serialized shape alone; it moves once in the first commit of each pull request that changes that shape.
 
 ## Summary
 
@@ -91,7 +92,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 
 ## What fixes the order
 
-1. **L01 first:** "This is the PR's FIRST mjcf commit" (A3 §1); every later rule returns its variants (A4 §10, A5 §6, A10 §8, A11 §8). Everything frozen in this PR freezes together, so variants later commits need are added now (A3 §6, "Dependencies").
+1. **L01 first:** "This is the PR's FIRST mjcf commit" (A3 §1); every later rule returns its variants (A4 §10, A5 §6, A10 §8, A11 §8). A3 §6 ("Dependencies") had the variants later commits need added now; L01's pull request added each with the commit that first constructs it instead (Conventions).
 2. **L02 after L01** (A6 §7: M3's refusal needs the error type).
 3. **L03 before L06** ("1 before 2 so commit 2's NaN tests never reach a hang", A5 §5); L03 = M4 + MH2 because "eig3 **is** M4's `principal_axes`" (A10 §7).
 4. **L05 → L06, L07, L09, L10–L14** (A4 §9; A5 §6: the non-finite check sits in the reader's token function).
@@ -152,6 +153,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Flips:** 19 five-value `friction` rewrites (class E); `inertial` without `pos` in validator `urdf-loading/stress-test/src/main.rs:120` `ARM_MJCF`; the multiple-orientation site `builder/body.rs:702`; `fluid_forces.rs:1205-1220` T39 err→ok (A4 §7, §9).
 - **Census:** `5eb35113` (partial `polycoef`) flips (A20 §1A.2).
 - **Breaking:** pub field types become `Prefix<N>`/`TfAuto`; new pub types (A4 §2.3).
+- **Also (from L01):** `MjcfError::BadNumber` and `WrongValueCount` have `element` and `attribute` fields, filled where the reader knows them (hfield `size`, `fluidcoef`, `gravcomp`) and empty from the generic readers in `parser/attrs.rs`, which this commit replaces: it fills them everywhere. `ValueCount` is `Exactly`/`AtLeast`, not A3 §1's `Exactly`/`AtMost`/`Between`; `AtLeast` describes the lenient readers this commit replaces, so it changes with them. A malformed attribute (`<geom size=/>`) loads today, skipped by `attributes().flatten()` (`parser/attrs.rs`); MuJoCo 3.5.0 refuses it.
 
 ### L06 · M7 · `feat(sim-mjcf): every non-finite number is refused`
 - **Closes:** mjcf-S9 (NaN body pos), mjcf-H1 (decision: refuse every NaN/±inf, 01-decisions consequences).
@@ -171,6 +173,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Implements:** A9 §4.2 C1; the comment fix `builder/composite.rs:390-393`; pins for the 2-body cable (lenient, named by 01-decisions) and the 1-body cable (A9 §3.5, §3.6).
 - **Must-fail:** `cable_vertices_round_through_f32` (A9 §4.4); pins `two_body_cable_matches_mujoco_generator` and `one_body_cable_frame_is_defined` pass on main (A9 §3.5–§3.6).
 - **Flips:** 10 docs model + trajectory; 0 tests (A9 §4.5).
+- **Also (ledger-L52 U15):** loading a cable of count 1000 (999 bodies) had about 2 GB of RSS in one `ps` sample before A4 stopped the run (A4 §1.4), and loading one of 4096 bodies took about twenty minutes in the repository's dev profile (opt-level 2; measured in L04's pull request); the cause is not isolated. In L04's review a chain of 1000 bodies built in code, each with a hinge, took 3.9 s and 405 MB to build at opt-level 2, and the same chain without joints 3.7 ms and 21 MB: the growth follows the joints, not the cable.
 
 ### L09 · M10 · `fix(sim-mjcf): repeated <compiler>/<option> merge`
 - **Closes:** mjcf-S5. **Implements:** A4 §8.3. **Must-fail:** the two measured cases. **Flips:** none (A4 §8.3).
@@ -180,6 +183,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Also (ledger-L141, ledger-L144):** a flexcomp of mass 0 refused, as MuJoCo; whether any vertex body this entry loads can make an all-zero edge row, which MuJoCo drops at the dense size; and `flexedge_rigid` by MuJoCo's rule (`user_model.cc:3512-3520`), not both inverse masses 0.
 - **Also (ledger-L125):** a pinned vertex's passive flex force goes to its body as MuJoCo's does (`mj_applyFT`, `engine_passive.c:394-408`), with a must-fail against MuJoCo.
 - **Also** (ledger-L63): in 73 flex docs the per-joint arrays `jnt_name`, `jnt_margin`, `jnt_solref`, `jnt_solimp`, `jnt_group`, `jnt_actgravcomp`, `jnt_user` are empty, and in 77 `body_gravcomp` and `body_user` are short: the flex child form's generated bodies and joints skip those pushes. Run the per-element length check of sim-core's factory test (`factory_models_size_every_per_element_array`) over the loadable census docs; 0 short is the gate.
+- **Also (from L02's review):** the child form's reader drops a trailing partial element and non-integer or negative vertex ids, and reads `dim="-1"` as 2 (`parser/deformable.rs`), so L02's element checks never see them in a document; MuJoCo 3.5.0 refuses all three. L02's review moved the two flex contact-attribute tests (`builder/mod.rs`, `test_flex_contact_runtime_attrs_parsed` and `_defaults`) to the child form, because the attribute form built a flex of no vertices, now refused; they return to the attribute form here.
 - **Closes:** C7 / Q81 (MuJoCo's flex meaning; A4-Q1's "same meaning" is superseded); A6 §1.10 / A20 §1B.3 C4 (`vertex=`/`element=` ignored today); U07 (an empty `element` loads a 1-vertex flex; MuJoCo refuses).
 - **Now.**
   - The parser reads `body` (`parser/deformable.rs:233-235`) and `node` (`:237-239`) as name lists and reads the `<vertex>`/`<element>` children (A4 §3). It ignores `vertex=`/`element=`; A20 measured 72 of 79 docs loading with `nflexvert = 0`.
@@ -250,6 +254,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Implements:** A4 §8.4 (a plane's size as given; its positivity check is L18's `checksize`); `compute_fromto_pose(fromto, size, geom_type)` with `mjuu_z2quat(from − to)` (A14 §2.3); fromto resolved in a rotated frame's coordinates, after defaults (A20 §1A.3.6).
 - **Must-fail:** A4 §8.4's cases except the plane `size(3)` refusals (L18's); A14 §2.6 (capsule `geom_quat` literals; box frame with sizes; `framequat objtype="geom"` golden); `fromto_axis_is_from_minus_to` (A10 §2.4 #4); the `4eed75d1` literal (A20 §1A.3.6). A14's and A20's literals came from the fused arm64 wheel; they are regenerated from the unfused oracle.
 - **Also:** a site's rangefinder reads every plane as unbounded: `sensor::ray_geom::mj_ray`'s plane arm passes a size of 0 (the closing work's second rounding pull request). This commit passes the plane's kept size there too, so the reading is bounded as MuJoCo's `ray_plane` bounds it (`engine_ray.c:204-230`: by `size[0]` and `size[1]` when positive). Must-fail: a rangefinder past a bounded plane's edge (the rangefinder golden's only plane has a size of 0, unbounded in MuJoCo too).
+- **Also (from L04's review):** MuJoCo 3.5.0 refuses a capsule whose `fromto` points coincide ("fromto points too close"); sim-mjcf loads it. The same check refuses a cable with no `curve`, whose vertices all coincide, which sim-mjcf loads (count 5: nbody 6); L04's two cable census documents (`5846074f`, `c3ca80ca`) are refused by MuJoCo for that, not for their length.
 - **Flips:** plane `geom_size` changes in 282 docs ("whether any test asserts a plane's `geom_size` was not checked", A4 §8.4); `geom_quat` in 200 docs, trajectories in 21 (20 at ≤ 8.4e-14; the chaotic `equality-constraints/stress-test:388` validator still passes, two printed lines change) (A14 §2.4).
 - **Census:** `fromto` 156 of 166 flip alone; the rotated-frame pair 2/2 (A20 §1A.2). Chunk 2c added four capsule `fromto` docs, each `model:geom_quat;dyn:agree`: `c71ecb68` (`runtime_flags.rs:751`), `b15cb449` (`history.rs:266`), `a4a69b6b` (`step_inputs.rs:71`), `c56b6880` (`derivatives.rs:3610`).
 - **Breaking:** new pub `MjcfBody` fields (A4 §8.4).
@@ -315,8 +320,10 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Flips:** `lib.rs:293-310`, `validation.rs:741-761` (shared with L01); URDF validator cases `:208`, `:305` flip unless the converter is fixed in this commit (A5 §3.6).
 
 ### L24 · M21 · `fix(sim-mjcf): frame contents are validated`
-- **Closes:** mjcf-S13; the limitation wording for joints/inertial in `<frame>` (11-settled #5).
-- **Must-fail:** the 7 frame cases (A5 §3.7). **Flips:** `frame.rs:673/697/716` stay green with "not allowed inside <frame>" kept.
+- **Closes:** mjcf-S13; the limitation wording for joints/inertial in `<frame>` (11-settled #5; L01 made the joint case `MjcfError::Unsupported`).
+- **Must-fail:** the 7 frame cases (A5 §3.7). **Flips:** AC17 (`builder/frame.rs`) asserts L01's `Unsupported` variant for a joint in a frame; it stays green if this commit keeps the variant.
+- **Also (from L04's review):** expanding frames takes memory that grows with the square of the depth: a tree built in code alternating frame and body used 79 MB at 512 levels, 1.14 GB at 2048 and 4.49 GB at 4096, which the tree guard takes; a chain of bodies without frames, 70 MB at 4096. The cause is not isolated.
+- **Also (ledger-L294):** `MjcfFrame` is not exported, though `MjcfBody::frames` and `MjcfFrame::frames` are public fields of that type: export it, or decide frames are read-only.
 
 ### L25 · M22 part · `fix(sim-mjcf): geom and pair condim checked as MuJoCo`
 - **Split from M22** (A5 commit 9 bundles condim checks, `<contact/>` parsing, `.mjb` decoding and pair dedupe: four rules in four files, and only the `.mjb` one needs `--features mjb`, A6 §4(e)).
@@ -331,6 +338,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 ### L27 · M22 part · `fix(sim-mjcf): .mjb decoding is size-limited`
 - **Closes:** mjcf-D2 (`.mjb` size); 11-settled #13 (`MjbTooLarge`).
 - **Implements:** A5 §3.8 (`MJB_DECODE_LIMIT = 1 << 28`, `with_limit`) — "Not measured (no crafted file was decoded)".
+- **Also (from L04's review):** the readers and writers encode and decode the body tree recursively on the caller's stack, to any depth (`mjb.rs`, "Stack"): decoding a tree built in code 1000 deep overflows a 2 MiB thread. A decoded tree's depth is bounded here, with its size.
 - **Must-fail:** `mjb_claimed_length_over_limit_is_refused`: a `.mjb` whose length-prefixed `String`/`Vec<u8>` claims `MJB_DECODE_LIMIT + 1` bytes → `MjbTooLarge` (R2). At the parent bincode allocates the claimed length before reading (A5 §3.8, by reading), about 256 MiB: run only under the 2.5 GB RSS watchdog (40-verification). Run locally with `--features mjb` (A6 §4(e)).
 
 ### L28 · M24 · `fix(sim-mjcf): timestep > 1 loads`
@@ -364,7 +372,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Implements:** A9 §2.4 2b (`FlexElastic2d`; bending only for `bend`/`both`; `stretch`/`both` refused as a limitation; refusals per A9 Q4, Q7; pins + bending load per A9 Q3) — C2 implements `elastic2d` — and the 39 `elastic2d="bend"` rewrites, applied to L10's vertex-body docs. **U12:** sim-core has no dim-3 or 2-D membrane elasticity (A9 §7 H6), so a dim-3 flex with `<elasticity young>` > 0 is refused as a stated limitation, as `stretch`/`both` are. Today a dim-3 `young` becomes a bending stiffness (`builder/flex.rs:773`), not MuJoCo's tet elasticity (`user_mesh.cc:4347-4361`).
 - **Must-fail:** A9 §2.6 #2, #4, #5, #6, #7; pins #8 (bending-order deviation) and #9 (pins + bending); `flex_dim3_elasticity_is_refused` (U12; main loads).
 - **Flips:** with the rewrites, 2 docs model-only, 0 tests; without them, 12 CI tests flip (A9 §2.7). U12: `flex_unified.rs:399` `ac3_solid_compression` — its doc (`:61-77`) is the only in-tree dim-3 flex (`git grep 'dim="3"'`) and sets `young="100"`; drop `young` or make it the refusal test (which keeps its intent was not checked).
-- **Note:** the `.mjb` shape changes here; the version was bumped in L01.
+- **Note:** the `.mjb` shape changes here, so `MJB_VERSION` moves in this pull request's first commit that changes it (Conventions; L01 left it at 3).
 
 ### L33 · A10 MH3 · `fix(sim-mjcf): body inertial frame as MuJoCo: one geom copied, orientation alternatives`
 - **Closes:** ledger-L43c, census "rotated inertia" (A16 §2; `636fc5d5`, A20 §1A.2).
@@ -372,6 +380,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Must-fail:** `single_geom_body_copies_geom_frame`, `geom_euler_rotates_body_inertia` (A10 §2.4).
 - **Flips:** `fluid_derivatives.rs:1391` t23 only if before L22 (A10 §7); here it is after.
 - **Census:** `636fc5d5` flips (A20 §1A.2); outlier `capsule_box_face_2_contacts` (`collision_primitives.rs:1305`) moves 0.189 (A10 §2.3).
+- **Also (from L03):** L03 ported `eig3` for `<inertial fullinertia>` only. The geom path keeps nalgebra's eigendecomposition, behind a finite guard, until this commit: `eig3` without the one-geom copy re-sorts a single geom's moments and turns its frame (at least 24 conformance parity tests broke in L03's first draft; cargo stopped after the integration binary). This commit moves the geom path to `eig3` with the copy, MuJoCo's combination (`mjuu_globalinertia`, `mjuu_offcenter`) and its positive-moment refusal; ledger-L49's framequat axes and ledger-L195 (a) come with it. L03's Flips named `mesh_inertia_modes.rs:218` t9; it did not flip there, and whether it flips here is to be measured. MuJoCo's `InertiaFromGeom` sends a NaN `toti[0]` through `mjuu_fullInertia`'s first branch (`user_util.cc:786-788`), which L03's `full_inertia` leaves out: a static body with a geom whose inertia overflows and a second geom loads with inertia 0 and the identity frame in MuJoCo (L03's review).
 
 ### L34 · A20 R3-L1 · `fix(sim-mjcf): plane and hfield geoms have MuJoCo's volume; zero-volume mass is zero`
 - **Implements:** A20 §1A.3.1 (plane volume 0; hfield the box of its size; an explicit mass with volume ≤ 1e-14 → 0) and **Q46** (parity): a body with no mass gets MuJoCo's inertial pose, its parent-frame pose copied into `ipos`/`iquat` (`user_objects.cc:2443-2446`).
@@ -436,6 +445,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Implements:** A20 §1A.3.9: `euler`, `axisangle`, `xyaxes`, `zaxis` resolved as MuJoCo (`user_objects.cc:2419-2424`) and refused with `fullinertia` (`:2404-2406`); sim-urdf already emits `<inertial euler=…>` (`urdf/src/converter.rs:456-458`). C2 implements these. **U10** (parity with MuJoCo's URDF reader): sim-urdf writes `eulerseq="xyz"` (`converter.rs:177`), which reads URDF `rpy` as intrinsic x-y-z; it writes `eulerseq="XYZ"` instead (A20 §1A.3.9 measured agreement to 1e-8). This changes every multi-axis `rpy` the converter emits, not only inertials.
 - **Must-fail:** `inertial_euler_rotates_iquat`: A20's `fs_tool` → `body_iquat` (0.98877, 0, 0.14944, 0), MuJoCo's (A20 §1A.3.9); main identity. `urdf_rpy_as_mujoco`: `rpy="0.2 -0.6 1.1"` → `body_quat` (0.79496, 0.23500, −0.20083, 0.52200), MuJoCo's URDF reader (A20 §1A.3.9); main (0.82580, −0.07238, −0.30053, 0.47170).
 - **Flips:** the one in-tree URDF with a multi-axis `rpy` is a parser test (`urdf/src/parser.rs:569`); whether it reads the converted orientation was not checked. U10's 3.4e-3 inertia residual after the fix is not isolated (A20 §1A.3.9).
+- **Also (from L03):** MuJoCo's XML reader refuses any `quat` beside `fullinertia`, even `1 0 0 0` ("fullinertia and inertial orientation cannot both be specified", measured on the oracle), and its compiler a `fullinertia` beside a diagonal inertia (`user_objects.cc:2408-2409`). Until this commit sim-mjcf composes the quat with the full inertia's frame and takes the full inertia over a diagonal one.
 
 ### L44 · A11 LR-a · `fix(sim-mjcf): actuator lengthrange computed and kept as MuJoCo 3.5.0` — cross-layer (sim-core), cross-crate (cf-design)
 - **In Rigid-loading although most of it is sim-core:** it needs L01's error variant (A11 §8, Q-LR5). Body: sim-core changes, the breaking `LengthRangeError`, and `compute_actuator_params` no longer sets lengthrange (A11 §8).
@@ -470,8 +480,8 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
   3. `user_model.cc:5160-5179`: a final `mj_makeData` raises the init-sleep error (`engine_io.c:1473-1493`). A8 measured MuJoCo refusing both `initmix` fixtures at load.
 - **Change.**
   - An explicit non-auto policy on a body with no tree, or not its tree's first body (`tree_body_adr[tree] != body_id`, P20's tables) → `MjcfError::InvalidValue { element: "body", attribute: "sleep", reason: "sleep policy only allowed for movable root bodies", at }`, replacing the `warn!`.
-  - Rule 2 → `MjcfError::InvalidModel` with MuJoCo's text and our ids, at `Location::none()` (MuJoCo's is an engine error with no element). The trees come from P20's `Model::tendon_trees`.
-  - At the end of `model_from_mjcf`, if `ENABLE_SLEEP` is set and any tree is `Init`: `model.try_make_data()`, mapping any `MakeDataError` → `MjcfError::InvalidModel { reason: e.to_string(), at: Location::none() }`; the `Data` is dropped.
+  - Rule 2 → `MjcfError::InvalidModel` with MuJoCo's text and our ids, at `Location::unknown()` (MuJoCo's is an engine error with no element). The trees come from P20's `Model::tendon_trees`.
+  - At the end of `model_from_mjcf`, if `ENABLE_SLEEP` is set and any tree is `Init`: `model.try_make_data()`, mapping any `MakeDataError` → `MjcfError::InvalidModel { reason: e.to_string(), at: Location::unknown() }`; the `Data` is dropped.
   - **P23 supplies** (20-rigid-physics.md): `MakeDataError::InitSleep { marked, slept, tree, root_body }`, which carries MuJoCo's two counts (`engine_io.c:1490-1492`).
 - **Must-fail** (not run): `sleep_policy_on_child_body_refused` (main warns); `sleep_policy_on_static_body_refused`; `init_on_damped_cross_tree_tendon_refused` (fixture `fluid_derivatives.rs:2768`; MuJoCo refuses it, A6 §5.1); `allowed_on_three_tree_tendon_refused`; `init_mixed_island_refused_at_load` (A8's `initmix.xml`, `initmix_contact.xml` and the T60 doc); `explicit_auto_on_actuated_tree_never_sleeps` (main `AutoAllowed`). Pins: `explicit_auto_on_child_body_loads`, `init_on_limited_only_cross_tree_tendon_loads`.
 - **Flips:** `fluid_derivatives.rs:2990` t56 (rewrite without `sleep="init"`); `:3045` t57 (delete, or make it the refusal test); `sleeping.rs:2612` T60 (its assertion moves to `load_model`); `sleep_parity.rs` `init_mixed_island_refused`, which loads A8's `initmix` and `initmix_contact` with `load_model(..).expect` and refuses them at `try_make_data`, and `init_sleep_with_a_tendon_equality_refused`, which loads `init_tendon_equality` the same way (their assertions move to `load_model`). Every other in-tree `sleep=` is on a world child (`git grep`, R4).
@@ -491,6 +501,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Must-fail:** A4 §1.5's list; refusal tests for the 12 dropped sensors and the limitations (A4 §9); one load test per accepted-with-no-effect element (0 corpus docs use them, so only these tests can catch a wrong verdict, R2); `nativeccd_disable_is_refused` (Q66).
 - **Flips:** classes B, C, F (A4 §7; class A is L10's); dt16 `parser/tests.rs:2026-2050`; plugin tests t1–t13; `exactmeshinertia.rs` tests become refusals; `adhesion.rs` ac6; `sensor_phase6.rs` pins; `runtime_flags.rs:1385`. Q66 flips `golden_flags.rs` `golden_disable_nativeccd_is_refused` (P50's: it loads `<flag nativeccd="disable"/>` and checks that `try_make_data` refuses the model; under Q66 the load itself refuses, so it becomes a load refusal); a code-built `Model` with that flag is refused by P50 (20-rigid-physics.md).
 - **Census:** the corpus re-run must show new refusals ⊆ 3.5.0's refusals ∪ the listed deviations (A4 §9). With A4's recommended allowlist, 171 docs that parse today would be refused before the doc fixes (A4 §3).
+- **Also (from L04):** the depth limit (A4 §1.2 rule 4) landed in L04, read without recursing before the parser, because L04's loader stack is sized for it; it is not part of this pre-pass. L04's review found a processing instruction inside an element (`<body><?pi x?></body>`) loading; MuJoCo 3.5.0 refuses it (`XML_ERROR_PARSING_DECLARATION`).
 
 ### L48 · M25 = A7 DH-3 · `feat(sim-mjcf): delay and history as MuJoCo 3.5.0`
 - **Closes:** P-L34, sim-mjcf half.

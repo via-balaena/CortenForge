@@ -1,0 +1,3 @@
+<mujoco><worldbody>
+            <body><geom size="0.1"/><body mocap="true"><geom size="0.1"/></body></body>
+        </worldbody></mujoco>

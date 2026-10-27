@@ -4,7 +4,7 @@ use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
-use crate::error::{MjcfError, Result};
+use crate::error::{MjcfError, Result, ValueCount};
 
 use crate::types::{
     FluidShape, MeshInertia, MjcfActuatorDefaults, MjcfDefault, MjcfEqualityDefaults,
@@ -105,9 +105,9 @@ pub(super) fn parse_default<R: BufRead>(
                 _ => {}
             },
             Ok(Event::End(ref e)) if e.name().as_ref() == b"default" => break,
-            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in default".into())),
+            Ok(Event::Eof) => return Err(MjcfError::eof_in("default")),
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -198,13 +198,18 @@ pub(super) fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
         defaults.fluidshape = Some(match fs.as_str() {
             "none" => FluidShape::None,
             "ellipsoid" => FluidShape::Ellipsoid,
-            _ => return Err(MjcfError::InvalidFluidShape(fs)),
+            _ => return Err(MjcfError::invalid_keyword("geom", "fluidshape", fs)),
         });
     }
     if let Some(coef_str) = get_attribute_opt(e, "fluidcoef") {
         let parts = parse_float_array(&coef_str)?;
         if parts.len() != 5 {
-            return Err(MjcfError::InvalidFluidCoef(parts.len()));
+            return Err(MjcfError::wrong_count_in(
+                "geom",
+                "fluidcoef",
+                ValueCount::Exactly(5),
+                parts.len(),
+            ));
         }
         defaults.fluidcoef = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
     }
@@ -221,6 +226,7 @@ pub(super) fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
 
 /// Parse actuator defaults.
 pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefaults> {
+    super::actuator::refuse_actdim(e)?;
     let mut defaults = MjcfActuatorDefaults::default();
 
     if let Some(ctrlrange) = get_attribute_opt(e, "ctrlrange") {
@@ -342,38 +348,7 @@ pub(super) fn parse_tendon_defaults(e: &BytesStart) -> Result<MjcfTendonDefaults
 
     // B3: Parse springlength in defaults
     if let Some(sl_str) = get_attribute_opt(e, "springlength") {
-        let parts = parse_float_array(&sl_str)?;
-        match parts.len() {
-            1 => {
-                if parts[0] < 0.0 || !parts[0].is_finite() {
-                    return Err(MjcfError::XmlParse(format!(
-                        "tendon default springlength: value ({}) must be finite and >= 0",
-                        parts[0]
-                    )));
-                }
-                defaults.springlength = Some((parts[0], parts[0]));
-            }
-            n if n >= 2 => {
-                if parts[0] < 0.0
-                    || parts[1] < 0.0
-                    || !parts[0].is_finite()
-                    || !parts[1].is_finite()
-                {
-                    return Err(MjcfError::XmlParse(format!(
-                        "tendon default springlength: values ({}, {}) must be finite and >= 0",
-                        parts[0], parts[1]
-                    )));
-                }
-                if parts[0] > parts[1] {
-                    return Err(MjcfError::XmlParse(format!(
-                        "tendon default springlength: low ({}) must be <= high ({})",
-                        parts[0], parts[1]
-                    )));
-                }
-                defaults.springlength = Some((parts[0], parts[1]));
-            }
-            _ => {}
-        }
+        defaults.springlength = super::tendon::springlength(&parse_float_array(&sl_str)?)?;
     }
 
     defaults.width = parse_float_attr(e, "width");
@@ -433,9 +408,7 @@ pub(super) fn parse_mesh_defaults(e: &BytesStart) -> Result<MjcfMeshDefaults> {
             "legacy" => MeshInertia::Legacy,
             "shell" => MeshInertia::Shell,
             other => {
-                return Err(MjcfError::XmlParse(format!(
-                    "mesh default: invalid inertia mode '{other}'"
-                )));
+                return Err(MjcfError::invalid_keyword("mesh", "inertia", other));
             }
         });
     }
