@@ -208,7 +208,7 @@
 1c7399952a893cf8	mj-refuses
 1c79cbdb23b5c1f3	both-refuse
 1cb368c0461ea4c0	agree
-1cb45321c92c774a	mj-refuses
+1cb45321c92c774a	mj-refuses	divergence=D-CABLE-TWO-BODY
 1ce86a926e55363d	agree
 1d703b09062af1fa	model:geom_quat;dyn:agree
 1d8ccd3c65062b7c	model:geom_quat;dyn:agree
@@ -1751,6 +1751,7 @@ eb1d0b9c311aa887	agree
 eb2727bab776c397	agree
 eb2d27f53748110c	model:actuator_actlimited;dyn:e1:s1:qfrc_actuator
 eb2e288f8f471b6c	agree
+eb30af809518a280	model:geom_quat;dyn:agree
 eb35a54eec1b38c9	model:geom_quat;dyn:agree
 eb4b3e04b060c3f8	agree
 eb58f8a5b7a7ea3b	agree

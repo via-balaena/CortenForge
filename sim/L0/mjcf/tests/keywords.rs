@@ -304,6 +304,7 @@ fn a_flexcomp_type_is_generated_or_refused() {
             if element == "flexcomp" && attribute == "type"),
         "{err}"
     );
+    assert!(err.to_string().contains("cylinder"), "{err}");
 }
 
 #[test]
@@ -585,16 +586,14 @@ fn the_builder_refuses_a_site_type_built_in_code() {
         let err = sim_mjcf::model_from_mjcf(&mjcf, None).unwrap_err();
         assert_keyword(&err, "site", "type", word);
     }
-    // A word MuJoCo's map holds still loads; what plane means for a site is
-    // book L18's.
-    mjcf.worldbody.children[0].sites[0].site_type = Some("plane".to_owned());
+    mjcf.worldbody.children[0].sites[0].site_type = Some("box".to_owned());
     assert!(sim_mjcf::model_from_mjcf(&mjcf, None).is_ok());
 }
 
 #[test]
 fn a_ball_joint_written_limited_with_a_zero_range_is_limited() {
-    // MuJoCo 3.5.0 refuses a range that does not increase on every joint but a
-    // ball (`user_objects.cc`, `type != mjJNT_BALL`): a ball written
+    // MuJoCo 3.5.0 refuses a range that does not increase on a hinge or slide
+    // joint, not on a ball (`user_objects.cc`, `type != mjJNT_BALL`): a ball written
     // `limited="true"` with `range="0 0"` loads limited (measured). Found by
     // RL-2b's review: no test told it from reading `true` as "limited when the
     // range makes a limit".

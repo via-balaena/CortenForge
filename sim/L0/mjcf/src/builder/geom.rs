@@ -139,7 +139,13 @@ impl ModelBuilder {
         }
 
         self.site_body.push(body_id);
-        self.site_type.push(site_geom_type(site)?);
+        self.site_type.push(site_geom_type(site).map_err(|e| {
+            e.with_location_if_unknown(Location::named(ElementKind::Site, &site.name).within_nth(
+                ElementKind::Body,
+                self.body_name.get(body_id).and_then(Option::as_deref),
+                body_id,
+            ))
+        })?);
 
         // The site's class values and its `fromto` are already in it
         // (`resolve_sites`).
@@ -285,8 +291,8 @@ pub fn geom_effective_com(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Ve
 
 /// A site's type (sphere is the MuJoCo default), held to MuJoCo's geom
 /// type words as the reader holds it, so a site built in code is too. A
-/// plane, mesh, height field or signed distance field is a sphere here,
-/// as before; what those words mean for a site is book L18's.
+/// plane, mesh, height field or signed distance field is a sphere here, as
+/// before (ledger L235: MuJoCo refuses the first three and keeps `sdf`).
 fn site_geom_type(site: &MjcfSite) -> Result<GeomType> {
     let word = site.site_type.as_deref().unwrap_or("sphere");
     let mjcf_type = MjcfGeomType::from_str(word)

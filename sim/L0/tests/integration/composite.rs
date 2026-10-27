@@ -811,8 +811,7 @@ fn cable_edges_are_float_differences() {
 #[test]
 fn a_composite_quat_turns_its_vertices_as_written() {
     // MuJoCo 3.5.0 turns generated vertices by the quat as written
-    // (`user_util.cc` mjuu_rotVecQuat): a quaternion that is not a unit one
-    // scales as it turns, and the zero quaternion leaves them. Measured on the
+    // (`user_util.cc` mjuu_rotVecQuat), not normalised. Measured on the
     // oracle: quat "0 0 0 2" puts CB_1 at x 1.75 (seven times 0.25), CB_first's
     // quat (0, 0, 0, 1); "0 0 0 0" puts CB_1 at x 0.25. Before: the quat was
     // normalised (CB_1 at 0.25), and "0 0 0 0" was refused.
@@ -835,4 +834,34 @@ fn a_composite_quat_turns_its_vertices_as_written() {
     assert!((q.k - 1.0).abs() < 1e-15 && q.w.abs() < 1e-15, "{q}");
     let model = cable("0 0 0 0");
     assert_eq!(model.body_pos[b1].x, 0.25);
+}
+
+#[test]
+fn a_cable_frame_takes_the_next_tangent_as_a_float_difference() {
+    // The next tangent, like the edge, is a difference of float vertices in
+    // MuJoCo 3.5.0 (`user_composite.cc`, AddCableBody). A cable in three
+    // dimensions shows it in the first frame; measured on the oracle: CB_first's
+    // quat (0.9467737022456508, 0.20939200177512202, -0.0396382897100404,
+    // 0.24125370943787358). With a double difference there, w is 1.5e-9 off
+    // (RL-2b's fix-diff review).
+    let model = load_model(
+        r#"<mujoco><worldbody>
+            <composite type="cable" prefix="C" vertex="0 0 0 0.1 0.05 0.02 -0.3 0.2 0.1 0.7 0.1 0.3">
+                <geom type="capsule" size="0.01"/>
+            </composite>
+        </worldbody></mujoco>"#,
+    );
+    let first = model
+        .name2id(ElementType::Body, "CB_first")
+        .expect("CB_first");
+    let q = model.body_quat[first];
+    let want = [
+        0.946_773_702_245_650_8,
+        0.209_392_001_775_122_02,
+        -0.039_638_289_710_040_4,
+        0.241_253_709_437_873_58,
+    ];
+    for (got, want) in [q.w, q.i, q.j, q.k].into_iter().zip(want) {
+        assert!((got - want).abs() < 1e-12, "{q}");
+    }
 }

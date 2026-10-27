@@ -200,8 +200,8 @@ fn generate_vertices(composite: &MjcfComposite) -> Vec<[f64; 3]> {
 }
 
 /// MuJoCo's `mjuu_rotVecQuat` (`user_util.cc`): `quat` as written, not
-/// normalised, turns `vec`, so a quaternion that is not a unit one scales it
-/// too; a zero vector stays zero, and the quaternion (1, 0, 0, 0) copies it.
+/// normalised, turns `vec`; a zero vector stays zero, and the quaternion
+/// (1, 0, 0, 0) copies it.
 // The two shortcuts compare exactly, as MuJoCo's (`vec[0] == 0 && …`).
 #[allow(clippy::float_cmp)]
 fn rot_vec_quat(vec: [f64; 3], quat: [f64; 4]) -> [f64; 3] {
