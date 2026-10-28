@@ -2141,3 +2141,4 @@ ddd2cc2869d50122	sim/L0/mjcf/tests/user_sensors.rs:18
 f0b98fca9eede3ea	sim/L0/tests/integration/equality_constraints.rs:747
 1f7d6307ddd92a8d	sim/L0/mjcf/tests/connect_forms.rs:106
 8cef1f2155033a74	sim/L0/tests/integration/sensor_phase6_spec_c.rs:1123
+16b7f780332e005f	sim/L0/mjcf/src/builder/actuator.rs:1607

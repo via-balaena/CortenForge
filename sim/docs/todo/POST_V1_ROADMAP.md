@@ -187,7 +187,7 @@ DT-181 added during derivatives examples (sensor FD optimization).
 | DT-120 | T1 | `MjObjectType::Camera` -- frame sensor camera support (reftype="camera" currently warns + ignores) | 10h |
 | DT-121 | T1 | `InsideSite` sensor (`mjSENS_INSIDESITE`) -- MuJoCo 3.x sensor type not yet supported | 10h |
 | DT-122 | T2 | Mesh/Hfield/SDF geom distance support for `GeomDist`/`GeomPoint`/`GeomNormal` sensors | 10h |
-| DT-123 | T1 | `IntVelocity` enum variant -- concrete `<intvelocity>` elements not yet supported (defaults parsing works) | 10b |
+| DT-123 | T1 | ~~`IntVelocity` enum variant -- concrete `<intvelocity>` elements not yet supported (defaults parsing works)~~ **Done** -- Rigid-loading PR RL-4a (book L11) | 10b |
 | DT-124 | T1 | Muscle sentinel detection for `<general dyntype="muscle">` path (`gainprm[0]==1` quirk). Known conformance divergence. | 10b |
 | DT-125 | T2 | `mj_setConst()` runtime `qpos_spring` recomputation -- currently `qpos_spring` is set at build time and static | ROADMAP_V1 |
 | DT-126 | T1 | Camera user data (`cam_user`/`nuser_cam`) -- per-camera user data (8th element type for `user` attribute) | 10b |

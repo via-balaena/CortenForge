@@ -57,39 +57,27 @@ pub(super) fn refuse_actdim(a: &Attrs) -> Result<()> {
     Ok(())
 }
 
-/// A `<position>` or `<intvelocity>`'s own `kv`, `dampratio` and
-/// `timeconst`, checked as MuJoCo 3.5.0's `mjs_setToPosition` checks them
-/// (`user_api.cc:903-937`), on the values the element itself writes, as
-/// `xml_native_reader.cc:2399-2432` reads them; a default class's element is
-/// checked the same way. `mjs_setToIntVelocity` drops that function's
-/// refusal and builds the servo with no bias (`user_api.cc:942-954`,
-/// measured); it is refused here (D-INTVELOCITY-SERVO).
-pub(super) fn check_servo_gains(
-    element: &str,
-    kv: Option<f64>,
-    dampratio: Option<f64>,
-    timeconst: Option<f64>,
-) -> Result<()> {
-    if !matches!(element, "position" | "intvelocity") {
-        return Ok(());
-    }
-    if kv.is_some() && dampratio.is_some() {
-        return Err(MjcfError::conflicting(element, &["kv", "dampratio"]));
-    }
-    for (attribute, value) in [
-        ("kv", kv),
-        ("dampratio", dampratio),
-        ("timeconst", timeconst),
-    ] {
-        if value.is_some_and(|v| v < 0.0) {
-            return Err(MjcfError::invalid_value(
-                element,
-                attribute,
-                format!("{attribute} cannot be negative"),
-            ));
+/// A servo's `inheritrange`, read only where MuJoCo 3.5.0's schema has it:
+/// on a `<position>` or `<intvelocity>`, as an element or a default class's
+/// (`xml_native_reader.cc:189-196`, `:402-416`); elsewhere refused, as its
+/// schema refuses it. An intvelocity's schema has no `timeconst` and no
+/// `actlimited` (its activation is always limited); both are refused.
+pub(super) fn servo_attributes(a: &Attrs) -> Result<Option<f64>> {
+    let element = a.element();
+    if element == "intvelocity" {
+        for attribute in ["timeconst", "actlimited"] {
+            if a.has(attribute) {
+                return Err(MjcfError::unknown_attribute(element, attribute));
+            }
         }
     }
-    Ok(())
+    if matches!(element, "position" | "intvelocity") {
+        a.real("inheritrange")
+    } else if a.has("inheritrange") {
+        Err(MjcfError::unknown_attribute(element, "inheritrange"))
+    } else {
+        Ok(None)
+    }
 }
 
 /// `gainprm` or `biasprm`: MuJoCo 3.5.0 reads up to ten (`mjNGAIN`,
@@ -160,7 +148,7 @@ pub(super) fn parse_actuator_attrs(
     if let Some(dampratio) = a.real("dampratio")? {
         actuator.dampratio = Some(dampratio);
     }
-    actuator.inheritrange = a.real("inheritrange")?;
+    actuator.inheritrange = servo_attributes(&a)?;
 
     // Interpolation attributes (common to all actuator types)
     actuator.nsample = a.int("nsample")?;
@@ -253,7 +241,7 @@ pub(super) fn parse_actuator_attrs(
     if let Some(user) = a.vector("user")? {
         actuator.user = user;
     }
-    check_servo_gains(
+    crate::builder::actuator::check_servo_gains(
         a.element(),
         actuator.kv,
         actuator.dampratio,
