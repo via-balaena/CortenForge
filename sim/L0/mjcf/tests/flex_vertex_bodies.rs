@@ -807,9 +807,10 @@ fn a_flexcomp_with_vertcollide_gives_its_vertex_bodies_spheres() {
 }
 
 /// The spheres hold up a cloth whose own contact is off: a grid of four
-/// vertices with `vertcollide`, started on a plane, comes to rest with each
-/// vertex about its radius above it (0.0196 for 0.02, measured), and
-/// without the spheres it falls through.
+/// vertices with `vertcollide`, started on a plane, comes to rest after 500
+/// steps with each vertex 0.01963281815753985 above it for a radius of 0.02,
+/// MuJoCo's own flexcomp's height bit for bit (measured), and without the
+/// spheres it falls through.
 #[test]
 fn a_cloth_rests_on_its_vertex_spheres() {
     let xml = r#"<mujoco><worldbody><geom type="plane" size="1 1 0.1"/></worldbody><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" radius="0.02" mass="1"><contact contype="0" conaffinity="0" vertcollide="true"/></flexcomp></deformable></mujoco>"#;
@@ -825,7 +826,11 @@ fn a_cloth_rests_on_its_vertex_spheres() {
             .fold(f64::INFINITY, f64::min)
     };
     let resting = lowest(xml);
-    assert!((resting - 0.02).abs() < 2e-3, "on its spheres: {resting}");
+    assert_eq!(
+        resting.to_bits(),
+        0.019_632_818_157_539_85_f64.to_bits(),
+        "on its spheres: {resting}"
+    );
     let fallen = lowest(&xml.replace(r#" vertcollide="true""#, ""));
     assert!(fallen < -0.1, "without them: {fallen}");
 }
@@ -987,4 +992,61 @@ fn a_vertcollide_radius_of_0_or_below_is_refused() {
     let pinned = load_model(&grid("0", "", &format!(r#"{spheres}<pin id="0 1 2 3"/>"#)))
         .expect("no sphere with every vertex pinned");
     assert_eq!(pinned.ngeom, 0);
+}
+
+/// A flexcomp vertex body's inertia is MuJoCo's on every axis, from the
+/// written inertiabox: mass 2 over four vertices, inertiabox 0.3, 0.03 about
+/// each, as MuJoCo's own flexcomp gives (measured).
+#[test]
+fn a_flexcomp_vertex_inertia_takes_its_inertiabox() {
+    let model = load_model(&format!(
+        r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" {}/></deformable></mujoco>"#,
+        r#"mass="2" inertiabox="0.3""#
+    ))
+    .unwrap();
+    for body in 1..5 {
+        assert_eq!(model.body_mass[body].to_bits(), 0.5_f64.to_bits(), "{body}");
+        for axis in 0..3 {
+            assert_eq!(
+                model.body_inertia[body][axis].to_bits(),
+                0.03_f64.to_bits(),
+                "body {body} axis {axis}"
+            );
+        }
+    }
+}
+
+/// A flexcomp's mass and inertiabox just above what MuJoCo refuses load as
+/// MuJoCo's own flexcomp loads them: mass 8e-15 over four vertices,
+/// inertiabox 2, each vertex body 2e-15 with an inertia of
+/// 5.333333333333334e-15 (measured), both above mjMINVAL. The flexcomp's
+/// check is at mjMINVAL itself (`check_flexcomp_refuses_below_mjminval`).
+#[test]
+fn a_flexcomp_mass_above_mjminval_loads_as_mujocos() {
+    let model = load_model(&format!(
+        r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" {}/></deformable></mujoco>"#,
+        r#"mass="8e-15" inertiabox="2""#
+    ))
+    .unwrap();
+    assert_eq!(model.body_mass[1].to_bits(), 2e-15_f64.to_bits());
+    assert_eq!(
+        model.body_inertia[1].x.to_bits(),
+        5.333_333_333_333_334e-15_f64.to_bits()
+    );
+}
+
+/// A flexcomp with every vertex pinned is a rigid flex, every edge rigid, as
+/// MuJoCo's own flexcomp makes it (its vertices on the parent body; measured
+/// by the review): sim-mjcf makes a jointless body per vertex, all welded to
+/// the world.
+#[test]
+fn a_flexcomp_with_every_vertex_pinned_is_rigid() {
+    let model = load_model(&format!(
+        r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1">{}</flexcomp></deformable></mujoco>"#,
+        r#"<pin id="0 1 2 3"/>"#
+    ))
+    .unwrap();
+    assert_eq!(model.nv, 0);
+    assert_eq!(model.flex_rigid, [true]);
+    assert!(model.nflexedge > 0 && model.flexedge_rigid.iter().all(|&r| r));
 }
