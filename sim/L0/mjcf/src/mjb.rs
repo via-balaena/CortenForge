@@ -56,8 +56,9 @@ use crate::types::MjcfModel;
 /// Magic bytes identifying an MJB file.
 pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
-/// Current MJB format version.
-pub const MJB_VERSION: u32 = 5;
+/// Current MJB format version: 6 since `MjcfFlex` lost `node` and took its
+/// vertex bodies' source (Rigid-loading L10).
+pub const MJB_VERSION: u32 = 6;
 
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;
@@ -601,6 +602,19 @@ mod tests {
         assert!(matches!(
             result,
             Err(MjcfError::MjbVersion { found: 999, .. })
+        ));
+    }
+
+    /// A file written before `MjcfFlex`'s shape changed (version 5) is
+    /// refused for its version, not misread: decoded as version 6 it failed
+    /// with a decode error (measured by RL-3a's review).
+    #[test]
+    fn a_version_5_file_is_refused_for_its_version() {
+        let mut bytes = save_mjb_bytes(&simple_model()).expect("should serialize");
+        bytes[4..8].copy_from_slice(&5u32.to_le_bytes());
+        assert!(matches!(
+            load_mjb_bytes(&bytes),
+            Err(MjcfError::MjbVersion { found: 5, .. })
         ));
     }
 
