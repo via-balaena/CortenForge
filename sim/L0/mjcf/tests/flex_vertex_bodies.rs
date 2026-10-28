@@ -809,8 +809,10 @@ fn a_flexcomp_with_vertcollide_gives_its_vertex_bodies_spheres() {
 /// The spheres hold up a cloth whose own contact is off: a grid of four
 /// vertices with `vertcollide`, started on a plane, comes to rest after 500
 /// steps with each vertex 0.01963281815753985 above it for a radius of 0.02,
-/// MuJoCo's own flexcomp's height bit for bit (measured), and without the
-/// spheres it falls through.
+/// and without the spheres it falls through. The height is MuJoCo's own
+/// flexcomp's bit for bit on macOS arm64, where it was measured; elsewhere
+/// within 1e-12, and a `NaN` never, as sim-conformance-tests' flex runs: whether
+/// another platform's libm rounds this run otherwise has not been measured.
 #[test]
 fn a_cloth_rests_on_its_vertex_spheres() {
     let xml = r#"<mujoco><worldbody><geom type="plane" size="1 1 0.1"/></worldbody><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" radius="0.02" mass="1"><contact contype="0" conaffinity="0" vertcollide="true"/></flexcomp></deformable></mujoco>"#;
@@ -826,11 +828,19 @@ fn a_cloth_rests_on_its_vertex_spheres() {
             .fold(f64::INFINITY, f64::min)
     };
     let resting = lowest(xml);
-    assert_eq!(
-        resting.to_bits(),
-        0.019_632_818_157_539_85_f64.to_bits(),
-        "on its spheres: {resting}"
-    );
+    let mujoco = 0.019_632_818_157_539_85_f64;
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        assert_eq!(
+            resting.to_bits(),
+            mujoco.to_bits(),
+            "on its spheres: {resting}"
+        );
+    } else {
+        assert!(
+            (resting - mujoco).abs() <= 1e-12,
+            "on its spheres: {resting}"
+        );
+    }
     let fallen = lowest(&xml.replace(r#" vertcollide="true""#, ""));
     assert!(fallen < -0.1, "without them: {fallen}");
 }
