@@ -1212,13 +1212,13 @@ fn a_composite_joint_with_a_closing_tag_names_its_kind() {
 fn an_index_or_a_count_below_zero_or_with_a_fraction_is_refused() {
     // MuJoCo 3.5.0 refuses each in its own form (measured: a mesh face of -1,
     // "vertex index -1 does not exist"; a flex dim of -1, "dim must be 1, 2 or
-    // 3"; a flexcomp count of -1, "Count too small"); a flex's child
-    // `<element>` and `<pin>` and a skin's child `<vertex>` are sim-mjcf's
-    // form. A skin face below zero, which MuJoCo loads, is
+    // 3"; a flex element id of -1, "elem vertex id out of range"; a flexcomp
+    // count of -1, "Count too small"); a skin's child `<vertex>` is
+    // sim-mjcf's form. A skin face below zero, which MuJoCo loads, is
     // D-SKIN-FACE-NEGATIVE.
-    let flex = |dim: &str, children: &str| {
+    let flex = |dim: &str, element: &str| {
         format!(
-            r#"<mujoco><deformable><flex name="f" dim="{dim}" density="0.1"><vertex pos="0 0 1  0.05 0 1  0.1 0 1"/>{children}</flex></deformable></mujoco>"#
+            r#"<mujoco><worldbody><body name="a" pos="0 0 1"></body><body name="b" pos="0.05 0 1"></body><body name="c" pos="0.1 0 1"></body></worldbody><deformable><flex name="f" dim="{dim}" body="a b c" element="{element}"></flex></deformable></mujoco>"#
         )
     };
     let skin = |face: &str, children: &str| {
@@ -1232,9 +1232,8 @@ fn an_index_or_a_count_below_zero_or_with_a_fraction_is_refused() {
             "mesh",
             "face",
         ),
-        (flex("-1", ""), "flex", "dim"),
-        (flex("1", r#"<element data="0 1  1 -2"/>"#), "element", "data"),
-        (flex("1", r#"<element data="0 1  1 2"/><pin id="-1"/>"#), "pin", "id"),
+        (flex("-1", "0 1"), "flex", "dim"),
+        (flex("1", "0 1  1 -2"), "flex", "element"),
         (
             r#"<mujoco><worldbody/><deformable><flexcomp name="f" type="grid" count="-1 3 1" spacing="1 1 1" dim="2"/></deformable></mujoco>"#.to_string(),
             "flexcomp",
@@ -1251,10 +1250,8 @@ fn an_index_or_a_count_below_zero_or_with_a_fraction_is_refused() {
             "{xml}: {err}"
         );
     }
-    let err = refused(&flex("1", r#"<element data="0 1  1 2.0"/>"#));
-    assert_bad_number(&err, "element", "data");
-    let err = refused(&flex("1", r#"<element data="0 1  1 2"/><pin id="1.5"/>"#));
-    assert_bad_number(&err, "pin", "id");
+    let err = refused(&flex("1", "0 1  1 2.0"));
+    assert_bad_number(&err, "flex", "element");
     let err = refused(&skin("0 1 2", r#"<vertex id="1.5" bone="0"/>"#));
     assert_bad_number(&err, "vertex", "id");
 }

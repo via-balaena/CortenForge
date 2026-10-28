@@ -488,7 +488,8 @@ damping. Bending stiffness derived from material (Kirchhoff-Love for shells,
 characteristic stiffness for solids). Pinned vertices use `mass = 1e20`,
 `invmass = 0`.
 
-**Parsed from MJCF:** `<flex>` (direct vertex/element specification) and
+**Parsed from MJCF:** `<flex>` (MuJoCo's form: its vertices are the bodies it
+names, each jointless or with three slides along x, y and z) and
 `<flexcomp>` (procedural generation: grid, box, cable types).
 
 See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) for the full

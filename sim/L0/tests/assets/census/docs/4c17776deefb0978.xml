@@ -1,0 +1,12 @@
+<mujoco model="single_edge">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <worldbody>
+          <body name="spring_v0" pos="0 0 0"><inertial pos="0 0 0" mass="500.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="spring_v1" pos="1 0 0"><joint type="slide" axis="1 0 0" damping="1.0"/><joint type="slide" axis="0 1 0" damping="1.0"/><joint type="slide" axis="0 0 1" damping="1.0"/><inertial pos="0 0 0" mass="500.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+        </worldbody>
+        <deformable>
+            <flex name="spring" dim="1" body="spring_v0 spring_v1" element="0 1">
+                <elasticity young="1000.0" damping="1.0"/>
+            </flex>
+        </deformable>
+    </mujoco>

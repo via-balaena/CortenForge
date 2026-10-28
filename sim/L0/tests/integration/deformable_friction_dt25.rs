@@ -24,13 +24,13 @@ fn flex_cable_on_tilted_plane_mjcf() -> &'static str {
             <body pos="0 0 -0.5" euler="0 30 0">
                 <geom type="box" size="5 5 0.5" friction="1.0 0.005 0.0001"/>
             </body>
+          <body name="rod_v0" pos="0 0 0.1"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="25.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rod_v1" pos="0 0.05 0.1"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="25.0" diaginertia="1e-15 1e-15 1e-15"/></body>
         </worldbody>
         <deformable>
-            <flex name="rod" dim="1" density="1.0" radius="0.01">
+            <flex name="rod" dim="1" radius="0.01" body="rod_v0 rod_v1" element="0 1">
                 <contact condim="3" friction="1.0 0.005 0.0001" solref="0.02 1.0"/>
                 <elasticity young="1e4"/>
-                <vertex pos="0 0 0.1  0 0.05 0.1"/>
-                <element data="0 1"/>
             </flex>
         </deformable>
     </mujoco>
@@ -49,13 +49,15 @@ fn flex_cloth_friction_mjcf() -> &'static str {
             <body pos="0 0 -0.5">
                 <geom type="box" size="5 5 0.5" friction="1.0 0.005 0.0001"/>
             </body>
+          <body name="cloth_v0" pos="0 0 0.002"><joint type="slide" axis="1 0 0" damping="5.0"/><joint type="slide" axis="0 1 0" damping="5.0"/><joint type="slide" axis="0 0 1" damping="5.0"/><inertial pos="0 0 0" mass="0.01666666666666667" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="cloth_v1" pos="0.1 0 0.002"><joint type="slide" axis="1 0 0" damping="5.0"/><joint type="slide" axis="0 1 0" damping="5.0"/><joint type="slide" axis="0 0 1" damping="5.0"/><inertial pos="0 0 0" mass="0.03333333333333334" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="cloth_v2" pos="0 0.1 0.002"><joint type="slide" axis="1 0 0" damping="5.0"/><joint type="slide" axis="0 1 0" damping="5.0"/><joint type="slide" axis="0 0 1" damping="5.0"/><inertial pos="0 0 0" mass="0.03333333333333334" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="cloth_v3" pos="0.1 0.1 0.002"><joint type="slide" axis="1 0 0" damping="5.0"/><joint type="slide" axis="0 1 0" damping="5.0"/><joint type="slide" axis="0 0 1" damping="5.0"/><inertial pos="0 0 0" mass="0.01666666666666667" diaginertia="1e-15 1e-15 1e-15"/></body>
         </worldbody>
         <deformable>
-            <flex name="cloth" dim="2" density="100" radius="0.005">
+            <flex name="cloth" dim="2" radius="0.005" body="cloth_v0 cloth_v1 cloth_v2 cloth_v3" element="0 1 2  1 3 2">
                 <contact condim="3" friction="1.0 0.005 0.0001" solref="0.02 1.0"/>
                 <elasticity young="50" damping="5.0" thickness="0.01"/>
-                <vertex pos="0 0 0.002  0.1 0 0.002  0 0.1 0.002  0.1 0.1 0.002"/>
-                <element data="0 1 2  1 3 2"/>
             </flex>
         </deformable>
     </mujoco>
@@ -72,13 +74,15 @@ fn flex_cloth_frictionless_mjcf() -> &'static str {
             <body pos="0 0 -0.5">
                 <geom type="box" size="5 5 0.5" condim="1" friction="0 0 0"/>
             </body>
+          <body name="cloth_v0" pos="0 0 0.002"><joint type="slide" axis="1 0 0" damping="5.0"/><joint type="slide" axis="0 1 0" damping="5.0"/><joint type="slide" axis="0 0 1" damping="5.0"/><inertial pos="0 0 0" mass="0.01666666666666667" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="cloth_v1" pos="0.1 0 0.002"><joint type="slide" axis="1 0 0" damping="5.0"/><joint type="slide" axis="0 1 0" damping="5.0"/><joint type="slide" axis="0 0 1" damping="5.0"/><inertial pos="0 0 0" mass="0.03333333333333334" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="cloth_v2" pos="0 0.1 0.002"><joint type="slide" axis="1 0 0" damping="5.0"/><joint type="slide" axis="0 1 0" damping="5.0"/><joint type="slide" axis="0 0 1" damping="5.0"/><inertial pos="0 0 0" mass="0.03333333333333334" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="cloth_v3" pos="0.1 0.1 0.002"><joint type="slide" axis="1 0 0" damping="5.0"/><joint type="slide" axis="0 1 0" damping="5.0"/><joint type="slide" axis="0 0 1" damping="5.0"/><inertial pos="0 0 0" mass="0.01666666666666667" diaginertia="1e-15 1e-15 1e-15"/></body>
         </worldbody>
         <deformable>
-            <flex name="cloth" dim="2" density="100" radius="0.005">
+            <flex name="cloth" dim="2" radius="0.005" body="cloth_v0 cloth_v1 cloth_v2 cloth_v3" element="0 1 2  1 3 2">
                 <contact condim="1" friction="0 0 0" solref="0.02 1.0"/>
                 <elasticity young="50" damping="5.0" thickness="0.01"/>
-                <vertex pos="0 0 0.002  0.1 0 0.002  0 0.1 0.002  0.1 0.1 0.002"/>
-                <element data="0 1 2  1 3 2"/>
             </flex>
         </deformable>
     </mujoco>

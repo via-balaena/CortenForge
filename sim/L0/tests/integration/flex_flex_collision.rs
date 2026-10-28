@@ -9,6 +9,8 @@ use approx::assert_relative_eq;
 use sim_core::validation::max_abs_or_nan;
 use sim_mjcf::load_model;
 
+use super::flex_test_utils::{triples, vertex_bodies};
+
 /// Helper: count flex-flex contacts (a flex on each side, two different
 /// flexes).
 fn count_flex_flex_contacts(data: &sim_core::Data) -> usize {
@@ -18,33 +20,42 @@ fn count_flex_flex_contacts(data: &sim_core::Data) -> usize {
         .count()
 }
 
-/// Two overlapping 3×3 dim=2 flexcomp grids for basic collision tests.
+/// Two overlapping 3×3 dim=2 grids for basic collision tests, each vertex a
+/// body of 1 g with three slides.
 fn two_overlapping_grids_mjcf(ct1: i32, ca1: i32, ct2: i32, ca2: i32) -> String {
+    let (b1, n1) = vertex_bodies(
+        "f1",
+        &triples("0 0 0  1 0 0  2 0 0  0 1 0  1 1 0  2 1 0  0 2 0  1 2 0  2 2 0"),
+        &[0.001; 9],
+        &[],
+        None,
+    );
+    let (b2, n2) = vertex_bodies(
+        "f2",
+        &triples(
+            "0.5 0.5 0  1.5 0.5 0  2.5 0.5 0  0.5 1.5 0  1.5 1.5 0  2.5 1.5 0  0.5 2.5 0  1.5 2.5 0  2.5 2.5 0",
+        ),
+        &[0.001; 9],
+        &[],
+        None,
+    );
     format!(
         r#"
         <mujoco model="flex_flex">
             <option gravity="0 0 -9.81" timestep="0.001"/>
-            <worldbody/>
+            <worldbody>{b1}{b2}</worldbody>
             <deformable>
-                <flex name="f1" dim="2" density="1000" radius="0.01">
+                <flex name="f1" dim="2" radius="0.01" body="{n1}" element="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7">
                     <contact contype="{ct1}" conaffinity="{ca1}" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0 0 0  1 0 0  2 0 0  0 1 0  1 1 0  2 1 0  0 2 0  1 2 0  2 2 0"/>
-                    <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
                 </flex>
-                <flex name="f2" dim="2" density="1000" radius="0.01">
+                <flex name="f2" dim="2" radius="0.01" body="{n2}" element="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7">
                     <contact contype="{ct2}" conaffinity="{ca2}" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0.5 0.5 0  1.5 0.5 0  2.5 0.5 0  0.5 1.5 0  1.5 1.5 0  2.5 1.5 0  0.5 2.5 0  1.5 2.5 0  2.5 2.5 0"/>
-                    <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
                 </flex>
             </deformable>
         </mujoco>
-        "#,
-        ct1 = ct1,
-        ca1 = ca1,
-        ct2 = ct2,
-        ca2 = ca2
+        "#
     )
 }
 
@@ -115,21 +126,26 @@ fn t03_priority_winner_takes_all() {
     let mjcf = r#"
         <mujoco model="priority_test">
             <option gravity="0 0 -9.81" timestep="0.001"/>
-            <worldbody/>
+            <worldbody>
+              <body name="f1_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v0" pos="0.25 0.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v1" pos="1.25 0.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v2" pos="0.25 1.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v3" pos="1.25 1.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+            </worldbody>
             <deformable>
-                <flex name="f1" dim="2" density="1000" radius="0.01">
+                <flex name="f1" dim="2" radius="0.01" body="f1_v0 f1_v1 f1_v2 f1_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1" priority="1"
                              solref="0.05 2.0" friction="0.5 0.005 0.0001" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
-                <flex name="f2" dim="2" density="1000" radius="0.01">
+                <flex name="f2" dim="2" radius="0.01" body="f2_v0 f2_v1 f2_v2 f2_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1" priority="0"
                              solref="0.02 1.0" friction="0.3 0.005 0.0001" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0.25 0.25 0  1.25 0.25 0  0.25 1.25 0  1.25 1.25 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
             </deformable>
         </mujoco>
@@ -167,21 +183,26 @@ fn t04_solmix_weighted_blend() {
     let mjcf = r#"
         <mujoco model="solmix_test">
             <option gravity="0 0 -9.81" timestep="0.001"/>
-            <worldbody/>
+            <worldbody>
+              <body name="f1_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v0" pos="0.25 0.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v1" pos="1.25 0.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v2" pos="0.25 1.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v3" pos="1.25 1.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+            </worldbody>
             <deformable>
-                <flex name="f1" dim="2" density="1000" radius="0.01">
+                <flex name="f1" dim="2" radius="0.01" body="f1_v0 f1_v1 f1_v2 f1_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1"
                              solmix="0.5" solref="0.02 1.0" friction="0.8 0.005 0.0001" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
-                <flex name="f2" dim="2" density="1000" radius="0.01">
+                <flex name="f2" dim="2" radius="0.01" body="f2_v0 f2_v1 f2_v2 f2_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1"
                              solmix="1.5" solref="0.04 2.0" friction="0.2 0.005 0.0001" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0.25 0.25 0  1.25 0.25 0  0.25 1.25 0  1.25 1.25 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
             </deformable>
         </mujoco>
@@ -222,19 +243,24 @@ fn t05_margin_gap_additive() {
     let mjcf = r#"
         <mujoco model="margin_gap_test">
             <option gravity="0 0 -9.81" timestep="0.001"/>
-            <worldbody/>
+            <worldbody>
+              <body name="f1_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v0" pos="0.25 0.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v1" pos="1.25 0.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v2" pos="0.25 1.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v3" pos="1.25 1.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+            </worldbody>
             <deformable>
-                <flex name="f1" dim="2" density="1000" radius="0.01">
+                <flex name="f1" dim="2" radius="0.01" body="f1_v0 f1_v1 f1_v2 f1_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1" margin="0.05" gap="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
-                <flex name="f2" dim="2" density="1000" radius="0.01">
+                <flex name="f2" dim="2" radius="0.01" body="f2_v0 f2_v1 f2_v2 f2_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1" margin="0.03" gap="0.02"/>
                     <elasticity young="50"/>
-                    <vertex pos="0.25 0.25 0  1.25 0.25 0  0.25 1.25 0  1.25 1.25 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
             </deformable>
         </mujoco>
@@ -271,19 +297,24 @@ fn t06_flex_rigid_does_not_gate_flex_flex() {
     let mjcf_unpinned = r#"
         <mujoco model="unpinned_baseline">
             <option gravity="0 0 0" timestep="0.001"/>
-            <worldbody/>
+            <worldbody>
+              <body name="f1_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f_normal_v0" pos="0.25 0.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f_normal_v1" pos="1.25 0.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f_normal_v2" pos="0.25 1.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f_normal_v3" pos="1.25 1.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+            </worldbody>
             <deformable>
-                <flex name="f1" dim="2" density="1000" radius="0.01">
+                <flex name="f1" dim="2" radius="0.01" body="f1_v0 f1_v1 f1_v2 f1_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
-                <flex name="f_normal" dim="2" density="1000" radius="0.01">
+                <flex name="f_normal" dim="2" radius="0.01" body="f_normal_v0 f_normal_v1 f_normal_v2 f_normal_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0.25 0.25 0  1.25 0.25 0  0.25 1.25 0  1.25 1.25 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
             </deformable>
         </mujoco>
@@ -302,34 +333,42 @@ fn t06_flex_rigid_does_not_gate_flex_flex() {
         "baseline must produce flex-flex contacts"
     );
 
-    // Test: flex1 fully pinned (invmass=0 → flex_rigid[0]=true)
+    // Test: flex1 fully pinned, then marked rigid
     let mjcf_pinned = r#"
         <mujoco model="rigid_flex_test">
             <option gravity="0 0 0" timestep="0.001"/>
-            <worldbody/>
+            <worldbody>
+              <body name="f_rigid_v0" pos="0 0 0"><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f_rigid_v1" pos="1 0 0"><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f_rigid_v2" pos="0 1 0"><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f_rigid_v3" pos="1 1 0"><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f_normal_v0" pos="0.25 0.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f_normal_v1" pos="1.25 0.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f_normal_v2" pos="0.25 1.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f_normal_v3" pos="1.25 1.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+            </worldbody>
             <deformable>
-                <flex name="f_rigid" dim="2" density="0" radius="0.01">
+                <flex name="f_rigid" dim="2" radius="0.01" body="f_rigid_v0 f_rigid_v1 f_rigid_v2 f_rigid_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
-                    <element data="0 1 2  1 3 2"/>
-                    <pin id="0 1 2 3"/>
                 </flex>
-                <flex name="f_normal" dim="2" density="1000" radius="0.01">
+                <flex name="f_normal" dim="2" radius="0.01" body="f_normal_v0 f_normal_v1 f_normal_v2 f_normal_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0.25 0.25 0  1.25 0.25 0  0.25 1.25 0  1.25 1.25 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
             </deformable>
         </mujoco>
     "#;
 
-    let model_pinned = load_model(mjcf_pinned).expect("load pinned");
+    // A flex of four jointless bodies is not rigid in MuJoCo (a rigid flex is
+    // one on a single body, which sim-mjcf refuses), so it is set rigid on
+    // the loaded model.
+    let mut model_pinned = load_model(mjcf_pinned).expect("load pinned");
     assert!(
-        model_pinned.flex_rigid[0],
-        "first flex must be rigid (all pinned)"
+        !model_pinned.flex_rigid[0],
+        "four bodies are not a rigid flex"
     );
+    model_pinned.flex_rigid[0] = true;
     assert!(!model_pinned.flex_rigid[1], "second flex must not be rigid");
 
     let mut data_pinned = model_pinned.make_data();
@@ -352,25 +391,32 @@ fn t07_three_flex_all_pairs_enumeration() {
     let mjcf = r#"
         <mujoco model="three_flex">
             <option gravity="0 0 0" timestep="0.001"/>
-            <worldbody/>
+            <worldbody>
+              <body name="f0_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f0_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f0_v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f0_v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v0" pos="0.25 0.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v1" pos="1.25 0.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v2" pos="0.25 1.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v3" pos="1.25 1.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v0" pos="0.5 0.5 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v1" pos="1.5 0.5 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v2" pos="0.5 1.5 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v3" pos="1.5 1.5 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+            </worldbody>
             <deformable>
-                <flex name="f0" dim="2" density="1000" radius="0.01">
+                <flex name="f0" dim="2" radius="0.01" body="f0_v0 f0_v1 f0_v2 f0_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
-                <flex name="f1" dim="2" density="1000" radius="0.01">
+                <flex name="f1" dim="2" radius="0.01" body="f1_v0 f1_v1 f1_v2 f1_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0.25 0.25 0  1.25 0.25 0  0.25 1.25 0  1.25 1.25 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
-                <flex name="f2" dim="2" density="1000" radius="0.01">
+                <flex name="f2" dim="2" radius="0.01" body="f2_v0 f2_v1 f2_v2 f2_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0.5 0.5 0  1.5 0.5 0  0.5 1.5 0  1.5 1.5 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
             </deformable>
         </mujoco>
@@ -416,20 +462,25 @@ fn t08_condim_max_combination() {
     let mjcf = r#"
         <mujoco model="condim_test">
             <option gravity="0 0 0" timestep="0.001"/>
-            <worldbody/>
+            <worldbody>
+              <body name="f1_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v0" pos="0.25 0.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v1" pos="1.25 0.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v2" pos="0.25 1.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v3" pos="1.25 1.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+            </worldbody>
             <deformable>
-                <flex name="f1" dim="2" density="1000" radius="0.01">
+                <flex name="f1" dim="2" radius="0.01" body="f1_v0 f1_v1 f1_v2 f1_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1" condim="1" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
-                <flex name="f2" dim="2" density="1000" radius="0.01">
+                <flex name="f2" dim="2" radius="0.01" body="f2_v0 f2_v1 f2_v2 f2_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1" condim="4"
                              friction="1.0 0.005 0.0001" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0.25 0.25 0  1.25 0.25 0  0.25 1.25 0  1.25 1.25 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
             </deformable>
         </mujoco>
@@ -465,21 +516,34 @@ fn t08_condim_max_combination() {
 const FULL_STEP_SCENE: &str = r#"
         <mujoco model="full_step_test">
             <option gravity="0 0 -9.81" timestep="0.001"/>
-            <worldbody/>
+            <worldbody>
+              <body name="f1_v0" pos="0 0 0"><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v1" pos="1 0 0"><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v2" pos="2 0 0"><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v3" pos="0 1 0"><joint type="slide" axis="1 0 0" damping="10"/><joint type="slide" axis="0 1 0" damping="10"/><joint type="slide" axis="0 0 1" damping="10"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v4" pos="1 1 0"><joint type="slide" axis="1 0 0" damping="10"/><joint type="slide" axis="0 1 0" damping="10"/><joint type="slide" axis="0 0 1" damping="10"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v5" pos="2 1 0"><joint type="slide" axis="1 0 0" damping="10"/><joint type="slide" axis="0 1 0" damping="10"/><joint type="slide" axis="0 0 1" damping="10"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v6" pos="0 2 0"><joint type="slide" axis="1 0 0" damping="10"/><joint type="slide" axis="0 1 0" damping="10"/><joint type="slide" axis="0 0 1" damping="10"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v7" pos="1 2 0"><joint type="slide" axis="1 0 0" damping="10"/><joint type="slide" axis="0 1 0" damping="10"/><joint type="slide" axis="0 0 1" damping="10"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v8" pos="2 2 0"><joint type="slide" axis="1 0 0" damping="10"/><joint type="slide" axis="0 1 0" damping="10"/><joint type="slide" axis="0 0 1" damping="10"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v0" pos="0.5 0.5 0"><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v1" pos="1.5 0.5 0"><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v2" pos="2.5 0.5 0"><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v3" pos="0.5 1.5 0"><joint type="slide" axis="1 0 0" damping="10"/><joint type="slide" axis="0 1 0" damping="10"/><joint type="slide" axis="0 0 1" damping="10"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v4" pos="1.5 1.5 0"><joint type="slide" axis="1 0 0" damping="10"/><joint type="slide" axis="0 1 0" damping="10"/><joint type="slide" axis="0 0 1" damping="10"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v5" pos="2.5 1.5 0"><joint type="slide" axis="1 0 0" damping="10"/><joint type="slide" axis="0 1 0" damping="10"/><joint type="slide" axis="0 0 1" damping="10"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v6" pos="0.5 2.5 0"><joint type="slide" axis="1 0 0" damping="10"/><joint type="slide" axis="0 1 0" damping="10"/><joint type="slide" axis="0 0 1" damping="10"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v7" pos="1.5 2.5 0"><joint type="slide" axis="1 0 0" damping="10"/><joint type="slide" axis="0 1 0" damping="10"/><joint type="slide" axis="0 0 1" damping="10"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v8" pos="2.5 2.5 0"><joint type="slide" axis="1 0 0" damping="10"/><joint type="slide" axis="0 1 0" damping="10"/><joint type="slide" axis="0 0 1" damping="10"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+            </worldbody>
             <deformable>
-                <flex name="f1" dim="2" density="1000" radius="0.01">
+                <flex name="f1" dim="2" radius="0.01" body="f1_v0 f1_v1 f1_v2 f1_v3 f1_v4 f1_v5 f1_v6 f1_v7 f1_v8" element="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7">
                     <contact contype="1" conaffinity="1" margin="0.05"/>
                     <elasticity young="1000" damping="10"/>
-                    <vertex pos="0 0 0  1 0 0  2 0 0  0 1 0  1 1 0  2 1 0  0 2 0  1 2 0  2 2 0"/>
-                    <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
-                    <pin id="0 1 2"/>
                 </flex>
-                <flex name="f2" dim="2" density="1000" radius="0.01">
+                <flex name="f2" dim="2" radius="0.01" body="f2_v0 f2_v1 f2_v2 f2_v3 f2_v4 f2_v5 f2_v6 f2_v7 f2_v8" element="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7">
                     <contact contype="1" conaffinity="1" margin="0.05"/>
                     <elasticity young="1000" damping="10"/>
-                    <vertex pos="0.5 0.5 0  1.5 0.5 0  2.5 0.5 0  0.5 1.5 0  1.5 1.5 0  2.5 1.5 0  0.5 2.5 0  1.5 2.5 0  2.5 2.5 0"/>
-                    <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
-                    <pin id="0 1 2"/>
                 </flex>
             </deformable>
         </mujoco>
@@ -537,13 +601,15 @@ fn t12_flex_rigid_regression() {
             <option gravity="0 0 -9.81" timestep="0.001"/>
             <worldbody>
                 <geom type="plane" size="5 5 0.1" pos="0 0 -0.1"/>
+              <body name="f1_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
             </worldbody>
             <deformable>
-                <flex name="f1" dim="2" density="1000" radius="0.01">
+                <flex name="f1" dim="2" radius="0.01" body="f1_v0 f1_v1 f1_v2 f1_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
             </deformable>
         </mujoco>
@@ -580,23 +646,28 @@ fn t13_contact_param_flexes_unit() {
     let mjcf = r#"
         <mujoco model="param_unit">
             <option gravity="0 0 0" timestep="0.001"/>
-            <worldbody/>
+            <worldbody>
+              <body name="f1_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v0" pos="0.25 0.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v1" pos="1.25 0.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v2" pos="0.25 1.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v3" pos="1.25 1.25 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+            </worldbody>
             <deformable>
-                <flex name="f1" dim="2" density="1000" radius="0.01">
+                <flex name="f1" dim="2" radius="0.01" body="f1_v0 f1_v1 f1_v2 f1_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1"
                              solref="0.02 1.0" solimp="0.9 0.95 0.001 0.5 2.0"
                              friction="0.5 0.005 0.0001" gap="0.01" margin="0.05"/>
                     <elasticity young="50"/>
-                    <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
-                <flex name="f2" dim="2" density="1000" radius="0.01">
+                <flex name="f2" dim="2" radius="0.01" body="f2_v0 f2_v1 f2_v2 f2_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1"
                              solref="0.04 2.0" solimp="0.8 0.99 0.002 0.6 3.0"
                              friction="0.3 0.003 0.0002" gap="0.02" margin="0.05"/>
                     <elasticity young="50"/>
-                    <vertex pos="0.25 0.25 0  1.25 0.25 0  0.25 1.25 0  1.25 1.25 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
             </deformable>
         </mujoco>
@@ -658,19 +729,24 @@ fn t14_zero_element_flex_no_panic() {
     let mjcf = r#"
         <mujoco model="zero_elem">
             <option gravity="0 0 0" timestep="0.001"/>
-            <worldbody/>
+            <worldbody>
+              <body name="f1_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f1_v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v0" pos="0.5 0.5 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v1" pos="1.5 0.5 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v2" pos="0.5 1.5 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+              <body name="f2_v3" pos="1.5 1.5 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+            </worldbody>
             <deformable>
-                <flex name="f1" dim="2" density="1000" radius="0.01">
+                <flex name="f1" dim="2" radius="0.01" body="f1_v0 f1_v1 f1_v2 f1_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
-                <flex name="f2" dim="2" density="1000" radius="0.01">
+                <flex name="f2" dim="2" radius="0.01" body="f2_v0 f2_v1 f2_v2 f2_v3" element="0 1 2  1 3 2">
                     <contact contype="1" conaffinity="1" margin="0.01"/>
                     <elasticity young="50"/>
-                    <vertex pos="0.5 0.5 0  1.5 0.5 0  0.5 1.5 0  1.5 1.5 0"/>
-                    <element data="0 1 2  1 3 2"/>
                 </flex>
             </deformable>
         </mujoco>

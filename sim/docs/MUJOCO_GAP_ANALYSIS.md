@@ -903,7 +903,7 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 >
 > **Material model:** Young's modulus → bending stiffness via Kirchhoff-Love (shells) or characteristic stiffness (solids). Proportional damping. Pinned vertices: `mass = 1e20`, `invmass = 0`.
 >
-> **MJCF parsing:** `<flex>` (direct specification) and `<flexcomp>` (procedural: grid, box, cable) parsed in `sim-mjcf`. Edge/hinge topology computed at build time.
+> **MJCF parsing:** `<flex>` (MuJoCo's form: its vertices are the bodies it names) and `<flexcomp>` (procedural: grid, box, cable) parsed in `sim-mjcf`. Edge/hinge topology computed at build time.
 >
 > **Tests:** 21 acceptance tests in `flex_unified.rs` (AC1–AC21) covering cloth drape, contacts, edge stiffness, bending, pinned vertices, MJCF round-trip, stability clamp, and more.
 
@@ -1114,7 +1114,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | `<contact>` | Full | `<pair>` (explicit geom pairs with per-pair condim/friction/solref/solimp overrides), `<exclude>` (body-pair exclusions), contype/conaffinity bitmasks; two-mechanism collision architecture |
 | `<equality>` | Full | `<connect>`, `<weld>`, `<joint>`, `<distance>`, `<flex>` (edge-length) — unified solver rows for all solver types |
 | `<keyframe>` | Full | `<key>` elements with qpos/qvel/act/ctrl/mpos/mquat/time; `Data::reset_to_keyframe()` |
-| `<flex>` | Full | Direct vertex/element specification for flex bodies; parsed via `parse_flex()` + `process_flex()` |
+| `<flex>` | Partial | MuJoCo's form: `body` names the vertex bodies, `element` the elements; a vertex body jointless or with three slides along x, y and z, unrotated, with no dof above it, one per vertex at its origin (else refused, a stated limitation); parsed via `parse_flex()` + `process_flex_bodies()` |
 | `<flexcomp>` | Full | Procedural flex body generation: grid (2D shell), box (3D solid), cable (1D); parsed via `parse_flexcomp()` |
 
 **Supported Joint Types:**

@@ -12,6 +12,8 @@ use sim_core::{
     mjd_transition, mjd_transition_fd, mjd_transition_hybrid, validate_analytical_vs_fd,
 };
 
+use super::flex_test_utils::{triples, uniform, vertex_bodies};
+
 // ============================================================================
 // Test fixture helpers
 // ============================================================================
@@ -4307,21 +4309,22 @@ fn hybrid_velocity_columns_take_flex_edge_damping() {
         ("implicitfast", "disable"),
     ] {
         let what = format!("{integrator}, damper {damper}");
+        let c = triples("0 0 1  0.1 0 1  0.2 0 1  0.3 0 1");
+        let d = triples("0 0 2  0.1 0 2  0.2 0 2");
+        let (c_bodies, c_names) = vertex_bodies("c", &c, &uniform(0.4, 4), &[], None);
+        let (d_bodies, d_names) = vertex_bodies("d", &d, &uniform(0.3, 3), &[], None);
         let model = sim_mjcf::load_model(&format!(
             r#"<mujoco>
               <option timestep="0.002" integrator="{integrator}">
                 <flag equality="disable" damper="{damper}"/>
               </option>
+              <worldbody>{c_bodies}{d_bodies}</worldbody>
               <deformable>
-                <flex name="c" dim="1" mass="0.4">
-                  <vertex pos="0 0 1  0.1 0 1  0.2 0 1  0.3 0 1"/>
-                  <element data="0 1  1 2  2 3"/>
+                <flex name="c" dim="1" body="{c_names}" element="0 1  1 2  2 3">
                   <edge damping="3"/>
                   <contact contype="0" conaffinity="0"/>
                 </flex>
-                <flex name="d" dim="1" mass="0.3">
-                  <vertex pos="0 0 2  0.1 0 2  0.2 0 2"/>
-                  <element data="0 1  1 2"/>
+                <flex name="d" dim="1" body="{d_names}" element="0 1  1 2">
                   <edge damping="7"/>
                   <contact contype="0" conaffinity="0"/>
                 </flex>

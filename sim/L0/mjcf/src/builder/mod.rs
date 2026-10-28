@@ -1375,11 +1375,13 @@ mod tests {
                 <body pos="0 0 1">
                   <geom type="sphere" size="0.01" mass="0.1"/>
                 </body>
+                <body name="test_flex_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+                <body name="test_flex_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+                <body name="test_flex_v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+                <body name="test_flex_v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
               </worldbody>
               <deformable>
-                <flex name="test_flex" dim="2">
-                  <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
-                  <element data="0 1 2  1 2 3"/>
+                <flex name="test_flex" dim="2" body="test_flex_v0 test_flex_v1 test_flex_v2 test_flex_v3" element="0 1 2  1 2 3">
                   <contact internal="false" activelayers="3"
                            vertcollide="true" passive="false"/>
                   <elasticity young="1e6"/>
@@ -1412,11 +1414,13 @@ mod tests {
                 <body pos="0 0 1">
                   <geom type="sphere" size="0.01" mass="0.1"/>
                 </body>
+                <body name="test_flex_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+                <body name="test_flex_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+                <body name="test_flex_v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+                <body name="test_flex_v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
               </worldbody>
               <deformable>
-                <flex name="test_flex" dim="2">
-                  <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
-                  <element data="0 1 2  1 2 3"/>
+                <flex name="test_flex" dim="2" body="test_flex_v0 test_flex_v1 test_flex_v2 test_flex_v3" element="0 1 2  1 2 3">
                   <contact/>
                   <elasticity young="1e6"/>
                 </flex>

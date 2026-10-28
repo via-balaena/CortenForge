@@ -1,0 +1,11 @@
+<mujoco>
+            <worldbody>
+                <body name="a0"></body><body name="a1" pos="1 0 0"></body><body name="a2" pos="0 1 0"></body>
+                <body name="b0"></body><body name="b1" pos="1 0 0"></body><body name="b2" pos="0 1 0"></body>
+                <body name="b3" pos="0 0 1"></body><body name="b4" pos="1 1 1"></body>
+            </worldbody>
+            <deformable>
+                <flex name="a" dim="2" body="a0 a1 a2" element="0 1 2"></flex>
+                <flex dim="4" body="b0 b1 b2 b3 b4" element="0 1 2 3 4"></flex>
+            </deformable>
+        </mujoco>

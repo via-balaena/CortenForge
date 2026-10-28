@@ -8,6 +8,8 @@ use serde_json::Value;
 use sim_core::{Contact, Data, Model, Warning};
 use sim_mjcf::load_model;
 
+use super::flex_test_utils::{triples, uniform, vertex_bodies};
+
 fn golden() -> Value {
     serde_json::from_str(include_str!("../assets/golden/collision/collision.json"))
         .expect("collision golden parses")
@@ -231,28 +233,29 @@ fn contacts_in_mujoco_body_pair_order() {
 
 /// MuJoCo's list for an `order` flex case against ours: sim-mjcf does not
 /// load MuJoCo's `<flexcomp>` in a body (ledger L152), so the same flex is
-/// built in sim-mjcf's `<deformable><flex>` form from MuJoCo's vertex
-/// positions and elements, beside `bodies`, the case's other bodies.
+/// built as a `<flex>` of vertex bodies at MuJoCo's vertex positions, with
+/// its elements, beside `bodies`, the case's other bodies.
 fn flex_lists_as_mujoco(name: &str, bodies: &str) {
     let case = &golden()["order"][name];
     let join = |v: Vec<String>| v.join(" ");
-    let pos = join(
+    let pos = triples(&join(
         floats(&case["flexvert_xpos"])
             .iter()
             .map(f64::to_string)
             .collect(),
-    );
+    ));
     let elem = join(
         floats(&case["flex_elem"])
             .iter()
             .map(f64::to_string)
             .collect(),
     );
+    let (vertices, names) = vertex_bodies("cloth", &pos, &uniform(0.1, pos.len()), &[], None);
     let xml = format!(
         r#"<mujoco><option><flag gravity="disable"/></option><worldbody>
-{bodies}
-</worldbody><deformable><flex name="cloth" dim="2" radius="0.01" mass="0.1">
-<contact selfcollide="none"/><vertex pos="{pos}"/><element data="{elem}"/></flex></deformable></mujoco>"#
+{bodies}{vertices}
+</worldbody><deformable><flex name="cloth" dim="2" radius="0.01" body="{names}" element="{elem}">
+<contact selfcollide="none"/></flex></deformable></mujoco>"#
     );
     let model: Model = load_model(&xml).expect("load");
     let mut data = model.make_data();

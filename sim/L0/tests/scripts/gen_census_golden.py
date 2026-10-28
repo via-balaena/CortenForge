@@ -15,12 +15,13 @@ names another oracle; moving the golden to a new oracle is a deliberate act
 
 For every <docs>/<id>.xml (or every id in ids-file) it writes <golden>/<id>.json:
 
-    {"doc", "status": "ok" | "refused", "model"?, "e1"?, "e2"?}
+    {"doc", "status": "ok" | "refused" | "stops", "model"?, "e1"?, "e2"?}
     eK = {"dump": {"0", "1", "100"}, "traj_steps", "traj": {"q", "v", "a", "t"}, "warn_end"}
 
 "refused" carries no message: MuJoCo's message varies between runs for some
 docs (which of two missing mesh files it names), and the golden must be
-byte-stable. Non-finite numbers are the strings "inf", "-inf" and "nan",
+byte-stable. "stops": MuJoCo loads the doc and stops (mju_error) while it
+runs it, in mj_forward or mj_step; like "refused" it carries no data. Non-finite numbers are the strings "inf", "-inf" and "nan",
 because JSON has none. Without an ids-file it also writes <golden>/meta.json:
 the oracle, the platform, the versions and the rules below, with no timestamp.
 
@@ -267,8 +268,11 @@ def golden(path):
     except Exception:  # noqa: BLE001 — any refusal is the same verdict: status only
         return {'doc': doc, 'status': 'refused'}
     out = {'doc': doc, 'status': 'ok', 'model': model_json(m)}
-    for name, qvel_of in EXCITATIONS.items():
-        out[name] = run_excitation(m, qvel_of)
+    try:
+        for name, qvel_of in EXCITATIONS.items():
+            out[name] = run_excitation(m, qvel_of)
+    except mujoco.FatalError:
+        return {'doc': doc, 'status': 'stops'}
     return finite_or_string(out)
 
 

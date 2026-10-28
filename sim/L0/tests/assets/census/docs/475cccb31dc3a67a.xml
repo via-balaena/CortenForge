@@ -1,0 +1,13 @@
+<mujoco model="flex_newton">
+        <option gravity="0 0 -9.81" timestep="0.002" integrator="implicit"/>
+        <worldbody>
+          <body name="cable_v0" pos="0 0 1"><inertial pos="0 0 0" mass="250.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="cable_v1" pos="0.5 0 1"><joint type="slide" axis="1 0 0" damping="10.0"/><joint type="slide" axis="0 1 0" damping="10.0"/><joint type="slide" axis="0 0 1" damping="10.0"/><inertial pos="0 0 0" mass="500.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="cable_v2" pos="1 0 1"><inertial pos="0 0 0" mass="250.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+        </worldbody>
+        <deformable>
+            <flex name="cable" dim="1" body="cable_v0 cable_v1 cable_v2" element="0 1  1 2">
+                <elasticity young="100" damping="10.0"/>
+            </flex>
+        </deformable>
+    </mujoco>

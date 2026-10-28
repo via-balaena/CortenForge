@@ -234,14 +234,14 @@ fn read_flex_data(a: &Attrs, flex: &mut MjcfFlex) -> Result<()> {
             .collect();
     }
     if let Some(ids) = indices(a, "element")? {
-        if !(1..=3).contains(&flex.dim) {
-            return Err(MjcfError::invalid_value(
-                a.element(),
-                "dim",
-                "dim must be 1, 2 or 3",
-            ));
-        }
-        flex.elements = ids.chunks(flex.dim + 1).map(<[usize]>::to_vec).collect();
+        // Under a dim that is not 1, 2 or 3 the ids stay one element, and the
+        // builder refuses the dim, as MuJoCo's compiler does.
+        let size = if (1..=3).contains(&flex.dim) {
+            flex.dim + 1
+        } else {
+            ids.len()
+        };
+        flex.elements = ids.chunks(size).map(<[usize]>::to_vec).collect();
     }
     Ok(())
 }

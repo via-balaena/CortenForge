@@ -181,12 +181,14 @@ fn a_flex_s_rows_hold_their_entries_in_their_chains() {
       <freejoint/>
       <geom type="box" size="0.2 0.2 0.01" mass="1"/>
     </body>
+    <body name="cloth_v0" pos="0 0 0.015"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="cloth_v1" pos="0.1 0 0.015"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="cloth_v2" pos="0 0.1 0.015"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="cloth_v3" pos="0.1 0.1 0.015"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
   </worldbody>
   <deformable>
-    <flex name="cloth" dim="2" density="1000" radius="0.02">
+    <flex name="cloth" dim="2" radius="0.02" body="cloth_v0 cloth_v1 cloth_v2 cloth_v3" element="0 1 2  1 3 2">
       <contact margin="0.005"/>
-      <vertex pos="0 0 0.015  0.1 0 0.015  0 0.1 0.015  0.1 0.1 0.015"/>
-      <element data="0 1 2  1 3 2"/>
     </flex>
   </deformable>
 </mujoco>"#;

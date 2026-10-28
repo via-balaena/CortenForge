@@ -9,7 +9,8 @@
 //!
 //! Each doc gets one verdict: `agree`; the first differing model field; the
 //! first differing step or quantity; or a load status (`ours-panic`,
-//! `ours-refused`, `mj-refuses`, `both-refuse`). `assets/census/verdicts.tsv` pins each doc's
+//! `ours-refused`, `mj-refuses`, `both-refuse`, or `mj-stops`: MuJoCo loads
+//! the doc and stops while running it). `assets/census/verdicts.tsv` pins each doc's
 //! class (see `ratchet::class`) and is a ratchet:
 //!
 //! - **An improvement fails until blessed.** Run with `CENSUS_BLESS=1` to

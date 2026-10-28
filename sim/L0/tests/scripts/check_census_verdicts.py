@@ -48,7 +48,7 @@ def rows(ref):
 
 
 def klass(verdict):
-    if verdict == 'agree' or verdict.startswith('ours-') or verdict in ('mj-refuses', 'both-refuse'):
+    if verdict == 'agree' or verdict.startswith('ours-') or verdict in ('mj-refuses', 'mj-stops', 'both-refuse'):
         return verdict
     if verdict.startswith('model:'):
         rest = verdict[len('model:'):]
@@ -64,7 +64,7 @@ def rank(cls):
         return 4
     if cls.startswith('model:') and cls.endswith(';dyn-agree'):
         return 3
-    if cls == 'mj-refuses':
+    if cls in ('mj-refuses', 'mj-stops'):
         return 1
     if cls.startswith('ours-'):
         return 0
@@ -74,7 +74,7 @@ def rank(cls):
 def is_class(cls):
     if any(c.isspace() for c in cls):
         return False
-    return (cls in ('agree', 'dyn', 'mj-refuses', 'both-refuse')
+    return (cls in ('agree', 'dyn', 'mj-refuses', 'mj-stops', 'both-refuse')
             or (cls.startswith('ours-') and len(cls) > len('ours-'))
             or (cls.startswith('model:') and cls.endswith((';dyn-agree', ';dyn-differs'))))
 

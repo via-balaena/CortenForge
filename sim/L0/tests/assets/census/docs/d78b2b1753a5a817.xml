@@ -1,0 +1,13 @@
+<mujoco model="s30_parse_explicit">
+        <worldbody>
+          <body name="cloth_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="1.6666666666666667" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="cloth_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="1.6666666666666667" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="cloth_v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="1.6666666666666667" diaginertia="1e-15 1e-15 1e-15"/></body>
+        </worldbody>
+        <deformable>
+            <flex name="cloth" dim="2" body="cloth_v0 cloth_v1 cloth_v2" element="0 1 2">
+                <contact contype="3" conaffinity="5" margin="0.001"/>
+                <elasticity young="50" thickness="0.01"/>
+            </flex>
+        </deformable>
+    </mujoco>

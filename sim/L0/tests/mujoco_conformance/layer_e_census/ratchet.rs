@@ -72,6 +72,7 @@ pub fn verdict(golden: &Value, ours: &Value) -> String {
     }
     match (golden["status"] == "ok", ours["status"] == "ok") {
         (false, false) => return "both-refuse".to_string(),
+        (false, true) if golden["status"] == "stops" => return "mj-stops".to_string(),
         (false, true) => return "mj-refuses".to_string(),
         (true, false) => return format!("ours-{}", ours["status"].as_str().unwrap_or("?")),
         (true, true) => {}
@@ -91,7 +92,12 @@ pub fn verdict(golden: &Value, ours: &Value) -> String {
 /// step or quantity differs first — is a label: recorded on bless, never
 /// failed on, because last-bit perturbations move it (A20 §2.4).
 fn class(v: &str) -> String {
-    if v == "agree" || v.starts_with("ours-") || v == "mj-refuses" || v == "both-refuse" {
+    if v == "agree"
+        || v.starts_with("ours-")
+        || v == "mj-refuses"
+        || v == "mj-stops"
+        || v == "both-refuse"
+    {
         return v.to_string();
     }
     if let Some(rest) = v.strip_prefix("model:") {
@@ -114,7 +120,7 @@ fn rank(class: &str) -> u8 {
         "agree" => 5,
         "both-refuse" => 4,
         c if c.starts_with("model:") && c.ends_with(";dyn-agree") => 3,
-        "mj-refuses" => 1,
+        "mj-refuses" | "mj-stops" => 1,
         c if c.starts_with("ours-") => 0,
         _ => 2,
     }
@@ -177,8 +183,10 @@ fn is_class(c: &str) -> bool {
     if c.contains(char::is_whitespace) {
         return false;
     }
-    matches!(c, "agree" | "dyn" | "mj-refuses" | "both-refuse")
-        || c.strip_prefix("ours-").is_some_and(|s| !s.is_empty())
+    matches!(
+        c,
+        "agree" | "dyn" | "mj-refuses" | "mj-stops" | "both-refuse"
+    ) || c.strip_prefix("ours-").is_some_and(|s| !s.is_empty())
         || c.strip_prefix("model:")
             .is_some_and(|r| r.ends_with(";dyn-agree") || r.ends_with(";dyn-differs"))
 }
@@ -374,6 +382,20 @@ pub fn ratchet(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A doc MuJoCo loads and stops on (golden `status: stops`) is
+    /// `mj-stops` while ours runs it, a class ranked with `mj-refuses`; with
+    /// ours refusing it too, `both-refuse`.
+    #[test]
+    fn a_doc_mujoco_stops_on_is_mj_stops() {
+        let stops = serde_json::json!({"status": "stops"});
+        let ours = |s: &str| serde_json::json!({ "status": s });
+        assert_eq!(verdict(&stops, &ours("ok")), "mj-stops");
+        assert_eq!(verdict(&stops, &ours("refused")), "both-refuse");
+        assert_eq!(class("mj-stops"), "mj-stops");
+        assert!(is_class("mj-stops"));
+        assert_eq!(rank("mj-stops"), rank("mj-refuses"));
+    }
 
     /// Bless clears a `known=` note once the doc's class rises: the note
     /// explained the class the doc has left. A `fixed_by=` note stays until

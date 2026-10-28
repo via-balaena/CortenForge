@@ -89,12 +89,14 @@ fn empty_flex_edge_rows_are_not_made() {
     let model = load_model(
         r#"<mujoco>
           <option gravity="0 0 -9.81" timestep="0.001"/>
+          <worldbody>
+            <body name="rope_v0" pos="0 0 1"><inertial pos="0 0 0" mass="25.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+            <body name="rope_v1" pos="0.05 0 1"><inertial pos="0 0 0" mass="50.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+            <body name="rope_v2" pos="0.1 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="25.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+          </worldbody>
           <deformable>
-            <flex name="rope" dim="1" density="0.1">
+            <flex name="rope" dim="1" body="rope_v0 rope_v1 rope_v2" element="0 1  1 2">
               <elasticity young="1e4" damping="0.1"/>
-              <vertex pos="0 0 1  0.05 0 1  0.1 0 1"/>
-              <element data="0 1  1 2"/>
-              <pin id="0 1"/>
             </flex>
           </deformable>
         </mujoco>"#,

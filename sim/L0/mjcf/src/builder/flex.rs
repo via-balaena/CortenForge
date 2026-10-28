@@ -454,6 +454,7 @@ impl ModelBuilder {
 
         let jnt_adr = self.jnt_type.len();
         let dof_adr = self.nv;
+        let qpos_start = self.nq;
         let geom_adr = self.geom_type.len();
 
         // Push body arrays (mirrors process_body_with_world_frame pattern)
@@ -528,7 +529,9 @@ impl ModelBuilder {
                     .push((-std::f64::consts::PI, std::f64::consts::PI));
                 self.jnt_stiffness.push(0.0);
                 self.jnt_springref.push(0.0);
-                self.jnt_damping.push(0.0);
+                // The flex's damping as each slide's (MuJoCo's flex damping
+                // acts only through its elasticity and bending).
+                self.jnt_damping.push(flex.damping);
                 self.jnt_armature.push(0.0);
 
                 // DOF arrays
@@ -541,7 +544,7 @@ impl ModelBuilder {
                 self.dof_body.push(body_id);
                 self.dof_jnt.push(jnt_id);
                 self.dof_armature.push(0.0);
-                self.dof_damping.push(0.0);
+                self.dof_damping.push(flex.damping);
                 self.dof_frictionloss.push(0.0);
                 self.dof_solref.push(DEFAULT_SOLREF);
                 self.dof_solimp.push(DEFAULT_SOLIMP);
@@ -560,7 +563,7 @@ impl ModelBuilder {
             self.body_dof_num.push(3);
             self.body_geom_num.push(0);
 
-            self.flexvert_qposadr.push(dof_adr); // first of 3 slide joint qpos addresses
+            self.flexvert_qposadr.push(qpos_start); // first of 3 slide joint qpos addresses
             self.flexvert_dofadr.push(dof_adr); // first of 3 DOF addresses
         }
 

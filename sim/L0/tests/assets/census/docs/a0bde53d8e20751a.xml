@@ -1,0 +1,16 @@
+<mujoco>
+          <option timestep="0.002">
+            <flag equality="disable" gravity="disable" energy="enable"/>
+          </option>
+          <worldbody>
+            <body name="c_v0" pos="0 0 1"><inertial pos="0 0 0" mass="0.06666666666666667" diaginertia="1e-15 1e-15 1e-15"/></body>
+            <body name="c_v1" pos="0.1 0 1"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.06666666666666667" diaginertia="1e-15 1e-15 1e-15"/></body>
+            <body name="c_v2" pos="0.2 0 1"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.06666666666666667" diaginertia="1e-15 1e-15 1e-15"/></body>
+          </worldbody>
+          <deformable>
+            <flex name="c" dim="1" body="c_v0 c_v1 c_v2" element="0 1  1 2">
+              <edge stiffness="50"/>
+              <contact contype="0" conaffinity="0"/>
+            </flex>
+          </deformable>
+        </mujoco>

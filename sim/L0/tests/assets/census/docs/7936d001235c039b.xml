@@ -1,0 +1,33 @@
+<mujoco model="cable_catenary">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <worldbody>
+          <body name="rope_v0" pos="0 0 1"><inertial pos="0 0 0" mass="25.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v1" pos="0.05 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="50.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v2" pos="0.1 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="49.99999999999999" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v3" pos="0.15 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="50.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v4" pos="0.2 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="50.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v5" pos="0.25 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="49.999999999999986" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v6" pos="0.3 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="49.999999999999986" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v7" pos="0.35 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="50.000000000000014" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v8" pos="0.4 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="50.000000000000014" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v9" pos="0.45 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="49.999999999999986" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v10" pos="0.5 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="50.000000000000014" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v11" pos="0.55 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="49.999999999999986" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v12" pos="0.6 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="49.999999999999986" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v13" pos="0.65 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="49.999999999999986" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v14" pos="0.7 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="49.999999999999986" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v15" pos="0.75 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="50.00000000000004" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v16" pos="0.8 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="49.999999999999986" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v17" pos="0.85 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="49.999999999999986" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v18" pos="0.9 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="49.999999999999986" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v19" pos="0.95 0 1"><joint type="slide" axis="1 0 0" damping="0.1"/><joint type="slide" axis="0 1 0" damping="0.1"/><joint type="slide" axis="0 0 1" damping="0.1"/><inertial pos="0 0 0" mass="49.999999999999986" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="rope_v20" pos="1.0 0 1"><inertial pos="0 0 0" mass="25.00000000000002" diaginertia="1e-15 1e-15 1e-15"/></body>
+        </worldbody>
+        <deformable>
+            <flex name="rope" dim="1" body="rope_v0 rope_v1 rope_v2 rope_v3 rope_v4 rope_v5 rope_v6 rope_v7 rope_v8 rope_v9 rope_v10 rope_v11 rope_v12 rope_v13 rope_v14 rope_v15 rope_v16 rope_v17 rope_v18 rope_v19 rope_v20" element="0 1  1 2  2 3  3 4  4 5  5 6  6 7  7 8  8 9
+                              9 10  10 11  11 12  12 13  13 14  14 15  15 16
+                              16 17  17 18  18 19  19 20">
+                <elasticity young="1e4" damping="0.1"/>
+            </flex>
+        </deformable>
+    </mujoco>

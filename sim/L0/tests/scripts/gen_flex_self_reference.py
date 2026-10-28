@@ -25,8 +25,8 @@ each pair in turn (narrow, or without the midphase), its margin and gap left
 out of the narrow phase, its contacts in the order made. Two cables'
 elements meet as capsules, any other two through the convex route. Each case
 is written as gen_flex_rigid_reference.py writes its cases (each vertex a
-body of mass 0.125 with three slides; MuJoCo's <flex body=...> and
-sim-mjcf's <deformable><flex>; equality constraints disabled on both), most
+body of mass 0.125 with three slides in MuJoCo's <flex body=...>, sim-mjcf's
+the same; equality constraints disabled on both), most
 after the same dummy cable that collides with nothing, and records the same
 values.
 """
@@ -306,9 +306,9 @@ CASES = {
 
 # Tetrahedra as written, right-handed: MuJoCo's compiler turns each so its
 # faces' right-handed normals point out (user_mesh.cc:4272-4293), and
-# sim-mjcf's document keeps them as written, so its loader must turn them
-# the same. With internal collisions a tetrahedron's faces meet its vertices
-# only where it is thin (the small cube's).
+# sim-mjcf's document, MuJoCo's, has them as written, so its loader must turn
+# them the same. With internal collisions a tetrahedron's faces meet its
+# vertices only where it is thin (the small cube's).
 RIGHT_HANDED = ([[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0], [0, 0, 0.1]], [0, 1, 2, 3], 3)
 AS_WRITTEN = {
     "right_handed_tet_internal": ([DUMMY, (*RIGHT_HANDED, INTERNAL)], "", ""),
@@ -318,17 +318,9 @@ AS_WRITTEN = {
 
 
 def as_written(name, flexes, option, flag):
-    """A case whose sim-mjcf document lists each flex's elements as written,
-    not in the order MuJoCo compiled them."""
+    """A case whose elements MuJoCo compiles in another order than written:
+    sim-mjcf's document, MuJoCo's, lists them as written."""
     mj, ours, m = documents("", flexes, option, flag, "")
-    for f, (_, elems, dim, _) in enumerate(flexes):
-        da, en = m.flex_elemdataadr[f], m.flex_elemnum[f]
-        compiled = " ".join(str(int(i)) for i in m.flex_elem[da:da + en * (dim + 1)])
-        written = " ".join(map(str, elems))
-        if compiled != written:
-            old = f'<element data="{compiled}"/>'
-            assert ours.count(old) == 1, (name, f)
-            ours = ours.replace(old, f'<element data="{written}"/>')
     assert any(" ".join(map(str, e)) != " ".join(str(int(i)) for i in m.flex_elem[m.flex_elemdataadr[f]:
                m.flex_elemdataadr[f] + m.flex_elemnum[f] * (d + 1)]) for f, (_, e, d, _) in enumerate(flexes)), name
     return record(name, mj, ours, m)

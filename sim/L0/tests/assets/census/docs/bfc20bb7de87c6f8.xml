@@ -1,0 +1,8 @@
+<mujoco>
+        <option gravity="0 0 0"/>
+        <deformable>
+            <flexcomp name="grid" type="grid" count="3 3 1" spacing="0.04 0.04 0.04" dim="2" mass="1">
+                <elasticity young="1e5" thickness="0.001" damping="0.3"/>
+            </flexcomp>
+        </deformable>
+    </mujoco>

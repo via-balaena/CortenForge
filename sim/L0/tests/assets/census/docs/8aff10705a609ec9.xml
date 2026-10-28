@@ -1,0 +1,10 @@
+<mujoco model="dt16_density">
+                <worldbody>
+                  <body name="test_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="500.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+                  <body name="test_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="500.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+                </worldbody>
+                <deformable>
+                    <flex name="test" dim="1" density="500" body="test_v0 test_v1" element="0 1">
+                    </flex>
+                </deformable>
+            </mujoco>
