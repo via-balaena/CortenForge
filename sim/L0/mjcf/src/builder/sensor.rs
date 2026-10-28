@@ -177,9 +177,6 @@ impl ModelBuilder {
             return Ok((MjObjectType::None, 0));
         };
         let refuse = |reason: String| MjcfError::invalid_value("user", "objname", reason);
-        if name.is_empty() {
-            return Err(refuse("missing name of sensorized object in sensor".into()));
-        }
         let (kind, names, object) = match objtype {
             "body" => (ElementKind::Body, &self.body_name_to_id, MjObjectType::Body),
             "xbody" => (
@@ -219,6 +216,9 @@ impl ModelBuilder {
             }
             other => return Err(MjcfError::invalid_keyword("user", "objtype", other)),
         };
+        if name.is_empty() {
+            return Err(refuse("missing name of sensorized object in sensor".into()));
+        }
         let id = *names
             .get(name)
             .ok_or_else(|| MjcfError::undefined(kind, name))?;

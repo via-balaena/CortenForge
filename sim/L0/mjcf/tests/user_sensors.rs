@@ -112,6 +112,12 @@ fn a_user_sensor_is_refused_as_mujoco_refuses_it() {
             r#"<user dim="1" objtype="bogus" objname="b1"/>"#,
             "invalid keyword \"bogus\"",
         ),
+        // The word before the name: MuJoCo loads it as an unknown object
+        // (D-USER-SENSOR-OBJTYPE).
+        (
+            r#"<user dim="1" objtype="bogus" objname=""/>"#,
+            "invalid keyword \"bogus\"",
+        ),
         (
             r#"<user dim="1" objtype="dof" objname="x"/>"#,
             "unrecognized name 'x' of sensorized object",

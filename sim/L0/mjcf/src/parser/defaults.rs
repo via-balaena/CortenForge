@@ -274,10 +274,16 @@ pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefa
         defaults.dampratio,
         defaults.timeconst,
     )?;
+    // MuJoCo's `mjs_setToIntVelocity` drops an intvelocity class's
+    // `ctrlrange` refusal (measured: such a class loads); an element using it
+    // is refused at the build (D-INTVELOCITY-SERVO), as MuJoCo refuses it.
+    let ctrlrange = (a.element() != "intvelocity")
+        .then_some(defaults.ctrlrange)
+        .flatten();
     crate::builder::actuator::check_servo_ranges(
         a.element(),
         defaults.inheritrange,
-        defaults.ctrlrange,
+        ctrlrange,
         defaults.actrange,
     )?;
 

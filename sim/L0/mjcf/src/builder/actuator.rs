@@ -1759,6 +1759,15 @@ mod tests {
         ))
         .expect("kept");
         assert_eq!(kept.actuator_ctrlrange[0], (-1.0, 1.0));
+        // An intvelocity class's ctrlrange beside its inheritrange is no
+        // refusal while no actuator uses the class: MuJoCo's
+        // mjs_setToIntVelocity drops it (measured: loads).
+        let unused = load_model(&inheritrange_model(
+            r#"<motor joint="h"/>"#,
+            r#"<default><default class="k"><intvelocity ctrlrange="-1 1" inheritrange="1"/></default></default>"#,
+        ))
+        .expect("an unused intvelocity class");
+        assert_eq!(unused.nu, 1);
         // A negative inheritrange takes nothing.
         let negative = load_model(&inheritrange_model(
             r#"<position joint="h" kp="3" inheritrange="-1"/>"#,
@@ -1838,6 +1847,13 @@ mod tests {
                 r#"<general joint="h" class="c" dyntype="filter" gaintype="fixed" biastype="affine" gainprm="5" biasprm="0 -5"/>"#,
                 class,
                 "inheritrange only available for position and intvelocity actuators",
+            ),
+            // MuJoCo loads this one, the class's affine bias making it a
+            // servo that takes the range (measured; D-INTVELOCITY-SERVO).
+            (
+                r#"<intvelocity class="c2" joint="h" kp="3" ctrlrange="-1 1" inheritrange="1"/>"#,
+                r#"<default><default class="c2"><general biastype="affine"/></default></default>"#,
+                "ctrlrange and inheritrange cannot both be defined",
             ),
             // A class's own range beside its own inheritrange is refused when
             // the class is read, used or not (MuJoCo, measured).
