@@ -56,8 +56,8 @@ use crate::types::MjcfModel;
 /// Magic bytes identifying an MJB file.
 pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
-/// Current MJB format version: 6 since `MjcfFlex` lost `node` and took its
-/// vertex bodies' source (Rigid-loading L10).
+/// Current MJB format version: 6 since `MjcfFlex` took `vertex_bodies`
+/// (Rigid-loading L10).
 pub const MJB_VERSION: u32 = 6;
 
 /// Header size in bytes (magic + version + flags).

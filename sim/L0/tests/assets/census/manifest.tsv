@@ -2114,3 +2114,5 @@ bfb0263f4e8212bf	sim/L0/tests/integration/flex_unified.rs:931
 a1b33ed699cd992f	sim/L0/mjcf/tests/flex_vertex_bodies.rs:380
 2f03c0b6756eaf8d	sim/L0/mjcf/tests/flex_vertex_bodies.rs:651
 beb172351d1bd263	sim/L0/tests/integration/flex_unified.rs:952
+5d1b62612242f92e	sim/L0/mjcf/tests/flex_vertex_bodies.rs:669
+ecf16381af1256a3	sim/L0/mjcf/tests/flex_vertex_bodies.rs:684

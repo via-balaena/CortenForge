@@ -48,9 +48,10 @@ impl ModelBuilder {
                 vertex_bodies = Some(bodies);
                 &resolved
             } else {
+                // A flexcomp's checks; a `<flex>` has had them above.
+                check_flex_elements(flex_orig).map_err(|e| e.with_location_if_unknown(at()))?;
                 flex_orig
             };
-            check_flex_elements(flex).map_err(|e| e.with_location_if_unknown(at()))?;
             // Before the masses, edges, hinges and elements read the order.
             let oriented;
             let flex = if flex.dim == 3 {
@@ -241,7 +242,8 @@ impl ModelBuilder {
     }
 
     /// Whether a body joined to `body` moves with it: one with joints at or
-    /// above `body`, or a mocap body, which moves without joints.
+    /// above `body`, or, when `mocap_too`, a mocap body there, which moves
+    /// without joints.
     fn moves_with(&self, mut body: usize, mocap_too: bool) -> bool {
         while body != 0 {
             if self.body_jnt_num[body] > 0 || (mocap_too && self.body_mocapid[body].is_some()) {
@@ -252,9 +254,12 @@ impl ModelBuilder {
         false
     }
 
-    /// A `<flex>` whose vertices are the bodies it names, checked as MuJoCo
-    /// 3.5.0's compiler checks it and in its order (`mjCFlex::Compile` and
-    /// `ResolveReferences`, `user_mesh.cc:4076-4202`), then held to the
+    /// A `<flex>` whose vertices are the bodies it names, given MuJoCo 3.5.0's
+    /// checks of its elements, vertices, bodies, nodes and Poisson ratio in
+    /// its order (`mjCFlex::Compile` and `ResolveReferences`, `user_mesh.cc:
+    /// 4076-4202`, `:4331-4334`; not `material` or `texcoord`, which this
+    /// crate does not read, Rigid-loading L47's, nor a node flex's element
+    /// count with a Young's modulus, `:4337-4343`), then held to the
     /// subset sim-core's flex code takes: each vertex on a body of its own (a
     /// flex on one body is MuJoCo's rigid flex), at its body's origin, and
     /// each body either jointless with no joint above it, or with exactly
@@ -733,10 +738,10 @@ const ELEMENT_EDGES: [&[(usize, usize)]; 3] = [
     &[(0, 1), (1, 2), (2, 0), (2, 3), (0, 3), (1, 3)],
 ];
 
-/// MuJoCo's checks of a flexcomp's elements and material before anything is
-/// built from them (`mjCFlex::Compile`, `user_mesh.cc`), in its order, as the
-/// functions below make them. A `<flex>` takes them one by one in
-/// `resolve_vertex_bodies`, among the checks of its bodies.
+/// MuJoCo's checks of a flexcomp's elements and Poisson ratio before anything
+/// is built from them (`mjCFlex::Compile`, `user_mesh.cc`), in its order, as
+/// the functions below make them. A `<flex>` takes them one by one in
+/// `resolve_vertex_bodies`, among the checks of its bodies, and not here.
 fn check_flex_elements(flex: &MjcfFlex) -> Result<()> {
     check_flex_dim_and_elements(flex)?;
     check_flex_vertex_count(flex, flex.vertices.len())?;

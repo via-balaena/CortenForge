@@ -4,9 +4,10 @@
 //!
 //! Each vertex is the body `body` names, at that body's origin. sim-core reads
 //! a vertex's three dofs as its world x, y and z and a vertex without dofs as
-//! fixed, so a vertex body must be jointless or have exactly three slides along
-//! x, y and z, unrotated, with no dof above it; anything else MuJoCo loads is
-//! refused as a stated limitation. The arrays below were measured on MuJoCo
+//! fixed, so a vertex body must be jointless with no joint above it, or have
+//! exactly three slides along x, y and z, unrotated, with no joint or mocap
+//! body above it; anything else MuJoCo loads is refused as a stated
+//! limitation. The arrays below were measured on MuJoCo
 //! 3.5.0 for the same documents (edges, `flexedge_rigid`, `flexedge_length0`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -463,11 +464,29 @@ fn flex_node_is_refused() {
             TRILINEAR.replace(r#" fc_0_1_1 fc_1_0_0 fc_1_0_1 fc_1_1_0 fc_1_1_1""#, "\""),
             "number of nodes must be 0^3 but it is 3",
         ),
+        // MuJoCo's cube root truncated: 64 nodes read as 2^3 (measured).
+        (
+            TRILINEAR.replace(
+                r#"node="fc_0_0_0 fc_0_0_1 fc_0_1_0 fc_0_1_1 fc_1_0_0 fc_1_0_1 fc_1_1_0 fc_1_1_1""#,
+                &format!(
+                    r#"node="{}""#,
+                    (0..64)
+                        .map(|i| format!("n{i}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ),
+            ),
+            "number of nodes must be 2^3 but it is 64",
+        ),
     ] {
         match refusal(&xml) {
             MjcfError::InvalidValue { reason: got, .. } => assert_eq!(got, reason),
             other => panic!("{reason}: {other}"),
         }
+    }
+    match refusal(&TRILINEAR.replace(r#" fc_1_1_1""#, r#" nope""#)) {
+        MjcfError::UndefinedReference { name, .. } => assert_eq!(name, "nope"),
+        other => panic!("an unknown node body: {other}"),
     }
     match refusal(&doc(
         &triangle_bodies(),
@@ -539,7 +558,12 @@ fn mujocos_refusals_come_before_the_stated_limitations() {
             ),
         )
     };
+    let rigid_poisson = doc(
+        &triangle_bodies(),
+        r#"<flex name="f" dim="1" body="a" vertex="0 0 0 0.1 0 0" element="0 1"><elasticity young="100" poisson="0.6"/></flex>"#,
+    );
     for (xml, reason) in [
+        (rigid_poisson, "Poisson ratio must be in [0, 0.5)"),
         (one(1, "0 0 0", "0 1"), "not enough vertices"),
         (
             one(1, "0 0 0 0.1 0 0", "0 5"),
@@ -642,6 +666,26 @@ fn a_poisson_ratio_out_of_range_is_refused() {
         }
     }
     load_model(&flex("0.49")).expect("0.49");
+    let flexcomp = r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"><elasticity young="100" poisson="0.6" thickness="0.01"/></flexcomp></deformable></mujoco>"#;
+    match refusal(flexcomp) {
+        MjcfError::InvalidValue { reason, .. } => {
+            assert_eq!(reason, "Poisson ratio must be in [0, 0.5)");
+        }
+        other => panic!("a flexcomp: {other}"),
+    }
+}
+
+/// A `<deformable><flexcomp>` that generates no element (a grid one vertex
+/// wide) is refused, "elem is empty", as MuJoCo's compiler refuses an empty
+/// flex; MuJoCo's own grid flexcomp refuses it as "No elements were created
+/// in grid" (measured). It loaded with no element before Rigid-loading L10.
+#[test]
+fn a_flexcomp_with_no_element_is_refused() {
+    let xml = r#"<mujoco><deformable><flexcomp name="g" type="grid" count="3 1 1" spacing="0.1 0.1 0.1" dim="2"/></deformable></mujoco>"#;
+    match refusal(xml) {
+        MjcfError::InvalidValue { reason, .. } => assert_eq!(reason, "elem is empty"),
+        other => panic!("{other}"),
+    }
 }
 
 /// A `<deformable><flexcomp>` makes its vertices' bodies; `body` on it is
