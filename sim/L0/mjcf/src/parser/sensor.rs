@@ -25,20 +25,20 @@ pub(super) fn parse_sensors<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<Mj
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                if let Some(sensor_type) = MjcfSensorType::from_str(&elem_name) {
-                    let mut sensor = parse_sensor_attrs(e, sensor_type)?;
-                    // Parse children (may contain <plugin> sub-element)
-                    parse_sensor_children(reader, elem_name.as_bytes(), &mut sensor)?;
-                    sensors.push(sensor);
-                }
+                let sensor_type = MjcfSensorType::from_str(&elem_name)
+                    .ok_or_else(|| unread_sensor(&elem_name))?;
+                let mut sensor = parse_sensor_attrs(e, sensor_type)?;
+                // Parse children (may contain <plugin> sub-element)
+                parse_sensor_children(reader, elem_name.as_bytes(), &mut sensor)?;
+                sensors.push(sensor);
             }
             Ok(Event::Empty(ref e)) => {
                 let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                if let Some(sensor_type) = MjcfSensorType::from_str(&elem_name) {
-                    let sensor = parse_sensor_attrs(e, sensor_type)?;
-                    sensors.push(sensor);
-                    // Self-closing, no need to skip
-                }
+                let sensor_type = MjcfSensorType::from_str(&elem_name)
+                    .ok_or_else(|| unread_sensor(&elem_name))?;
+                let sensor = parse_sensor_attrs(e, sensor_type)?;
+                sensors.push(sensor);
+                // Self-closing, no need to skip
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"sensor" => break,
             Ok(Event::Eof) => return Err(MjcfError::eof_in("sensor")),
@@ -49,6 +49,31 @@ pub(super) fn parse_sensors<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<Mj
     }
 
     Ok(sensors)
+}
+
+/// The refusal of an element in `<sensor>` that is not a sensor sim-mjcf
+/// reads: a sensor MuJoCo 3.5.0 makes and sim-mjcf cannot (its schema,
+/// `xml_native_reader.cc:446-503`; registry D-UNREAD-SENSOR), or any other
+/// element, which MuJoCo's schema refuses as unrecognized.
+fn unread_sensor(element: &str) -> MjcfError {
+    const MUJOCO_SENSORS: [&str; 11] = [
+        "camprojection",
+        "contact",
+        "e_kinetic",
+        "e_potential",
+        "insidesite",
+        "jointlimitpos",
+        "jointlimitvel",
+        "plugin",
+        "tactile",
+        "tendonlimitpos",
+        "tendonlimitvel",
+    ];
+    if MUJOCO_SENSORS.contains(&element) {
+        MjcfError::unsupported(format!("the <{element}> sensor"))
+    } else {
+        MjcfError::unknown_element(element, "sensor")
+    }
 }
 
 /// Parse sensor attributes.
@@ -133,6 +158,12 @@ pub(super) fn parse_sensor_attrs(
     sensor.interval = a
         .prefix::<2>("interval")?
         .map(|interval| interval.given()[0]);
+
+    if sensor_type == MjcfSensorType::User {
+        sensor.dim = a.int("dim")?;
+        sensor.needstage = a.keyword_text("needstage", keywords::sensor_stage)?;
+        sensor.datatype = a.keyword_text("datatype", keywords::sensor_datatype)?;
+    }
 
     Ok(sensor)
 }

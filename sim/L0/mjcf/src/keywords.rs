@@ -173,6 +173,20 @@ pub fn composite_shape(s: &str) -> Option<CompositeShape> {
     }
 }
 
+/// A user sensor's `needstage` (`stage_map`), as its word.
+pub fn sensor_stage(s: &str) -> Option<&'static str> {
+    ["none", "pos", "vel", "acc"]
+        .into_iter()
+        .find(|word| *word == s)
+}
+
+/// A user sensor's `datatype` (`datatype_map`), as its word.
+pub fn sensor_datatype(s: &str) -> Option<&'static str> {
+    ["real", "positive", "axis", "quaternion"]
+        .into_iter()
+        .find(|word| *word == s)
+}
+
 /// A `<flexcomp>`'s `type` (`fcomp_map`), as its word.
 pub fn flexcomp_type(s: &str) -> Option<&'static str> {
     const WORDS: [&str; 10] = [

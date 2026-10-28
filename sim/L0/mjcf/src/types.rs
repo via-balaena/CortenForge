@@ -3604,6 +3604,14 @@ pub struct MjcfSensor {
     pub interval: Option<f64>,
     /// Plugin reference (plugin-controlled sensor). §66.
     pub plugin: Option<MjcfPluginRef>,
+    /// A user sensor's number of values (required on `<user>`, 0 or more).
+    pub dim: Option<i32>,
+    /// A user sensor's stage keyword (MuJoCo's `needstage`: `pos`, `vel` or
+    /// `acc`, the default; `none` is not supported).
+    pub needstage: Option<String>,
+    /// A user sensor's data kind keyword (MuJoCo's `datatype`: only `real`,
+    /// the default, is supported).
+    pub datatype: Option<String>,
 }
 
 impl Default for MjcfSensor {
@@ -3628,6 +3636,9 @@ impl Default for MjcfSensor {
             delay: None,
             interval: None,
             plugin: None,
+            dim: None,
+            needstage: None,
+            datatype: None,
         }
     }
 }

@@ -187,9 +187,8 @@ fn clone_with_callbacks() {
 
 /// T4/G17: cb_sensor invoked at 3 stages for User sensors with different datatypes.
 ///
-/// Creates 3 User sensors via MJCF, then patches model to assign one to each
-/// stage (Position, Velocity, Acceleration). Each sensor gets dim=1 and proper
-/// sensor_adr allocation so the callback can write to sensordata.
+/// Creates 3 User sensors via MJCF, one at each stage (`needstage` pos, vel,
+/// acc), each of `dim` 1, as MuJoCo 3.5.0 reads them.
 ///
 /// Verifies that the callback fires at all 3 stages and writes to sensordata.
 #[test]
@@ -206,28 +205,26 @@ fn sensor_callback_fires_for_user_sensor() {
         </body>
       </worldbody>
       <sensor>
-        <user name="pos_sensor"/>
-        <user name="vel_sensor"/>
-        <user name="acc_sensor"/>
+        <user name="pos_sensor" dim="1" needstage="pos"/>
+        <user name="vel_sensor" dim="1" needstage="vel"/>
+        <user name="acc_sensor" dim="1" needstage="acc"/>
       </sensor>
     </mujoco>"#;
 
     let mut model = sim_mjcf::load_model(xml).expect("load");
     assert_eq!(model.nsensor, 3, "Should have 3 user sensors");
+    assert_eq!(
+        model.sensor_datatype,
+        [
+            MjSensorDataType::Position,
+            MjSensorDataType::Velocity,
+            MjSensorDataType::Acceleration
+        ]
+    );
+    assert_eq!(model.sensor_dim, [1, 1, 1]);
+    assert_eq!(model.sensor_adr, [0, 1, 2]);
+    assert_eq!(model.nsensordata, 3);
 
-    // Patch sensor datatypes: one for each stage
-    model.sensor_datatype[0] = MjSensorDataType::Position;
-    model.sensor_datatype[1] = MjSensorDataType::Velocity;
-    model.sensor_datatype[2] = MjSensorDataType::Acceleration;
-
-    // Patch sensor dims to 1 each, and set up sensor_adr
-    for i in 0..3 {
-        model.sensor_dim[i] = 1;
-        model.sensor_adr[i] = i;
-    }
-    model.nsensordata = 3;
-
-    // Rebuild data to pick up the new nsensordata
     let mut data = model.make_data();
 
     // Track which (sensor_id, stage) pairs fire

@@ -45,8 +45,11 @@ impl ModelBuilder {
             );
             return Ok(());
         };
-        let dim = sensor_type.dim();
-        let datatype = sensor_datatype(sensor_type);
+        let (dim, datatype) = if sensor_type == MjSensorType::User {
+            user_sensor_layout(&mjcf_sensor)?
+        } else {
+            (sensor_type.dim(), sensor_datatype(sensor_type))
+        };
 
         // Dual-object sensors (GeomDist/Normal/FromTo) use geom1/body1 + geom2/body2
         // instead of the standard objname/refname resolution path.
@@ -145,6 +148,76 @@ impl ModelBuilder {
         Ok(())
     }
 
+    /// A user sensor's object, as MuJoCo 3.5.0's reader and its
+    /// `ResolveReferences` take it (`xml_native_reader.cc:4419-4438`,
+    /// measured): none when neither `objtype` nor `objname` is written, and
+    /// refused when one is written without the other; else the object of
+    /// that name of one of `mju_str2Type`'s types. A type sim-core keeps no
+    /// object of is not supported (D-USER-SENSOR); a word that is no type,
+    /// which MuJoCo leaves an unknown object with no id, is refused
+    /// (D-USER-SENSOR-OBJTYPE).
+    fn resolve_user_object(
+        &self,
+        objtype: Option<&str>,
+        objname: Option<&str>,
+    ) -> Result<(MjObjectType, usize)> {
+        let refuse =
+            |attribute: &str, reason: String| MjcfError::invalid_value("user", attribute, reason);
+        let (objtype, name) = match (objtype, objname) {
+            (None, None) => return Ok((MjObjectType::None, 0)),
+            (Some(t), None) => {
+                return Err(refuse(
+                    "objtype",
+                    format!("objtype '{t}' given but objname is missing"),
+                ));
+            }
+            (None, Some(n)) => {
+                return Err(refuse(
+                    "objname",
+                    format!("objname '{n}' given but objtype is missing"),
+                ));
+            }
+            (Some(t), Some(n)) => (t, n),
+        };
+        let (kind, names, object) = match objtype {
+            "body" => (ElementKind::Body, &self.body_name_to_id, MjObjectType::Body),
+            "xbody" => (
+                ElementKind::Body,
+                &self.body_name_to_id,
+                MjObjectType::XBody,
+            ),
+            "joint" => (
+                ElementKind::Joint,
+                &self.joint_name_to_id,
+                MjObjectType::Joint,
+            ),
+            "geom" => (ElementKind::Geom, &self.geom_name_to_id, MjObjectType::Geom),
+            "site" => (ElementKind::Site, &self.site_name_to_id, MjObjectType::Site),
+            "tendon" => (
+                ElementKind::Tendon,
+                &self.tendon_name_to_id,
+                MjObjectType::Tendon,
+            ),
+            "actuator" => (
+                ElementKind::Actuator,
+                &self.actuator_name_to_id,
+                MjObjectType::Actuator,
+            ),
+            "dof" | "camera" | "light" | "flex" | "mesh" | "skin" | "hfield" | "texture"
+            | "material" | "pair" | "exclude" | "equality" | "sensor" | "numeric" | "text"
+            | "tuple" | "key" | "plugin" => {
+                return Err(MjcfError::unsupported(format!(
+                    "a user sensor on a {objtype}"
+                )));
+            }
+            other => return Err(MjcfError::invalid_keyword("user", "objtype", other)),
+        };
+        let id = *names
+            .get(name)
+            .ok_or_else(|| MjcfError::undefined(kind, name))?;
+        Ok((object, id))
+    }
+
     /// Returns (MjObjectType, objid) for a given sensor type and MJCF objname.
     ///
     /// `objtype_str` is the explicit `objtype` attribute from MJCF. Only frame
@@ -155,8 +228,11 @@ impl ModelBuilder {
         objname: Option<&str>,
         objtype_str: Option<&str>,
     ) -> Result<(MjObjectType, usize)> {
-        // Clock and User sensors have no object reference
-        if sensor_type == MjSensorType::User || sensor_type == MjSensorType::Clock {
+        if sensor_type == MjSensorType::User {
+            return self.resolve_user_object(objtype_str, objname);
+        }
+        // A clock has no object reference
+        if sensor_type == MjSensorType::Clock {
             return Ok((MjObjectType::None, 0));
         }
 
@@ -489,6 +565,41 @@ fn convert_sensor_type(mjcf: MjcfSensorType) -> Option<MjSensorType> {
         MjcfSensorType::Normal => Some(MjSensorType::GeomNormal),
         MjcfSensorType::Fromto => Some(MjSensorType::GeomFromTo),
     }
+}
+
+/// A user sensor's number of values and its stage, as MuJoCo 3.5.0 reads
+/// and checks them (`xml_native_reader.cc:4419-4438`, `user_objects.cc`
+/// `mjCSensor::Compile`, measured): `dim` written and not negative, 0
+/// included; `needstage` `pos`, `vel` or `acc` (the default). A `needstage`
+/// of `none`, which sim-core has no stage for, and a `datatype` other than
+/// `real`, which sim-core does not keep per sensor, are not supported
+/// (D-USER-SENSOR).
+fn user_sensor_layout(sensor: &MjcfSensor) -> Result<(usize, MjSensorDataType)> {
+    let dim = sensor
+        .dim
+        .ok_or_else(|| MjcfError::missing_attribute("user", "dim"))?;
+    let dim = usize::try_from(dim).map_err(|_| {
+        MjcfError::invalid_value("user", "dim", "sensor dim must be non-negative in sensor")
+    })?;
+    let stage = match sensor.needstage.as_deref().unwrap_or("acc") {
+        "pos" => MjSensorDataType::Position,
+        "vel" => MjSensorDataType::Velocity,
+        "acc" => MjSensorDataType::Acceleration,
+        "none" => {
+            return Err(MjcfError::unsupported("a user sensor's needstage \"none\""));
+        }
+        other => return Err(MjcfError::invalid_keyword("user", "needstage", other)),
+    };
+    match sensor.datatype.as_deref().unwrap_or("real") {
+        "real" => {}
+        kind @ ("positive" | "axis" | "quaternion") => {
+            return Err(MjcfError::unsupported(format!(
+                "a user sensor's datatype \"{kind}\""
+            )));
+        }
+        other => return Err(MjcfError::invalid_keyword("user", "datatype", other)),
+    }
+    Ok((dim, stage))
 }
 
 /// Determine which evaluation stage processes a given sensor type.

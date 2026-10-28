@@ -2126,3 +2126,7 @@ ecb5a767b60490ef	sim/L0/mjcf/tests/flex_vertex_bodies.rs:717
 6a88f6d33032d3b9	sim/L0/mjcf/src/builder/actuator.rs:1466
 784a5ee6f7d42d92	sim/L0/mjcf/src/builder/actuator.rs:1509
 924ccd8af8ae71c4	sim/L0/tests/integration/sensor_phase6_spec_c.rs:1070
+6b5d87bc5a7da64d	sim/L0/mjcf/tests/user_sensors.rs:52
+b2a9b10667ab7047	sim/L0/tests/integration/callbacks.rs:198
+c760b08a0468de51	sim/L0/mjcf/tests/user_sensors.rs:31
+ddd2cc2869d50122	sim/L0/mjcf/tests/user_sensors.rs:18

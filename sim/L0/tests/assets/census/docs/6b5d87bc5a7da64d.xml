@@ -1,0 +1,5 @@
+<mujoco><worldbody><body name="b1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody>
+<tendon><fixed name="t"><joint joint="j" coef="1"/></fixed></tendon><actuator><motor name="a" joint="j"/></actuator>
+<sensor><user dim="1" objtype="body" objname="b1"/><user dim="1" objtype="xbody" objname="b1"/>
+<user dim="1" objtype="joint" objname="j"/><user dim="1" objtype="geom" objname="g"/><user dim="1" objtype="site" objname="s"/>
+<user dim="1" objtype="tendon" objname="t"/><user dim="1" objtype="actuator" objname="a"/><user dim="1"/></sensor></mujoco>
