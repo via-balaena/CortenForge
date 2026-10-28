@@ -1,8 +1,10 @@
 //! Flex deformable body processing.
 //!
 //! Converts MJCF `<flex>` / `<flexcomp>` elements into the flex body arrays.
-//! Creates a kinematic body (+ 3 slide joints for unpinned vertices) per flex
-//! vertex, extracts edges/hinges, and populates per-flex material properties.
+//! A `<flex>`'s vertices are the bodies it names (MuJoCo 3.5.0's form); a
+//! `<deformable><flexcomp>`'s each get a body of its own (+ 3 slide joints if
+//! unpinned). Then the edges and hinges are extracted and the per-flex material
+//! properties set.
 //!
 //! MuJoCo architecture: flex vertices ARE bodies in the kinematic tree.
 //! `mj_crb`/`mj_rne` have zero flex-specific code — the standard rigid-body
@@ -25,25 +27,18 @@ const BENDING_COEFFS: usize = 17;
 const MIN_VERTEX_MASS: f64 = 0.001;
 
 impl ModelBuilder {
-    /// Process flex deformable bodies: create a real body (+ 3 slide joints for unpinned
-    /// vertices) per flex vertex, extract edges/hinges, populate Model flex_* arrays.
+    /// Process flex deformable bodies: a `<flex>`'s vertices on the bodies it names, a
+    /// flexcomp's on a body each (+ 3 slide joints if unpinned); extract edges/hinges,
+    /// populate Model flex_* arrays.
     ///
     /// MuJoCo architecture: flex vertices ARE bodies in the kinematic tree. `mj_crb`/`mj_rne`
     /// have zero flex-specific code — the standard rigid-body pipeline handles everything.
     pub(crate) fn process_flex_bodies(&mut self, flex_list: &[MjcfFlex]) -> Result<()> {
         for (index, flex_orig) in flex_list.iter().enumerate() {
             let at = || Location::nth(ElementKind::Flex, Some(&flex_orig.name), index);
-            // Resolve `node` attribute: if `node` names are present and no vertices
-            // exist, use the named bodies as flex vertices (MuJoCo semantics).
-            //
-            // Each node body IS the vertex. The new vertex body is parented to the
-            // node body with body_pos = zeros (vertex is at node body origin).
-            // We store the node body's world position as the vertex position so that
-            // edge rest-lengths and mass lumping use correct geometry. Then override
-            // body_pos to zeros when creating the vertex body (see `is_node_flex`
-            // flag below).
+            // A `<flex>`'s vertices are the bodies it names; a flexcomp's get
+            // bodies of their own below.
             let resolved;
-            let is_node_flex;
             let mut vertex_bodies = None;
             let flex = if flex_orig.vertex_bodies == FlexVertexBodies::Named {
                 let (named, bodies) = self
@@ -51,32 +46,8 @@ impl ModelBuilder {
                     .map_err(|e| e.with_location_if_unknown(at()))?;
                 resolved = named;
                 vertex_bodies = Some(bodies);
-                is_node_flex = false;
-                &resolved
-            } else if !flex_orig.node.is_empty() && flex_orig.vertices.is_empty() {
-                resolved = {
-                    let mut f = flex_orig.clone();
-                    for node_name in &flex_orig.node {
-                        let &bid = self.body_name_to_id.get(node_name).ok_or_else(|| {
-                            MjcfError::undefined(ElementKind::Body, node_name).at(at())
-                        })?;
-                        // World position for geometry (rest-lengths, mass lumping).
-                        // body_world_pos is indexed by (body_id - 1) since worldbody
-                        // has no entry. Node bodies are always non-world (bid >= 1).
-                        let world_pos = if bid == 0 {
-                            Vector3::zeros()
-                        } else {
-                            self.body_world_pos[bid - 1]
-                        };
-                        f.vertices.push(world_pos);
-                        f.body.push(node_name.clone());
-                    }
-                    f
-                };
-                is_node_flex = true;
                 &resolved
             } else {
-                is_node_flex = false;
                 flex_orig
             };
             check_flex_elements(flex).map_err(|e| e.with_location_if_unknown(at()))?;
@@ -110,7 +81,7 @@ impl ModelBuilder {
                 for (i, pos) in flex.vertices.iter().enumerate() {
                     let mass = vertex_masses[i];
                     let pinned = flex.pinned.contains(&i);
-                    self.create_flex_vertex_body(flex, i, pos, mass, pinned, is_node_flex, flex_id);
+                    self.create_flex_vertex_body(flex, pos, mass, pinned, flex_id);
                 }
             }
 
@@ -398,18 +369,18 @@ impl ModelBuilder {
         self.flexvert_initial_pos.push(*pos);
     }
 
-    /// Create a body (+ 3 slide joints for unpinned vertices) for one flex vertex.
+    /// Create a body (+ 3 slide joints for unpinned vertices) for one vertex
+    /// of a `<deformable><flexcomp>`, on the world body.
     ///
-    /// Pushes body, joint, DOF, qpos, and flexvert arrays for vertex `vert_idx`.
-    /// Pinned vertices get a body with no joints/DOFs; unpinned get 3 slide joints (X, Y, Z).
+    /// Pushes body, joint, DOF, qpos, and flexvert arrays for the vertex at `pos`.
+    /// Pinned vertices get a body with no joints/DOFs; unpinned get 3 slide joints (X, Y, Z),
+    /// each with the flex's damping.
     fn create_flex_vertex_body(
         &mut self,
         flex: &MjcfFlex,
-        vert_idx: usize,
         pos: &Vector3<f64>,
         mass: f64,
         pinned: bool,
-        is_node_flex: bool,
         flex_id: usize,
     ) {
         let axes = [Vector3::x(), Vector3::y(), Vector3::z()];
@@ -425,50 +396,21 @@ impl ModelBuilder {
         // --- Create body for this vertex ---
         let body_id = self.body_parent.len();
 
-        // Resolve parent body: for bare <flex> use the named body attr;
-        // for <flexcomp> (no body attr), parent is worldbody (0).
-        let parent_id = if vert_idx < flex.body.len() {
-            if let Some(&bid) = self.body_name_to_id.get(&flex.body[vert_idx]) {
-                bid
-            } else {
-                tracing::warn!(
-                    "flex '{}' vertex {} references unknown body '{}', \
-                     parenting to worldbody",
-                    flex.name,
-                    vert_idx,
-                    flex.body[vert_idx]
-                );
-                0
-            }
-        } else {
-            0 // <flexcomp> → parent is worldbody
-        };
-
-        // Each flex vertex body parented to worldbody is its own kinematic tree root.
-        // For bodies parented to a non-world body, inherit the root.
-        let root_id = if parent_id == 0 {
-            body_id
-        } else {
-            self.body_rootid[parent_id]
-        };
-
+        // A flexcomp's vertex bodies hang off the world body, each the root of
+        // its own kinematic tree.
         let jnt_adr = self.jnt_type.len();
         let dof_adr = self.nv;
         let qpos_start = self.nq;
         let geom_adr = self.geom_type.len();
 
         // Push body arrays (mirrors process_body_with_world_frame pattern)
-        self.body_parent.push(parent_id);
-        self.body_rootid.push(root_id);
+        self.body_parent.push(0);
+        self.body_rootid.push(body_id);
         self.body_jnt_adr.push(jnt_adr);
         self.body_dof_adr.push(dof_adr);
         self.body_geom_adr.push(geom_adr);
-        // For node-derived vertices, body_pos = zeros (vertex is at the node
-        // body's origin; the slide joints provide displacement from there).
-        // For flexcomp/bare-flex, body_pos = vertex world position (parent is
-        // worldbody, so local offset == world position).
-        let body_pos_val = if is_node_flex { Vector3::zeros() } else { *pos };
-        self.body_pos.push(body_pos_val);
+        // On the world body, the local offset is the world position.
+        self.body_pos.push(*pos);
         self.body_quat.push(UnitQuaternion::identity());
         self.body_ipos.push(Vector3::zeros()); // point mass: CoM at body origin
         self.body_iquat.push(UnitQuaternion::identity());
@@ -477,9 +419,6 @@ impl ModelBuilder {
         self.body_mocapid.push(None);
         self.body_name.push(None);
         self.body_sleep_policy.push(None);
-        // *pos is the vertex world position from node resolution or flexcomp.
-        // For flexcomp (parent=world), local offset == world position.
-        // For node-flex, *pos is the node body's world position.
         self.body_world_pos.push(*pos);
         self.body_world_quat.push(UnitQuaternion::identity());
 
@@ -493,26 +432,12 @@ impl ModelBuilder {
             self.flexvert_qposadr.push(usize::MAX); // sentinel: no qpos
             self.flexvert_dofadr.push(usize::MAX); // sentinel: no dof
         } else {
-            // Unpinned vertex: 3 slide joints (X, Y, Z)
-            // dof_parent chain: first DOF has no parent (worldbody has no DOFs),
-            // subsequent DOFs chain to previous within this vertex.
+            // Unpinned vertex: 3 slide joints (X, Y, Z). The first dof has no
+            // parent (the world body has no dofs); each next one chains to the
+            // one before it.
             let mut last_dof: Option<usize> = None;
-            // Determine parent's last DOF for kinematic tree linkage.
-            // Worldbody (parent_id=0) has no DOFs → None.
-            // Non-world parent: use their last DOF.
-            let parent_last_dof = if parent_id == 0 {
-                None
-            } else {
-                let pdof_adr = self.body_dof_adr[parent_id];
-                let pdof_num = self.body_dof_num[parent_id];
-                if pdof_num > 0 {
-                    Some(pdof_adr + pdof_num - 1)
-                } else {
-                    None
-                }
-            };
 
-            for (axis_idx, axis) in axes.iter().enumerate() {
+            for axis in &axes {
                 let jnt_id = self.jnt_type.len();
                 let qpos_adr = self.nq;
                 let dof_idx = self.nv;
@@ -535,12 +460,7 @@ impl ModelBuilder {
                 self.jnt_armature.push(0.0);
 
                 // DOF arrays
-                let dof_parent_val = if axis_idx == 0 {
-                    parent_last_dof // first DOF links to parent body's last DOF
-                } else {
-                    last_dof // subsequent DOFs chain within this vertex
-                };
-                self.dof_parent.push(dof_parent_val);
+                self.dof_parent.push(last_dof);
                 self.dof_body.push(body_id);
                 self.dof_jnt.push(jnt_id);
                 self.dof_armature.push(0.0);

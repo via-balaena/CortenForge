@@ -326,3 +326,70 @@ fn a_flex_refusal_names_its_flex_once() {
     let message = refusal(&xml).to_string();
     assert_eq!(message.matches("cloth").count(), 1, "{message}");
 }
+
+/// sim-mjcf's old child form: `<vertex>`, `<element>` and `<pin>` inside a
+/// `<flex>`, each "Schema violation: unrecognized element" in MuJoCo 3.5.0
+/// (measured), whether written open or self-closing, and refused before a
+/// missing attribute is, as MuJoCo checks its schema first.
+#[test]
+fn flex_child_forms_are_refused() {
+    for child in [
+        r#"<vertex pos="0 0 0"/>"#,
+        r#"<vertex pos="0 0 0"></vertex>"#,
+        r#"<element data="0 1 2"/>"#,
+        r#"<pin id="0"/>"#,
+    ] {
+        for flex in [
+            format!(r#"<flex name="f" dim="2" body="a b c" element="0 1 2">{child}</flex>"#),
+            format!(r#"<flex name="f" dim="2">{child}</flex>"#),
+        ] {
+            match refusal(&doc(&triangle_bodies(), &flex)) {
+                MjcfError::UnknownElement {
+                    element, parent, ..
+                } => {
+                    assert_eq!(parent, "flex", "{flex}");
+                    assert!(
+                        child.starts_with(&format!("<{element}")),
+                        "{flex}: {element}"
+                    );
+                }
+                other => panic!("{flex}: {other}"),
+            }
+        }
+    }
+}
+
+/// `mass` on a `<flex>`: "Schema violation: unrecognized attribute: 'mass'" in
+/// MuJoCo 3.5.0 (measured); a vertex's mass is its body's.
+#[test]
+fn flex_mass_is_refused() {
+    match refusal(&doc(
+        &triangle_bodies(),
+        r#"<flex name="f" dim="2" mass="1" body="a b c" element="0 1 2"></flex>"#,
+    )) {
+        MjcfError::UnknownAttribute {
+            element, attribute, ..
+        } => assert_eq!((element.as_str(), attribute.as_str()), ("flex", "mass")),
+        other => panic!("{other}"),
+    }
+}
+
+/// `node` (MuJoCo's trilinear interpolation) is a stated limitation; alone,
+/// MuJoCo 3.5.0 refuses it for the missing `body` (measured), as here.
+#[test]
+fn flex_node_is_refused() {
+    assert_unsupported(
+        &doc(
+            &triangle_bodies(),
+            r#"<flex name="f" dim="2" body="a b c" node="a b c" element="0 1 2"></flex>"#,
+        ),
+        "node",
+    );
+    match refusal(&doc(
+        &triangle_bodies(),
+        r#"<flex name="f" dim="2" node="a b c" element="0 1 2"></flex>"#,
+    )) {
+        MjcfError::MissingAttribute { attribute, .. } => assert_eq!(attribute, "body"),
+        other => panic!("{other}"),
+    }
+}

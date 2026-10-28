@@ -2068,9 +2068,10 @@ fn dt16_flex_density_attribute_silently_ignored() {
 }
 
 #[test]
-fn dt16_flex_mass_attribute_works() {
-    // DT-16 positive: mass="1.5" on <flex> is the conformant API.
-    let model = parse_mjcf_str(
+fn dt16_flex_mass_attribute_is_refused() {
+    // A `<flex>`'s vertex mass is its body's: MuJoCo 3.5.0's schema refuses
+    // `mass` ("unrecognized attribute: 'mass'", measured), as here.
+    let err = parse_mjcf_str(
         r#"
             <mujoco model="dt16_mass">
                 <worldbody>
@@ -2084,9 +2085,11 @@ fn dt16_flex_mass_attribute_works() {
             </mujoco>
             "#,
     )
-    .unwrap();
-    assert_eq!(model.flex.len(), 1);
-    assert_eq!(model.flex[0].mass, Some(1.5));
+    .unwrap_err();
+    assert!(
+        matches!(&err, MjcfError::UnknownAttribute { element, attribute, .. } if element == "flex" && attribute == "mass"),
+        "{err}"
+    );
 }
 
 // ========================================================================

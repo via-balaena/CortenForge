@@ -71,6 +71,32 @@ pub enum MjcfError {
         at: Location,
     },
 
+    /// An element MuJoCo 3.5.0's schema does not take inside its parent
+    /// ("Schema violation: unrecognized element").
+    #[error("unrecognized element <{element}> in <{parent}>{at}")]
+    #[non_exhaustive]
+    UnknownElement {
+        /// The element's tag.
+        element: String,
+        /// Its parent's tag.
+        parent: String,
+        /// Where it is.
+        at: Location,
+    },
+
+    /// An attribute MuJoCo 3.5.0's schema does not take on its element
+    /// ("Schema violation: unrecognized attribute").
+    #[error("unrecognized attribute '{attribute}' on <{element}>{at}")]
+    #[non_exhaustive]
+    UnknownAttribute {
+        /// The element's tag.
+        element: String,
+        /// The attribute.
+        attribute: String,
+        /// Where the element is.
+        at: Location,
+    },
+
     /// Attributes that exclude each other were set together.
     #[error("<{element}> may set only one of: {}{at}", attributes.join(", "))]
     #[non_exhaustive]
@@ -563,6 +589,27 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::UnknownElement`].
+    pub(crate) fn unknown_element(element: impl Into<String>, parent: impl Into<String>) -> Self {
+        Self::UnknownElement {
+            element: element.into(),
+            parent: parent.into(),
+            at: Location::unknown(),
+        }
+    }
+
+    /// An [`MjcfError::UnknownAttribute`].
+    pub(crate) fn unknown_attribute(
+        element: impl Into<String>,
+        attribute: impl Into<String>,
+    ) -> Self {
+        Self::UnknownAttribute {
+            element: element.into(),
+            attribute: attribute.into(),
+            at: Location::unknown(),
+        }
+    }
+
     /// An [`MjcfError::ConflictingAttributes`].
     pub(crate) fn conflicting(element: impl Into<String>, attributes: &[&str]) -> Self {
         Self::ConflictingAttributes {
@@ -739,6 +786,8 @@ impl MjcfError {
             | Self::Include { at, .. }
             | Self::TooDeep { at, .. }
             | Self::MissingAttribute { at, .. }
+            | Self::UnknownElement { at, .. }
+            | Self::UnknownAttribute { at, .. }
             | Self::ConflictingAttributes { at, .. }
             | Self::BadNumber { at, .. }
             | Self::OutOfRange { at, .. }

@@ -4051,8 +4051,8 @@ impl Default for MjcfKeyframe {
 /// properties. Maps to MuJoCo's `<flex>` element within `<deformable>`.
 ///
 /// Contact parameters come from `<flex><contact>`, elasticity from `<flex><elasticity>`,
-/// and edge spring-damper from `<flex><edge>`. Direct `<flex>` attributes are only
-/// `name`, `dim`, `radius`, `body`, `node`, `group` (plus structural data arrays).
+/// and edge spring-damper from `<flex><edge>`. Direct `<flex>` attributes are
+/// `name`, `dim`, `radius`, `group`, `body`, `vertex` and `element`.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfFlex {
@@ -4068,8 +4068,6 @@ pub struct MjcfFlex {
     /// vertex bodies ([`FlexVertexBodies::Generated`]), each vertex's parent
     /// body instead (world when empty).
     pub body: Vec<String>,
-    /// Node body names (alternative to `<vertex>` positions).
-    pub node: Vec<String>,
     /// Visualization group (0-5).
     pub group: i32,
 
@@ -4176,9 +4174,7 @@ pub enum FlexVertexBodies {
     /// MuJoCo 3.5.0's `vertbody`.
     #[default]
     Named,
-    /// The loader makes a body for each vertex: a `<deformable><flexcomp>`'s,
-    /// and until Rigid-loading L10-iii a `<flex>` written with `<vertex>`,
-    /// `<element>` or `<pin>` children or `node`.
+    /// The loader makes a body for each vertex: a `<deformable><flexcomp>`'s.
     Generated,
 }
 
@@ -4190,7 +4186,6 @@ impl Default for MjcfFlex {
             dim: 2,
             radius: 0.005,
             body: Vec::new(),
-            node: Vec::new(),
             group: 0,
             // <contact> child element (MuJoCo defaults)
             priority: 0,
