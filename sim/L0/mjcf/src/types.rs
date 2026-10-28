@@ -4064,9 +4064,8 @@ pub struct MjcfFlex {
     /// Collision vertex radius `[m]`.
     pub radius: f64,
     /// A `<flex>`'s vertex bodies, one per vertex: each vertex is the body
-    /// it names, as MuJoCo 3.5.0's `vertbody`. Where the loader makes the
-    /// vertex bodies ([`FlexVertexBodies::Generated`]), each vertex's parent
-    /// body instead (world when empty).
+    /// it names, as MuJoCo 3.5.0's `vertbody`. Empty for a flexcomp, whose
+    /// vertex bodies the loader makes ([`FlexVertexBodies::Generated`]).
     pub body: Vec<String>,
     /// A `<flex>`'s `node` bodies (MuJoCo's trilinear interpolation): refused,
     /// a stated limitation, once MuJoCo's own checks pass; empty when the

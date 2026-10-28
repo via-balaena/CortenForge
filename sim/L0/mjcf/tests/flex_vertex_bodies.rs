@@ -617,3 +617,42 @@ fn a_code_built_flex_with_no_element_is_refused() {
         other => panic!("{other:?}"),
     }
 }
+
+/// With a Young's modulus, MuJoCo 3.5.0 requires a Poisson ratio in
+/// [0, 0.5): 0.6, -0.1 and 0.5 refused, 0.49 loaded (measured). sim-mjcf
+/// clamped it and loaded every one.
+#[test]
+fn a_poisson_ratio_out_of_range_is_refused() {
+    let flex = |poisson: &str| {
+        doc(
+            &triangle_bodies(),
+            &format!(
+                r#"<flex name="f" dim="2" body="a b c" element="0 1 2"><elasticity young="100" poisson="{poisson}" thickness="0.01"/></flex>"#
+            ),
+        )
+    };
+    for poisson in ["0.6", "-0.1", "0.5"] {
+        match refusal(&flex(poisson)) {
+            MjcfError::InvalidValue { reason, .. } => {
+                assert_eq!(reason, "Poisson ratio must be in [0, 0.5)", "{poisson}");
+            }
+            other => panic!("{poisson}: {other}"),
+        }
+    }
+    load_model(&flex("0.49")).expect("0.49");
+}
+
+/// A `<deformable><flexcomp>` makes its vertices' bodies; `body` on it is
+/// refused as MuJoCo 3.5.0's schema refuses it ("unrecognized attribute:
+/// 'body'", measured on its own flexcomp). It once hung the vertex bodies on
+/// the named bodies.
+#[test]
+fn a_flexcomp_body_is_refused() {
+    let xml = r#"<mujoco><worldbody><body name="arm"><joint type="hinge"/><geom size="0.1"/></body></worldbody><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" body="arm arm arm arm"/></deformable></mujoco>"#;
+    match refusal(xml) {
+        MjcfError::UnknownAttribute {
+            element, attribute, ..
+        } => assert_eq!((element.as_str(), attribute.as_str()), ("flexcomp", "body")),
+        other => panic!("{other}"),
+    }
+}

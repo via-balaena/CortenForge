@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="arm"><joint type="hinge"/><geom size="0.1"/></body></worldbody><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" body="arm arm arm arm"/></deformable></mujoco>

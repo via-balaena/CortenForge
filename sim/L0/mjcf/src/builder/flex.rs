@@ -327,6 +327,7 @@ impl ModelBuilder {
         }
         bodies.truncate(flex.body.len());
         check_flex_repeated_vertices(flex)?;
+        check_flex_poisson(flex)?;
 
         // The subset sim-core takes; the error's location names the flex.
         if interpolated {
@@ -732,18 +733,29 @@ const ELEMENT_EDGES: [&[(usize, usize)]; 3] = [
     &[(0, 1), (1, 2), (2, 0), (2, 3), (0, 3), (1, 3)],
 ];
 
-/// MuJoCo's checks of a flex's elements before anything is built from them
-/// (`mjCFlex::Compile`, `user_mesh.cc`), in its order: a dimension of 1, 2 or
-/// 3 (`:4108-4110`), each element of `dim + 1` vertices (`:4114-4116`), at
-/// least `dim + 1` vertices (`:4147-4149`), each element's vertices among
-/// them (`:4160-4165`), and none twice in an element (`:4189-4202`). Its
-/// "elem is empty" (`:4111-4113`) is Rigid-loading L10's; the other checks it
-/// makes between these are not this function's.
+/// MuJoCo's checks of a flexcomp's elements and material before anything is
+/// built from them (`mjCFlex::Compile`, `user_mesh.cc`), in its order, as the
+/// functions below make them. A `<flex>` takes them one by one in
+/// `resolve_vertex_bodies`, among the checks of its bodies.
 fn check_flex_elements(flex: &MjcfFlex) -> Result<()> {
     check_flex_dim_and_elements(flex)?;
     check_flex_vertex_count(flex, flex.vertices.len())?;
     check_flex_element_ids(flex, flex.vertices.len())?;
-    check_flex_repeated_vertices(flex)
+    check_flex_repeated_vertices(flex)?;
+    check_flex_poisson(flex)
+}
+
+/// With a Young's modulus, a Poisson ratio in [0, 0.5), as MuJoCo's
+/// compiler requires (`user_mesh.cc:4331-4334`).
+fn check_flex_poisson(flex: &MjcfFlex) -> Result<()> {
+    if flex.young > 0.0 && !(0.0..0.5).contains(&flex.poisson) {
+        return Err(MjcfError::invalid_value(
+            "elasticity",
+            "poisson",
+            "Poisson ratio must be in [0, 0.5)",
+        ));
+    }
+    Ok(())
 }
 
 fn refuse_flex(attribute: &str, reason: &str) -> MjcfError {
