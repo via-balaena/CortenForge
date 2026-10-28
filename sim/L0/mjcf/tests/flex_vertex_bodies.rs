@@ -1050,3 +1050,35 @@ fn a_flexcomp_with_every_vertex_pinned_is_rigid() {
     assert_eq!(model.flex_rigid, [true]);
     assert!(model.nflexedge > 0 && model.flexedge_rigid.iter().all(|&r| r));
 }
+
+/// A flexcomp's dim outside 1 to 3 and a count of 0 are refused, as MuJoCo
+/// 3.5.0's flexcomp refuses them, dim first, then count, each before its
+/// mass (measured on its own flexcomp, the same cases). A dim of 0 or 4
+/// loaded as a grid of dim 2; a count of 0 made the grid's element loop
+/// subtract past 0 (a panic with overflow checks, an unbounded loop
+/// without).
+#[test]
+fn a_flexcomp_dim_or_count_outside_mujocos_range_is_refused() {
+    let grid = |attrs: &str| {
+        format!(
+            r#"<mujoco><deformable><flexcomp name="g" type="grid" spacing="0.1 0.1 0.1" {attrs}/></deformable></mujoco>"#
+        )
+    };
+    let dim = "Invalid dim, must be between 1 and 3";
+    let count = "Count too small";
+    for (attrs, reason) in [
+        (r#"count="0 2 1""#, count),
+        (r#"count="2 0 1""#, count),
+        (r#"count="2 2 0""#, count),
+        (r#"count="2 2 1" dim="0""#, dim),
+        (r#"count="2 2 1" dim="4""#, dim),
+        (r#"count="2 2 1" dim="4" mass="0""#, dim),
+        (r#"count="0 2 1" mass="0""#, count),
+        (r#"count="0 2 1" dim="4""#, dim),
+    ] {
+        match refusal(&grid(attrs)) {
+            MjcfError::InvalidValue { reason: got, .. } => assert_eq!(got, reason, "{attrs}"),
+            other => panic!("{attrs}: {other}"),
+        }
+    }
+}

@@ -403,7 +403,24 @@ fn flexcomp_mesh(e: &BytesStart) -> Result<MjcfFlex> {
     let comp_type = a
         .keyword("type", keywords::flexcomp_type)?
         .unwrap_or("grid");
+    // MuJoCo's first checks of a flexcomp, in its order (`mjCFlexcomp::Make`,
+    // `user_flexcomp.cc:114-124`): its dim, then its count, here before the
+    // mesh is generated from them.
+    if !(1..=3).contains(&flex.dim) {
+        return Err(MjcfError::invalid_value(
+            "flexcomp",
+            "dim",
+            "Invalid dim, must be between 1 and 3",
+        ));
+    }
     let count = parse_flexcomp_count(&a)?;
+    if count.contains(&0) {
+        return Err(MjcfError::invalid_value(
+            "flexcomp",
+            "count",
+            "Count too small",
+        ));
+    }
     let spacing = a.array::<3>("spacing")?.unwrap_or([0.02; 3]);
 
     match comp_type {
