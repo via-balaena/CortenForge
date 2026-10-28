@@ -29,6 +29,13 @@ const MIN_VERTEX_MASS: f64 = 0.001;
 /// MuJoCo's `mjMINVAL` (`mjtnum.h`).
 const MJ_MINVAL: f64 = 1e-15;
 
+/// A flexcomp vertex body's inertia about each axis, MuJoCo's
+/// `mass · (2 · inertiabox²) / 3` (`user_flexcomp.cc:470-471`, set at
+/// `:518-521`).
+fn vertex_inertia(mass: f64, inertiabox: f64) -> f64 {
+    mass * (2.0 * inertiabox * inertiabox) / 3.0
+}
+
 impl ModelBuilder {
     /// Process flex deformable bodies: a `<flex>`'s vertices on the bodies it names, a
     /// flexcomp's on a body each (+ 3 slide joints if unpinned); extract edges/hinges,
@@ -82,6 +89,19 @@ impl ModelBuilder {
             } else {
                 // Compute per-vertex masses (uniform from mass attr, or element-based lumping)
                 let vertex_masses = compute_vertex_masses(flex);
+                // A vertex body whose mass or inertia is not finite is refused,
+                // as any other body's is (registry D-INERTIA-NONFINITE): a mass
+                // or inertiabox built in code, an inertiabox whose square
+                // overflows, a lumped mass that does.
+                if !vertex_masses
+                    .iter()
+                    .all(|&m| m.is_finite() && vertex_inertia(m, flex.inertiabox).is_finite())
+                {
+                    return Err(MjcfError::invalid_model(
+                        "a flexcomp vertex body's mass or inertia is not finite",
+                    )
+                    .at(at()));
+                }
 
                 // Create a body (+ joints for unpinned) per vertex
                 for (i, pos) in flex.vertices.iter().enumerate() {
@@ -459,8 +479,9 @@ impl ModelBuilder {
     ) -> Result<()> {
         let axes = [Vector3::x(), Vector3::y(), Vector3::z()];
 
-        // `check_flexcomp` has refused a mass below mjMINVAL, and the density
-        // path floors each vertex's, so `mass` is positive.
+        // `check_flexcomp` has refused a mass below mjMINVAL, the density path
+        // floors each vertex's, and the caller a mass that is not finite, so
+        // `mass` is positive and finite.
         let inv_mass = if pinned { 0.0 } else { 1.0 / mass };
 
         self.nflexvert += 1;
@@ -487,10 +508,8 @@ impl ModelBuilder {
         self.body_ipos.push(Vector3::zeros()); // CoM at the body origin
         self.body_iquat.push(UnitQuaternion::identity());
         self.body_mass.push(mass);
-        // MuJoCo's flexcomp body inertia (`user_flexcomp.cc:471`, `:474-477`).
-        self.body_inertia.push(Vector3::repeat(
-            mass * (2.0 * flex.inertiabox * flex.inertiabox) / 3.0,
-        ));
+        self.body_inertia
+            .push(Vector3::repeat(vertex_inertia(mass, flex.inertiabox)));
         self.body_mocapid.push(None);
         self.body_name.push(None);
         self.body_sleep_policy.push(None);
@@ -650,9 +669,10 @@ impl ModelBuilder {
         self.flexedge_flexid.push(flex_id);
         // Every edge of a rigid flex, and an edge whose ends' bodies are
         // welded together, is rigid (MuJoCo's rule, `user_model.cc:3511-3519`).
-        // No document makes the first half decide an edge: a flexcomp is
-        // rigid only when every vertex is pinned, and the pinned vertices'
-        // bodies all weld to the world.
+        // No model sim-mjcf builds makes the first half decide an edge: a
+        // flexcomp's vertex masses are finite and positive, so it is rigid
+        // only when every vertex is pinned, and the pinned vertices' bodies
+        // all weld to the world.
         let weld = |v: usize| self.weld_id(self.flexvert_bodyid[vert_start + v]);
         self.flexedge_rigid.push(rigid || weld(a) == weld(b));
         // §42B S1: Initialize flexedge_flap to [-1, -1] (boundary default).

@@ -908,3 +908,43 @@ fn the_new_refusals_come_in_mujocos_order() {
         }
     }
 }
+
+/// A flexcomp vertex body whose mass or inertia is not finite is refused, as
+/// sim-mjcf refuses any other body's (registry `D-INERTIA-NONFINITE`): a
+/// lumped mass that overflows (no `mass`, thickness 1e306), an inertiabox
+/// whose square overflows, and, built in code, a `NaN` or infinite mass or
+/// inertiabox. MuJoCo's own flexcomp loads its inertiabox 1e200 with an
+/// infinite inertia (measured). The overflowing mass loaded as a rigid flex
+/// whose vertices kept three slides each.
+#[test]
+fn a_flexcomp_vertex_mass_or_inertia_that_is_not_finite_is_refused() {
+    let grid = |attrs: &str, children: &str| {
+        format!(
+            r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="10 10 10"{attrs}>{children}</flexcomp></deformable></mujoco>"#
+        )
+    };
+    let reason = "a flexcomp vertex body's mass or inertia is not finite";
+    let refused = |case: &str, result: Result<sim_core::Model, MjcfError>| match result {
+        Err(MjcfError::InvalidModel { reason: got, .. }) => assert_eq!(got, reason, "{case}"),
+        other => panic!("{case}: {other:?}"),
+    };
+    refused(
+        "lumped mass",
+        load_model(&grid("", r#"<elasticity thickness="1e306"/>"#)),
+    );
+    refused(
+        "inertiabox",
+        load_model(&grid(r#" mass="1" inertiabox="1e200""#, "")),
+    );
+    for (case, mass, inertiabox) in [
+        ("NaN mass", f64::NAN, 0.005),
+        ("infinite mass", f64::INFINITY, 0.005),
+        ("NaN inertiabox", 1.0, f64::NAN),
+        ("infinite inertiabox", 1.0, f64::INFINITY),
+    ] {
+        let mut mjcf = parse_mjcf_str(&grid(r#" mass="1""#, "")).unwrap();
+        mjcf.flex[0].mass = Some(mass);
+        mjcf.flex[0].inertiabox = inertiabox;
+        refused(case, model_from_mjcf(&mjcf, None));
+    }
+}
