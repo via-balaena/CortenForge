@@ -13,7 +13,7 @@ use nalgebra::{UnitQuaternion, Vector3};
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::keywords;
-use crate::types::MjcfFlex;
+use crate::types::{FlexVertexBodies, MjcfFlex};
 use sim_core::{EqualityType, FlexSelfCollide, MjJointType};
 
 /// Number of coefficients per bending element in the discrete thin-shell model.
@@ -44,7 +44,16 @@ impl ModelBuilder {
             // flag below).
             let resolved;
             let is_node_flex;
-            let flex = if !flex_orig.node.is_empty() && flex_orig.vertices.is_empty() {
+            let mut vertex_bodies = None;
+            let flex = if flex_orig.vertex_bodies == FlexVertexBodies::Named {
+                let (named, bodies) = self
+                    .resolve_vertex_bodies(flex_orig)
+                    .map_err(|e| e.with_location_if_unknown(at()))?;
+                resolved = named;
+                vertex_bodies = Some(bodies);
+                is_node_flex = false;
+                &resolved
+            } else if !flex_orig.node.is_empty() && flex_orig.vertices.is_empty() {
                 resolved = {
                     let mut f = flex_orig.clone();
                     for node_name in &flex_orig.node {
@@ -89,19 +98,33 @@ impl ModelBuilder {
 
             let vert_start = self.nflexvert;
 
-            // Compute per-vertex masses (uniform from mass attr, or element-based lumping)
-            let vertex_masses = compute_vertex_masses(flex);
+            if let Some(bodies) = &vertex_bodies {
+                for (&body_id, pos) in bodies.iter().zip(&flex.vertices) {
+                    self.push_named_flex_vertex(flex, body_id, pos, flex_id);
+                }
+            } else {
+                // Compute per-vertex masses (uniform from mass attr, or element-based lumping)
+                let vertex_masses = compute_vertex_masses(flex);
 
-            // Create a body (+ joints for unpinned) per vertex
-            for (i, pos) in flex.vertices.iter().enumerate() {
-                let mass = vertex_masses[i];
-                let pinned = flex.pinned.contains(&i);
-                self.create_flex_vertex_body(flex, i, pos, mass, pinned, is_node_flex, flex_id);
+                // Create a body (+ joints for unpinned) per vertex
+                for (i, pos) in flex.vertices.iter().enumerate() {
+                    let mass = vertex_masses[i];
+                    let pinned = flex.pinned.contains(&i);
+                    self.create_flex_vertex_body(flex, i, pos, mass, pinned, is_node_flex, flex_id);
+                }
             }
+
+            // A flex whose vertices are named bodies is rigid when they are one
+            // body (`mjCFlex::Compile`, `user_mesh.cc:4205-4213`), which
+            // `resolve_vertex_bodies` refuses. Where the loader makes the
+            // vertex bodies: when no vertex moves.
+            let rigid = vertex_bodies.is_none()
+                && (vert_start..vert_start + flex.vertices.len())
+                    .all(|v| self.flexvert_invmass[v] == 0.0);
 
             // Extract edges from element connectivity
             let (edge_start, edge_key_to_global) =
-                self.extract_flex_edges(flex, vert_start, flex_id);
+                self.extract_flex_edges(flex, vert_start, flex_id, rigid);
 
             // Extract bending hinges from adjacent elements + compute bending coefficients
             self.extract_flex_bending_hinges(
@@ -189,10 +212,7 @@ impl ModelBuilder {
             self.flex_edgestiffness.push(flex.edge_stiffness);
             self.flex_edgedamping.push(flex.edge_damping);
 
-            // §42A-ii: Compute flex_rigid — true if ALL vertices have invmass == 0.
-            let all_rigid = (vert_start..vert_start + flex.vertices.len())
-                .all(|v| self.flexvert_invmass[v] == 0.0);
-            self.flex_rigid.push(all_rigid);
+            self.flex_rigid.push(rigid);
 
             // §42B S4: Push bending model type (default: Cotangent).
             self.flex_bending_type.push(flex.bending_model);
@@ -237,6 +257,145 @@ impl ModelBuilder {
         }
 
         Ok(())
+    }
+
+    /// The body `body` is welded to: itself if it has joints, else its
+    /// parent's, the world's id 0 at the root (MuJoCo's `weldid`,
+    /// `user_objects.cc:2393`).
+    fn weld_id(&self, mut body: usize) -> usize {
+        while body != 0 && self.body_jnt_num[body] == 0 {
+            body = self.body_parent[body];
+        }
+        body
+    }
+
+    /// A `<flex>` whose vertices are the bodies it names, checked as MuJoCo
+    /// 3.5.0's compiler checks it (`mjCFlex::Compile`, `user_mesh.cc:
+    /// 4103-4202`), then held to the subset sim-core's flex code takes: each
+    /// vertex on a body of its own (a flex on one body is MuJoCo's rigid
+    /// flex), at its body's origin, and each body either jointless or with
+    /// exactly three slides along x, y and z, in that order, unrotated, with
+    /// no dof above it. sim-core reads a vertex's three dofs as its world x,
+    /// y and z (the edge Jacobian, the passive forces) and a vertex without
+    /// dofs as fixed, so anything else is refused, a stated limitation.
+    ///
+    /// Returns the flex with each vertex's world position, its body's at
+    /// compile time (MuJoCo's centered flex: `vertxpos` is the body's
+    /// `xpos0`), and the vertex bodies' ids.
+    fn resolve_vertex_bodies(&self, flex: &MjcfFlex) -> Result<(MjcfFlex, Vec<usize>)> {
+        let refuse = |attribute: &str, reason: &str| {
+            MjcfError::invalid_value("flex", attribute, reason.to_string())
+        };
+        let unsupported =
+            |what: String| MjcfError::unsupported(format!("flex '{}': {what}", flex.name));
+        if flex.body.is_empty() {
+            return Err(refuse("body", "vertbody and nodebody are both empty"));
+        }
+        // nvert as MuJoCo sets it: one vertex per body, or `vertex`'s count.
+        let nvert = if flex.vertices.is_empty() {
+            flex.body.len()
+        } else if flex.body.len() == 1 {
+            return Err(unsupported(
+                "one body for every vertex (MuJoCo's rigid flex)".to_string(),
+            ));
+        } else if flex.body.len() == flex.vertices.len() {
+            flex.vertices.len()
+        } else {
+            return Err(refuse("body", "vertbody size must be 1 or nvert"));
+        };
+        check_flex_elements(&MjcfFlex {
+            vertices: vec![Vector3::zeros(); nvert],
+            ..flex.clone()
+        })?;
+
+        let mut bodies = Vec::with_capacity(nvert);
+        for name in &flex.body {
+            let &id = self
+                .body_name_to_id
+                .get(name)
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Body, name))?;
+            if bodies.contains(&id) {
+                return Err(unsupported(format!(
+                    "body '{name}' holds two of its vertices"
+                )));
+            }
+            bodies.push(id);
+        }
+        if flex.vertices.iter().any(|v| *v != Vector3::zeros()) {
+            return Err(unsupported(
+                "a vertex away from its body's origin (a nonzero vertex offset)".to_string(),
+            ));
+        }
+        let axes = [Vector3::x(), Vector3::y(), Vector3::z()];
+        for (name, &id) in flex.body.iter().zip(&bodies) {
+            let (adr, num) = (self.body_jnt_adr[id], self.body_jnt_num[id]);
+            let three_slides = num == 3
+                && (0..3).all(|k| {
+                    self.jnt_type[adr + k] == MjJointType::Slide
+                        && self.jnt_axis[adr + k] == axes[k]
+                });
+            if num != 0 && !three_slides {
+                return Err(unsupported(format!(
+                    "vertex body '{name}' has joints other than three slides along x, y and z"
+                )));
+            }
+            if id != 0 && self.body_world_quat[id - 1].angle() != 0.0 {
+                return Err(unsupported(format!("vertex body '{name}' is rotated")));
+            }
+            if id != 0 && self.weld_id(self.body_parent[id]) != 0 {
+                return Err(unsupported(format!(
+                    "vertex body '{name}' moves with a body above it"
+                )));
+            }
+        }
+
+        let vertices = bodies
+            .iter()
+            .map(|&id| {
+                if id == 0 {
+                    Vector3::zeros()
+                } else {
+                    self.body_world_pos[id - 1]
+                }
+            })
+            .collect();
+        Ok((
+            MjcfFlex {
+                vertices,
+                ..flex.clone()
+            },
+            bodies,
+        ))
+    }
+
+    /// One vertex of a flex whose vertices are named bodies: the `flexvert_*`
+    /// entries of the vertex at world position `pos` on body `body_id`, its
+    /// mass the body's and its dofs the body's three slides, or none.
+    fn push_named_flex_vertex(
+        &mut self,
+        flex: &MjcfFlex,
+        body_id: usize,
+        pos: &Vector3<f64>,
+        flex_id: usize,
+    ) {
+        let mass = self.body_mass[body_id];
+        let moves = self.body_dof_num[body_id] > 0;
+        self.nflexvert += 1;
+        if moves {
+            let first = self.body_jnt_adr[body_id];
+            self.flexvert_qposadr.push(self.jnt_qpos_adr[first]);
+            self.flexvert_dofadr.push(self.body_dof_adr[body_id]);
+        } else {
+            self.flexvert_qposadr.push(usize::MAX);
+            self.flexvert_dofadr.push(usize::MAX);
+        }
+        self.flexvert_mass.push(mass);
+        self.flexvert_invmass
+            .push(if moves && mass > 0.0 { 1.0 / mass } else { 0.0 });
+        self.flexvert_radius.push(flex.radius);
+        self.flexvert_flexid.push(flex_id);
+        self.flexvert_bodyid.push(body_id);
+        self.flexvert_initial_pos.push(*pos);
     }
 
     /// Create a body (+ 3 slide joints for unpinned vertices) for one flex vertex.
@@ -426,6 +585,7 @@ impl ModelBuilder {
         flex: &MjcfFlex,
         vert_start: usize,
         flex_id: usize,
+        rigid: bool,
     ) -> (usize, std::collections::HashMap<(usize, usize), usize>) {
         use std::collections::HashMap;
 
@@ -438,7 +598,7 @@ impl ModelBuilder {
                 if edge_key_to_global.contains_key(&(a, b)) {
                     continue;
                 }
-                self.push_flex_edge(flex, vert_start, flex_id, a, b);
+                self.push_flex_edge(flex, vert_start, flex_id, a, b, rigid);
                 edge_key_to_global.insert((a, b), self.nflexedge);
                 self.nflexedge += 1;
             }
@@ -447,7 +607,8 @@ impl ModelBuilder {
         (edge_start, edge_key_to_global)
     }
 
-    /// One edge's `flexedge_*` entries, between the flex's vertices `a < b`.
+    /// One edge's `flexedge_*` entries, between the flex's vertices `a < b`,
+    /// of a flex that is `rigid` or not.
     fn push_flex_edge(
         &mut self,
         flex: &MjcfFlex,
@@ -455,16 +616,16 @@ impl ModelBuilder {
         flex_id: usize,
         a: usize,
         b: usize,
+        rigid: bool,
     ) {
         let rest_len = (flex.vertices[b] - flex.vertices[a]).norm();
         self.flexedge_vert.push([vert_start + a, vert_start + b]);
         self.flexedge_length0.push(rest_len);
         self.flexedge_flexid.push(flex_id);
-        // §42A-ii: flexedge_rigid — both endpoints pinned (invmass == 0).
-        let va = vert_start + a;
-        let vb = vert_start + b;
-        self.flexedge_rigid
-            .push(self.flexvert_invmass[va] == 0.0 && self.flexvert_invmass[vb] == 0.0);
+        // Every edge of a rigid flex, and an edge whose ends' bodies are
+        // welded together, is rigid (MuJoCo's rule, `user_model.cc:3511-3519`).
+        let weld = |v: usize| self.weld_id(self.flexvert_bodyid[vert_start + v]);
+        self.flexedge_rigid.push(rigid || weld(a) == weld(b));
         // §42B S1: Initialize flexedge_flap to [-1, -1] (boundary default).
         self.flexedge_flap.push([-1, -1]);
         // §42B S2+S3: Initialize flex_bending to zeros per edge.

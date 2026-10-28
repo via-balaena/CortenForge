@@ -8,7 +8,7 @@ use std::io::BufRead;
 use crate::error::{MjcfError, Result};
 use crate::keywords;
 
-use crate::types::{MjcfFlex, MjcfSkin, MjcfSkinBone, MjcfSkinVertex};
+use crate::types::{FlexVertexBodies, MjcfFlex, MjcfSkin, MjcfSkinBone, MjcfSkinVertex};
 
 use super::attrs::{Attrs, skip_element};
 
@@ -73,12 +73,21 @@ pub(super) fn parse_deformable<R: BufRead>(
     Ok((skins, flex_bodies))
 }
 
-/// Parse a `<flex>` element and its children (`<vertex>`, `<element>`, `<pin>`).
+/// Parse a `<flex>` element and its children. Its `body`, `vertex` and
+/// `element` attributes give MuJoCo 3.5.0's flex, whose vertices are the
+/// bodies it names; one written with `<vertex>`, `<element>` or `<pin>`
+/// children or `node` is read as before, its vertex bodies made by the loader
+/// (until Rigid-loading L10-iii).
 pub(super) fn parse_flex<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
 ) -> Result<MjcfFlex> {
     let mut flex = parse_flex_attrs(start)?;
+    let a = Attrs::new(start)?;
+    read_flex_data(&a, &mut flex)?;
+    if !flex.node.is_empty() {
+        flex.vertex_bodies = FlexVertexBodies::Generated;
+    }
     let mut buf = Vec::new();
 
     loop {
@@ -99,6 +108,7 @@ pub(super) fn parse_flex<R: BufRead>(
                         skip_element(reader, &elem_name)?;
                     }
                     b"vertex" => {
+                        flex.vertex_bodies = FlexVertexBodies::Generated;
                         // Parse child vertex elements until end of <vertex>
                         if let Some(floats) = Attrs::new(e)?.vector("pos")? {
                             // Inline attribute: flat array of xyz triples
@@ -112,6 +122,7 @@ pub(super) fn parse_flex<R: BufRead>(
                         skip_element(reader, &elem_name)?;
                     }
                     b"element" => {
+                        flex.vertex_bodies = FlexVertexBodies::Generated;
                         if let Some(ints) = indices(&Attrs::new(e)?, "data")? {
                             // Element connectivity
                             let verts_per_elem = match flex.dim {
@@ -128,6 +139,7 @@ pub(super) fn parse_flex<R: BufRead>(
                         skip_element(reader, &elem_name)?;
                     }
                     b"pin" => {
+                        flex.vertex_bodies = FlexVertexBodies::Generated;
                         if let Some(ids) = indices(&Attrs::new(e)?, "id")? {
                             flex.pinned.extend(ids);
                         }
@@ -145,6 +157,7 @@ pub(super) fn parse_flex<R: BufRead>(
                     b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex)?,
                     b"edge" => parse_flex_edge_attrs(e, &mut flex)?,
                     b"vertex" => {
+                        flex.vertex_bodies = FlexVertexBodies::Generated;
                         if let Some(floats) = Attrs::new(e)?.vector("pos")? {
                             for chunk in floats.chunks(3) {
                                 if chunk.len() == 3 {
@@ -155,6 +168,7 @@ pub(super) fn parse_flex<R: BufRead>(
                         }
                     }
                     b"element" => {
+                        flex.vertex_bodies = FlexVertexBodies::Generated;
                         if let Some(ints) = indices(&Attrs::new(e)?, "data")? {
                             let verts_per_elem = match flex.dim {
                                 1 => 2,
@@ -169,6 +183,7 @@ pub(super) fn parse_flex<R: BufRead>(
                         }
                     }
                     b"pin" => {
+                        flex.vertex_bodies = FlexVertexBodies::Generated;
                         if let Some(ids) = indices(&Attrs::new(e)?, "id")? {
                             flex.pinned.extend(ids);
                         }
@@ -186,7 +201,49 @@ pub(super) fn parse_flex<R: BufRead>(
         buf.clear();
     }
 
+    // MuJoCo 3.5.0 requires both (`xml_native_reader.cc`, `OneFlex`); it
+    // reads an empty `element` as missing, an empty `body` as given (measured).
+    if flex.vertex_bodies == FlexVertexBodies::Named {
+        if !a.has("body") {
+            return Err(MjcfError::missing_attribute("flex", "body"));
+        }
+        if flex.elements.is_empty() {
+            return Err(MjcfError::missing_attribute("flex", "element"));
+        }
+    }
     Ok(flex)
+}
+
+/// A `<flex>`'s `vertex` and `element` attributes, read as MuJoCo 3.5.0
+/// reads them (`OneFlex`) and sized as its compiler checks them
+/// (`mjCFlex::Compile`, `user_mesh.cc`): three reals per vertex, `dim + 1`
+/// vertex ids per element. A trailing partial element is kept for the
+/// builder's element check, which refuses it.
+fn read_flex_data(a: &Attrs, flex: &mut MjcfFlex) -> Result<()> {
+    if let Some(reals) = a.vector("vertex")? {
+        if reals.len() % 3 != 0 {
+            return Err(MjcfError::invalid_value(
+                a.element(),
+                "vertex",
+                "vert size must be a multiple of 3",
+            ));
+        }
+        flex.vertices = reals
+            .chunks(3)
+            .map(|c| Vector3::new(c[0], c[1], c[2]))
+            .collect();
+    }
+    if let Some(ids) = indices(a, "element")? {
+        if !(1..=3).contains(&flex.dim) {
+            return Err(MjcfError::invalid_value(
+                a.element(),
+                "dim",
+                "dim must be 1, 2 or 3",
+            ));
+        }
+        flex.elements = ids.chunks(flex.dim + 1).map(<[usize]>::to_vec).collect();
+    }
+    Ok(())
 }
 
 /// Parse direct `<flex>` / `<flexcomp>` top-level attributes.
@@ -406,6 +463,7 @@ pub(super) fn parse_flexcomp_empty(e: &BytesStart) -> Result<MjcfFlex> {
 /// `count` and `spacing` as exactly three values each (`xml_native_reader.cc`).
 fn flexcomp_mesh(e: &BytesStart) -> Result<MjcfFlex> {
     let mut flex = parse_flex_attrs(e)?;
+    flex.vertex_bodies = FlexVertexBodies::Generated;
     let a = Attrs::new(e)?;
 
     let comp_type = a

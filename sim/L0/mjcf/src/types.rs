@@ -4063,8 +4063,10 @@ pub struct MjcfFlex {
     pub dim: usize,
     /// Collision vertex radius `[m]`.
     pub radius: f64,
-    /// Body names for vertex attachment (one per vertex). Required on `<flex>`.
-    /// For `<flexcomp>`, auto-generated during expansion (one body per vertex).
+    /// A `<flex>`'s vertex bodies, one per vertex: each vertex is the body
+    /// it names, as MuJoCo 3.5.0's `vertbody`. Where the loader makes the
+    /// vertex bodies ([`FlexVertexBodies::Generated`]), each vertex's parent
+    /// body instead (world when empty).
     pub body: Vec<String>,
     /// Node body names (alternative to `<vertex>` positions).
     pub node: Vec<String>,
@@ -4154,12 +4156,30 @@ pub struct MjcfFlex {
     pub flexcomp_file: Option<String>,
 
     // --- Structural data arrays ---
-    /// Vertex positions.
+    /// A `<flex>`'s `vertex`: each vertex's offset in its body (sim-mjcf
+    /// takes only zero offsets; empty when the attribute is omitted). Where
+    /// the loader makes the vertex bodies, each vertex's position.
     pub vertices: Vec<Vector3<f64>>,
     /// Element connectivity (each element is a list of vertex indices).
     pub elements: Vec<Vec<usize>>,
     /// Pinned vertex indices (infinite mass, fixed in place).
     pub pinned: Vec<usize>,
+    /// Where the vertex bodies come from.
+    pub vertex_bodies: FlexVertexBodies,
+}
+
+/// Where a flex's vertex bodies come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum FlexVertexBodies {
+    /// Each vertex is the body [`MjcfFlex::body`] names: a `<flex>`, as
+    /// MuJoCo 3.5.0's `vertbody`.
+    #[default]
+    Named,
+    /// The loader makes a body for each vertex: a `<deformable><flexcomp>`'s,
+    /// and until Rigid-loading L10-iii a `<flex>` written with `<vertex>`,
+    /// `<element>` or `<pin>` children or `node`.
+    Generated,
 }
 
 impl Default for MjcfFlex {
@@ -4210,6 +4230,7 @@ impl Default for MjcfFlex {
             vertices: Vec::new(),
             elements: Vec::new(),
             pinned: Vec::new(),
+            vertex_bodies: FlexVertexBodies::Named,
         }
     }
 }
