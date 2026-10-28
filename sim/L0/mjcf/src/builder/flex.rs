@@ -286,8 +286,8 @@ impl ModelBuilder {
     /// (`mjCFlex::Compile` and `ResolveReferences`, `user_mesh.cc:4076-4202`,
     /// `:4331-4343`; not `material` or `texcoord`, which this crate does not
     /// read, Rigid-loading L47's), then held to the subset sim-core's flex
-    /// code takes: each vertex on a body of its own (a
-    /// flex on one body is MuJoCo's rigid flex), at its body's origin, and
+    /// code takes: each vertex on a body of its own (a flex on one body is
+    /// MuJoCo's rigid flex), at its body's origin, and
     /// each body either jointless with no joint above it, or with exactly
     /// three slides along x, y and z, in that order, unrotated, with no joint
     /// or mocap body above it. sim-core reads a vertex's three dofs as its
@@ -795,8 +795,7 @@ const ELEMENT_EDGES: [&[(usize, usize)]; 3] = [
 /// `xml_native_reader.cc:312-315`; the parser refuses `body` on one, and an
 /// [`MjcfFlex`] built in code can carry either), then MuJoCo's check of its
 /// mass and `inertiabox` (`mjCFlexcomp::Make`, `user_flexcomp.cc:143-145`).
-/// Not MuJoCo's checks of its count, spacing and scale, which come before
-/// the mass's there, nor of its pin ids (ledger L324).
+/// Not the rest of MuJoCo's `Make` checks (ledger L324).
 fn check_flexcomp(flex: &MjcfFlex) -> Result<()> {
     for (attribute, names) in [("body", &flex.body), ("node", &flex.node)] {
         if !names.is_empty() {
@@ -833,8 +832,9 @@ fn check_vertex_spheres(flex: &MjcfFlex) -> Result<()> {
 
 /// MuJoCo's checks of a flexcomp's elements, edge stiffness and Poisson
 /// ratio before anything is built from them (`mjCFlex::Compile`,
-/// `user_mesh.cc`), in its order, as the functions below make them. A `<flex>` takes them one by one in
-/// `resolve_vertex_bodies`, among the checks of its bodies, and not here.
+/// `user_mesh.cc`), in its order, as the functions below make them. A
+/// `<flex>` takes them one by one in `resolve_vertex_bodies`, among the
+/// checks of its bodies, and not here.
 fn check_flex_elements(flex: &MjcfFlex) -> Result<()> {
     check_flex_dim_and_elements(flex)?;
     check_flex_edge_stiffness(flex)?;

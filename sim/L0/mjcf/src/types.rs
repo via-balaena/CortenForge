@@ -4156,8 +4156,7 @@ pub struct MjcfFlex {
     // --- Flexcomp attributes (DT-88) ---
     /// A flexcomp's inertia box size: each vertex body's inertia is
     /// `mass · (2 · inertiabox²) / 3` about each axis, MuJoCo's formula
-    /// (`user_flexcomp.cc:470-471`), on the vertex's mass, which is MuJoCo's
-    /// when `mass` is written (ledger L323); MuJoCo's default 0.005, at least
+    /// (`user_flexcomp.cc:470-471`); MuJoCo's default 0.005, at least
     /// mjMINVAL.
     pub inertiabox: f64,
     /// Flexcomp non-uniform scale applied to generated vertices.
