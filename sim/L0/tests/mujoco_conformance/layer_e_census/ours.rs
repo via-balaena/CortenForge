@@ -231,7 +231,9 @@ fn data_json(m: &Model, d: &Data) -> Value {
         .iter()
         .map(|c| {
             // MuJoCo's golden's layout: each side's geom, then each side's
-            // flex vertex among every flex's, -1 where a side has none.
+            // flex vertex among every flex's, the distance, position and
+            // frame, then each side's flex and each side's element in its
+            // flex; -1 where a side has none.
             let some = |x: Option<usize>| x.map_or(-1, id);
             let vertices = c.flex_vertices(m);
             json!([
@@ -244,6 +246,10 @@ fn data_json(m: &Model, d: &Data) -> Value {
                 nums(c.normal.iter().copied()),
                 nums(c.frame[0].iter().copied()),
                 nums(c.frame[1].iter().copied()),
+                some(c.flex[0]),
+                some(c.flex[1]),
+                some(c.elem[0]),
+                some(c.elem[1]),
             ])
         })
         .collect();

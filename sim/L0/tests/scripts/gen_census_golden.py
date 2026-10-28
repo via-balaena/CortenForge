@@ -192,15 +192,21 @@ def data_json(m, d):
         out['qM_full'], out['qM'] = 1, floats(full)
     else:
         out['qM_full'], out['qM'] = 0, [float(d.qM[m.dof_Madr[i]]) for i in range(m.nv)]
+    # A contact: each side's geom, each side's flex vertex among every flex's,
+    # the distance, position and frame, then each side's flex and each side's
+    # element in its flex; -1 where a side has none. Goldens written before the
+    # last four (none of which holds a flex contact) end at the frame.
     contacts = []
     c = d.contact
     for i in range(d.ncon):
         geom, flex, vert = ints(c.geom[i]), ints(c.flex[i]), ints(c.vert[i])
         flexvert = [int(m.flex_vertadr[flex[j]] + vert[j]) if flex[j] >= 0 and vert[j] >= 0 else -1
                     for j in range(2)]
+        elem = ints(c.elem[i])
         frame = floats(c.frame[i])
         contacts.append([geom[0], geom[1], flexvert[0], flexvert[1], float(c.dist[i]),
-                         floats(c.pos[i]), frame[0:3], frame[3:6], frame[6:9]])
+                         floats(c.pos[i]), frame[0:3], frame[3:6], frame[6:9],
+                         flex[0], flex[1], elem[0], elem[1]])
     counts = {}
     for t in d.efc_type[:d.nefc]:
         kind = CONSTRAINT[int(t)]

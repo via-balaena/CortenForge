@@ -513,22 +513,39 @@ const PIPELINE_ORDER: &[&str] = &[
     "con_zero",
 ];
 
-/// A contact's two objects, sorted, so the pair matches whichever side lists
-/// it first; and whether sorting swapped them, and whether one is a flex vertex.
-type PairKey = Vec<(char, i64)>;
+/// A contact's side: a geom (`'g'`, its id), a flex vertex (`'v'`, its id
+/// among every flex's), a flex element (`'e'`, its flex, its id in that
+/// flex) or none (`'-'`).
+type Side = (char, i64, i64);
 
-/// Both lists hold each side's geom, then each side's flex vertex (-1 where
-/// a side has none), MuJoCo's golden's layout.
-fn pair_key(c: &[Value]) -> (PairKey, bool, bool) {
+/// A contact's two sides, sorted, so the pair matches whichever side lists
+/// it first.
+type PairKey = Vec<Side>;
+
+/// Both lists hold each side's geom, then each side's flex vertex, the
+/// distance, position and frame, then each side's flex and each side's
+/// element (-1 where a side has none), MuJoCo's golden's layout; a golden
+/// written before the flex and element entries ends at the frame, and holds
+/// no flex contact. Returns the key and whether sorting swapped the sides.
+fn pair_key(c: &[Value]) -> (PairKey, bool) {
     let at = |i: usize| c.get(i).and_then(Value::as_i64).unwrap_or(-1);
-    let (g1, g2, v1, v2) = (at(0), at(1), at(2), at(3));
-    let side = |g: i64, v: i64| if g >= 0 { ('g', g) } else { ('v', v) };
-    let objects = vec![side(g1, v1), side(g2, v2)];
-    let mut key = objects.clone();
+    let side = |k: usize| -> Side {
+        let (geom, vertex, flex, elem) = (at(k), at(2 + k), at(9 + k), at(11 + k));
+        if geom >= 0 {
+            ('g', geom, -1)
+        } else if vertex >= 0 {
+            ('v', vertex, -1)
+        } else if elem >= 0 {
+            ('e', flex, elem)
+        } else {
+            ('-', -1, -1)
+        }
+    };
+    let sides = vec![side(0), side(1)];
+    let mut key = sides.clone();
     key.sort_unstable();
-    let swapped = key != objects;
-    let flex = objects.iter().any(|o| o.0 == 'v');
-    (key, swapped, flex)
+    let swapped = key != sides;
+    (key, swapped)
 }
 
 fn vec3(v: &Value) -> [f64; 3] {
@@ -541,21 +558,20 @@ fn max_abs_diff(a: [f64; 3], b: [f64; 3], sign: f64) -> f64 {
     (0..3).map(|i| diff(a[i], sign * b[i])).fold(0.0, f64::max)
 }
 
-type Grouped<'a> = BTreeMap<PairKey, Vec<(&'a [Value], bool, bool)>>;
+type Grouped<'a> = BTreeMap<PairKey, Vec<(&'a [Value], bool)>>;
 
 fn group<'a>(contacts: &[&'a [Value]]) -> Grouped<'a> {
     let mut g: Grouped<'a> = BTreeMap::new();
     for c in contacts {
-        let (key, swapped, flex) = pair_key(c);
-        g.entry(key).or_default().push((c, swapped, flex));
+        let (key, swapped) = pair_key(c);
+        g.entry(key).or_default().push((c, swapped));
     }
     g
 }
 
 /// Contacts as multisets keyed by object pair: within a pair each of
 /// MuJoCo's contacts is matched to our nearest one by position. A normal is
-/// compared after undoing a swap (and up to sign against a flex vertex); a
-/// tangent up to sign.
+/// compared after undoing a swap; a tangent up to sign.
 fn contact_diffs(ours: &[&[Value]], mj: &[&[Value]], out: &mut Vec<(&'static str, f64)>) {
     let (go, gm) = (group(ours), group(mj));
     let counts = |g: &Grouped<'_>| {
@@ -570,7 +586,7 @@ fn contact_diffs(ours: &[&[Value]], mj: &[&[Value]], out: &mut Vec<(&'static str
     let (mut dist, mut pos, mut normal, mut frame) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
     for (key, mine) in &gm {
         let mut candidates = go[key].clone();
-        for &(cm, swapped_m, flex_m) in mine {
+        for &(cm, swapped_m) in mine {
             let pm = vec3(&cm[5]);
             let nearest = (0..candidates.len())
                 .min_by(|&x, &y| {
@@ -579,18 +595,13 @@ fn contact_diffs(ours: &[&[Value]], mj: &[&[Value]], out: &mut Vec<(&'static str
                     dx.partial_cmp(&dy).unwrap_or(Ordering::Equal)
                 })
                 .unwrap_or(0);
-            let (co, swapped_o, _) = candidates.remove(nearest);
+            let (co, swapped_o) = candidates.remove(nearest);
             dist = dist.max(diff(num(&co[4]), num(&cm[4])));
             pos = pos.max(max_abs_diff(vec3(&co[5]), pm, 1.0));
             let flip = |swapped: bool| if swapped { -1.0 } else { 1.0 };
             let no = vec3(&co[6]).map(|x| x * flip(swapped_o));
             let nm = vec3(&cm[6]).map(|x| x * flip(swapped_m));
-            let dn = if flex_m {
-                max_abs_diff(no, nm, 1.0).min(max_abs_diff(no, nm, -1.0))
-            } else {
-                max_abs_diff(no, nm, 1.0)
-            };
-            normal = normal.max(dn);
+            normal = normal.max(max_abs_diff(no, nm, 1.0));
             for k in [7, 8] {
                 let (to, tm) = (vec3(&co[k]), vec3(&cm[k]));
                 frame = frame.max(max_abs_diff(to, tm, 1.0).min(max_abs_diff(to, tm, -1.0)));
@@ -696,4 +707,79 @@ pub fn state_differs(ours: &Value, mj: &Value, k_ours: usize, k_mj: usize) -> bo
             _ => true,
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A contact in the golden's layout: geoms, flex vertices, distance,
+    /// position, normal, two tangents, then flexes and elements.
+    fn contact(sides: [[i64; 4]; 2], normal: [f64; 3]) -> Value {
+        let [[g0, v0, f0, e0], [g1, v1, f1, e1]] = sides;
+        json!([
+            g0,
+            g1,
+            v0,
+            v1,
+            -0.01,
+            [0.0, 0.0, 0.0],
+            normal,
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            f0,
+            f1,
+            e0,
+            e1
+        ])
+    }
+
+    fn diffs(ours: &Value, mj: &Value) -> Vec<(&'static str, f64)> {
+        let (ours, mj) = (ours.as_array().unwrap(), mj.as_array().unwrap());
+        let mut out = Vec::new();
+        contact_diffs(&[ours.as_slice()], &[mj.as_slice()], &mut out);
+        out
+    }
+
+    /// Two contacts of a geom against two elements of one flex are different
+    /// pairs: an element side is its flex and its element, not a vertex
+    /// of -1.
+    #[test]
+    fn an_element_contact_is_told_from_another_elements() {
+        let geom = [0, -1, -1, -1];
+        let ours = contact([geom, [-1, -1, 0, 1]], [1.0, 0.0, 0.0]);
+        let mj = contact([geom, [-1, -1, 0, 2]], [1.0, 0.0, 0.0]);
+        assert_eq!(diffs(&ours, &mj), [("con_pairs", f64::INFINITY)]);
+        assert!(diffs(&ours, &ours).iter().all(|&(_, d)| d == 0.0));
+    }
+
+    /// A flex contact's normal is compared with its sign: a reversed normal
+    /// against a flex vertex differs by 2.
+    #[test]
+    fn a_reversed_flex_normal_differs() {
+        let sides = [[0, -1, -1, -1], [-1, 3, 0, -1]];
+        let ours = contact(sides, [1.0, 0.0, 0.0]);
+        let mj = contact(sides, [-1.0, 0.0, 0.0]);
+        let normal = diffs(&ours, &mj)
+            .into_iter()
+            .find(|&(k, _)| k == "con_normal")
+            .map(|(_, d)| d);
+        assert_eq!(normal, Some(2.0));
+    }
+
+    /// A golden written before the flex and element entries (it ends at the
+    /// frame) keys a geom pair as our longer entry does.
+    #[test]
+    fn a_golden_without_flex_entries_keys_a_geom_pair_as_before() {
+        let ours = contact([[0, -1, -1, -1], [1, -1, -1, -1]], [1.0, 0.0, 0.0]);
+        let mut old = ours.as_array().unwrap().clone();
+        old.truncate(9);
+        assert_eq!(pair_key(&old), pair_key(ours.as_array().unwrap()));
+        assert!(
+            diffs(&ours, &Value::Array(old))
+                .iter()
+                .all(|&(_, d)| d == 0.0)
+        );
+    }
 }
