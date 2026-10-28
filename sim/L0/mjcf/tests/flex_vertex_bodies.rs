@@ -948,3 +948,43 @@ fn a_flexcomp_vertex_mass_or_inertia_that_is_not_finite_is_refused() {
         refused(case, model_from_mjcf(&mjcf, None));
     }
 }
+
+/// With `vertcollide`, a flex radius of 0 or below is refused, as MuJoCo
+/// 3.5.0 refuses the spheres its flexcomp makes ("size 0 must be positive in
+/// geom"), after the flexcomp's mass and before its flex's edge stiffness;
+/// without `vertcollide`, or with every vertex pinned, there is no sphere
+/// and it loads (each measured on MuJoCo's own flexcomp). A negative radius
+/// loaded a sphere that came to rest below the floor.
+#[test]
+fn a_vertcollide_radius_of_0_or_below_is_refused() {
+    let grid = |radius: &str, attrs: &str, children: &str| {
+        format!(
+            r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" radius="{radius}"{attrs}>{children}</flexcomp></deformable></mujoco>"#
+        )
+    };
+    let spheres = r#"<contact vertcollide="true"/>"#;
+    let size = "size 0 must be positive in geom";
+    for (case, xml, reason) in [
+        ("radius 0", grid("0", "", spheres), size),
+        ("radius -0.01", grid("-0.01", "", spheres), size),
+        (
+            "radius 0 and an edge stiffness",
+            grid("0", "", &format!(r#"{spheres}<edge stiffness="1"/>"#)),
+            size,
+        ),
+        (
+            "radius 0 and a mass of 0",
+            grid("0", r#" mass="0""#, spheres),
+            "Mass and inertiabox must be larger than mjMINVAL",
+        ),
+    ] {
+        match refusal(&xml) {
+            MjcfError::InvalidValue { reason: got, .. } => assert_eq!(got, reason, "{case}"),
+            other => panic!("{case}: {other}"),
+        }
+    }
+    load_model(&grid("0", "", "")).expect("no sphere without vertcollide");
+    let pinned = load_model(&grid("0", "", &format!(r#"{spheres}<pin id="0 1 2 3"/>"#)))
+        .expect("no sphere with every vertex pinned");
+    assert_eq!(pinned.ngeom, 0);
+}

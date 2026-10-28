@@ -60,6 +60,7 @@ impl ModelBuilder {
             } else {
                 // A flexcomp's checks; a `<flex>` has had them above.
                 check_flexcomp(flex_orig)
+                    .and_then(|()| check_vertex_spheres(flex_orig))
                     .and_then(|()| check_flex_elements(flex_orig))
                     .map_err(|e| e.with_location_if_unknown(at()))?;
                 flex_orig
@@ -586,7 +587,7 @@ impl ModelBuilder {
 
             self.body_jnt_num.push(3);
             self.body_dof_num.push(3);
-            self.body_geom_num.push(usize::from(flex.vertcollide));
+            self.body_geom_num.push(0);
 
             self.flexvert_qposadr.push(qpos_start); // first of 3 slide joint qpos addresses
             self.flexvert_dofadr.push(dof_adr); // first of 3 DOF addresses
@@ -614,6 +615,7 @@ impl ModelBuilder {
                 ..MjcfGeom::default()
             });
             self.process_geom(&sphere, body_id)?;
+            self.body_geom_num[body_id] = self.geom_type.len() - geom_adr;
         }
         Ok(())
     }
@@ -803,6 +805,23 @@ fn check_flexcomp(flex: &MjcfFlex) -> Result<()> {
             "flexcomp",
             if low_mass { "mass" } else { "inertiabox" },
             "Mass and inertiabox must be larger than mjMINVAL",
+        ));
+    }
+    Ok(())
+}
+
+/// With `vertcollide`, a sphere's radius, the flex's, positive, as MuJoCo's
+/// compiler requires of the spheres its flexcomp makes ("size 0 must be
+/// positive in geom", `checksize`, `user_objects.cc:152-167`), when it makes
+/// one: on a vertex that is not pinned. MuJoCo makes the check after the
+/// flexcomp's own and before its flex's (measured).
+fn check_vertex_spheres(flex: &MjcfFlex) -> Result<()> {
+    let makes_one = (0..flex.vertices.len()).any(|v| !flex.pinned.contains(&v));
+    if flex.vertcollide && makes_one && flex.radius <= 0.0 {
+        return Err(MjcfError::invalid_value(
+            "flexcomp",
+            "radius",
+            "size 0 must be positive in geom",
         ));
     }
     Ok(())
