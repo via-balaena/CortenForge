@@ -419,6 +419,9 @@ impl ModelBuilder {
         self.body_mocapid.push(None);
         self.body_name.push(None);
         self.body_sleep_policy.push(None);
+        // The defaults of a body written with none of these (`body.rs`).
+        self.body_gravcomp.push(0.0);
+        self.body_user_raw.push(Vec::new());
         self.body_world_pos.push(*pos);
         self.body_world_quat.push(UnitQuaternion::identity());
 
@@ -458,6 +461,14 @@ impl ModelBuilder {
                 // acts only through its elasticity and bending).
                 self.jnt_damping.push(flex.damping);
                 self.jnt_armature.push(0.0);
+                // The defaults of a joint written with none of these (`joint.rs`).
+                self.jnt_solref.push(DEFAULT_SOLREF);
+                self.jnt_solimp.push(DEFAULT_SOLIMP);
+                self.jnt_name.push(None);
+                self.jnt_group.push(0);
+                self.jnt_actgravcomp.push(false);
+                self.jnt_margin.push(0.0);
+                self.jnt_user_raw.push(Vec::new());
 
                 // DOF arrays
                 self.dof_parent.push(last_dof);

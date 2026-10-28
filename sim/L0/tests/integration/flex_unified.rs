@@ -893,6 +893,33 @@ fn ac11_flexcomp_expansion() {
     assert_relative_eq!(dx, 0.04, epsilon = 1e-6);
 }
 
+/// A `<deformable><flexcomp>` beside a body with `gravcomp`: each vertex body
+/// has its `body_gravcomp` entry and each slide its `jnt_actgravcomp`, so the
+/// model steps (U06; the gravity compensation once indexed past the vertex
+/// bodies' missing entries and panicked). MuJoCo 3.5.0 loads and steps such a
+/// model (A20 §1B.5, measured on a `<flex>`).
+#[test]
+fn flexcomp_with_a_gravcomp_body_steps() {
+    let model = load_model(
+        r#"<mujoco>
+        <worldbody>
+            <body name="held" pos="1 1 1" gravcomp="1"><freejoint/><geom type="sphere" size="0.05"/></body>
+        </worldbody>
+        <deformable>
+            <flexcomp name="grid" type="grid" count="2 2 1" spacing="0.04 0.04 0.04" dim="2" mass="1"/>
+        </deformable>
+    </mujoco>"#,
+    )
+    .expect("load");
+    assert_eq!(model.body_gravcomp.len(), model.nbody);
+    assert_eq!(model.jnt_actgravcomp.len(), model.njnt);
+    let mut data = model.make_data();
+    for _ in 0..10 {
+        data.step(&model).expect("step");
+    }
+    assert!(data.qpos.iter().all(|x| x.is_finite()));
+}
+
 /// A flex vertex's `flexvert_qposadr` is its first slide's qpos address: after
 /// a free joint (7 qpos, 6 dofs) it is one past its dof address. The loader
 /// used to store the dof address there.
