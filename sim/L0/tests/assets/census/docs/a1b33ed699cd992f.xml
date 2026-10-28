@@ -1,0 +1,60 @@
+<mujoco model="trilinear">
+  <worldbody>
+      <body name="holder" pos="0 0 1">
+        <body name="fc_0_0_0" pos="-0.1 -0.1 0">
+          <inertial pos="0 0 0" mass="0.125" diaginertia="2.08333e-06 2.08333e-06 2.08333e-06"/>
+          <joint pos="0 0 0" axis="1 0 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 1 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 0 1" type="slide"/>
+        </body>
+        <body name="fc_0_0_1" pos="-0.1 -0.1 0">
+          <inertial pos="0 0 0" mass="0.125" diaginertia="2.08333e-06 2.08333e-06 2.08333e-06"/>
+          <joint pos="0 0 0" axis="1 0 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 1 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 0 1" type="slide"/>
+        </body>
+        <body name="fc_0_1_0" pos="-0.1 0.1 0">
+          <inertial pos="0 0 0" mass="0.125" diaginertia="2.08333e-06 2.08333e-06 2.08333e-06"/>
+          <joint pos="0 0 0" axis="1 0 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 1 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 0 1" type="slide"/>
+        </body>
+        <body name="fc_0_1_1" pos="-0.1 0.1 0">
+          <inertial pos="0 0 0" mass="0.125" diaginertia="2.08333e-06 2.08333e-06 2.08333e-06"/>
+          <joint pos="0 0 0" axis="1 0 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 1 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 0 1" type="slide"/>
+        </body>
+        <body name="fc_1_0_0" pos="0.1 -0.1 0">
+          <inertial pos="0 0 0" mass="0.125" diaginertia="2.08333e-06 2.08333e-06 2.08333e-06"/>
+          <joint pos="0 0 0" axis="1 0 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 1 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 0 1" type="slide"/>
+        </body>
+        <body name="fc_1_0_1" pos="0.1 -0.1 0">
+          <inertial pos="0 0 0" mass="0.125" diaginertia="2.08333e-06 2.08333e-06 2.08333e-06"/>
+          <joint pos="0 0 0" axis="1 0 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 1 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 0 1" type="slide"/>
+        </body>
+        <body name="fc_1_1_0" pos="0.1 0.1 0">
+          <inertial pos="0 0 0" mass="0.125" diaginertia="2.08333e-06 2.08333e-06 2.08333e-06"/>
+          <joint pos="0 0 0" axis="1 0 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 1 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 0 1" type="slide"/>
+        </body>
+        <body name="fc_1_1_1" pos="0.1 0.1 0">
+          <inertial pos="0 0 0" mass="0.125" diaginertia="2.08333e-06 2.08333e-06 2.08333e-06"/>
+          <joint pos="0 0 0" axis="1 0 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 1 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 0 1" type="slide"/>
+        </body>
+      </body>
+    </worldbody>
+  <deformable>
+    <flex name="fc" body="holder holder holder holder holder holder holder holder holder" vertex="-0.1 -0.1 0 -0.1 0 0 -0.1 0.1 0 0 -0.1 0 0 0 0 0 0.1 0 0.1 -0.1 0 0.1 0 0 0.1 0.1 0" element="0 3 4 0 4 1 1 4 5 1 5 2 3 6 7 3 7 4 4 7 8 4 8 5" node="fc_0_0_0 fc_0_0_1 fc_0_1_0 fc_0_1_1 fc_1_0_0 fc_1_0_1 fc_1_1_0 fc_1_1_1">
+      <contact selfcollide="none"/>
+      <elasticity/>
+    </flex>
+  </deformable>
+</mujoco>

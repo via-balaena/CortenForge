@@ -274,8 +274,21 @@ impl ModelBuilder {
         // MuJoCo's checks first, in its order; its rigid flex (one body for
         // every vertex) passes them.
         check_flex_dim_and_elements(flex)?;
-        if flex.body.is_empty() {
+        let interpolated = !flex.node.is_empty();
+        if flex.body.is_empty() && !interpolated {
             return Err(refuse("body", "vertbody and nodebody are both empty"));
+        }
+        if interpolated && flex.selfcollide.as_deref() != Some("none") {
+            return Err(refuse(
+                "node",
+                "trilinear interpolation cannot do self-collision",
+            ));
+        }
+        if interpolated && flex.internal {
+            return Err(refuse(
+                "node",
+                "trilinear interpolation cannot do internal collisions",
+            ));
         }
         let nvert = if flex.vertices.is_empty() {
             flex.body.len()
@@ -284,18 +297,43 @@ impl ModelBuilder {
         } else {
             return Err(refuse("body", "vertbody size must be 1 or nvert"));
         };
-        check_flex_vertex_ids(flex, nvert)?;
+        check_flex_vertex_count(flex, nvert)?;
+        if interpolated {
+            // MuJoCo's expression, `pow(nnode, 1.0 / 3) - 1` truncated to an
+            // int (`:4150-4157`), whose truncation the check must repeat (not
+            // `cbrt`); a node count is far below 2^52.
+            let nnode = flex.node.len();
+            #[allow(
+                clippy::imprecise_flops,
+                clippy::cast_precision_loss,
+                clippy::cast_possible_truncation
+            )]
+            let order = ((nnode as f64).powf(1.0 / 3.0) - 1.0) as i64;
+            if usize::try_from((order + 1).pow(3)) != Ok(nnode) {
+                return Err(refuse(
+                    "node",
+                    &format!("number of nodes must be {order}^3 but it is {nnode}"),
+                ));
+            }
+        }
+        check_flex_element_ids(flex, nvert)?;
         let mut bodies = Vec::with_capacity(flex.body.len());
-        for name in &flex.body {
+        for name in flex.body.iter().chain(&flex.node) {
             let &id = self
                 .body_name_to_id
                 .get(name)
                 .ok_or_else(|| MjcfError::undefined(ElementKind::Body, name))?;
             bodies.push(id);
         }
+        bodies.truncate(flex.body.len());
         check_flex_repeated_vertices(flex)?;
 
         // The subset sim-core takes; the error's location names the flex.
+        if interpolated {
+            return Err(MjcfError::unsupported(
+                "a flex's node (MuJoCo's trilinear interpolation)",
+            ));
+        }
         if bodies.len() == 1 && nvert > 1 {
             return Err(MjcfError::unsupported(
                 "one body for every vertex (MuJoCo's rigid flex)",
@@ -703,7 +741,8 @@ const ELEMENT_EDGES: [&[(usize, usize)]; 3] = [
 /// makes between these are not this function's.
 fn check_flex_elements(flex: &MjcfFlex) -> Result<()> {
     check_flex_dim_and_elements(flex)?;
-    check_flex_vertex_ids(flex, flex.vertices.len())?;
+    check_flex_vertex_count(flex, flex.vertices.len())?;
+    check_flex_element_ids(flex, flex.vertices.len())?;
     check_flex_repeated_vertices(flex)
 }
 
@@ -729,12 +768,17 @@ fn check_flex_dim_and_elements(flex: &MjcfFlex) -> Result<()> {
     Ok(())
 }
 
-/// Its vertex count against its dim, then each element's vertex ids against
-/// it (`user_mesh.cc:4146-4165`).
-fn check_flex_vertex_ids(flex: &MjcfFlex, nvert: usize) -> Result<()> {
+/// Its vertex count against its dim (`user_mesh.cc:4146-4148`).
+fn check_flex_vertex_count(flex: &MjcfFlex, nvert: usize) -> Result<()> {
     if nvert < flex.dim + 1 {
         return Err(refuse_flex("vertex", "not enough vertices"));
     }
+    Ok(())
+}
+
+/// Each element's vertex ids against its vertex count (`user_mesh.cc:
+/// 4160-4165`).
+fn check_flex_element_ids(flex: &MjcfFlex, nvert: usize) -> Result<()> {
     if flex.elements.iter().flatten().any(|&v| v >= nvert) {
         return Err(refuse_flex("element", "elem vertex id out of range"));
     }

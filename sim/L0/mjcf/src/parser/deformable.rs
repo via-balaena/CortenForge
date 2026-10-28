@@ -88,6 +88,10 @@ pub(super) fn parse_flex<R: BufRead>(
     }
     let mut flex = parse_flex_attrs(start)?;
     read_flex_data(&a, &mut flex)?;
+    // An empty `node` is no node, as MuJoCo 3.5.0 reads it (measured).
+    if let Some(s) = a.text("node") {
+        flex.node = s.split_whitespace().map(str::to_string).collect();
+    }
     let mut buf = Vec::new();
 
     loop {
@@ -137,11 +141,6 @@ pub(super) fn parse_flex<R: BufRead>(
     }
     if flex.elements.is_empty() {
         return Err(MjcfError::missing_attribute("flex", "element"));
-    }
-    if a.has("node") {
-        return Err(MjcfError::unsupported(
-            "a flex's node (MuJoCo's trilinear interpolation)",
-        ));
     }
     Ok(flex)
 }

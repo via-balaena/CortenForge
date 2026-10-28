@@ -374,17 +374,99 @@ fn flex_mass_is_refused() {
     }
 }
 
-/// `node` (MuJoCo's trilinear interpolation) is a stated limitation; alone,
-/// MuJoCo 3.5.0 refuses it for the missing `body` (measured), as here.
+/// MuJoCo 3.5.0's own trilinear flex, as `mj_saveLastXML` writes the one a
+/// trilinear flexcomp makes: its 9 vertices on one body at offsets, 8 node
+/// bodies, `selfcollide` none. MuJoCo loads it (measured).
+const TRILINEAR: &str = r#"<mujoco model="trilinear">
+  <worldbody>
+      <body name="holder" pos="0 0 1">
+        <body name="fc_0_0_0" pos="-0.1 -0.1 0">
+          <inertial pos="0 0 0" mass="0.125" diaginertia="2.08333e-06 2.08333e-06 2.08333e-06"/>
+          <joint pos="0 0 0" axis="1 0 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 1 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 0 1" type="slide"/>
+        </body>
+        <body name="fc_0_0_1" pos="-0.1 -0.1 0">
+          <inertial pos="0 0 0" mass="0.125" diaginertia="2.08333e-06 2.08333e-06 2.08333e-06"/>
+          <joint pos="0 0 0" axis="1 0 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 1 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 0 1" type="slide"/>
+        </body>
+        <body name="fc_0_1_0" pos="-0.1 0.1 0">
+          <inertial pos="0 0 0" mass="0.125" diaginertia="2.08333e-06 2.08333e-06 2.08333e-06"/>
+          <joint pos="0 0 0" axis="1 0 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 1 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 0 1" type="slide"/>
+        </body>
+        <body name="fc_0_1_1" pos="-0.1 0.1 0">
+          <inertial pos="0 0 0" mass="0.125" diaginertia="2.08333e-06 2.08333e-06 2.08333e-06"/>
+          <joint pos="0 0 0" axis="1 0 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 1 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 0 1" type="slide"/>
+        </body>
+        <body name="fc_1_0_0" pos="0.1 -0.1 0">
+          <inertial pos="0 0 0" mass="0.125" diaginertia="2.08333e-06 2.08333e-06 2.08333e-06"/>
+          <joint pos="0 0 0" axis="1 0 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 1 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 0 1" type="slide"/>
+        </body>
+        <body name="fc_1_0_1" pos="0.1 -0.1 0">
+          <inertial pos="0 0 0" mass="0.125" diaginertia="2.08333e-06 2.08333e-06 2.08333e-06"/>
+          <joint pos="0 0 0" axis="1 0 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 1 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 0 1" type="slide"/>
+        </body>
+        <body name="fc_1_1_0" pos="0.1 0.1 0">
+          <inertial pos="0 0 0" mass="0.125" diaginertia="2.08333e-06 2.08333e-06 2.08333e-06"/>
+          <joint pos="0 0 0" axis="1 0 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 1 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 0 1" type="slide"/>
+        </body>
+        <body name="fc_1_1_1" pos="0.1 0.1 0">
+          <inertial pos="0 0 0" mass="0.125" diaginertia="2.08333e-06 2.08333e-06 2.08333e-06"/>
+          <joint pos="0 0 0" axis="1 0 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 1 0" type="slide"/>
+          <joint pos="0 0 0" axis="0 0 1" type="slide"/>
+        </body>
+      </body>
+    </worldbody>
+  <deformable>
+    <flex name="fc" body="holder holder holder holder holder holder holder holder holder" vertex="-0.1 -0.1 0 -0.1 0 0 -0.1 0.1 0 0 -0.1 0 0 0 0 0 0.1 0 0.1 -0.1 0 0.1 0 0 0.1 0.1 0" element="0 3 4 0 4 1 1 4 5 1 5 2 3 6 7 3 7 4 4 7 8 4 8 5" node="fc_0_0_0 fc_0_0_1 fc_0_1_0 fc_0_1_1 fc_1_0_0 fc_1_0_1 fc_1_1_0 fc_1_1_1">
+      <contact selfcollide="none"/>
+      <elasticity/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+
+/// `node` (MuJoCo's trilinear interpolation): MuJoCo 3.5.0's own checks of
+/// it first, each with MuJoCo's message (measured), then a stated
+/// limitation (registry `D-FLEX-NODE`). `node` alone is refused for the
+/// missing `body`, and an empty `node` is no node, as MuJoCo reads them.
 #[test]
 fn flex_node_is_refused() {
-    assert_unsupported(
-        &doc(
-            &triangle_bodies(),
-            r#"<flex name="f" dim="2" body="a b c" node="a b c" element="0 1 2"></flex>"#,
+    assert_unsupported(TRILINEAR, "a flex's node");
+    for (xml, reason) in [
+        (
+            TRILINEAR.replace(r#"<contact selfcollide="none"/>"#, "<contact/>"),
+            "trilinear interpolation cannot do self-collision",
         ),
-        "node",
-    );
+        (
+            TRILINEAR.replace(
+                r#"<contact selfcollide="none"/>"#,
+                r#"<contact selfcollide="none" internal="true"/>"#,
+            ),
+            "trilinear interpolation cannot do internal collisions",
+        ),
+        (
+            TRILINEAR.replace(r#" fc_0_1_1 fc_1_0_0 fc_1_0_1 fc_1_1_0 fc_1_1_1""#, "\""),
+            "number of nodes must be 0^3 but it is 3",
+        ),
+    ] {
+        match refusal(&xml) {
+            MjcfError::InvalidValue { reason: got, .. } => assert_eq!(got, reason),
+            other => panic!("{reason}: {other}"),
+        }
+    }
     match refusal(&doc(
         &triangle_bodies(),
         r#"<flex name="f" dim="2" node="a b c" element="0 1 2"></flex>"#,
@@ -392,6 +474,11 @@ fn flex_node_is_refused() {
         MjcfError::MissingAttribute { attribute, .. } => assert_eq!(attribute, "body"),
         other => panic!("{other}"),
     }
+    load_model(&doc(
+        &triangle_bodies(),
+        r#"<flex name="f" dim="2" body="a b c" node="" element="0 1 2"></flex>"#,
+    ))
+    .expect("an empty node is no node");
 }
 
 /// Three joints along x, y and z that are not slides (three hinges): refused

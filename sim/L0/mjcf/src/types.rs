@@ -4068,6 +4068,10 @@ pub struct MjcfFlex {
     /// vertex bodies ([`FlexVertexBodies::Generated`]), each vertex's parent
     /// body instead (world when empty).
     pub body: Vec<String>,
+    /// A `<flex>`'s `node` bodies (MuJoCo's trilinear interpolation): refused,
+    /// a stated limitation, once MuJoCo's own checks pass; empty when the
+    /// attribute is omitted or empty.
+    pub node: Vec<String>,
     /// Visualization group (0-5).
     pub group: i32,
 
@@ -4186,6 +4190,7 @@ impl Default for MjcfFlex {
             dim: 2,
             radius: 0.005,
             body: Vec::new(),
+            node: Vec::new(),
             group: 0,
             // <contact> child element (MuJoCo defaults)
             priority: 0,

@@ -2111,3 +2111,4 @@ fde0cc38ce9cf888	sim/L0/tests/integration/flex_unified.rs:2262
 ef6a2cbdfa650617	sim/L0/tests/integration/flex_unified.rs:902
 6657b29beda3ae17	sim/L0/tests/integration/flex_unified.rs:904
 bfb0263f4e8212bf	sim/L0/tests/integration/flex_unified.rs:931
+a1b33ed699cd992f	sim/L0/mjcf/tests/flex_vertex_bodies.rs:380
