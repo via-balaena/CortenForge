@@ -393,3 +393,44 @@ fn flex_node_is_refused() {
         other => panic!("{other}"),
     }
 }
+
+/// Three joints along x, y and z that are not slides (three hinges): refused
+/// as any other joints are; sim-core reads a vertex's three dofs as
+/// translations.
+#[test]
+fn flex_vertex_body_with_three_hinges_is_refused() {
+    let hinges = r#"<body name="a" pos="0 0 1"><joint type="hinge" axis="1 0 0"/><joint type="hinge" axis="0 1 0"/><joint type="hinge" axis="0 0 1"/><inertial pos="0 0 0" mass="0.5" diaginertia="1e-3 1e-3 1e-3"/></body>"#;
+    assert_unsupported(
+        &doc(
+            &(hinges.to_string() + &body("b", "0.1 0 1", true)),
+            r#"<flex name="f" dim="1" body="a b" element="0 1"></flex>"#,
+        ),
+        "vertex body 'a' has joints other than three slides",
+    );
+}
+
+/// Two slides along x and y are not three, even where the joint declared
+/// next (another body's) slides along z.
+#[test]
+fn flex_vertex_body_with_two_slides_is_refused() {
+    let two = r#"<body name="a" pos="0 0 1"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><inertial pos="0 0 0" mass="0.5" diaginertia="1e-15 1e-15 1e-15"/></body>"#;
+    let next = r#"<body name="c" pos="1 1 1"><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.5" diaginertia="1e-15 1e-15 1e-15"/></body>"#;
+    assert_unsupported(
+        &doc(
+            &[two, next, &body("b", "0.1 0 1", true)].concat(),
+            r#"<flex name="f" dim="1" body="a b" element="0 1"></flex>"#,
+        ),
+        "vertex body 'a' has joints other than three slides",
+    );
+}
+
+/// After a free joint (7 qpos, 6 dofs) a vertex's qpos address is its first
+/// slide's, one past its dof address.
+#[test]
+fn a_vertex_after_a_free_joint_takes_its_slides_qpos_address() {
+    let free =
+        r#"<body name="ball" pos="1 1 1"><freejoint/><geom type="sphere" size="0.05"/></body>"#;
+    let model = load_model(&doc(&(free.to_string() + &triangle_bodies()), TRIANGLE)).unwrap();
+    assert_eq!(model.flexvert_dofadr, [6, 9, 12]);
+    assert_eq!(model.flexvert_qposadr, [7, 10, 13]);
+}

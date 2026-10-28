@@ -1,0 +1,5 @@
+<mujoco>
+        <deformable>
+            <flexcomp name="grid" type="grid" count="2 2 1" spacing="0.04 0.04 0.04" dim="2" mass="0"/>
+        </deformable>
+    </mujoco>

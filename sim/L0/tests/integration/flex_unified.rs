@@ -920,6 +920,26 @@ fn flexcomp_with_a_gravcomp_body_steps() {
     assert!(data.qpos.iter().all(|x| x.is_finite()));
 }
 
+/// Every edge of a rigid flex is rigid, whatever its ends' bodies, as
+/// MuJoCo's compiler makes them (`user_model.cc:3511-3513`): a flexcomp of
+/// mass 0 is rigid (no vertex has an inverse mass) though each vertex has
+/// three slides of its own. MuJoCo refuses a flexcomp of mass 0 (ledger L144,
+/// Rigid-loading PR RL-3b), which makes this test that refusal.
+#[test]
+fn every_edge_of_a_rigid_flex_is_rigid() {
+    let model = load_model(
+        r#"<mujoco>
+        <deformable>
+            <flexcomp name="grid" type="grid" count="2 2 1" spacing="0.04 0.04 0.04" dim="2" mass="0"/>
+        </deformable>
+    </mujoco>"#,
+    )
+    .expect("load");
+    assert_eq!(model.flex_rigid, [true]);
+    assert_eq!(model.nv, 12, "each vertex has its three slides");
+    assert!(model.nflexedge > 0 && model.flexedge_rigid.iter().all(|&r| r));
+}
+
 /// A flex vertex's `flexvert_qposadr` is its first slide's qpos address: after
 /// a free joint (7 qpos, 6 dofs) it is one past its dof address. The loader
 /// used to store the dof address there.
