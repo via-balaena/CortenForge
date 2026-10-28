@@ -96,6 +96,7 @@ impl ModelBuilder {
         } else {
             range
         });
+        self.jnt_range_written.push(joint.range.is_some());
         self.jnt_stiffness.push(joint.stiffness.unwrap_or(0.0));
 
         // ref_pos and spring_ref: angle-valued for hinge joints only.

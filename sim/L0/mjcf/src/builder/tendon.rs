@@ -25,6 +25,7 @@ impl ModelBuilder {
             });
             self.tendon_range
                 .push(tendon.range.unwrap_or((-f64::MAX, f64::MAX)));
+            self.tendon_range_written.push(tendon.range.is_some());
             // Autolimits: infer limited from range presence.
             let tendon_limited =
                 super::is_limited(tendon.limited, self.compiler.autolimits, tendon.range);

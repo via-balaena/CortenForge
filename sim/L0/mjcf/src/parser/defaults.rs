@@ -207,6 +207,7 @@ pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefa
     defaults.kp = a.real("kp")?;
     defaults.kv = a.real("kv")?;
     defaults.dampratio = a.real("dampratio")?;
+    defaults.inheritrange = a.real("inheritrange")?;
 
     defaults.ctrllimited = a.tf_auto("ctrllimited")?;
     defaults.forcelimited = a.tf_auto("forcelimited")?;
@@ -267,6 +268,12 @@ pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefa
     // Adhesion-specific attributes
     defaults.gain = a.real("gain")?;
     defaults.user = a.vector("user")?;
+    super::actuator::check_servo_gains(
+        a.element(),
+        defaults.kv,
+        defaults.dampratio,
+        defaults.timeconst,
+    )?;
 
     Ok(defaults)
 }

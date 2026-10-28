@@ -5,7 +5,9 @@
 //! adhesion, muscle) and the fully general `<general>` actuator, expanding
 //! each into the canonical gain/bias/dynamics representation.
 
-use sim_core::{ActuatorDynamics, ActuatorTransmission, BiasType, GainType, InterpolationType};
+use sim_core::{
+    ActuatorDynamics, ActuatorTransmission, BiasType, GainType, InterpolationType, MjJointType,
+};
 use tracing::warn;
 
 use super::ModelBuilder;
@@ -27,6 +29,7 @@ impl ModelBuilder {
         }
 
         let (trntype, trnid) = self.resolve_transmission(actuator)?;
+        check_servo_ranges(actuator)?;
 
         // Resolve per-type defaults for Option fields.
         // These must be resolved before dyntype/gain/bias decisions that depend on them.
@@ -38,17 +41,6 @@ impl ModelBuilder {
             MjcfActuatorType::Velocity => 1.0,
             _ => 0.0, // Damper defaults to 0.0 (MuJoCo: mjs_setToDamper uses kv=0)
         });
-
-        // Damper and Adhesion actuators force ctrllimited
-        // (MuJoCo: mjs_setToDamper and mjs_setToAdhesion both set ctrllimited=1).
-        let ctrllimited = match actuator.actuator_type {
-            MjcfActuatorType::Damper | MjcfActuatorType::Adhesion => true,
-            _ => super::is_limited(
-                actuator.ctrllimited,
-                self.compiler.autolimits,
-                actuator.ctrlrange,
-            ),
-        };
 
         // Determine dynamics type.
         // MuJoCo semantics: dyntype is determined by the shortcut type AND timeconst.
@@ -76,8 +68,36 @@ impl ModelBuilder {
                     ActuatorDynamics::None
                 }
             }
+            MjcfActuatorType::IntVelocity => ActuatorDynamics::Integrator,
             MjcfActuatorType::Muscle => ActuatorDynamics::Muscle,
             MjcfActuatorType::Cylinder => ActuatorDynamics::Filter,
+        };
+
+        let (gaintype, biastype, gainprm, biasprm, dynprm) =
+            compute_gain_bias_params(actuator, dyntype, timeconst, kv)?;
+        // MuJoCo takes `inheritrange` on an actuator whose gain and bias are a
+        // position servo's (`user_objects.cc:6824-6826`), whatever its element;
+        // the exact test is MuJoCo's: both values come from one kp.
+        #[allow(clippy::float_cmp)]
+        let servo = gaintype == GainType::Fixed
+            && biastype == BiasType::Affine
+            && gainprm[0] == -biasprm[1];
+        let inherited = if servo && actuator.inheritrange.is_some_and(|r| r > 0.0) {
+            Some(self.inherited_range(actuator, trntype, trnid[0], dyntype)?)
+        } else {
+            None
+        };
+        let (ctrlrange, actrange) = match inherited {
+            Some(Inherited::Ctrl(range)) => (Some(range), actuator.actrange),
+            Some(Inherited::Act(range)) => (actuator.ctrlrange, Some(range)),
+            None => (actuator.ctrlrange, actuator.actrange),
+        };
+
+        // Damper and Adhesion actuators force ctrllimited
+        // (MuJoCo: mjs_setToDamper and mjs_setToAdhesion both set ctrllimited=1).
+        let ctrllimited = match actuator.actuator_type {
+            MjcfActuatorType::Damper | MjcfActuatorType::Adhesion => true,
+            _ => super::is_limited(actuator.ctrllimited, self.compiler.autolimits, ctrlrange),
         };
 
         self.actuator_trntype.push(trntype);
@@ -93,7 +113,7 @@ impl ModelBuilder {
         // Gate ctrlrange/forcerange on ctrllimited/forcelimited (MuJoCo semantics).
         // When limited=false, range is effectively unbounded regardless of attribute value.
         self.actuator_ctrlrange.push(if ctrllimited {
-            actuator.ctrlrange.unwrap_or((-1.0, 1.0))
+            ctrlrange.unwrap_or((-1.0, 1.0))
         } else {
             (f64::NEG_INFINITY, f64::INFINITY)
         });
@@ -111,15 +131,13 @@ impl ModelBuilder {
         });
 
         // §34: Activation clamping — actlimited / actrange / actearly.
-        // Same autolimits pattern as ctrllimited/forcelimited.
-        let actlimited = super::is_limited(
-            actuator.actlimited,
-            self.compiler.autolimits,
-            actuator.actrange,
-        );
+        // Same autolimits pattern as ctrllimited/forcelimited; an intvelocity's
+        // is always limited (MuJoCo: mjs_setToIntVelocity sets actlimited=1).
+        let actlimited = actuator.actuator_type == MjcfActuatorType::IntVelocity
+            || super::is_limited(actuator.actlimited, self.compiler.autolimits, actrange);
         self.actuator_actlimited.push(actlimited);
         self.actuator_actrange.push(if actlimited {
-            actuator.actrange.unwrap_or((0.0, 0.0))
+            actrange.unwrap_or((0.0, 0.0))
         } else {
             (0.0, 0.0) // Unused when actlimited=false
         });
@@ -185,9 +203,6 @@ impl ModelBuilder {
         self.actuator_act_adr.push(self.na);
         self.actuator_act_num.push(act_num);
         self.na += act_num;
-
-        let (gaintype, biastype, gainprm, biasprm, dynprm) =
-            compute_gain_bias_params(actuator, dyntype, timeconst, kv)?;
 
         // HillMuscle parameter validation (CortenForge extension).
         if dyntype == ActuatorDynamics::HillMuscle {
@@ -371,6 +386,124 @@ impl ModelBuilder {
             ))
         }
     }
+
+    /// A position servo's range taken from its target, as MuJoCo 3.5.0's
+    /// `mjCActuator::Compile` takes it (`user_objects.cc:6824-6866`): the
+    /// target's compiled range (a hinge's in radians), `inheritrange` times its
+    /// half-width about its middle, as the control range of an actuator with
+    /// no dynamics or filterexact dynamics and as the activation range of an
+    /// integrator. The caller has checked the gain and bias and that
+    /// `inheritrange` is positive.
+    fn inherited_range(
+        &self,
+        actuator: &MjcfActuator,
+        trntype: ActuatorTransmission,
+        target: usize,
+        dyntype: ActuatorDynamics,
+    ) -> Result<Inherited> {
+        let refuse = |reason: &str| MjcfError::invalid_value("actuator", "inheritrange", reason);
+        let fraction = actuator.inheritrange.unwrap_or(0.0);
+        let into: fn((f64, f64)) -> Inherited = match dyntype {
+            ActuatorDynamics::None | ActuatorDynamics::FilterExact => Inherited::Ctrl,
+            ActuatorDynamics::Integrator => Inherited::Act,
+            _ => {
+                return Err(refuse(
+                    "inheritrange only available for position and intvelocity actuators",
+                ));
+            }
+        };
+        // An unwritten range is MuJoCo's `0 0`.
+        let (name, range) = match trntype {
+            ActuatorTransmission::Joint => {
+                if !matches!(
+                    self.jnt_type[target],
+                    MjJointType::Hinge | MjJointType::Slide
+                ) {
+                    return Err(refuse(
+                        "inheritrange can only be used with hinge and slide joints",
+                    ));
+                }
+                let written = self.jnt_range_written[target];
+                (
+                    &actuator.joint,
+                    if written {
+                        self.jnt_range[target]
+                    } else {
+                        (0.0, 0.0)
+                    },
+                )
+            }
+            ActuatorTransmission::Tendon => {
+                let written = self.tendon_range_written[target];
+                (
+                    &actuator.tendon,
+                    if written {
+                        self.tendon_range[target]
+                    } else {
+                        (0.0, 0.0)
+                    },
+                )
+            }
+            _ => {
+                return Err(refuse(
+                    "inheritrange can only be used with joint and tendon transmission",
+                ));
+            }
+        };
+        #[allow(clippy::float_cmp)] // MuJoCo's exact test of an empty range.
+        if range.0 == range.1 {
+            return Err(refuse(&format!(
+                "inheritrange used but target '{}' has no range defined",
+                name.as_deref().unwrap_or_default()
+            )));
+        }
+        let mean = 0.5 * (range.1 + range.0);
+        let radius = 0.5 * (range.1 - range.0) * fraction;
+        Ok(into((mean - radius, mean + radius)))
+    }
+}
+
+/// The range an actuator takes from its target (`inheritrange`).
+#[derive(Debug, Clone, Copy)]
+enum Inherited {
+    /// Its control range.
+    Ctrl((f64, f64)),
+    /// Its activation range.
+    Act((f64, f64)),
+}
+
+/// A position or intvelocity servo's `inheritrange` beside a range it would
+/// replace, refused as MuJoCo 3.5.0's `mjs_setToPosition` and
+/// `mjs_setToIntVelocity` refuse it (`user_api.cc:926-952`), on the values
+/// the element and its class give, a written range being any not `0 0`. An
+/// intvelocity is checked for its `actrange` first, the refusal MuJoCo
+/// reports; one with a `ctrlrange` and no `actrange` MuJoCo refuses as an
+/// invalid activation range (measured).
+fn check_servo_ranges(actuator: &MjcfActuator) -> Result<()> {
+    if !actuator.inheritrange.is_some_and(|r| r > 0.0) {
+        return Ok(());
+    }
+    let written = |range: Option<(f64, f64)>| range.is_some_and(|(lo, hi)| lo != 0.0 || hi != 0.0);
+    let element = actuator.actuator_type.as_str();
+    if actuator.actuator_type == MjcfActuatorType::IntVelocity && written(actuator.actrange) {
+        return Err(MjcfError::invalid_value(
+            element,
+            "inheritrange",
+            "actrange and inheritrange cannot both be defined",
+        ));
+    }
+    if matches!(
+        actuator.actuator_type,
+        MjcfActuatorType::Position | MjcfActuatorType::IntVelocity
+    ) && written(actuator.ctrlrange)
+    {
+        return Err(MjcfError::invalid_value(
+            element,
+            "inheritrange",
+            "ctrlrange and inheritrange cannot both be defined",
+        ));
+    }
+    Ok(())
 }
 
 /// Expand the actuator shortcut type into the canonical gain/bias/dynamics parameter
@@ -418,6 +551,23 @@ fn compute_gain_bias_params(
                 d[0] = tc;
                 d
             }))
+        }
+
+        MjcfActuatorType::IntVelocity => {
+            // `mjs_setToIntVelocity` = `mjs_setToPosition`'s gain and bias
+            // (`user_api.cc:942-954`); its `dynprm` is the actuator's own,
+            // MuJoCo's default [1, 0, ..., 0] under any a class gives.
+            let mut gp = [0.0; 9];
+            gp[0] = actuator.kp;
+            let mut bp = [0.0; 9];
+            bp[1] = -actuator.kp;
+            bp[2] = actuator.dampratio.unwrap_or(-kv);
+            let mut dynprm_default = [0.0; 10];
+            dynprm_default[0] = 1.0;
+            let dp = actuator
+                .dynprm
+                .map_or(dynprm_default, |v| v.over(dynprm_default));
+            Ok((GainType::Fixed, BiasType::Affine, gp, bp, dp))
         }
 
         MjcfActuatorType::Velocity => {
@@ -1296,5 +1446,265 @@ mod tests {
         assert_eq!(model.actuator_gaintype[0], GainType::Affine);
         // biastype is auto-set to MillardMuscle (not overridden).
         assert_eq!(model.actuator_biastype[0], BiasType::MillardMuscle);
+    }
+
+    /// An `<intvelocity>`'s compiled fields, as MuJoCo 3.5.0's (measured on
+    /// the oracle): integrator dynamics, position's gain and bias, the
+    /// actuator's default `dynprm`, an activation range always applied.
+    // MuJoCo's values as the oracle prints them, compared exactly.
+    #[allow(clippy::float_cmp, clippy::unreadable_literal)]
+    #[test]
+    fn an_intvelocity_is_mujoco_3_5_0s() {
+        let model = load_model(
+            r#"<mujoco><worldbody><body><joint name="j" type="hinge"/><geom size="0.1"/></body></worldbody>
+<actuator><intvelocity joint="j" kp="10" actrange="-1 1"/><intvelocity joint="j" kp="10" kv="2" actrange="-1 1"/>
+<intvelocity joint="j" kp="10" dampratio="0.5" actrange="-1 1"/></actuator></mujoco>"#,
+        )
+        .expect("loads");
+        assert_eq!(model.nu, 3);
+        assert_eq!(model.na, 3);
+        for i in 0..3 {
+            assert_eq!(model.actuator_dyntype[i], ActuatorDynamics::Integrator);
+            assert_eq!(model.actuator_gaintype[i], GainType::Fixed);
+            assert_eq!(model.actuator_biastype[i], BiasType::Affine);
+            assert_eq!(model.actuator_gainprm[i][0], 10.0);
+            assert_eq!(model.actuator_biasprm[i][1], -10.0);
+            assert_eq!(model.actuator_dynprm[i][0], 1.0);
+            assert!(model.actuator_actlimited[i]);
+            assert_eq!(model.actuator_actrange[i], (-1.0, 1.0));
+            assert_eq!(model.actuator_act_num[i], 1);
+        }
+        assert_eq!(model.actuator_biasprm[0][2], 0.0);
+        assert_eq!(model.actuator_biasprm[1][2], -2.0);
+        assert_eq!(
+            model.actuator_biasprm[2][2].to_bits(),
+            (-0.4093306831785955f64).to_bits()
+        );
+        // A class's kp, as MuJoCo's (7).
+        let classed = load_model(
+            r#"<mujoco><default><default class="c"><intvelocity kp="7"/></default></default>
+<worldbody><body><joint name="j" type="hinge"/><geom size="0.1"/></body></worldbody>
+<actuator><intvelocity joint="j" class="c" actrange="-1 1"/></actuator></mujoco>"#,
+        )
+        .expect("loads");
+        assert_eq!(classed.actuator_gainprm[0][0], 7.0);
+        assert_eq!(classed.actuator_biasprm[0][1], -7.0);
+        // With no activation range MuJoCo refuses it ("invalid actrange for
+        // actuator"); sim-mjcf refuses it when the `Data` is made
+        // (D-MODEL-CHECKS).
+        let no_range = load_model(
+            r#"<mujoco><worldbody><body><joint name="j" type="hinge"/><geom size="0.1"/></body></worldbody>
+<actuator><intvelocity joint="j" kp="10"/></actuator></mujoco>"#,
+        )
+        .expect("loads");
+        assert!(no_range.try_make_data().is_err());
+    }
+
+    /// A servo's own `kv`, `dampratio` and `timeconst` refused as MuJoCo
+    /// 3.5.0's `mjs_setToPosition` refuses them, on a position, on an
+    /// intvelocity (where MuJoCo drops the refusal and builds the servo with
+    /// no bias: D-INTVELOCITY-SERVO) and on a default class's element.
+    #[test]
+    fn servo_gains_refused_as_mujoco_3_5_0() {
+        let refusal = |act: &str| {
+            let xml = format!(
+                r#"<mujoco><worldbody><body><joint name="j" type="hinge"/><geom size="0.1"/></body></worldbody>
+<actuator>{act}</actuator></mujoco>"#
+            );
+            load_model(&xml).expect_err(act).to_string()
+        };
+        for kind in ["position", "intvelocity"] {
+            let range = if kind == "intvelocity" {
+                r#" actrange="-1 1""#
+            } else {
+                ""
+            };
+            let err = refusal(&format!(
+                r#"<{kind} joint="j" kv="2" dampratio="0.5"{range}/>"#
+            ));
+            assert!(
+                err.contains("may set only one of: kv, dampratio"),
+                "{kind}: {err}"
+            );
+            let err = refusal(&format!(r#"<{kind} joint="j" kv="-2"{range}/>"#));
+            assert!(err.contains("kv cannot be negative"), "{kind}: {err}");
+            let err = refusal(&format!(r#"<{kind} joint="j" dampratio="-0.5"{range}/>"#));
+            assert!(
+                err.contains("dampratio cannot be negative"),
+                "{kind}: {err}"
+            );
+        }
+        let err = refusal(r#"<position joint="j" timeconst="-0.1"/>"#);
+        assert!(err.contains("timeconst cannot be negative"), "{err}");
+        let err = load_model(
+            r#"<mujoco><default><default class="c"><position kv="2" dampratio="0.5"/></default></default>
+<worldbody><body><joint name="j" type="hinge"/><geom size="0.1"/></body></worldbody>
+<actuator><position joint="j" class="c"/></actuator></mujoco>"#,
+        )
+        .expect_err("a class's kv and dampratio")
+        .to_string();
+        assert!(err.contains("may set only one of: kv, dampratio"), "{err}");
+    }
+
+    /// A model whose joints and tendons a servo's `inheritrange` reads: a
+    /// hinge in degrees, a slide, a ball (own body), a hinge with no range,
+    /// a site, and a tendon with and without a range.
+    fn inheritrange_model(actuator: &str, default: &str) -> String {
+        format!(
+            r#"<mujoco><compiler autolimits="true"/>{default}<worldbody><body>
+<joint name="h" type="hinge" range="-30 60"/><joint name="s" type="slide" range="-0.2 0.6"/>
+<joint name="n" type="hinge"/><geom size="0.1"/><site name="st"/></body>
+<body pos="1 0 0"><joint name="b" type="ball"/><geom size="0.1"/></body></worldbody>
+<tendon><fixed name="t" range="0.1 0.5"><joint joint="h" coef="1"/></fixed>
+<fixed name="tn"><joint joint="h" coef="1"/></fixed></tendon>
+<actuator>{actuator}</actuator></mujoco>"#
+        )
+    }
+
+    /// `inheritrange` as MuJoCo 3.5.0's `mjCActuator::Compile` takes it,
+    /// every range bit for bit against the oracle's.
+    // The oracle's printed values, digit for digit: -0.5235987755982989 is
+    // MuJoCo's -30 degrees in radians, not a written constant.
+    #[allow(clippy::unreadable_literal, clippy::approx_constant)]
+    #[test]
+    fn inheritrange_as_mujoco_3_5_0() {
+        let bits = |r: (f64, f64)| (r.0.to_bits(), r.1.to_bits());
+        let ctrl = |act: &str, default: &str| {
+            let model = load_model(&inheritrange_model(act, default)).expect(act);
+            assert!(
+                model.actuator_ctrlrange[0].0.is_finite(),
+                "{act}: not limited"
+            );
+            bits(model.actuator_ctrlrange[0])
+        };
+        let hinge = bits((-0.5235987755982989, 1.0471975511965976));
+        assert_eq!(
+            ctrl(r#"<position joint="h" kp="3" inheritrange="1"/>"#, ""),
+            hinge
+        );
+        assert_eq!(
+            ctrl(r#"<position joint="h" kp="3" inheritrange="0.5"/>"#, ""),
+            bits((-0.13089969389957473, 0.6544984694978735))
+        );
+        assert_eq!(
+            ctrl(r#"<position joint="s" kp="3" inheritrange="1"/>"#, ""),
+            bits((-0.20000000000000004, 0.6))
+        );
+        assert_eq!(
+            ctrl(r#"<position tendon="t" kp="3" inheritrange="1"/>"#, ""),
+            bits((0.09999999999999998, 0.5))
+        );
+        assert_eq!(
+            ctrl(
+                r#"<position joint="h" kp="3" timeconst="0.2" inheritrange="1"/>"#,
+                ""
+            ),
+            hinge
+        );
+        // A written `ctrlrange` of 0 0 is no range.
+        assert_eq!(
+            ctrl(
+                r#"<position joint="h" kp="3" ctrlrange="0 0" inheritrange="1"/>"#,
+                ""
+            ),
+            hinge
+        );
+        // From a class, on a position and on a general with a position's gain
+        // and bias.
+        let class = r#"<default><default class="c"><position kp="3" inheritrange="1"/></default></default>"#;
+        assert_eq!(ctrl(r#"<position joint="h" class="c"/>"#, class), hinge);
+        assert_eq!(
+            ctrl(
+                r#"<general joint="h" class="c" gaintype="fixed" biastype="affine" gainprm="5" biasprm="0 -5"/>"#,
+                class
+            ),
+            hinge
+        );
+        // A motor's bias is none: the class's inheritrange is not taken.
+        let motor = load_model(&inheritrange_model(
+            r#"<motor joint="h" class="c"/>"#,
+            class,
+        ))
+        .expect("motor");
+        assert!(motor.actuator_ctrlrange[0].0.is_infinite());
+        // A negative inheritrange takes nothing.
+        let negative = load_model(&inheritrange_model(
+            r#"<position joint="h" kp="3" inheritrange="-1"/>"#,
+            "",
+        ))
+        .expect("negative");
+        assert!(negative.actuator_ctrlrange[0].0.is_infinite());
+        // An intvelocity's activation range.
+        let act = |a: &str| {
+            let model = load_model(&inheritrange_model(a, "")).expect(a);
+            assert!(model.actuator_actlimited[0]);
+            bits(model.actuator_actrange[0])
+        };
+        assert_eq!(
+            act(r#"<intvelocity joint="h" kp="3" inheritrange="1"/>"#),
+            hinge
+        );
+        assert_eq!(
+            act(r#"<intvelocity tendon="t" kp="3" inheritrange="0.5"/>"#),
+            bits((0.19999999999999998, 0.4))
+        );
+    }
+
+    /// `inheritrange`'s refusals, MuJoCo 3.5.0's messages (measured).
+    #[test]
+    fn inheritrange_refusals_as_mujoco_3_5_0() {
+        let class = r#"<default><default class="c"><position kp="3" inheritrange="1"/></default></default>"#;
+        for (act, default, message) in [
+            (
+                r#"<position joint="b" kp="3" inheritrange="1"/>"#,
+                "",
+                "inheritrange can only be used with hinge and slide joints",
+            ),
+            (
+                r#"<position site="st" kp="3" inheritrange="1"/>"#,
+                "",
+                "inheritrange can only be used with joint and tendon transmission",
+            ),
+            (
+                r#"<position jointinparent="h" kp="3" inheritrange="1"/>"#,
+                "",
+                "inheritrange can only be used with joint and tendon transmission",
+            ),
+            (
+                r#"<position joint="n" kp="3" inheritrange="1"/>"#,
+                "",
+                "inheritrange used but target 'n' has no range defined",
+            ),
+            (
+                r#"<position tendon="tn" kp="3" inheritrange="1"/>"#,
+                "",
+                "inheritrange used but target 'tn' has no range defined",
+            ),
+            (
+                r#"<position joint="h" kp="3" ctrlrange="-1 1" inheritrange="1"/>"#,
+                "",
+                "ctrlrange and inheritrange cannot both be defined",
+            ),
+            (
+                r#"<intvelocity joint="h" kp="3" actrange="-1 1" inheritrange="1"/>"#,
+                "",
+                "actrange and inheritrange cannot both be defined",
+            ),
+            (
+                r#"<intvelocity joint="h" kp="3" ctrlrange="-1 1" actrange="-1 1" inheritrange="1"/>"#,
+                "",
+                "actrange and inheritrange cannot both be defined",
+            ),
+            (
+                r#"<general joint="h" class="c" dyntype="filter" gaintype="fixed" biastype="affine" gainprm="5" biasprm="0 -5"/>"#,
+                class,
+                "inheritrange only available for position and intvelocity actuators",
+            ),
+        ] {
+            let err = load_model(&inheritrange_model(act, default))
+                .expect_err(act)
+                .to_string();
+            assert!(err.contains(message), "{act}: {err}");
+        }
     }
 }

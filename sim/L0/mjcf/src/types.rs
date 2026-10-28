@@ -867,6 +867,8 @@ pub struct MjcfActuatorDefaults {
     pub kv: Option<f64>,
     /// Damping ratio for position actuators.
     pub dampratio: Option<f64>,
+    /// A position or intvelocity servo's `inheritrange`.
+    pub inheritrange: Option<f64>,
     /// Control limited.
     pub ctrllimited: Option<TfAuto>,
     /// Force limited.
@@ -2734,6 +2736,10 @@ pub enum MjcfActuatorType {
     Damper,
     /// Adhesion actuator (controllable adhesion force).
     Adhesion,
+    /// Integrated-velocity servo: a position servo whose reference is its
+    /// activation, the integral of its control (MuJoCo's
+    /// `mjs_setToIntVelocity`).
+    IntVelocity,
 }
 
 impl MjcfActuatorType {
@@ -2748,6 +2754,7 @@ impl MjcfActuatorType {
             "cylinder" => Some(Self::Cylinder),
             "damper" => Some(Self::Damper),
             "adhesion" => Some(Self::Adhesion),
+            "intvelocity" => Some(Self::IntVelocity),
             _ => None,
         }
     }
@@ -2764,6 +2771,7 @@ impl MjcfActuatorType {
             Self::Cylinder => "cylinder",
             Self::Damper => "damper",
             Self::Adhesion => "adhesion",
+            Self::IntVelocity => "intvelocity",
         }
     }
 }
@@ -2823,6 +2831,11 @@ pub struct MjcfActuator {
     /// `kv = dampratio * 2 * sqrt(kp * reflected_mass)`.
     /// Mutually exclusive with explicit kv. `None` means not specified.
     pub dampratio: Option<f64>,
+    /// A position or intvelocity servo's range, as this fraction of its
+    /// joint's or tendon's range about the middle of that range: its
+    /// `ctrlrange` (position) or `actrange` (intvelocity) when positive.
+    /// `None` means not specified (MuJoCo's 0: no range taken).
+    pub inheritrange: Option<f64>,
     /// Visualization group (0–5).
     pub group: Option<i32>,
     /// Whether activation is clamped to actrange.
@@ -2936,6 +2949,7 @@ impl Default for MjcfActuator {
             kp: 1.0,
             kv: None,
             dampratio: None,
+            inheritrange: None,
             group: None,
             actlimited: None,
             actrange: None,

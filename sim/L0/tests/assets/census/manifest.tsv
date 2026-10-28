@@ -2121,3 +2121,7 @@ ecb5a767b60490ef	sim/L0/mjcf/tests/flex_vertex_bodies.rs:717
 28b8a2aa1a101bc9	sim/L0/mjcf/tests/flex_vertex_bodies.rs:786
 860dfba8942c271f	sim/L0/mjcf/tests/flex_vertex_bodies.rs:810
 85766904c1bb4ce9	sim/L0/tests/integration/jacobian_parity.rs:350
+13df588570426f33	sim/L0/mjcf/src/builder/actuator.rs:1440
+5a5e786e7bd11eb6	sim/L0/mjcf/src/builder/actuator.rs:1477
+6a88f6d33032d3b9	sim/L0/mjcf/src/builder/actuator.rs:1466
+784a5ee6f7d42d92	sim/L0/mjcf/src/builder/actuator.rs:1509

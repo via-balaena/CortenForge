@@ -462,6 +462,9 @@ pub struct ModelBuilder {
     pub(crate) jnt_axis: Vec<Vector3<f64>>,
     pub(crate) jnt_limited: Vec<bool>,
     pub(crate) jnt_range: Vec<(f64, f64)>,
+    /// Whether each joint's `range` was written: MuJoCo's unwritten range
+    /// is `0 0`, which `jnt_range` does not hold (read by `inheritrange`).
+    pub(crate) jnt_range_written: Vec<bool>,
     pub(crate) jnt_stiffness: Vec<f64>,
     pub(crate) jnt_springref: Vec<f64>,
     pub(crate) jnt_damping: Vec<f64>,
@@ -647,6 +650,8 @@ pub struct ModelBuilder {
     pub(crate) tendon_name_to_id: HashMap<String, usize>,
     pub(crate) tendon_type: Vec<TendonType>,
     pub(crate) tendon_range: Vec<(f64, f64)>,
+    /// Whether each tendon's `range` was written, as `jnt_range_written`.
+    pub(crate) tendon_range_written: Vec<bool>,
     pub(crate) tendon_limited: Vec<bool>,
     pub(crate) tendon_stiffness: Vec<f64>,
     pub(crate) tendon_damping: Vec<f64>,

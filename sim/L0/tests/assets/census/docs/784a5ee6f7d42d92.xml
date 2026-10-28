@@ -1,0 +1,3 @@
+<mujoco><default><default class="c"><position kv="2" dampratio="0.5"/></default></default>
+<worldbody><body><joint name="j" type="hinge"/><geom size="0.1"/></body></worldbody>
+<actuator><position joint="j" class="c"/></actuator></mujoco>
