@@ -9,7 +9,7 @@ use crate::keywords;
 
 use crate::types::{MjcfSensor, MjcfSensorType};
 
-use super::attrs::{Attrs, skip_element};
+use super::attrs::{Attrs, is_c_space, skip_element};
 use super::extension::{parse_plugin_ref, parse_plugin_ref_empty};
 
 // ============================================================================
@@ -74,6 +74,46 @@ fn unread_sensor(element: &str) -> MjcfError {
     } else {
         MjcfError::unknown_element(element, "sensor")
     }
+}
+
+/// A rangefinder's `data`, read as MuJoCo 3.5.0 reads it
+/// (`xml_native_reader.cc:4104-4124`, `MapValues` at `xml_util.cc:953-984`):
+/// words of `raydata_map` separated by space, none twice, then in the map's
+/// order; unwritten or empty, `dist`. sim-core computes a rangefinder's
+/// distance only, so any other word is not supported (D-RANGEFINDER-DATA).
+fn check_ray_data(a: &Attrs) -> Result<()> {
+    const WORDS: [&str; 6] = ["dist", "dir", "origin", "point", "normal", "depth"];
+    let Some(text) = a.text("data") else {
+        return Ok(());
+    };
+    let mut keys = Vec::new();
+    for word in text.split(is_c_space).filter(|w| !w.is_empty()) {
+        let key = WORDS
+            .iter()
+            .position(|w| *w == word)
+            .ok_or_else(|| MjcfError::invalid_keyword("rangefinder", "data", word))?;
+        if keys.contains(&key) {
+            return Err(MjcfError::invalid_value(
+                "rangefinder",
+                "data",
+                format!("duplicate keyword: '{word}'"),
+            ));
+        }
+        keys.push(key);
+    }
+    if keys.windows(2).any(|pair| pair[1] <= pair[0]) {
+        return Err(MjcfError::invalid_value(
+            "rangefinder",
+            "data",
+            format!("data attributes must be in order: {}", WORDS.join(", ")),
+        ));
+    }
+    if keys.iter().any(|&key| key != 0) {
+        return Err(MjcfError::unsupported(format!(
+            "a rangefinder's data \"{text}\""
+        )));
+    }
+    Ok(())
 }
 
 /// Parse sensor attributes.
@@ -159,6 +199,9 @@ pub(super) fn parse_sensor_attrs(
         .prefix::<2>("interval")?
         .map(|interval| interval.given()[0]);
 
+    if sensor_type == MjcfSensorType::Rangefinder {
+        check_ray_data(&a)?;
+    }
     if sensor_type == MjcfSensorType::User {
         sensor.dim = a.int("dim")?;
         sensor.needstage = a.keyword_text("needstage", keywords::sensor_stage)?;
