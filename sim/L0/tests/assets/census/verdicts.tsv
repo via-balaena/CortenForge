@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1097
+# agree_floor 1108
 001bc4149d608b24	agree
 00308b83da9d8bab	agree
 0032a4ca7e233aec	agree
@@ -28,6 +28,7 @@
 03d755ff17a103dd	agree
 03e04796ba001309	agree
 03e904efa63233f3	agree
+03ea1f2f83690667	model:geom_quat;dyn:agree
 03ee6ef404cb95f3	agree
 041c09e690f55ffa	agree
 042d2bc251a91c9d	agree
@@ -62,13 +63,15 @@
 080e810263b284c4	mj-refuses
 083cd16fa191aaeb	agree
 0869b72ef0e48fa8	agree
-08703d36a33412c8	mj-refuses
+08703d36a33412c8	both-refuse
 08831202fd91471b	agree
 089520333bf2646a	agree
 0899e0a9d40dd42e	mj-refuses
 08c152bc51cf2b6a	mj-refuses
 08d8952840bdfbbf	agree
 08efe56133152147	mj-refuses
+08f235d9d9ea15b3	agree
+09352da9b0ac726e	mj-refuses	divergence=D-CABLE-TWO-BODY
 0967e92dce4068f8	agree
 097a47126e774264	agree
 097d8a7f4f219675	agree
@@ -81,6 +84,7 @@
 09fb49cd36bbbe3e	model:geom_quat;dyn:agree
 0a12d5bb9d1caf4d	agree
 0a498c830d5a7c8d	agree
+0a58cea197119611	both-refuse
 0ab5a555f32a6276	agree
 0adff64fcc009eed	agree
 0ae6d732de1d4ece	model:geom_quat;dyn:agree
@@ -104,7 +108,7 @@
 0ebba01683910c5e	agree
 0eccac56941cb124	both-refuse
 0ee0d13ee3c0e9ed	agree
-0eec3d0de1d13094	mj-refuses
+0eec3d0de1d13094	both-refuse
 0ef3d42be35e6671	mj-refuses
 0f1cfd553bbdf7ff	agree
 0f1dd292de12918d	agree
@@ -118,6 +122,7 @@
 10d41092b86ca59e	agree
 10d89f7d31aa2115	agree
 110676bf88258907	agree
+1119524902cc66aa	agree
 1131fef0a9fb8172	agree
 1158ea65d4d4ee98	agree
 11976cd3f27cf755	model:geom_quat;dyn:agree
@@ -125,6 +130,7 @@
 11afd11f0818f685	agree
 11beabb117c3d1e6	model:body_mass;dyn:agree
 11c09d44bd2ef843	mj-refuses
+11ce1fd51d2db2e8	mj-refuses
 127d76572880c247	agree
 128fccf8b94496a2	agree
 12b8f8939ad754b7	agree
@@ -141,6 +147,7 @@
 13fdd82f2ab90b66	agree
 14074c2917322bdd	mj-refuses
 140b7da39d174c9c	agree
+14229d86e283ac31	both-refuse
 143a252455fd7272	both-refuse
 144254b62c5c1c46	agree
 145cc768e76735e4	agree
@@ -151,7 +158,7 @@
 14c1ccee5ca47734	agree
 150fd680b1379afd	both-refuse
 151fe1b6a55ed71c	agree
-153da4ad9b74593b	mj-refuses
+153da4ad9b74593b	both-refuse
 1568a784dedb5e83	agree
 157c48ad9ccb5bd6	agree
 15e49570aab7a397	model:geom_quat;dyn:agree
@@ -201,7 +208,7 @@
 1c7399952a893cf8	mj-refuses
 1c79cbdb23b5c1f3	both-refuse
 1cb368c0461ea4c0	agree
-1cb45321c92c774a	mj-refuses
+1cb45321c92c774a	mj-refuses	divergence=D-CABLE-TWO-BODY
 1ce86a926e55363d	agree
 1d703b09062af1fa	model:geom_quat;dyn:agree
 1d8ccd3c65062b7c	model:geom_quat;dyn:agree
@@ -238,15 +245,17 @@
 228aea1d19d83b6f	model:geom_quat;dyn:agree
 22a6e027dd04cefb	agree
 22adbf4357022902	agree
+22faa8a3cd28b7a9	agree
 2339fc91905af855	agree
 2340ed39d751a99c	agree
-234f1d7acf42f889	mj-refuses
+234f1d7acf42f889	both-refuse
 236879dcfe8eb0ba	mj-refuses
-236a8ac6dcb051d5	mj-refuses
+236a8ac6dcb051d5	both-refuse
 236b3977b55aa417	agree
 23a69ff558a39bf3	mj-refuses
 23b8afa68cced2d7	mj-refuses
 23e9a5933a608c2a	agree
+241de0b28cbd136d	agree
 2467e10dd21615b5	agree
 247eb40f9a9dab7b	mj-refuses
 2480fb419e1415ab	both-refuse
@@ -261,7 +270,7 @@
 25b2aa32d83e7bbf	model:geom_quat;dyn:agree
 25befe2869676628	agree
 25f08286ac9a147e	both-refuse
-263f733b2df7d3fe	model:meaninertia;dyn:e1:t0:xpos
+263f733b2df7d3fe	model:geom_quat;dyn:agree
 2669f9b5f8094489	model:geom_quat;dyn:agree
 26747e04612e4515	agree
 26a2f4d642297627	mj-refuses
@@ -281,7 +290,7 @@
 28d58ebfea4dabb1	model:geom_quat;dyn:agree
 28dcb75dcf09996c	agree
 28faab2d562cf86c	agree
-294c3a94e8328d92	mj-refuses
+294c3a94e8328d92	both-refuse
 29661ba2fd5620f9	agree
 298b4dbc9bd6c9f6	agree
 29e16a3020ea81a7	model:geom_quat;dyn:agree
@@ -304,11 +313,13 @@
 2c79bac6099a0c1a	agree
 2c7d9d473d41b513	both-refuse
 2c9beaefd96403fe	agree
+2ca64490e3b93d51	model:geom_quat;dyn:agree
 2cb92700e75eb1ae	agree
 2cbf8e52f094a78e	agree
 2cd47bcb910c61e4	both-refuse
 2d474316d6f44394	agree
 2d57e188bc24c29b	agree
+2d93e04c8c0f6943	agree
 2dc68973030c63b4	ours-refused	divergence=D-NONFINITE
 2e10c7d58ff403e6	mj-refuses
 2e206c4d72cdef99	mj-refuses
@@ -329,6 +340,7 @@
 2fef0830a5acd6a5	mj-refuses
 2fef3adf2d6aff01	agree
 2ff26bd31bc3e252	both-refuse
+3003d57c13de33f0	both-refuse
 303cd44e1595f4c6	agree
 305664003312a26f	agree
 3058193d2fff1b83	agree
@@ -402,8 +414,8 @@
 38a060522ba6ae31	model:body_mass;dyn:agree
 38a1d9908da9936a	model:geom_quat;dyn:agree
 38afc80688101ab9	agree
-38b3160fe2d0dd71	mj-refuses
-38ea284dbc4b1563	mj-refuses
+38b3160fe2d0dd71	both-refuse
+38ea284dbc4b1563	both-refuse
 38fe8b207e527282	agree
 39398fd083c71fc4	ours-refused	divergence=D-NONFINITE
 393a286d88043d0b	agree
@@ -437,6 +449,7 @@
 3c9ed957a4e762d7	mj-refuses
 3caf15ed11b501e6	agree
 3cfd74faaad7ba74	both-refuse
+3d0c5bc13897e0d6	both-refuse
 3d10e49743322ac6	both-refuse
 3d1d57a9bdac2c70	agree
 3d5489a79cb9d87a	agree
@@ -493,7 +506,7 @@
 4365c4e26ae92516	both-refuse
 43a7692b34966690	agree
 43f75958c991d5ec	ours-refused	known=mjcf-D1
-440d94b651e29e78	mj-refuses
+440d94b651e29e78	both-refuse
 4435e41e249cf1c1	agree
 443824badf5c9947	agree
 448a32628e51f10f	agree
@@ -517,6 +530,7 @@
 4676fb9952de0711	agree
 4687970951045c1a	agree
 46a5290eff704e76	agree
+46c67454df1ff9ec	agree
 46ea26d3b83725d9	agree
 472701e97399e36e	agree
 473795622cf3dd02	both-refuse
@@ -535,6 +549,7 @@
 4984d5606f8039a7	mj-refuses
 49876f34be2305c4	agree
 499b364df2378dc1	agree
+49b2f19df66d840c	mj-refuses	divergence=D-CABLE-TWO-BODY
 49c63d4bcdd0691d	model:geom_quat;dyn:agree
 4a042f9877aaca64	agree
 4a4409fcea6ad260	ours-refused	divergence=D-HEX-FLOAT
@@ -564,11 +579,13 @@
 4e4b32ecd7a5cf01	agree
 4e4f866538d5b2a0	agree
 4e6971f6e1e2e357	mj-refuses
-4ea6c4e3b1af36f6	mj-refuses
+4ea6c4e3b1af36f6	both-refuse
+4ed5050c07bad07a	both-refuse
 4eed75d122e4fc26	model:geom_quat;dyn:agree
 4f568d84ac961d20	agree
 4f6683a920356ee4	agree
 4f80dc96e6d41ecc	agree
+4f8fe0fe86fe1c3c	both-refuse
 4f90fc1e574ec48c	both-refuse
 4f9d6f85106c0a98	agree
 4fadf0ddf2f42bb3	mj-refuses
@@ -602,7 +619,7 @@
 5204a339ca3e3e24	agree
 523302880e97a6f5	agree
 524b90e618bdc706	agree
-526258fcd83604d3	mj-refuses
+526258fcd83604d3	both-refuse
 52ed66b9a15e31df	agree
 52f8569850ee9ce8	agree
 5312a1ccb4f38c18	model:geom_quat;dyn:agree
@@ -640,6 +657,7 @@
 560cfecd72ecf7e7	agree
 5647eac9d4968a07	agree
 567bcd2752441dd8	mj-refuses
+5684cca263c4f285	model:geom_quat;dyn:agree
 569a4b0ca4ed2b21	agree
 56efde9a4f434231	agree
 57042119ef71b0e7	model:geom_quat;dyn:agree
@@ -655,6 +673,7 @@
 57ce70abb0caa643	both-refuse
 57d50d23a453527a	agree
 57fc71a81bc9d6a2	agree
+581b4090d8b04cbe	agree
 582c92650b448b93	agree
 5843268075a929c2	mj-refuses
 5846074f48552d40	both-refuse
@@ -678,6 +697,7 @@
 5a7341e54083808f	agree
 5aa55def31566e0c	agree
 5b09b5261dae0bab	agree
+5b1f2365892f28a7	model:geom_quat;dyn:agree
 5b5760f678cb1b26	agree
 5b6c3f9f1c002e27	agree
 5ba3eec69a09865c	mj-refuses
@@ -721,6 +741,7 @@
 60dcc995c9d9d606	agree
 60ed994645462888	agree
 60ee2361418e38e0	agree
+60f68690b781e3f2	both-refuse
 6104b5bb0a99d01d	agree
 616f67db538b6988	agree
 617024c6bffbd72a	agree
@@ -761,7 +782,7 @@
 6632f74549b52b4b	agree
 66c72cf754f3aa38	agree
 66f9ccb6ddbc3abb	agree
-67374b975cd431ce	mj-refuses
+67374b975cd431ce	both-refuse
 673c7951b16fd3ee	agree
 67799f341b674067	model:geom_quat;dyn:agree
 67bba3a77c16482d	agree
@@ -769,6 +790,7 @@
 67ed261056e8c19d	both-refuse
 67f4c35f3ec89578	agree
 681acac6292f9e95	model:geom_quat;dyn:agree
+682b755b1fa36f9d	model:geom_quat;dyn:agree
 683fa749f60f7a28	agree
 685341598b021fd3	agree
 6854149f10c2dc0f	agree
@@ -777,6 +799,7 @@
 6882502697d4d101	model:geom_quat;dyn:agree
 68a35ea3ea6583ab	model:body_ipos;dyn:agree
 68c0928ea382a0fa	both-refuse
+68cfbce7805f60a6	both-refuse
 68da7b59b5d7ae99	agree
 68e14d56d0683686	agree
 693fd9b061e88237	agree
@@ -794,6 +817,7 @@
 6b253f49d6decf54	both-refuse
 6b283036b978b306	agree
 6bdb331907f17724	both-refuse
+6c16ffbf3b49a2dc	model:geom_quat;dyn:agree
 6cb090b74aaae511	agree
 6ce3d12405344f52	agree
 6ce5751f8eeb11fc	agree
@@ -807,6 +831,7 @@
 6e29526239b0ca5c	mj-refuses
 6e39c167a1be2552	mj-refuses
 6e449c5793a22124	agree
+6e8a7a340c2ee0cb	both-refuse
 6e9dd32719aa25c6	agree
 6eb6894967271a4d	mj-refuses
 6f0d8b1530fab29b	both-refuse
@@ -814,6 +839,7 @@
 6f45c8dd430b48dd	agree
 6f5af74b5dc59346	agree
 6f685a768ff198cd	mj-refuses
+6f69f90b165fc105	both-refuse
 6f72c558b0adbb55	mj-refuses
 7010a7d93830f179	both-refuse
 7026bc17c9212a56	agree
@@ -821,9 +847,11 @@
 702ce4099ead83bb	agree
 703108e1d9d887bb	agree
 70609a6f4a28d099	agree
+707dd2196d297184	both-refuse
 70b20f041f46fcdb	agree
 70b30fc5d2190ee4	agree
 70e982bc2f4ae719	agree
+713486ad5f348c06	both-refuse
 715d053641a93059	agree
 71b9f49f097bc26d	mj-refuses
 72212e25f0828eb3	agree
@@ -831,6 +859,7 @@
 72ba7c45490289d4	agree
 72c0e7216ac48d7c	both-refuse
 72f88dcfa7841ae5	both-refuse
+7342afd89bc662ac	model:geom_quat;dyn:agree
 739b2abd562b6ebe	agree
 73a181a6f0d79389	agree
 73a406cd4632bb4e	mj-refuses
@@ -880,15 +909,17 @@
 7969a39e8b92e28f	model:geom_quat;dyn:agree
 79cbf6b06b4c598a	both-refuse
 79f1fc77f4fb8fc7	agree
+7a507d5829d3f4a3	both-refuse
 7ab34229ac72d329	both-refuse
 7ad5a27cd99555d3	agree
 7ae121d9f93cf4e8	mj-refuses
 7b53469f81b43d81	agree
 7b5928434fff25b7	model:geom_quat;dyn:agree
 7b64e1017e70e9ab	mj-refuses
-7b6eff02bd08507c	model:meaninertia;dyn:e1:t0:qM
+7b6eff02bd08507c	model:geom_pos;dyn:agree
 7b7d47ee14924bf7	ours-refused	divergence=D-NONFINITE
 7bc46dc0fb79dbf5	model:geom_quat;dyn:agree
+7c781c060da0ecfe	both-refuse
 7c8e5b144882c516	both-refuse
 7c92936ec5c5be78	agree
 7c973d9ff749f189	model:geom_quat;dyn:agree
@@ -909,6 +940,7 @@
 7e99f6d72cace647	agree
 7eba75effc46d2d8	ours-refused	known=connect-body1
 7ed4f697e9d99582	agree
+7edb6158bbbd963c	both-refuse
 7ef33e6abd7ad54b	model:geom_quat;dyn:agree
 7ef4bd1c0009e22f	both-refuse
 7ef5994720913321	agree
@@ -948,10 +980,12 @@
 8430f715935ff91d	mj-refuses
 84b1697fbec84504	agree
 84c4ba5378047b12	agree
+84f80f87f0169f72	both-refuse
 8526166516caea82	mj-refuses
 85ae9390faa29d6b	agree
-85ca63c1de6d2d0a	mj-refuses
+85ca63c1de6d2d0a	both-refuse
 85d81a08089aa0df	mj-refuses
+864ac03f0d4f1a63	both-refuse
 86642bfe157069ed	agree
 867dfcc15229ba8b	agree
 86ea1e197ab564cb	agree
@@ -973,6 +1007,7 @@
 887fe25f94d899c1	agree
 8891cacce8c0b3ce	model:geom_quat;dyn:agree
 88a9f0edd72481fe	agree
+88b2e00f01eff273	both-refuse
 88df115039e3d8fd	agree
 890dee7740613285	model:geom_quat;dyn:agree
 8911fdab9393973e	mj-refuses
@@ -982,6 +1017,7 @@
 8a5345a6b6772422	agree
 8a72a8469aac9bad	agree
 8a7b3a37a6aa6cc6	both-refuse
+8aee765a33e5f9a9	both-refuse
 8af53a643ada5d6f	agree
 8b1d741ee222c1cc	agree
 8b6e8933d5016641	agree
@@ -1014,6 +1050,7 @@
 901a8ad78c37be30	both-refuse
 901ffffa67631a39	both-refuse
 907b816f9cca3e6d	both-refuse
+90a3f33bd2829dad	both-refuse
 90ec93d8a45c12bd	mj-refuses
 90fe1274af761012	agree
 91072568fd158c07	agree
@@ -1034,6 +1071,7 @@
 92349b4d911c39d0	agree
 9260eabcbff2454e	agree
 92c2f550f9e26dba	mj-refuses
+93079b94e5e87d73	both-refuse
 931ae6c72b49a537	agree
 9390044fdc5c9373	mj-refuses
 9395e073e269d15c	agree
@@ -1057,6 +1095,7 @@
 960eb951f20adf6e	agree
 96379c6cf602090f	mj-refuses
 9664e72eaf8500ef	mj-refuses
+9667c551f099d45a	model:geom_quat;dyn:agree
 969323941d20a120	agree
 96a3895afdc93114	agree
 970e0e96b132105f	model:geom_quat;dyn:agree
@@ -1067,6 +1106,7 @@
 978d8613972e763e	mj-refuses
 97c2da41b6b81ae1	both-refuse
 9802c21f2863943c	agree
+98066541a3bd104d	both-refuse
 980d079ba9552bae	agree
 98306496d345c538	agree
 983763651c688c8a	agree
@@ -1076,6 +1116,7 @@
 98a5ef4a9ba419b4	agree
 98dfc1654f95d5a5	mj-refuses
 98f687e62a86bbe9	agree
+995f27449fbaa4fb	mj-refuses	divergence=D-CABLE-TWO-BODY
 9968986b6dfa9f65	agree
 996de36bc1273778	agree
 99aac113082e788d	model:geom_quat;dyn:agree
@@ -1095,7 +1136,7 @@
 9ad01568e29f27a5	agree
 9b034f2b6bc665a3	agree
 9b04442ae0d16e2e	both-refuse
-9b0854df950162da	model:meaninertia;dyn:e1:t0:qM
+9b0854df950162da	model:geom_pos;dyn:agree
 9b33406e322b4890	agree
 9b5189ae92332b61	agree
 9b9a607b1081c201	mj-refuses
@@ -1163,6 +1204,7 @@ a38a7859e8ba16fb	model:geom_quat;dyn:agree
 a3943538b6868780	both-refuse
 a3b1e8810607076d	both-refuse
 a3c6e774308b82aa	both-refuse
+a3cc093e3832a0cf	agree
 a412b68231fac065	agree
 a45554417b10d186	agree
 a478ee6ac7fc453e	model:geom_quat;dyn:agree
@@ -1177,6 +1219,7 @@ a5addcac3e6fcaa6	agree
 a5b83a0cb0d5a4da	agree
 a5ea8e2d2db9a045	agree
 a610ab28d635fe28	agree
+a63d5a2c47761713	model:geom_quat;dyn:agree
 a6569aea372df90f	mj-refuses
 a66b9c0ed9f55150	agree
 a69fdcd96d70baf2	mj-refuses
@@ -1224,6 +1267,7 @@ aae1a38e11b6b417	agree
 ab092d3a5b192adf	agree
 ab0d1d1b054e262f	model:geom_quat;dyn:agree
 ab1105a758fd7f77	both-refuse
+ab11668ed3315078	model:geom_quat;dyn:agree
 ab19e6315abc2684	agree
 ab213dde883dac83	agree
 ab67b236ac9d2365	agree
@@ -1252,10 +1296,12 @@ ae12a4125ec19b6e	both-refuse
 ae12a812dfd4621f	agree
 ae28c0f1c05a21f9	agree
 ae48710b73877765	agree
+ae6649c551572f20	both-refuse
 ae6ec6348ac13540	mj-refuses
 ae8934e681fb8ab3	agree
 aeb763299c7d2303	agree
 aeb829cc18447e0c	agree
+aedf5a82db449d12	mj-refuses	divergence=D-CABLE-TWO-BODY
 aeed2155d7ad2495	agree
 af29464e8c060446	agree
 af31582a6b281881	agree
@@ -1279,10 +1325,12 @@ b159fba84e6550f0	agree
 b15cb449d8f72fad	model:geom_quat;dyn:agree
 b16aed0349b92f60	agree
 b16fc678197ce772	both-refuse
+b182a8b33bf6f1b5	agree
 b1b01745b06617df	agree
 b1f0077db210fee8	agree
 b1f13f4eac5239b5	mj-refuses
 b20bb365655b0bde	agree
+b24afa817bb97c81	both-refuse
 b25bb57e15046bae	mj-refuses
 b26a81b924f19019	agree
 b27eba70e803583c	model:geom_quat;dyn:agree
@@ -1296,6 +1344,7 @@ b2f47cf2b4cd101c	agree
 b33abfa794630776	agree
 b35dbea3d5481bdc	mj-refuses
 b38e4a6c90e91be2	both-refuse
+b393413fc2006184	model:geom_quat;dyn:agree
 b39f1afefdef0302	both-refuse
 b3eb2ad3b9a19a27	agree
 b4bedc0970a160ad	agree
@@ -1311,6 +1360,7 @@ b5b8a04323241359	agree
 b5d0a3b1f663195b	agree
 b5df60f53939c8f3	model:geom_quat;dyn:agree
 b600c18069333e95	agree
+b60f39659af4559c	model:nsite	divergence=D-CABLE-ONE-BODY
 b6302b9e7d4fff9e	agree
 b645213c19860353	agree
 b673eb8a91dfd645	agree
@@ -1322,6 +1372,7 @@ b6dac25a7cc1452e	agree
 b6e14b6469126088	agree
 b74e8abfa13f6391	model:geom_quat;dyn:agree
 b7b1d868a3f151e4	mj-refuses
+b7e503a93e51344a	both-refuse
 b7e92714b56cfddb	both-refuse
 b82b91546416a98b	agree
 b84f8b5c08cdbd07	agree
@@ -1365,6 +1416,7 @@ bd9a43632714e008	agree
 bd9d79126f46dae2	mj-refuses
 bda6718fd70c2a56	agree
 bde3e3ecf7bdfd33	ours-refused	divergence=D-NONFINITE
+be054ffae448ca51	both-refuse
 be07776f1145291b	agree
 be54cd4cd4f11295	agree
 be6eee56c82cc94d	agree
@@ -1447,7 +1499,7 @@ c80e899448ec2574	model:geom_quat;dyn:agree
 c81b82c5b5c7a096	mj-refuses
 c840e0c6a82e22e9	agree
 c8585eb74a13c4d0	agree
-c861e93a1fa9b35d	mj-refuses
+c861e93a1fa9b35d	both-refuse
 c881ba19f9c5d559	agree
 c8902cf8aa6803d8	agree
 c89e53a74bfe9a74	agree
@@ -1462,8 +1514,10 @@ c9dc03204051238d	agree
 c9ded1b6da906ddb	agree
 ca37817f35fcf4b3	mj-refuses
 ca44c0466416c589	agree
+ca5a8806109ac20f	mj-refuses	divergence=D-CABLE-TWO-BODY
 ca6940297f8221f8	agree
 ca7634f88bbe2d54	agree
+ca8218d312908549	mj-refuses	divergence=D-CABLE-TWO-BODY
 cab19f0f0209ad60	agree
 cb01b9cc06f2e65e	agree
 cb11abd2594a94a2	agree
@@ -1471,6 +1525,7 @@ cb204d19626939a0	agree
 cb2a349c6ab803e7	agree
 cb2e58ac6142fc53	model:geom_pos;dyn:agree
 cb3ce0c4edef5f8f	both-refuse
+cb8794bb6cf9702a	mj-refuses	divergence=D-CABLE-TWO-BODY
 cbbca26f345cca27	model:geom_quat;dyn:agree
 cbd7a05e81b3f9b0	agree
 cbd9eb7f3fc4f781	model:geom_quat;dyn:agree
@@ -1482,7 +1537,7 @@ cc62c807a03b7910	both-refuse
 cc7f70229dee6393	agree
 cc83c6c76bf48cdb	agree
 cc88f3f8e309672a	agree
-cc9a2bf6b1f68798	mj-refuses
+cc9a2bf6b1f68798	both-refuse
 cca7d1b3cb75574e	agree
 ccafd10cf4593094	model:geom_quat;dyn:agree
 ccb734846cfec89d	model:geom_quat;dyn:agree
@@ -1532,7 +1587,7 @@ d3f41c569f6f0802	model:geom_quat;dyn:agree
 d45c933df4fba43a	mj-refuses
 d45ffe220473d96e	both-refuse
 d47dabd6c4ff5f14	agree
-d48ee3564e6b19e9	mj-refuses
+d48ee3564e6b19e9	both-refuse
 d497c31e8fc541c8	agree
 d4ac308432e38b40	agree
 d4ef2aa311a049f8	agree
@@ -1550,6 +1605,7 @@ d664ca10a65e6f36	agree
 d6ce8144027a1358	model:geom_quat;dyn:agree
 d70998fb4ff09add	agree
 d72ea476f3c31053	agree
+d736e327d57f0c46	agree
 d74fc97074519fd4	agree
 d7687002cbdc2625	mj-refuses
 d7701557afdbe155	agree
@@ -1571,7 +1627,7 @@ d997cb5b91477365	agree
 d9ddc00a8b14d4a1	agree
 da24a052f3690343	agree
 da598080e9902a82	both-refuse
-da5d60902c37f2f5	mj-refuses
+da5d60902c37f2f5	both-refuse
 da6f0edc2e571a08	agree
 da78eba98e133936	e1:s100:sensordata
 daae429936ec8440	agree
@@ -1656,6 +1712,7 @@ e5873594b0d4f42e	model:geom_quat;dyn:agree
 e59804a6538a080e	agree
 e60973e68ea07fb6	ours-refused	divergence=D-FRAME-INERTIAL
 e60a4037dff29d3b	ours-refused	divergence=D-NONFINITE
+e617caab86ca940f	both-refuse
 e64076f828aed57d	agree
 e67472e1681c2d87	agree
 e6a8fc5ad5bb52c4	agree
@@ -1681,6 +1738,7 @@ e94d7c1b19633405	ours-refused	known=mjcf-D1
 e964e88f30b49a41	mj-refuses
 e96920f453ac2bc1	agree
 e9c9311a16b1bb15	model:geom_quat;dyn:agree
+e9f9e30a78367c7e	both-refuse
 ea73c8f39893034f	agree
 ea7cabfe6f37ff3a	agree
 ea9c6c3592d6a334	both-refuse
@@ -1693,6 +1751,7 @@ eb1d0b9c311aa887	agree
 eb2727bab776c397	agree
 eb2d27f53748110c	model:actuator_actlimited;dyn:e1:s1:qfrc_actuator
 eb2e288f8f471b6c	agree
+eb30af809518a280	model:geom_quat;dyn:agree
 eb35a54eec1b38c9	model:geom_quat;dyn:agree
 eb4b3e04b060c3f8	agree
 eb58f8a5b7a7ea3b	agree
@@ -1711,6 +1770,7 @@ ed65d8197d4282ec	agree
 ed8d322a842a1358	both-refuse
 ed994df10cc5e1bc	agree
 edb1146b0365719b	both-refuse
+edd12fc57abf0a25	both-refuse
 ede96f46d03af648	ours-refused	divergence=D-ACTDIM
 ee00cbb9cb41686a	mj-refuses
 ee13f2c107f13807	agree
@@ -1759,6 +1819,7 @@ f385f69214ef0b6b	mj-refuses
 f3a0bbcc9d46ec1e	both-refuse
 f3ba3abbf4b0e764	agree
 f3d79d5bf27c4aec	agree
+f3f829981e954223	agree
 f435c9d6070fa6f2	agree
 f4aa8beb04bf99ea	agree
 f4b579027d5a5487	agree
@@ -1768,7 +1829,7 @@ f4cab275f01574d8	agree
 f4e4a0c0ce8b16a6	model:geom_quat;dyn:agree
 f4ed90e2f10583d4	agree
 f4f97340769bccc2	agree
-f529edbdead17c2b	mj-refuses
+f529edbdead17c2b	both-refuse
 f554165fcdc81201	agree
 f55567dc9d0dc54b	model:geom_quat;dyn:e1:t0:qfrc_actuator
 f55adfc299eedcef	both-refuse
@@ -1785,6 +1846,7 @@ f5c9ff3ea509a80a	agree
 f5df7643b057dc0d	mj-refuses
 f5e362d2178a7d93	model:geom_quat;dyn:agree
 f5f3c05e62882a2b	agree
+f6881ce2578560ae	mj-refuses	divergence=D-CABLE-TWO-BODY
 f6882954f2a1ffda	mj-refuses
 f6b297e7a0e2575e	agree
 f6d9bfb450ea5a7f	agree
@@ -1832,7 +1894,7 @@ fb6bf8050f325479	agree
 fb78e979876042d4	mj-refuses
 fb8f17ffe831871a	agree
 fc20ac3b75b19a48	model:geom_quat;dyn:agree
-fc974f045921927a	mj-refuses
+fc974f045921927a	both-refuse
 fc99ebfb217ade84	both-refuse
 fcbad70195a88d0f	agree
 fcdd943a686639d0	model:geom_quat;dyn:agree
@@ -1844,7 +1906,7 @@ fd5e37ce44262783	agree
 fd6188c08122b166	agree
 fdd8701089dfb2c4	agree
 fde9185fcd85cc26	agree
-fdfe95aea78c5174	mj-refuses
+fdfe95aea78c5174	both-refuse
 fe287cb8338b0ac0	agree
 fe6ae49a76e765d4	mj-refuses
 fe794748d22e4f25	agree

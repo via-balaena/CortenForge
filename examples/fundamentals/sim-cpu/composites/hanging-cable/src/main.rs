@@ -53,7 +53,7 @@ const MJCF: &str = r#"
     <!-- 5-segment cable (red) — count=6 vertices → 5 bodies -->
     <body name="anchor_5" pos="-0.4 0 1.2">
       <composite type="cable" prefix="C5" count="6 1 1"
-                 initial="none" curve="l 0 0" size="0.8">
+                 initial="none" curve="s 0 0" size="0.8">
         <joint kind="main" damping="0.4"/>
         <geom type="capsule" size="0.012" rgba="0.9 0.25 0.2 1"
               density="500" contype="0" conaffinity="0"/>
@@ -63,7 +63,7 @@ const MJCF: &str = r#"
     <!-- 10-segment cable (green) — count=11 vertices → 10 bodies -->
     <body name="anchor_10" pos="0 0 1.2">
       <composite type="cable" prefix="C10" count="11 1 1"
-                 initial="none" curve="l 0 0" size="0.8">
+                 initial="none" curve="s 0 0" size="0.8">
         <joint kind="main" damping="0.4"/>
         <geom type="capsule" size="0.012" rgba="0.2 0.8 0.3 1"
               density="500" contype="0" conaffinity="0"/>
@@ -73,7 +73,7 @@ const MJCF: &str = r#"
     <!-- 20-segment cable (blue) — count=21 vertices → 20 bodies -->
     <body name="anchor_20" pos="0.4 0 1.2">
       <composite type="cable" prefix="C20" count="21 1 1"
-                 initial="none" curve="l 0 0" size="0.8">
+                 initial="none" curve="s 0 0" size="0.8">
         <joint kind="main" damping="0.4"/>
         <geom type="capsule" size="0.012" rgba="0.2 0.4 0.9 1"
               density="500" contype="0" conaffinity="0"/>

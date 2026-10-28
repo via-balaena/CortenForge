@@ -8,7 +8,7 @@ use sim_core::MjJointType;
 use tracing::warn;
 
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
-use crate::error::{ElementKind, Location, MjcfError, Result};
+use crate::error::Result;
 use crate::types::{AngleUnit, MjcfJoint, MjcfJointType};
 
 impl ModelBuilder {
@@ -45,26 +45,12 @@ impl ModelBuilder {
         }
 
         // Convert joint type
-        let at = || {
-            Location::named(ElementKind::Joint, &joint.name).within_nth(
-                ElementKind::Body,
-                self.body_name.get(body_id).and_then(Option::as_deref),
-                body_id,
-            )
-        };
         let joint_type = joint.joint_type.unwrap_or(MjcfJointType::Hinge);
         let jnt_type = match joint_type {
             MjcfJointType::Hinge => MjJointType::Hinge,
             MjcfJointType::Slide => MjJointType::Slide,
             MjcfJointType::Ball => MjJointType::Ball,
             MjcfJointType::Free => MjJointType::Free,
-            // Not MuJoCo joint types: its reader refuses both keywords.
-            MjcfJointType::Cylindrical => {
-                return Err(MjcfError::invalid_keyword("joint", "type", "cylindrical").at(at()));
-            }
-            MjcfJointType::Planar => {
-                return Err(MjcfError::invalid_keyword("joint", "type", "planar").at(at()));
-            }
         };
 
         let nq = jnt_type.nq();
@@ -92,16 +78,7 @@ impl ModelBuilder {
         };
         self.jnt_axis.push(axis);
         // Autolimits: infer limited from range presence when no explicit value.
-        let limited = match joint.limited {
-            Some(v) => v,
-            None => {
-                if self.compiler.autolimits {
-                    super::has_range(joint.range)
-                } else {
-                    false
-                }
-            }
-        };
+        let limited = super::is_limited(joint.limited, self.compiler.autolimits, joint.range);
         self.jnt_limited.push(limited);
 
         // Angle conversion: hinge and ball joint range/ref/springref are angle-valued.

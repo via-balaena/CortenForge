@@ -5,12 +5,11 @@ use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
 use crate::error::{MjcfError, Result, ValueCount};
+use crate::keywords;
 
-use crate::types::{
-    CompositeGeom, CompositeJoint, CompositeShape, CompositeType, MjcfComposite, MjcfGeomType,
-};
+use crate::types::{CompositeGeom, CompositeJoint, CompositeShape, MjcfComposite, MjcfGeomType};
 
-use super::attrs::{Attrs, skip_element};
+use super::attrs::{Attrs, is_c_space, skip_element};
 
 // ============================================================================
 // Composite parsing
@@ -24,20 +23,9 @@ pub(super) fn parse_composite<R: BufRead>(
     let a = Attrs::new(e)?;
     let prefix = a.string("prefix").unwrap_or_default();
 
-    let comp_type = match a
-        .text("type")
-        .ok_or_else(|| MjcfError::missing_attribute("composite", "type"))?
-    {
-        "particle" => CompositeType::Particle,
-        "grid" => CompositeType::Grid,
-        "rope" => CompositeType::Rope,
-        "loop" => CompositeType::Loop,
-        "cable" => CompositeType::Cable,
-        "cloth" => CompositeType::Cloth,
-        other => {
-            return Err(MjcfError::invalid_keyword("composite", "type", other));
-        }
-    };
+    let comp_type = a
+        .keyword("type", keywords::composite_type)?
+        .ok_or_else(|| MjcfError::missing_attribute("composite", "type"))?;
 
     // One up to three counts, the rest 1 (MuJoCo reads three with `exact =
     // false`).
@@ -59,7 +47,7 @@ pub(super) fn parse_composite<R: BufRead>(
         .map_or([1.0, 0.0, 0.0], |size| size.over([1.0, 0.0, 0.0]));
 
     let curve = if let Some(s) = a.text("curve") {
-        parse_curve_shapes(s)?
+        parse_curve_shapes(&a, s)?
     } else {
         [CompositeShape::Zero; 3]
     };
@@ -77,12 +65,7 @@ pub(super) fn parse_composite<R: BufRead>(
                 let child_name = child.name().as_ref().to_vec();
                 match child_name.as_slice() {
                     b"joint" => {
-                        let kind = Attrs::new(child)?
-                            .string("kind")
-                            .ok_or_else(|| MjcfError::missing_attribute("joint", "kind"))?;
-                        if kind == "main" {
-                            joint = Some(parse_composite_joint_attrs(child)?);
-                        }
+                        joint = Some(parse_composite_joint_attrs(child)?);
                         // Skip to closing tag (composite <joint> has no children)
                         skip_element(reader, &child_name)?;
                     }
@@ -95,12 +78,7 @@ pub(super) fn parse_composite<R: BufRead>(
             }
             Ok(Event::Empty(ref child)) => match child.name().as_ref() {
                 b"joint" => {
-                    let kind = Attrs::new(child)?
-                        .string("kind")
-                        .ok_or_else(|| MjcfError::missing_attribute("joint", "kind"))?;
-                    if kind == "main" {
-                        joint = Some(parse_composite_joint_attrs(child)?);
-                    }
+                    joint = Some(parse_composite_joint_attrs(child)?);
                 }
                 b"geom" => {
                     geom = Some(parse_composite_geom_attrs(child)?);
@@ -132,20 +110,21 @@ pub(super) fn parse_composite<R: BufRead>(
     })
 }
 
-/// Parse attributes of a `<composite><joint kind="main">` child.
+/// Parse attributes of a `<composite><joint kind="main">` child. `kind` is
+/// required, and `main` is MuJoCo's one kind (`jkind_map`).
 pub(super) fn parse_composite_joint_attrs(e: &BytesStart) -> Result<CompositeJoint> {
     let a = Attrs::new(e)?;
+    a.keyword("kind", |s| (s == "main").then_some(()))?
+        .ok_or_else(|| MjcfError::missing_attribute("joint", "kind"))?;
     Ok(CompositeJoint {
         group: a.int("group")?,
         stiffness: a.real("stiffness")?,
         damping: a.real("damping")?,
         armature: a.real("armature")?,
         frictionloss: a.real("frictionloss")?,
-        limited: a.text("limited").and_then(|s| match s {
-            "true" => Some(true),
-            "false" => Some(false),
-            _ => None,
-        }),
+        // MuJoCo reads this from the <composite> element, which may not hold
+        // it, so a written value is never read (D-COMPOSITE-JOINT-LIMITED).
+        limited: a.tf_auto("limited")?,
         range: a.array("range")?,
     })
 }
@@ -153,11 +132,9 @@ pub(super) fn parse_composite_joint_attrs(e: &BytesStart) -> Result<CompositeJoi
 /// Parse attributes of a `<composite><geom>` child.
 pub(super) fn parse_composite_geom_attrs(e: &BytesStart) -> Result<CompositeGeom> {
     let a = Attrs::new(e)?;
-    let geom_type = if let Some(s) = a.text("type") {
-        MjcfGeomType::from_str(s).ok_or_else(|| MjcfError::invalid_keyword("geom", "type", s))?
-    } else {
-        MjcfGeomType::Capsule
-    };
+    let geom_type = a
+        .keyword("type", MjcfGeomType::from_str)?
+        .unwrap_or(MjcfGeomType::Capsule);
 
     let size = a
         .prefix::<3>("size")?
@@ -184,22 +161,22 @@ pub(super) fn parse_composite_geom_attrs(e: &BytesStart) -> Result<CompositeGeom
     })
 }
 
-/// Parse curve shapes from space-separated string (e.g., "s 0 l").
-pub(super) fn parse_curve_shapes(s: &str) -> Result<[CompositeShape; 3]> {
+/// A `<composite>`'s `curve`: up to three of MuJoCo's shapes
+/// ([`keywords::composite_shape`]), split on C's `isspace`, the rest zero;
+/// four or more are refused, as MuJoCo's "maximum of 3 components". Space
+/// after the last shape is read as no more shapes. MuJoCo's read loop takes
+/// the last shape once more there (`xml_native_reader.cc`, OneComposite): it
+/// reads `"s "` as `"s s"` (D-CURVE-TRAILING-SPACE), and refuses three shapes
+/// then space, or a curve of only space (D-CURVE-WHITESPACE).
+fn parse_curve_shapes(a: &Attrs, text: &str) -> Result<[CompositeShape; 3]> {
+    let tokens: Vec<&str> = text.split(is_c_space).filter(|t| !t.is_empty()).collect();
+    if tokens.len() > 3 {
+        return Err(a.wrong_count("curve", ValueCount::AtMost(3), tokens.len()));
+    }
     let mut shapes = [CompositeShape::Zero; 3];
-    for (i, token) in s.split_whitespace().enumerate() {
-        if i >= 3 {
-            break;
-        }
-        shapes[i] = match token {
-            "s" => CompositeShape::Sin,
-            "c" => CompositeShape::Cos,
-            "l" => CompositeShape::Line,
-            "0" | "zero" => CompositeShape::Zero,
-            other => {
-                return Err(MjcfError::invalid_keyword("composite", "curve", other));
-            }
-        };
+    for (shape, token) in shapes.iter_mut().zip(tokens) {
+        *shape = keywords::composite_shape(token)
+            .ok_or_else(|| MjcfError::invalid_keyword("composite", "curve", token))?;
     }
     Ok(shapes)
 }

@@ -84,7 +84,7 @@ fn t2_cable_initial_none() {
     let xml = r#"
         <mujoco model="cable_none">
             <worldbody>
-                <composite type="cable" count="4 1 1" initial="none" curve="l 0 0" size="1">
+                <composite type="cable" count="4 1 1" initial="none" curve="s 0 0" size="1">
                     <joint kind="main" damping="0.01"/>
                     <geom type="capsule" size=".005" rgba=".8 .2 .1 1"/>
                 </composite>
@@ -115,7 +115,7 @@ fn t3_cable_initial_free() {
     let xml = r#"
         <mujoco model="cable_free">
             <worldbody>
-                <composite type="cable" count="4 1 1" initial="free" curve="l 0 0" size="1">
+                <composite type="cable" count="4 1 1" initial="free" curve="s 0 0" size="1">
                     <joint kind="main" damping="0.5"/>
                     <geom type="capsule" size=".005" rgba=".8 .2 .1 1"/>
                 </composite>
@@ -199,7 +199,7 @@ fn t5_cable_with_prefix() {
     let xml = r#"
         <mujoco model="cable_prefix">
             <worldbody>
-                <composite type="cable" prefix="R" count="3 1 1" curve="l 0 0" size="1">
+                <composite type="cable" prefix="R" count="3 1 1" curve="s 0 0" size="1">
                     <joint kind="main" damping="0.01"/>
                     <geom type="capsule" size=".005" rgba=".8 .2 .1 1"/>
                 </composite>
@@ -227,7 +227,7 @@ fn t6_cable_in_nested_body() {
         <mujoco model="cable_nested">
             <worldbody>
                 <body name="parent" pos="1 0 0">
-                    <composite type="cable" count="3 1 1" curve="l 0 0" size="1">
+                    <composite type="cable" count="3 1 1" curve="s 0 0" size="1">
                         <joint kind="main" damping="0.01"/>
                         <geom type="capsule" size=".005" rgba=".8 .2 .1 1"/>
                     </composite>
@@ -253,7 +253,7 @@ fn t7_cable_minimum_count() {
     let xml = r#"
         <mujoco model="cable_min">
             <worldbody>
-                <composite type="cable" count="2 1 1" curve="l 0 0" size="1">
+                <composite type="cable" count="2 1 1" curve="s 0 0" size="1">
                     <joint kind="main" damping="0.01"/>
                     <geom type="capsule" size=".005" rgba=".8 .2 .1 1"/>
                 </composite>
@@ -281,7 +281,7 @@ fn t8_invalid_geom_type() {
     let xml = r#"
         <mujoco model="cable_bad_geom">
             <worldbody>
-                <composite type="cable" count="3 1 1" curve="l 0 0" size="1">
+                <composite type="cable" count="3 1 1" curve="s 0 0" size="1">
                     <joint kind="main"/>
                     <geom type="sphere" size=".005"/>
                 </composite>
@@ -301,11 +301,11 @@ fn t9_multiple_composites() {
     let xml = r#"
         <mujoco model="cable_multi">
             <worldbody>
-                <composite type="cable" prefix="A" count="3 1 1" curve="l 0 0" size="1">
+                <composite type="cable" prefix="A" count="3 1 1" curve="s 0 0" size="1">
                     <joint kind="main" damping="0.01"/>
                     <geom type="capsule" size=".005" rgba=".8 .2 .1 1"/>
                 </composite>
-                <composite type="cable" prefix="B" count="4 1 1" curve="l 0 0" size="2" offset="0 1 0">
+                <composite type="cable" prefix="B" count="4 1 1" curve="s 0 0" size="2" offset="0 1 0">
                     <joint kind="main" damping="0.02"/>
                     <geom type="capsule" size=".01" rgba=".2 .8 .1 1"/>
                 </composite>
@@ -333,7 +333,7 @@ fn t10_cable_cylinder_geom() {
     let xml = r#"
         <mujoco model="cable_cyl">
             <worldbody>
-                <composite type="cable" count="3 1 1" curve="l 0 0" size="1">
+                <composite type="cable" count="3 1 1" curve="s 0 0" size="1">
                     <joint kind="main" damping="0.01"/>
                     <geom type="cylinder" size=".005" rgba=".8 .2 .1 1"/>
                 </composite>
@@ -384,7 +384,7 @@ fn t12_validation_errors() {
     // (a) count="1 1 1" → too few
     let xml_a = r#"
         <mujoco><worldbody>
-            <composite type="cable" count="1 1 1" curve="l 0 0" size="1">
+            <composite type="cable" count="1 1 1" curve="s 0 0" size="1">
                 <joint kind="main"/><geom type="capsule" size=".005"/>
             </composite>
         </worldbody></mujoco>
@@ -394,7 +394,7 @@ fn t12_validation_errors() {
     // (b) count="5 5 1" → multi-dimensional
     let xml_b = r#"
         <mujoco><worldbody>
-            <composite type="cable" count="5 5 1" curve="l 0 0" size="1">
+            <composite type="cable" count="5 5 1" curve="s 0 0" size="1">
                 <joint kind="main"/><geom type="capsule" size=".005"/>
             </composite>
         </worldbody></mujoco>
@@ -408,7 +408,7 @@ fn t12_validation_errors() {
     // (c) both count and vertex → mutual exclusion
     let xml_c = r#"
         <mujoco><worldbody>
-            <composite type="cable" count="5 1 1" vertex="0 0 0 1 0 0" curve="l 0 0" size="1">
+            <composite type="cable" count="5 1 1" vertex="0 0 0 1 0 0" curve="s 0 0" size="1">
                 <joint kind="main"/><geom type="capsule" size=".005"/>
             </composite>
         </worldbody></mujoco>
@@ -419,24 +419,22 @@ fn t12_validation_errors() {
         "Mutual exclusion error: {err_c}"
     );
 
-    // (d) initial="xyz" → invalid initial
+    // (d) initial="xyz" is text MuJoCo reads as a ball joint, not a keyword
+    // (`ReadAttrTxt`; measured, count 4: jnt_type [ball, ball, ball]).
     let xml_d = r#"
         <mujoco><worldbody>
-            <composite type="cable" count="3 1 1" initial="xyz" curve="l 0 0" size="1">
+            <composite type="cable" count="4 1 1" initial="xyz" curve="s 0 0" size="1">
                 <joint kind="main"/><geom type="capsule" size=".005"/>
             </composite>
         </worldbody></mujoco>
     "#;
-    let err_d = try_load_model(xml_d).unwrap_err();
-    assert!(
-        err_d.contains("initial") || err_d.contains("xyz"),
-        "Invalid initial error: {err_d}"
-    );
+    let model_d = load_model(xml_d);
+    assert_eq!(model_d.jnt_type, vec![MjJointType::Ball; 3]);
 
     // (e) size="0 0 0" (no uservert) → too small
     let xml_e = r#"
         <mujoco><worldbody>
-            <composite type="cable" count="3 1 1" size="0 0 0" curve="l 0 0">
+            <composite type="cable" count="3 1 1" size="0 0 0" curve="s 0 0">
                 <joint kind="main"/><geom type="capsule" size=".005"/>
             </composite>
         </worldbody></mujoco>
@@ -493,5 +491,377 @@ fn t13_cable_sites_take_no_class() {
                 "{name}: {xml}"
             );
         }
+    }
+}
+
+// ============================================================================
+// The curve keywords, as MuJoCo 3.5.0's `shape_map` (book L07; ledger L260)
+// ============================================================================
+
+/// A cable of `count` vertices with `curve` and `size`, prefixed `C`.
+fn curve_cable(count: u32, curve: &str, size: &str) -> String {
+    format!(
+        r#"<mujoco><worldbody>
+            <composite type="cable" prefix="C" count="{count} 1 1" curve="{curve}" size="{size}">
+                <geom type="capsule" size="0.01"/>
+            </composite>
+        </worldbody></mujoco>"#
+    )
+}
+
+#[test]
+fn cable_curve_keywords_as_mujoco() {
+    // MuJoCo 3.5.0 (measured on the unfused oracle): `s` is the straight
+    // line, `sin(s)` and `cos(s)` the sine and the cosine. Before: `s` was
+    // the sine, `l` the line and `c` the cosine, and `sin(s)` was refused.
+    let model = load_model(&curve_cable(6, "s 0 sin(s)", "1 0.2 1"));
+    let b1 = model.name2id(ElementType::Body, "CB_1").expect("CB_1");
+    let first = model
+        .name2id(ElementType::Body, "CB_first")
+        .expect("CB_first");
+    // The vertices pass through f32, as MuJoCo's do (book L08).
+    let pos = model.body_pos[b1];
+    assert!((pos.x - 0.231_990_648_333_280_79).abs() < 1e-15, "{pos}");
+    assert!(pos.y.abs() < 1e-15 && pos.z.abs() < 1e-15, "{pos}");
+    let q = model.body_quat[first];
+    let want = [
+        0.682_294_608_073_227_5,
+        -0.682_294_608_073_227_5,
+        -0.185_671_935_935_942_9,
+        -0.185_671_935_935_942_9,
+    ];
+    for (got, want) in [q.w, q.i, q.j, q.k].into_iter().zip(want) {
+        assert!((got - want).abs() < 1e-15, "{q}");
+    }
+    // `cos(s) sin(s) 0` is read (MuJoCo loads it).
+    let model = load_model(&curve_cable(6, "cos(s) sin(s) 0", "1 0.5 1"));
+    assert_eq!(model.nbody, 6);
+}
+
+#[test]
+fn a_curve_word_not_mujocos_is_refused() {
+    // MuJoCo: "The curve array contains an invalid shape".
+    for curve in ["l 0 0", "S 0 0", "zero 0 0", "s c 0"] {
+        let err = try_load_model(&curve_cable(5, curve, "1")).unwrap_err();
+        assert!(
+            err.contains("invalid keyword") && err.contains("curve"),
+            "{curve}: {err}"
+        );
+    }
+    // MuJoCo: "The curve array must have a maximum of 3 components". Before:
+    // a fourth word was dropped.
+    let err = try_load_model(&curve_cable(5, "s 0 0 0", "1")).unwrap_err();
+    assert!(err.contains("curve"), "{err}");
+}
+
+#[test]
+fn space_after_three_curve_shapes_or_alone_is_read_without_it() {
+    // D-CURVE-WHITESPACE: MuJoCo 3.5.0 refuses "s 0 0 " ("maximum of 3
+    // components") and a curve of only space ("invalid shape", measured with
+    // the vertices below): after the last shape its read loop takes a stale
+    // token. sim-mjcf reads the shapes space separates.
+    let trimmed = load_model(&curve_cable(5, "s 0 0", "1"));
+    let spaced = load_model(&curve_cable(5, "s 0 0 ", "1"));
+    assert_eq!(trimmed.body_pos, spaced.body_pos);
+    let with_vertices = |curve: &str| {
+        format!(
+            r#"<mujoco><worldbody><composite type="cable" vertex="0 0 0 1 0 0 2 0 1 3 0 1"{curve}>
+                <geom type="capsule" size="0.01"/>
+            </composite></worldbody></mujoco>"#
+        )
+    };
+    let unwritten = load_model(&with_vertices(""));
+    let space = load_model(&with_vertices(r#" curve=" ""#));
+    assert_eq!(unwritten.body_pos, space.body_pos);
+    // Space before or between shapes MuJoCo reads too (measured).
+    let model = load_model(&curve_cable(5, " s\t 0 0", "1"));
+    assert_eq!(model.body_pos, trimmed.body_pos);
+}
+
+#[test]
+fn space_after_one_or_two_curve_shapes_is_read_without_it() {
+    // D-CURVE-TRAILING-SPACE: MuJoCo 3.5.0 reads "s " as "s s" (measured,
+    // count 5, size "1 0.5 1": CB_2 at x 0.3535533905932738, CB_first's quat
+    // (0.9238795325112867, 0, 0, 0.38268343236508967)), its read loop storing
+    // the stale last shape in the next slot. sim-mjcf reads it as "s" (CB_2 at
+    // x 0.25, as MuJoCo's "s").
+    let one = load_model(&curve_cable(5, "s", "1 0.5 1"));
+    let spaced = load_model(&curve_cable(5, "s ", "1 0.5 1"));
+    assert_eq!(one.body_pos, spaced.body_pos);
+    let b2 = spaced.name2id(ElementType::Body, "CB_2").expect("CB_2");
+    assert_eq!(spaced.body_pos[b2].x, 0.25);
+    let two = load_model(&curve_cable(6, "cos(s) sin(s)", "1 0.2 1"));
+    let spaced = load_model(&curve_cable(6, "cos(s) sin(s) ", "1 0.2 1"));
+    assert_eq!(two.body_pos, spaced.body_pos);
+}
+
+// ============================================================================
+// Cable vertices through f32, and the 1- and 2-body cables (book L08)
+// ============================================================================
+
+#[test]
+fn cable_vertices_round_through_f32() {
+    // MuJoCo 3.5.0 stores a cable's vertices as floats (`user_composite.h`
+    // `uservert`), measured: B_1 at x 0.3333333432674408, a third as a float.
+    // Before: 0.3333333333333333.
+    let model = load_model(&curve_cable(4, "s 0 0", "1"));
+    let b1 = model.name2id(ElementType::Body, "CB_1").expect("CB_1");
+    assert_eq!(model.body_pos[b1].x, f64::from((1.0_f64 / 3.0) as f32));
+    assert_eq!(model.body_pos[b1].x, 0.333_333_343_267_440_8);
+}
+
+#[test]
+fn two_body_cable_matches_mujoco_generator() {
+    // D-CABLE-TWO-BODY: MuJoCo 3.5.0 refuses this document ("body 'B_1' not
+    // found in bodypair 0"): its first body is also the second-last, and the
+    // exclude it adds names B_1, which it names B_last. The reference is
+    // MuJoCo's own expansion (MjSpec) with that one name corrected, written
+    // at 17 digits and reloaded; its qpos and qvel at steps 1, 10, 100, 500,
+    // measured on the unfused oracle (A9 §3.2, §3.5).
+    let model = load_model(
+        r#"<mujoco model="cable_uservert"><worldbody>
+            <composite type="cable" vertex="0 0 0 1 0 0 2 0 1">
+                <joint kind="main" damping="0.01"/>
+                <geom type="capsule" size=".005" rgba=".8 .2 .1 1"/>
+            </composite></worldbody></mujoco>"#,
+    );
+    let first = model
+        .name2id(ElementType::Body, "B_first")
+        .expect("B_first");
+    let last = model.name2id(ElementType::Body, "B_last").expect("B_last");
+    assert_eq!(model.nbody, 3);
+    assert_eq!(model.contact_excludes.len(), 1);
+    assert!(
+        model.contact_excludes.contains(&(first, last))
+            || model.contact_excludes.contains(&(last, first))
+    );
+    let golden: [(usize, [f64; 8], [f64; 6]); 4] = [
+        (
+            1,
+            [
+                0.999_999_999_751_946,
+                8.953_939_595_722_174e-19,
+                5.529_945_652_121_103e-21,
+                -2.227_348_174_714_429_7e-5,
+                0.999_999_999_705_911_1,
+                -3.769_642_584_006_882e-19,
+                6.284_181_367_740_443e-19,
+                2.425_237_540_270_774_7e-5,
+            ],
+            [
+                8.953_939_596_462_529e-16,
+                5.529_945_652_578_346e-18,
+                -0.022_273_481_748_985_975,
+                -3.769_642_584_376_418e-16,
+                6.284_181_368_356_479e-16,
+                0.024_252_375_405_085_198,
+            ],
+        ),
+        (
+            10,
+            [
+                0.999_999_253_068_526_3,
+                6.499_068_096_296_155e-18,
+                2.424_632_405_444_334_4e-19,
+                -0.001_222_236_633_906_899_4,
+                0.999_999_119_628_955_8,
+                -3.254_940_872_205_717e-18,
+                4.390_088_113_566_97e-18,
+                0.001_326_929_279_528_090_3,
+            ],
+            [
+                3.801_822_354_839_432e-16,
+                4.243_494_806_032_707e-17,
+                -0.221_930_447_818_991_4,
+                -4.036_741_762_827_343e-16,
+                2.300_527_761_263_919_6e-16,
+                0.240_492_891_165_991_98,
+            ],
+        ),
+        (
+            100,
+            [
+                0.994_428_437_101_387_6,
+                9.658_378_725_269_55e-17,
+                1.581_522_154_775_960_5e-17,
+                -0.105_413_867_608_072_89,
+                0.994_933_276_017_639_5,
+                5.831_972_834_501_562e-17,
+                6.576_940_518_347_792e-17,
+                0.100_537_437_170_475_92,
+            ],
+            [
+                1.251_485_727_082_517_2e-15,
+                1.196_772_447_386_961_7e-16,
+                -1.990_439_464_273_854,
+                2.307_465_664_822_542_6e-15,
+                1.029_664_681_881_032_7e-15,
+                1.646_146_460_520_004_2,
+            ],
+        ),
+        (
+            500,
+            [
+                0.444_813_913_413_780_4,
+                -3.713_766_464_164_956e-17,
+                1.249_043_912_490_699_5e-16,
+                -0.895_623_013_568_498_6,
+                0.883_496_203_927_752_7,
+                -1.216_184_458_225_102e-16,
+                1.038_383_506_741_981_1e-16,
+                -0.468_438_317_866_131_1,
+            ],
+            [
+                -5.519_423_639_833_345_4e-15,
+                1.147_397_098_257_190_5e-15,
+                -6.212_247_956_365_928,
+                -6.700_500_083_138_36e-15,
+                -3.409_192_451_329_129_7e-15,
+                7.775_807_386_523_438_5,
+            ],
+        ),
+    ];
+    let mut data = model.make_data();
+    let mut step = 0;
+    for (at, qpos, qvel) in golden {
+        while step < at {
+            data.step(&model).expect("step");
+            step += 1;
+        }
+        for (i, want) in qpos.iter().enumerate() {
+            assert!(
+                (data.qpos[i] - want).abs() < 1e-12,
+                "step {at} qpos[{i}] {}",
+                data.qpos[i]
+            );
+        }
+        for (i, want) in qvel.iter().enumerate() {
+            assert!(
+                (data.qvel[i] - want).abs() < 1e-10,
+                "step {at} qvel[{i}] {}",
+                data.qvel[i]
+            );
+        }
+    }
+}
+
+#[test]
+fn one_body_cable_frame_is_defined() {
+    // D-CABLE-ONE-BODY: MuJoCo 3.5.0 builds a 1-body cable's frame from an
+    // uninitialised tangent (`user_composite.cc`, AddCableBody `tnext`, set
+    // only when the body is not the last), so its quaternion depends on what
+    // memory holds (A9 measured NaN; finite garbage in a later run), and makes
+    // one site, S_first, at the far end. sim-mjcf takes that tangent as zero:
+    // the body's x-axis is the edge, and it makes S_first at 0 and S_last at
+    // the far end. Edges along the six axes and two oblique ones, written as
+    // floats exactly.
+    for v in [
+        "1 0 0",
+        "-1 0 0",
+        "0 1 0",
+        "0 -1 0",
+        "0 0 1",
+        "0 0 -1",
+        "0.5 0.25 0.75",
+        "-0.25 1 -0.5",
+    ] {
+        let model = load_model(&format!(
+            r#"<mujoco><worldbody><composite type="cable" vertex="0 0 0 {v}">
+                <geom type="capsule" size=".005"/>
+            </composite></worldbody></mujoco>"#
+        ));
+        assert_eq!(model.nbody, 2, "{v}");
+        assert_eq!(model.nsite, 2, "{v}");
+        let edge: Vec<f64> = v.split(' ').map(|t| t.parse().expect("number")).collect();
+        let edge = nalgebra::Vector3::new(edge[0], edge[1], edge[2]).normalize();
+        let q = model.body_quat[1];
+        assert!((q.quaternion().norm() - 1.0).abs() < 1e-12, "{v}: {q}");
+        let x_axis = q * nalgebra::Vector3::x();
+        assert!((x_axis - edge).norm() < 1e-12, "{v}: {x_axis}");
+        let mut data = model.make_data();
+        for _ in 0..500 {
+            data.step(&model).expect("step");
+        }
+        assert!(data.qpos.iter().all(|x| x.is_finite()), "{v}");
+    }
+}
+
+#[test]
+fn cable_edges_are_float_differences() {
+    // MuJoCo 3.5.0's cable vertices are floats, and so are their differences
+    // (`user_composite.cc`, AddCableBody). Measured on the oracle: CB_2 at x
+    // 0.44721360216395983, CB_last at x 1.0488088517220766, CB_1's quat
+    // (0.2297529205473612, 0, 0, 0.9732489894677301). Before: the edges
+    // were differences of doubles, CB_2 at x 0.4472136088279617.
+    let model = load_model(
+        r#"<mujoco><worldbody>
+            <composite type="cable" prefix="C" vertex="0 0 0 0.1 0 0 -0.3 0.2 0 0.7 0.1 0.3 -0.9 -0.4 0.2">
+                <geom type="capsule" size="0.01"/>
+            </composite>
+        </worldbody></mujoco>"#,
+    );
+    let at = |name: &str| model.name2id(ElementType::Body, name).expect(name);
+    assert!((model.body_pos[at("CB_2")].x - 0.447_213_602_163_959_83).abs() < 1e-15);
+    assert!((model.body_pos[at("CB_last")].x - 1.048_808_851_722_076_6).abs() < 1e-15);
+    let q = model.body_quat[at("CB_1")];
+    assert!((q.w - 0.229_752_920_547_361_2).abs() < 1e-15, "{q}");
+    assert!((q.k - 0.973_248_989_467_730_1).abs() < 1e-15, "{q}");
+}
+
+#[test]
+fn a_composite_quat_turns_its_vertices_as_written() {
+    // MuJoCo 3.5.0 turns generated vertices by the quat as written
+    // (`user_util.cc` mjuu_rotVecQuat), not normalised. Measured on the
+    // oracle: quat "0 0 0 2" puts CB_1 at x 1.75 (seven times 0.25), CB_first's
+    // quat (0, 0, 0, 1); "0 0 0 0" puts CB_1 at x 0.25. Before: the quat was
+    // normalised (CB_1 at 0.25), and "0 0 0 0" was refused.
+    let cable = |quat: &str| {
+        load_model(&format!(
+            r#"<mujoco><worldbody>
+                <composite type="cable" prefix="C" count="5 1 1" curve="s 0 0" size="1" quat="{quat}">
+                    <geom type="capsule" size="0.01"/>
+                </composite>
+            </worldbody></mujoco>"#
+        ))
+    };
+    let model = cable("0 0 0 2");
+    let b1 = model.name2id(ElementType::Body, "CB_1").expect("CB_1");
+    assert_eq!(model.body_pos[b1].x, 1.75);
+    let first = model
+        .name2id(ElementType::Body, "CB_first")
+        .expect("CB_first");
+    let q = model.body_quat[first];
+    assert!((q.k - 1.0).abs() < 1e-15 && q.w.abs() < 1e-15, "{q}");
+    let model = cable("0 0 0 0");
+    assert_eq!(model.body_pos[b1].x, 0.25);
+}
+
+#[test]
+fn a_cable_frame_takes_the_next_tangent_as_a_float_difference() {
+    // The next tangent, like the edge, is a difference of float vertices in
+    // MuJoCo 3.5.0 (`user_composite.cc`, AddCableBody). A cable in three
+    // dimensions shows it in the first frame; measured on the oracle: CB_first's
+    // quat (0.9467737022456508, 0.20939200177512202, -0.0396382897100404,
+    // 0.24125370943787358). With a double difference there, w is 1.5e-9 off
+    // (RL-2b's fix-diff review).
+    let model = load_model(
+        r#"<mujoco><worldbody>
+            <composite type="cable" prefix="C" vertex="0 0 0 0.1 0.05 0.02 -0.3 0.2 0.1 0.7 0.1 0.3">
+                <geom type="capsule" size="0.01"/>
+            </composite>
+        </worldbody></mujoco>"#,
+    );
+    let first = model
+        .name2id(ElementType::Body, "CB_first")
+        .expect("CB_first");
+    let q = model.body_quat[first];
+    let want = [
+        0.946_773_702_245_650_8,
+        0.209_392_001_775_122_02,
+        -0.039_638_289_710_040_4,
+        0.241_253_709_437_873_58,
+    ];
+    for (got, want) in [q.w, q.i, q.j, q.k].into_iter().zip(want) {
+        assert!((got - want).abs() < 1e-12, "{q}");
     }
 }

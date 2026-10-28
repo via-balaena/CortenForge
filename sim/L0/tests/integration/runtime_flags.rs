@@ -2710,7 +2710,7 @@ fn ac35i_override_end_to_end_xml() {
                 o_margin="0.1" o_solref="0.05 0.8"
                 o_solimp="0.8 0.85 0.002 0.3 1.5"
                 o_friction="0.6 0.6 0.02 0.003 0.003">
-            <flag override="true"/>
+            <flag override="enable"/>
         </option>
         <worldbody>
             <geom type="plane" size="5 5 0.1"/>
@@ -2728,7 +2728,7 @@ fn ac35i_override_end_to_end_xml() {
     assert_ne!(
         model.enableflags & ENABLE_OVERRIDE,
         0,
-        "ENABLE_OVERRIDE must be set from XML <flag override=\"true\"/>"
+        "ENABLE_OVERRIDE must be set from XML <flag override=\"enable\"/>"
     );
 
     // Verify override params wired from XML

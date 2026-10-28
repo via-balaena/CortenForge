@@ -10,6 +10,7 @@ use tracing::warn;
 
 use super::ModelBuilder;
 use crate::error::{ElementKind, MjcfError, Result};
+use crate::keywords;
 use crate::types::{MjcfActuator, MjcfActuatorType};
 
 /// MuJoCo's default `gear` (`user_init.c` `mjs_defaultActuator`).
@@ -42,16 +43,11 @@ impl ModelBuilder {
         // (MuJoCo: mjs_setToDamper and mjs_setToAdhesion both set ctrllimited=1).
         let ctrllimited = match actuator.actuator_type {
             MjcfActuatorType::Damper | MjcfActuatorType::Adhesion => true,
-            _ => match actuator.ctrllimited {
-                Some(v) => v,
-                None => {
-                    if self.compiler.autolimits {
-                        super::has_range(actuator.ctrlrange)
-                    } else {
-                        false
-                    }
-                }
-            },
+            _ => super::is_limited(
+                actuator.ctrllimited,
+                self.compiler.autolimits,
+                actuator.ctrlrange,
+            ),
         };
 
         // Determine dynamics type.
@@ -101,16 +97,11 @@ impl ModelBuilder {
         } else {
             (f64::NEG_INFINITY, f64::INFINITY)
         });
-        let forcelimited = match actuator.forcelimited {
-            Some(v) => v,
-            None => {
-                if self.compiler.autolimits {
-                    super::has_range(actuator.forcerange)
-                } else {
-                    false
-                }
-            }
-        };
+        let forcelimited = super::is_limited(
+            actuator.forcelimited,
+            self.compiler.autolimits,
+            actuator.forcerange,
+        );
         self.actuator_forcerange.push(if forcelimited {
             actuator
                 .forcerange
@@ -121,16 +112,11 @@ impl ModelBuilder {
 
         // §34: Activation clamping — actlimited / actrange / actearly.
         // Same autolimits pattern as ctrllimited/forcelimited.
-        let actlimited = match actuator.actlimited {
-            Some(v) => v,
-            None => {
-                if self.compiler.autolimits {
-                    super::has_range(actuator.actrange)
-                } else {
-                    false
-                }
-            }
-        };
+        let actlimited = super::is_limited(
+            actuator.actlimited,
+            self.compiler.autolimits,
+            actuator.actrange,
+        );
         self.actuator_actlimited.push(actlimited);
         self.actuator_actrange.push(if actlimited {
             actuator.actrange.unwrap_or((0.0, 0.0))
@@ -144,9 +130,8 @@ impl ModelBuilder {
 
         // Interpolation attributes: parse interp keyword → InterpolationType enum
         let interp = match &actuator.interp {
-            Some(s) => s
-                .parse::<InterpolationType>()
-                .map_err(|_| MjcfError::invalid_keyword("actuator", "interp", s))?,
+            Some(s) => keywords::interp(s)
+                .ok_or_else(|| MjcfError::invalid_keyword("actuator", "interp", s))?,
             None => InterpolationType::Zoh,
         };
 
@@ -641,41 +626,15 @@ fn compute_general_standard(
 }
 
 fn parse_gaintype(s: &str) -> Result<GainType> {
-    match s {
-        "fixed" => Ok(GainType::Fixed),
-        "affine" => Ok(GainType::Affine),
-        "muscle" => Ok(GainType::Muscle),
-        "hillmuscle" => Ok(GainType::HillMuscle),
-        "millardmuscle" => Ok(GainType::MillardMuscle),
-        "user" => Ok(GainType::User),
-        _ => Err(MjcfError::invalid_keyword("general", "gaintype", s)),
-    }
+    keywords::gain_type(s).ok_or_else(|| MjcfError::invalid_keyword("general", "gaintype", s))
 }
 
 fn parse_biastype(s: &str) -> Result<BiasType> {
-    match s {
-        "none" => Ok(BiasType::None),
-        "affine" => Ok(BiasType::Affine),
-        "muscle" => Ok(BiasType::Muscle),
-        "hillmuscle" => Ok(BiasType::HillMuscle),
-        "millardmuscle" => Ok(BiasType::MillardMuscle),
-        "user" => Ok(BiasType::User),
-        _ => Err(MjcfError::invalid_keyword("general", "biastype", s)),
-    }
+    keywords::bias_type(s).ok_or_else(|| MjcfError::invalid_keyword("general", "biastype", s))
 }
 
 fn parse_dyntype(s: &str) -> Result<ActuatorDynamics> {
-    match s {
-        "none" => Ok(ActuatorDynamics::None),
-        "integrator" => Ok(ActuatorDynamics::Integrator),
-        "filter" => Ok(ActuatorDynamics::Filter),
-        "filterexact" => Ok(ActuatorDynamics::FilterExact),
-        "muscle" => Ok(ActuatorDynamics::Muscle),
-        "hillmuscle" => Ok(ActuatorDynamics::HillMuscle),
-        "millardmuscle" => Ok(ActuatorDynamics::MillardMuscle),
-        "user" => Ok(ActuatorDynamics::User),
-        _ => Err(MjcfError::invalid_keyword("general", "dyntype", s)),
-    }
+    keywords::dyn_type(s).ok_or_else(|| MjcfError::invalid_keyword("general", "dyntype", s))
 }
 
 #[cfg(test)]

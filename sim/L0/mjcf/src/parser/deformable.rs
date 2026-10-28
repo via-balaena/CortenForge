@@ -6,6 +6,7 @@ use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
 use crate::error::{MjcfError, Result};
+use crate::keywords;
 
 use crate::types::{MjcfFlex, MjcfSkin, MjcfSkinBone, MjcfSkinVertex};
 
@@ -273,20 +274,20 @@ pub(super) fn parse_flex_contact_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> R
     }
     flex.contype = a.int("contype")?;
     flex.conaffinity = a.int("conaffinity")?;
-    if let Some(s) = a.string("selfcollide") {
+    if let Some(s) = a.keyword_text("selfcollide", keywords::flex_selfcollide)? {
         flex.selfcollide = Some(s);
     }
     // DT-85: Flex contact runtime attributes
-    if let Some(internal) = a.is_true("internal") {
+    if let Some(internal) = a.boolean("internal")? {
         flex.internal = internal;
     }
     if let Some(val) = a.int("activelayers")? {
         flex.activelayers = val;
     }
-    if let Some(vertcollide) = a.is_true("vertcollide") {
+    if let Some(vertcollide) = a.boolean("vertcollide")? {
         flex.vertcollide = vertcollide;
     }
-    if let Some(passive) = a.is_true("passive") {
+    if let Some(passive) = a.boolean("passive")? {
         flex.passive = passive;
     }
     Ok(())
@@ -307,12 +308,9 @@ pub(super) fn parse_flex_elasticity_attrs(e: &BytesStart, flex: &mut MjcfFlex) -
     if let Some(thickness) = a.real("thickness")? {
         flex.thickness = thickness;
     }
-    // §42B S4: Parse bending_model (CortenForge extension attribute).
-    if let Some(s) = a.text("bending_model") {
-        flex.bending_model = match s {
-            "bridson" => sim_core::FlexBendingType::Bridson,
-            _ => sim_core::FlexBendingType::Cotangent, // default for unknown or "cotangent"
-        };
+    // §42B S4: bending_model, an extension attribute.
+    if let Some(model) = a.keyword("bending_model", keywords::bending_model)? {
+        flex.bending_model = model;
     }
     Ok(())
 }
@@ -410,14 +408,26 @@ fn flexcomp_mesh(e: &BytesStart) -> Result<MjcfFlex> {
     let mut flex = parse_flex_attrs(e)?;
     let a = Attrs::new(e)?;
 
-    let comp_type = a.string("type").unwrap_or_else(|| "grid".to_string());
+    let comp_type = a
+        .keyword("type", keywords::flexcomp_type)?
+        .unwrap_or("grid");
     let count = parse_flexcomp_count(&a)?;
     let spacing = a.array::<3>("spacing")?.unwrap_or([0.02; 3]);
 
-    match comp_type.as_str() {
+    match comp_type {
         "grid" => generate_grid(&mut flex, count, spacing),
         "box" => generate_box_mesh(&mut flex, count, spacing),
-        _ => {} // Unsupported type: leave empty
+        // A type of MuJoCo's this `<deformable>` form does not generate (the
+        // form itself is sim-mjcf's, refused by MuJoCo's schema).
+        other => {
+            return Err(MjcfError::invalid_value(
+                "flexcomp",
+                "type",
+                format!(
+                    "sim-mjcf's <deformable><flexcomp> generates only grid and box, not {other}"
+                ),
+            ));
+        }
     }
 
     // Apply scale and rotation to generated vertices (DT-88)

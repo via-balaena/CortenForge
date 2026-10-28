@@ -47,7 +47,7 @@ use crate::defaults::DefaultResolver;
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
     MeshInertia, MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfJacobianType, MjcfKeyframe,
-    MjcfModel, MjcfOption, MjcfSolverType, Prefix,
+    MjcfModel, MjcfOption, MjcfSolverType, Prefix, TfAuto,
 };
 
 use self::compiler::{apply_discardvisual, apply_fusestatic};
@@ -77,6 +77,16 @@ fn written_over<const N: usize>(written: Option<Prefix<N>>, base: [f64; N]) -> [
 /// leaves it unlimited (`islimited`, `user_objects.cc:184-189`).
 fn has_range(range: Option<(f64, f64)>) -> bool {
     range.is_some_and(|(lo, hi)| lo != 0.0 || hi != 0.0)
+}
+
+/// Whether a `limited`-style attribute limits: as written, or, for `auto` or
+/// nothing written, when `autolimits` is on and the range makes a limit.
+fn is_limited(written: Option<TfAuto>, autolimits: bool, range: Option<(f64, f64)>) -> bool {
+    match written {
+        Some(TfAuto::True) => true,
+        Some(TfAuto::False) => false,
+        Some(TfAuto::Auto) | None => autolimits && has_range(range),
+    }
 }
 
 // Resolve an `MjcfKeyframe` into a `Keyframe` with model-validated dimensions.
@@ -976,7 +986,7 @@ fn apply_flags(flag: &crate::types::MjcfFlag, disableflags: &mut u32, enableflag
     // Enable flags: field true = bit SET, field false = bit CLEARED.
     // Unlike disable flags (which only OR in bits), enable flags must
     // also clear bits to handle defaults like energy=true being overridden
-    // by <flag energy="false"/>.
+    // by <flag energy="disable"/>.
     set_enable(enableflags, ENABLE_OVERRIDE, flag.override_contacts);
     set_enable(enableflags, ENABLE_ENERGY, flag.energy);
     set_enable(enableflags, ENABLE_FWDINV, flag.fwdinv);

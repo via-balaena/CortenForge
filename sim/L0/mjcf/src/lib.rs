@@ -184,6 +184,7 @@ mod builder;
 mod defaults;
 mod error;
 mod include;
+mod keywords;
 #[cfg(feature = "mjb")]
 mod mjb;
 mod parser;
@@ -203,7 +204,7 @@ pub use types::{
     MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
     MjcfJointEquality, MjcfJointType, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption,
     MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendon, MjcfTendonDefaults,
-    MjcfTendonType, MjcfWeld, Prefix, SpatialPathElement,
+    MjcfTendonType, MjcfWeld, Prefix, SpatialPathElement, TfAuto,
 };
 pub use validation::{ValidationResult, validate, validate_tendons};
 

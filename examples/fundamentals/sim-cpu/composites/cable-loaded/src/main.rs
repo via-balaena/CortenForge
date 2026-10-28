@@ -57,7 +57,7 @@ const MJCF: &str = r#"
 
       <!-- Cable: 15 segments, cyan, starts with sine bulge for slack -->
       <composite type="cable" prefix="A" count="16 1 1"
-                 initial="ball" curve="l 0 s" size="1.0 0.2 1.0"
+                 initial="ball" curve="s 0 sin(s)" size="1.0 0.2 1.0"
                  offset="0 0 0.4">
         <joint kind="main" damping="0.05"/>
         <geom type="capsule" size="0.01" rgba="0.2 0.8 0.9 1"

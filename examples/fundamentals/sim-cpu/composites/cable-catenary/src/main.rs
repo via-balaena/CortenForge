@@ -41,7 +41,7 @@ use sim_core::validation::{Check, print_report};
 /// Cable with 15 segments (count=16 vertices) spanning 1.0m between two pylons.
 /// Left end pinned via initial="none". Right end pinned via connect constraint.
 ///
-/// Geometry: curve="l 0 s" with size="1.0 0.2 1.0" gives a half-sine bulge
+/// Geometry: curve="s 0 sin(s)" with size="1.0 0.2 1.0" gives a half-sine bulge
 /// upward in z, so the cable starts bowed up and swings down under gravity
 /// into a catenary. The x-extent is still 1.0 (matching the span), so both
 /// endpoints are at the pylons. Path length (~1.06m) exceeds span = slack.
@@ -72,7 +72,7 @@ const MJCF: &str = r#"
 
       <!-- Cable: 15 segments, gold, starts with sine-dip for slack -->
       <composite type="cable" prefix="A" count="16 1 1"
-                 initial="ball" curve="l 0 s" size="1.0 0.2 1.0"
+                 initial="ball" curve="s 0 sin(s)" size="1.0 0.2 1.0"
                  offset="0 0 0.4">
         <joint kind="main" damping="0.05"/>
         <geom type="capsule" size="0.01" rgba="0.9 0.75 0.2 1"

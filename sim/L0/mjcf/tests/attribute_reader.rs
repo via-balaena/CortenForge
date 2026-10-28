@@ -212,13 +212,35 @@ fn a_number_mujoco_reads_as_a_float_keeps_to_a_floats_range() {
         }
     }
     // The largest float, the smallest normal one and a zero load (measured),
-    // and a double keeps a double's range.
+    // as floats, and a double keeps a double's range.
     for value in ["3.4028235e38", "1.17549435e-38", "0e5"] {
         let m = load(&FLOAT_ATTRIBUTES[0].2.replace('@', value));
-        assert_eq!(m.geom_rgba[0][0], value.parse::<f64>().unwrap(), "{value}");
+        assert_eq!(
+            m.geom_rgba[0][0],
+            f64::from(value.parse::<f32>().unwrap()),
+            "{value}"
+        );
     }
     let m = load(r#"<mujoco><worldbody><geom size="0.1" pos="0 0 1e39"/></worldbody></mujoco>"#);
     assert_eq!(m.geom_pos[0].z, 1e39);
+}
+
+#[test]
+fn a_number_mujoco_reads_as_a_float_is_rounded_as_strtof_rounds_it() {
+    // MuJoCo 3.5.0 parses these attributes with `strtof` (`user_util.cc`
+    // `StringToVector<float>`): the decimal rounded once, to a float.
+    // Measured: rgba 0.1 is 0.10000000149011612, and 1.00000005960464477539063,
+    // just past the midpoint of 1 and the next float, is 1.0000001192092896,
+    // where rounding to a double first, then to a float, gives 1. Before:
+    // 0.1 and 1.0000000596046448, the doubles.
+    let m = load(
+        r#"<mujoco><worldbody><geom size="0.1" rgba="1.00000005960464477539063 0.1 0 1"/></worldbody></mujoco>"#,
+    );
+    assert_eq!(m.geom_rgba[0][0], 1.000_000_119_209_289_6);
+    assert_eq!(m.geom_rgba[0][1], 0.100_000_001_490_116_12);
+    // A double attribute keeps the double.
+    let m = load(r#"<mujoco><worldbody><geom size="0.1" pos="0 0 0.1"/></worldbody></mujoco>"#);
+    assert_eq!(m.geom_pos[0].z, 0.1);
 }
 
 #[test]

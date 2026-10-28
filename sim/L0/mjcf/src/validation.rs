@@ -8,7 +8,7 @@ use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::stack::MAX_BODY_TREE_DEPTH;
 use crate::types::{
     MjcfBody, MjcfFrame, MjcfGeom, MjcfModel, MjcfOption, MjcfTendon, MjcfTendonType,
-    SpatialPathElement,
+    SpatialPathElement, TfAuto,
 };
 
 /// Validation result containing the flattened body tree structure.
@@ -644,7 +644,7 @@ fn validate_tendon_params(tendon: &MjcfTendon) -> Result<()> {
             format!("negative frictionloss {frictionloss}"),
         ));
     }
-    if tendon.limited.unwrap_or(false) {
+    if tendon.limited == Some(TfAuto::True) {
         if let Some((min, max)) = tendon.range {
             if min >= max {
                 return Err(MjcfError::invalid_value(

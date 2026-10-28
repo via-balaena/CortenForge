@@ -5,10 +5,11 @@ use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
 use crate::error::{MjcfError, Result};
+use crate::keywords;
 
 use crate::types::{
-    AngleUnit, InertiaFromGeom, MjcfCompiler, MjcfConeType, MjcfFlag, MjcfIntegrator,
-    MjcfJacobianType, MjcfModel, MjcfOption, MjcfSolverType,
+    MjcfCompiler, MjcfConeType, MjcfFlag, MjcfIntegrator, MjcfJacobianType, MjcfModel, MjcfOption,
+    MjcfSolverType,
 };
 
 use super::attrs::Attrs;
@@ -42,12 +43,16 @@ pub(super) fn parse_size_attrs(e: &BytesStart, model: &mut MjcfModel) -> Result<
     Ok(())
 }
 
-/// Parse option element.
+/// An `<option>` element, read onto `option`: MuJoCo reads every `<option>`,
+/// and the one `<flag>` it may hold, onto the same values, each setting only
+/// what it writes (`xml_native_reader.cc`, the Option loop; a second `<flag>`
+/// is a schema error, book L47's).
 pub(super) fn parse_option<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
-) -> Result<MjcfOption> {
-    let mut option = parse_option_attrs(start)?;
+    option: &mut MjcfOption,
+) -> Result<()> {
+    parse_option_attrs(start, option)?;
     let mut buf = Vec::new();
 
     loop {
@@ -55,7 +60,7 @@ pub(super) fn parse_option<R: BufRead>(
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 // Handle flag element
                 if e.name().as_ref() == b"flag" {
-                    option.flag = parse_flag_attrs(e)?;
+                    parse_flag_attrs(e, &mut option.flag)?;
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"option" => break,
@@ -66,29 +71,24 @@ pub(super) fn parse_option<R: BufRead>(
         buf.clear();
     }
 
-    Ok(option)
+    Ok(())
 }
 
-/// Parse option attributes only.
-pub(super) fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
+/// An `<option>`'s attributes, read onto `option`.
+pub(super) fn parse_option_attrs(e: &BytesStart, option: &mut MjcfOption) -> Result<()> {
     let a = Attrs::new(e)?;
-    let mut option = MjcfOption::default();
 
     // Core simulation
     if let Some(ts) = a.real("timestep")? {
         option.timestep = ts;
     }
-    if let Some(integrator) = a.text("integrator")
-        && let Some(int) = MjcfIntegrator::from_str(integrator)
-    {
-        option.integrator = int;
+    if let Some(integrator) = a.keyword("integrator", MjcfIntegrator::from_str)? {
+        option.integrator = integrator;
     }
 
     // Solver configuration
-    if let Some(solver) = a.text("solver")
-        && let Some(s) = MjcfSolverType::from_str(solver)
-    {
-        option.solver = s;
+    if let Some(solver) = a.keyword("solver", MjcfSolverType::from_str)? {
+        option.solver = solver;
     }
     if let Some(iter) = a.int("iterations")? {
         option.iterations = iter.max(0) as usize;
@@ -122,15 +122,11 @@ pub(super) fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     }
 
     // Contact configuration
-    if let Some(cone) = a.text("cone")
-        && let Some(c) = MjcfConeType::from_str(cone)
-    {
-        option.cone = c;
+    if let Some(cone) = a.keyword("cone", MjcfConeType::from_str)? {
+        option.cone = cone;
     }
-    if let Some(jacobian) = a.text("jacobian")
-        && let Some(j) = MjcfJacobianType::from_str(jacobian)
-    {
-        option.jacobian = j;
+    if let Some(jacobian) = a.keyword("jacobian", MjcfJacobianType::from_str)? {
+        option.jacobian = jacobian;
     }
     if let Some(impratio) = a.real("impratio")? {
         option.impratio = impratio;
@@ -171,9 +167,20 @@ pub(super) fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     if let Some(o_margin) = a.real("o_margin")? {
         option.o_margin = o_margin;
     }
-    option.o_solimp = a.prefix("o_solimp")?;
-    option.o_solref = a.prefix("o_solref")?;
-    option.o_friction = a.prefix("o_friction")?;
+    // A later <option>'s prefix lies over an earlier one's values.
+    if let Some(given) = a.prefix("o_solimp")? {
+        option.o_solimp = Some(option.o_solimp.map_or(given, |was| given.over_prefix(&was)));
+    }
+    if let Some(given) = a.prefix("o_solref")? {
+        option.o_solref = Some(option.o_solref.map_or(given, |was| given.over_prefix(&was)));
+    }
+    if let Some(given) = a.prefix("o_friction")? {
+        option.o_friction = Some(
+            option
+                .o_friction
+                .map_or(given, |was| given.over_prefix(&was)),
+        );
+    }
 
     // Sleep
     if let Some(st) = a.real("sleep_tolerance")? {
@@ -206,23 +213,17 @@ pub(super) fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
         }
     }
 
-    Ok(option)
+    Ok(())
 }
 
-/// Parse compiler element attributes.
-pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
+/// A `<compiler>`'s attributes, read onto `compiler`: MuJoCo reads every
+/// `<compiler>` onto the same settings, each setting only what it writes.
+pub(super) fn parse_compiler_attrs(e: &BytesStart, compiler: &mut MjcfCompiler) -> Result<()> {
     let a = Attrs::new(e)?;
-    let mut compiler = MjcfCompiler::default();
 
     // A1. angle — angular unit
-    if let Some(angle) = a.text("angle") {
-        match angle.to_lowercase().as_str() {
-            "degree" => compiler.angle = AngleUnit::Degree,
-            "radian" => compiler.angle = AngleUnit::Radian,
-            other => {
-                return Err(MjcfError::invalid_keyword("compiler", "angle", other));
-            }
-        }
+    if let Some(angle) = a.keyword("angle", keywords::angle)? {
+        compiler.angle = angle;
     }
 
     // A2. eulerseq — Euler rotation sequence
@@ -241,36 +242,30 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
         seq.clone_into(&mut compiler.eulerseq);
     }
 
-    // A3. meshdir / texturedir / assetdir — asset path resolution
+    // A3. assetdir / meshdir / texturedir — asset path resolution. MuJoCo
+    // writes assetdir into meshdir and texturedir as it reads it, then reads
+    // meshdir and texturedir over it (`xml_native_reader.cc`, Compiler), so a
+    // later <compiler>'s assetdir lies over an earlier one's meshdir.
+    if let Some(assetdir) = a.string("assetdir") {
+        compiler.meshdir = Some(assetdir.clone());
+        compiler.texturedir = Some(assetdir.clone());
+        compiler.assetdir = Some(assetdir);
+    }
     if let Some(meshdir) = a.string("meshdir") {
         compiler.meshdir = Some(meshdir);
     }
     if let Some(texturedir) = a.string("texturedir") {
         compiler.texturedir = Some(texturedir);
     }
-    if let Some(assetdir) = a.string("assetdir") {
-        compiler.assetdir = Some(assetdir);
-    }
 
     // A4. autolimits
-    if let Some(autolimits) = a.text("autolimits") {
-        compiler.autolimits = autolimits == "true";
+    if let Some(autolimits) = a.boolean("autolimits")? {
+        compiler.autolimits = autolimits;
     }
 
     // A5. inertiafromgeom
-    if let Some(ifg) = a.text("inertiafromgeom") {
-        match ifg.to_lowercase().as_str() {
-            "false" => compiler.inertiafromgeom = InertiaFromGeom::False,
-            "true" => compiler.inertiafromgeom = InertiaFromGeom::True,
-            "auto" => compiler.inertiafromgeom = InertiaFromGeom::Auto,
-            other => {
-                return Err(MjcfError::invalid_keyword(
-                    "compiler",
-                    "inertiafromgeom",
-                    other,
-                ));
-            }
-        }
+    if let Some(ifg) = a.keyword("inertiafromgeom", keywords::inertia_from_geom)? {
+        compiler.inertiafromgeom = ifg;
     }
 
     // A6. boundmass / boundinertia
@@ -282,8 +277,8 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
     }
 
     // A7. balanceinertia
-    if let Some(balance) = a.text("balanceinertia") {
-        compiler.balanceinertia = balance == "true";
+    if let Some(balance) = a.boolean("balanceinertia")? {
+        compiler.balanceinertia = balance;
     }
 
     // A8. settotalmass
@@ -292,97 +287,98 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
     }
 
     // A9. strippath
-    if let Some(sp) = a.text("strippath") {
-        compiler.strippath = sp == "true";
+    if let Some(sp) = a.boolean("strippath")? {
+        compiler.strippath = sp;
     }
 
     // A10. discardvisual
-    if let Some(dv) = a.text("discardvisual") {
-        compiler.discardvisual = dv == "true";
+    if let Some(dv) = a.boolean("discardvisual")? {
+        compiler.discardvisual = dv;
     }
 
     // A11. fusestatic
-    if let Some(fs) = a.text("fusestatic") {
-        compiler.fusestatic = fs == "true";
+    if let Some(fs) = a.boolean("fusestatic")? {
+        compiler.fusestatic = fs;
     }
 
     // A12. coordinate (deprecated — reject "global")
-    if let Some(coord) = a.text("coordinate") {
-        match coord.to_lowercase().as_str() {
-            "local" => {} // no-op, matches current behavior
-            "global" => {
-                return Err(MjcfError::invalid_value(
-                    "compiler",
-                    "coordinate",
-                    "coordinate='global' was removed in MuJoCo 2.3.4",
-                ));
-            }
-            other => {
-                return Err(MjcfError::invalid_keyword("compiler", "coordinate", other));
-            }
-        }
+    if a.keyword("coordinate", keywords::coordinate_is_global)? == Some(true) {
+        return Err(MjcfError::invalid_value(
+            "compiler",
+            "coordinate",
+            "coordinate='global' was removed in MuJoCo 2.3.4",
+        ));
     }
 
     // Deferred attributes (stored but no behavior yet)
-    if let Some(fitaabb) = a.text("fitaabb") {
-        compiler.fitaabb = fitaabb == "true";
+    if let Some(fitaabb) = a.boolean("fitaabb")? {
+        compiler.fitaabb = fitaabb;
     }
-    if let Some(usethread) = a.text("usethread") {
-        compiler.usethread = usethread == "true";
+    if let Some(usethread) = a.boolean("usethread")? {
+        compiler.usethread = usethread;
     }
-    if let Some(alignfree) = a.text("alignfree") {
-        compiler.alignfree = alignfree == "true";
+    if let Some(alignfree) = a.boolean("alignfree")? {
+        compiler.alignfree = alignfree;
     }
 
-    // A13. exactmeshinertia (deprecated — no behavioral effect since MuJoCo 3.5.0)
-    if let Some(emi) = a.text("exactmeshinertia") {
-        compiler.exactmeshinertia = emi == "true";
+    // A13. exactmeshinertia: not a MuJoCo 3.5.0 attribute (its schema refuses
+    // it, book L47); read, warned about and given no effect.
+    if let Some(emi) = a.boolean("exactmeshinertia")? {
+        compiler.exactmeshinertia = emi;
         tracing::warn!(
             "exactmeshinertia is deprecated and has no effect; \
              use <mesh inertia=\"exact\"/> instead"
         );
     }
 
-    Ok(compiler)
+    Ok(())
 }
 
-/// Parse flag element attributes.
-pub(super) fn parse_flag_attrs(e: &BytesStart) -> Result<MjcfFlag> {
+/// A `<flag>`'s attributes, read onto `flag`: each flag it does not write
+/// keeps its value.
+pub(super) fn parse_flag_attrs(e: &BytesStart, flag: &mut MjcfFlag) -> Result<()> {
     let a = Attrs::new(e)?;
-    let mut flag = MjcfFlag::default();
 
-    // Helper to parse enable/disable attributes
-    let parse_flag = |name: &str, default: bool| a.text(name).map_or(default, |v| v != "disable");
+    // Each flag is MuJoCo's `enable_map` keyword: exactly `disable` or
+    // `enable`.
+    let parse_flag = |name: &str, current: bool| -> Result<bool> {
+        Ok(a.keyword(name, |s| match s {
+            "disable" => Some(false),
+            "enable" => Some(true),
+            _ => None,
+        })?
+        .unwrap_or(current))
+    };
 
     // Disable flags (true = enabled, false = disabled)
-    flag.constraint = parse_flag("constraint", flag.constraint);
-    flag.equality = parse_flag("equality", flag.equality);
-    flag.frictionloss = parse_flag("frictionloss", flag.frictionloss);
-    flag.limit = parse_flag("limit", flag.limit);
-    flag.contact = parse_flag("contact", flag.contact);
+    flag.constraint = parse_flag("constraint", flag.constraint)?;
+    flag.equality = parse_flag("equality", flag.equality)?;
+    flag.frictionloss = parse_flag("frictionloss", flag.frictionloss)?;
+    flag.limit = parse_flag("limit", flag.limit)?;
+    flag.contact = parse_flag("contact", flag.contact)?;
     // MuJoCo 3.3.6+ split `passive` into independent `spring` + `damper`.
     // `passive` is silently ignored (unrecognized attributes are skipped).
-    flag.spring = parse_flag("spring", flag.spring);
-    flag.damper = parse_flag("damper", flag.damper);
-    flag.gravity = parse_flag("gravity", flag.gravity);
-    flag.clampctrl = parse_flag("clampctrl", flag.clampctrl);
-    flag.warmstart = parse_flag("warmstart", flag.warmstart);
-    flag.filterparent = parse_flag("filterparent", flag.filterparent);
-    flag.actuation = parse_flag("actuation", flag.actuation);
-    flag.refsafe = parse_flag("refsafe", flag.refsafe);
-    flag.sensor = parse_flag("sensor", flag.sensor);
-    flag.midphase = parse_flag("midphase", flag.midphase);
-    flag.nativeccd = parse_flag("nativeccd", flag.nativeccd);
-    flag.eulerdamp = parse_flag("eulerdamp", flag.eulerdamp);
-    flag.autoreset = parse_flag("autoreset", flag.autoreset);
-    flag.island = parse_flag("island", flag.island);
+    flag.spring = parse_flag("spring", flag.spring)?;
+    flag.damper = parse_flag("damper", flag.damper)?;
+    flag.gravity = parse_flag("gravity", flag.gravity)?;
+    flag.clampctrl = parse_flag("clampctrl", flag.clampctrl)?;
+    flag.warmstart = parse_flag("warmstart", flag.warmstart)?;
+    flag.filterparent = parse_flag("filterparent", flag.filterparent)?;
+    flag.actuation = parse_flag("actuation", flag.actuation)?;
+    flag.refsafe = parse_flag("refsafe", flag.refsafe)?;
+    flag.sensor = parse_flag("sensor", flag.sensor)?;
+    flag.midphase = parse_flag("midphase", flag.midphase)?;
+    flag.nativeccd = parse_flag("nativeccd", flag.nativeccd)?;
+    flag.eulerdamp = parse_flag("eulerdamp", flag.eulerdamp)?;
+    flag.autoreset = parse_flag("autoreset", flag.autoreset)?;
+    flag.island = parse_flag("island", flag.island)?;
     // Enable flags (false = disabled, true = enabled)
-    flag.override_contacts = parse_flag("override", flag.override_contacts);
-    flag.energy = parse_flag("energy", flag.energy);
-    flag.fwdinv = parse_flag("fwdinv", flag.fwdinv);
-    flag.invdiscrete = parse_flag("invdiscrete", flag.invdiscrete);
-    flag.multiccd = parse_flag("multiccd", flag.multiccd);
-    flag.sleep = parse_flag("sleep", flag.sleep);
+    flag.override_contacts = parse_flag("override", flag.override_contacts)?;
+    flag.energy = parse_flag("energy", flag.energy)?;
+    flag.fwdinv = parse_flag("fwdinv", flag.fwdinv)?;
+    flag.invdiscrete = parse_flag("invdiscrete", flag.invdiscrete)?;
+    flag.multiccd = parse_flag("multiccd", flag.multiccd)?;
+    flag.sleep = parse_flag("sleep", flag.sleep)?;
 
-    Ok(flag)
+    Ok(())
 }

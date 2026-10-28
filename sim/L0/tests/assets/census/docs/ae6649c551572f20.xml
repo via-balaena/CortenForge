@@ -1,0 +1,2 @@
+<mujoco><default><site type="Box"/></default>
+            <worldbody><body><geom size="0.1"/><site/></body></worldbody></mujoco>

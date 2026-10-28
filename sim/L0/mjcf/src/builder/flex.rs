@@ -12,6 +12,7 @@ use nalgebra::{UnitQuaternion, Vector3};
 
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
 use crate::error::{ElementKind, Location, MjcfError, Result};
+use crate::keywords;
 use crate::types::MjcfFlex;
 use sim_core::{EqualityType, FlexSelfCollide, MjJointType};
 
@@ -173,13 +174,11 @@ impl ModelBuilder {
             self.flex_contype.push(flex.contype.unwrap_or(1) as u32);
             self.flex_conaffinity
                 .push(flex.conaffinity.unwrap_or(1) as u32);
-            // MuJoCo default is "auto" (enabled). Convert string to FlexSelfCollide enum.
+            // MuJoCo's default is `auto`.
             let sc = match flex.selfcollide.as_deref() {
-                Some("none") => FlexSelfCollide::None,
-                Some("narrow") => FlexSelfCollide::Narrow,
-                Some("bvh") => FlexSelfCollide::Bvh,
-                Some("sap") => FlexSelfCollide::Sap,
-                Some("auto") | None | Some(_) => FlexSelfCollide::Auto,
+                Some(s) => keywords::flex_selfcollide(s)
+                    .ok_or_else(|| MjcfError::invalid_keyword("flex", "selfcollide", s).at(at()))?,
+                None => FlexSelfCollide::Auto,
             };
             self.flex_selfcollide.push(sc);
             // DT-85: flex contact runtime attributes

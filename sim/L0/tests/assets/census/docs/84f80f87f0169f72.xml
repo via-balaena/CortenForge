@@ -1,0 +1,2 @@
+<mujoco><worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>
+        <sensor><jointpos joint="j" interp="Cubic" nsample="2"/></sensor></mujoco>

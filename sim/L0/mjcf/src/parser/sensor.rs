@@ -5,6 +5,7 @@ use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
 use crate::error::{MjcfError, Result};
+use crate::keywords;
 
 use crate::types::{MjcfSensor, MjcfSensorType};
 
@@ -125,7 +126,7 @@ pub(super) fn parse_sensor_attrs(
     }
 
     sensor.nsample = a.int("nsample")?;
-    sensor.interp = a.string("interp");
+    sensor.interp = a.keyword_text("interp", keywords::interp)?;
     sensor.delay = a.real("delay")?;
     // MuJoCo reads `period [phase]` (`exact = false`); the phase is read with
     // the rest of delay and history (book L48), the period here.

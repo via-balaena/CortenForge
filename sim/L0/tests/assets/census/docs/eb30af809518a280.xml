@@ -1,0 +1,5 @@
+<mujoco><worldbody>
+            <composite type="cable" prefix="C" vertex="0 0 0 0.1 0.05 0.02 -0.3 0.2 0.1 0.7 0.1 0.3">
+                <geom type="capsule" size="0.01"/>
+            </composite>
+        </worldbody></mujoco>

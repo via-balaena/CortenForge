@@ -97,6 +97,32 @@ impl<'de, const N: usize> Deserialize<'de> for Prefix<N> {
     }
 }
 
+/// MuJoCo's `false | true | auto` keyword (`TFAuto_map`,
+/// `xml_native_reader.cc`), for a `limited`-style attribute: `Auto` leaves
+/// the limit to `<compiler autolimits>` and whether a range is given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum TfAuto {
+    /// `false`.
+    False,
+    /// `true`.
+    True,
+    /// `auto`.
+    Auto,
+}
+
+impl TfAuto {
+    /// The value a keyword names, exactly as written.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "false" => Some(Self::False),
+            "true" => Some(Self::True),
+            "auto" => Some(Self::Auto),
+            _ => None,
+        }
+    }
+}
+
 // ============================================================================
 // Global Options
 // ============================================================================
@@ -119,11 +145,13 @@ pub enum MjcfIntegrator {
 }
 
 impl MjcfIntegrator {
-    /// Parse integrator from MJCF string.
+    /// The integrator a keyword names, exactly as written: MuJoCo's
+    /// `integrator_map` (`xml_native_reader.cc`) and `implicitspringdamper`, an
+    /// extension.
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "euler" => Some(Self::Euler),
-            "rk4" => Some(Self::RK4),
+        match s {
+            "Euler" => Some(Self::Euler),
+            "RK4" => Some(Self::RK4),
             "implicit" => Some(Self::Implicit),
             "implicitfast" => Some(Self::ImplicitFast),
             "implicitspringdamper" => Some(Self::ImplicitSpringDamper),
@@ -156,9 +184,9 @@ pub enum MjcfConeType {
 }
 
 impl MjcfConeType {
-    /// Parse cone type from MJCF string.
+    /// The cone a keyword names, exactly as written (MuJoCo's `cone_map`).
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
+        match s {
             "pyramidal" => Some(Self::Pyramidal),
             "elliptic" => Some(Self::Elliptic),
             _ => None,
@@ -189,12 +217,12 @@ pub enum MjcfSolverType {
 }
 
 impl MjcfSolverType {
-    /// Parse solver type from MJCF string.
+    /// The solver a keyword names, exactly as written (MuJoCo's `solver_map`).
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_uppercase().as_str() {
+        match s {
             "PGS" => Some(Self::PGS),
             "CG" => Some(Self::CG),
-            "NEWTON" => Some(Self::Newton),
+            "Newton" => Some(Self::Newton),
             _ => None,
         }
     }
@@ -224,9 +252,10 @@ pub enum MjcfJacobianType {
 }
 
 impl MjcfJacobianType {
-    /// Parse jacobian type from MJCF string.
+    /// The Jacobian type a keyword names, exactly as written (MuJoCo's
+    /// `jac_map`).
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
+        match s {
             "dense" => Some(Self::Dense),
             "sparse" => Some(Self::Sparse),
             "auto" => Some(Self::Auto),
@@ -723,7 +752,7 @@ pub struct MjcfJointDefaults {
     /// Joint position relative to body frame.
     pub pos: Option<Vector3<f64>>,
     /// Position limits enabled.
-    pub limited: Option<bool>,
+    pub limited: Option<TfAuto>,
     /// Joint axis.
     pub axis: Option<Vector3<f64>>,
     /// Joint reference position.
@@ -839,9 +868,9 @@ pub struct MjcfActuatorDefaults {
     /// Damping ratio for position actuators.
     pub dampratio: Option<f64>,
     /// Control limited.
-    pub ctrllimited: Option<bool>,
+    pub ctrllimited: Option<TfAuto>,
     /// Force limited.
-    pub forcelimited: Option<bool>,
+    pub forcelimited: Option<TfAuto>,
     /// Gain type default for `<general>` actuators.
     pub gaintype: Option<String>,
     /// Bias type default for `<general>` actuators.
@@ -857,7 +886,7 @@ pub struct MjcfActuatorDefaults {
     /// Visualization group (0–5).
     pub group: Option<i32>,
     /// Whether activation is clamped to actrange.
-    pub actlimited: Option<bool>,
+    pub actlimited: Option<TfAuto>,
     /// Activation clamping range [lower, upper].
     pub actrange: Option<(f64, f64)>,
     /// If true, activation dynamics are applied early (before constraint).
@@ -916,7 +945,7 @@ pub struct MjcfTendonDefaults {
     /// Range limits [lower, upper] for tendon length.
     pub range: Option<(f64, f64)>,
     /// Whether range limits are enabled.
-    pub limited: Option<bool>,
+    pub limited: Option<TfAuto>,
     /// Stiffness coefficient.
     pub stiffness: Option<f64>,
     /// Damping coefficient.
@@ -1285,14 +1314,11 @@ pub enum MjcfGeomType {
     Hfield,
     /// Signed distance field.
     Sdf,
-    /// Non-convex triangle mesh.
-    /// Unlike `Mesh` which is treated as a convex hull, this preserves
-    /// the original triangle structure for accurate non-convex collision.
-    TriangleMesh,
 }
 
 impl MjcfGeomType {
-    /// Parse geom type from string.
+    /// The geom type a keyword names, exactly as written (MuJoCo's
+    /// `geom_map`, `xml_native_reader.cc`).
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "plane" => Some(Self::Plane),
@@ -1304,7 +1330,6 @@ impl MjcfGeomType {
             "mesh" => Some(Self::Mesh),
             "hfield" => Some(Self::Hfield),
             "sdf" => Some(Self::Sdf),
-            "trimesh" | "triangle_mesh" | "nonconvex" => Some(Self::TriangleMesh),
             _ => None,
         }
     }
@@ -1322,7 +1347,6 @@ impl MjcfGeomType {
             Self::Mesh => "mesh",
             Self::Hfield => "hfield",
             Self::Sdf => "sdf",
-            Self::TriangleMesh => "trimesh",
         }
     }
 }
@@ -1535,24 +1559,17 @@ pub enum MjcfJointType {
     Ball,
     /// Free joint (6 DOF).
     Free,
-    /// Cylindrical joint (2 DOF: rotation + translation along same axis).
-    /// Note: This is an extension to standard MJCF.
-    Cylindrical,
-    /// Planar joint (3 DOF: x, y translation + rotation about normal).
-    /// Note: This is an extension to standard MJCF.
-    Planar,
 }
 
 impl MjcfJointType {
-    /// Parse joint type from string.
+    /// The joint type a keyword names, exactly as written (MuJoCo's
+    /// `joint_map`, `xml_native_reader.cc`).
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "hinge" => Some(Self::Hinge),
             "slide" => Some(Self::Slide),
             "ball" => Some(Self::Ball),
             "free" => Some(Self::Free),
-            "cylindrical" => Some(Self::Cylindrical),
-            "planar" => Some(Self::Planar),
             _ => None,
         }
     }
@@ -1562,8 +1579,7 @@ impl MjcfJointType {
     pub fn dof(&self) -> usize {
         match self {
             Self::Hinge | Self::Slide => 1,
-            Self::Cylindrical => 2,
-            Self::Ball | Self::Planar => 3,
+            Self::Ball => 3,
             Self::Free => 6,
         }
     }
@@ -1589,9 +1605,9 @@ pub struct MjcfJoint {
     pub pos: Option<Vector3<f64>>,
     /// Joint axis (for hinge and slide).
     pub axis: Option<Vector3<f64>>,
-    /// Whether position limits are enabled. `None` means not explicitly set
-    /// (subject to autolimits inference).
-    pub limited: Option<bool>,
+    /// Whether position limits are enabled. `None`, as `Auto`, leaves it
+    /// to `autolimits` and the range.
+    pub limited: Option<TfAuto>,
     /// Position limit range [lower, upper].
     pub range: Option<(f64, f64)>,
     /// Joint reference position.
@@ -1682,7 +1698,7 @@ impl MjcfJoint {
     /// Set position limits.
     #[must_use]
     pub fn with_limits(mut self, lower: f64, upper: f64) -> Self {
-        self.limited = Some(true);
+        self.limited = Some(TfAuto::True);
         self.range = Some((lower, upper));
         self
     }
@@ -2482,7 +2498,7 @@ pub struct CompositeJoint {
     /// Friction loss.
     pub frictionloss: Option<f64>,
     /// Whether position limits are enabled.
-    pub limited: Option<bool>,
+    pub limited: Option<TfAuto>,
     /// Position limit range [lower, upper].
     pub range: Option<[f64; 2]>,
 }
@@ -2792,12 +2808,12 @@ pub struct MjcfActuator {
     pub ctrlrange: Option<(f64, f64)>,
     /// Force range [lower, upper].
     pub forcerange: Option<(f64, f64)>,
-    /// Whether control is clamped to range. `None` means not explicitly set
-    /// (subject to autolimits inference).
-    pub ctrllimited: Option<bool>,
-    /// Whether force is clamped to range. `None` means not explicitly set
-    /// (subject to autolimits inference).
-    pub forcelimited: Option<bool>,
+    /// Whether control is clamped to range. `None`, as `Auto`, leaves it
+    /// to `autolimits` and the range.
+    pub ctrllimited: Option<TfAuto>,
+    /// Whether force is clamped to range. `None`, as `Auto`, leaves it
+    /// to `autolimits` and the range.
+    pub forcelimited: Option<TfAuto>,
     /// Position gain (for position actuators).
     pub kp: f64,
     /// Velocity gain. `None` means use actuator-type default.
@@ -2810,7 +2826,7 @@ pub struct MjcfActuator {
     /// Visualization group (0–5).
     pub group: Option<i32>,
     /// Whether activation is clamped to actrange.
-    pub actlimited: Option<bool>,
+    pub actlimited: Option<TfAuto>,
     /// Activation clamping range [lower, upper].
     pub actrange: Option<(f64, f64)>,
     /// If true, activation dynamics are applied early (before constraint).
@@ -3123,9 +3139,9 @@ pub struct MjcfTendon {
     pub tendon_type: MjcfTendonType,
     /// Range limits [lower, upper] for tendon length.
     pub range: Option<(f64, f64)>,
-    /// Whether range limits are enabled. `None` means not explicitly set
-    /// (subject to autolimits inference).
-    pub limited: Option<bool>,
+    /// Whether range limits are enabled. `None`, as `Auto`, leaves it
+    /// to `autolimits` and the range.
+    pub limited: Option<TfAuto>,
     /// Stiffness coefficient.
     pub stiffness: Option<f64>,
     /// Damping coefficient.
@@ -3244,7 +3260,7 @@ impl MjcfTendon {
     /// Set range limits.
     #[must_use]
     pub fn with_limits(mut self, lower: f64, upper: f64) -> Self {
-        self.limited = Some(true);
+        self.limited = Some(TfAuto::True);
         self.range = Some((lower, upper));
         self
     }

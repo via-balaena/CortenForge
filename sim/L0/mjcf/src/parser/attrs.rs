@@ -8,12 +8,14 @@
 //!   "number is too large"; `1e-999` and `1e-310` measured);
 //! - a written NaN or infinity is refused, where MuJoCo loads it
 //!   (D-NONFINITE), and a number that overflows is out of range, as MuJoCo's
-//!   "number is too large"; an attribute MuJoCo reads as a `float` keeps to a
-//!   float's range ([`SINGLE_PRECISION`]);
+//!   "number is too large"; an attribute MuJoCo reads as a `float` is read as
+//!   one, to a float's range and rounding ([`SINGLE_PRECISION`]);
 //! - an empty or all-space number list is the attribute absent, except for an
 //!   integer read alone, which is refused (measured);
 //! - an attribute takes exactly its count, or, where MuJoCo reads it with
 //!   `exact = false`, one up to its count ([`Prefix`]); more is always refused;
+//! - a keyword is its whole text, untrimmed and case-sensitive, as MuJoCo's
+//!   `MapValue` reads it ([`Attrs::keyword`]);
 //! - text is read as tinyxml2 gives it to MuJoCo ([`unescape`]); a malformed
 //!   attribute, or one given twice, is an XML error.
 //!
@@ -27,7 +29,7 @@ use std::io::BufRead;
 use std::num::IntErrorKind;
 
 use crate::error::{MjcfError, Result, ValueCount};
-use crate::types::Prefix;
+use crate::types::{Prefix, TfAuto};
 
 /// Safe axis normalization with Z fallback for zero-length vectors.
 #[inline]
@@ -37,7 +39,7 @@ pub(super) fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
 }
 
 /// C's `isspace` in the "C" locale: Rust's ASCII whitespace and the vertical tab.
-fn is_c_space(c: char) -> bool {
+pub(super) fn is_c_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\u{b}' | '\u{c}' | '\r')
 }
 
@@ -177,8 +179,9 @@ fn character_reference(after_amp: &str) -> Reference {
 }
 
 /// The attributes MuJoCo 3.5.0 reads as a `float` (`mjspec.h`), as
-/// (element, attribute): their numbers keep to a float's range, where
-/// `strtof` reports one past it as "number is too large" (measured on each).
+/// (element, attribute): each number is read as `strtof` reads it
+/// (`user_util.cc` `StringToVector<float>`), rounded to a float, and one
+/// past a float's range is "number is too large" (measured on each).
 const SINGLE_PRECISION: [(&str, &str); 12] = [
     ("geom", "rgba"),
     ("site", "rgba"),
@@ -194,13 +197,14 @@ const SINGLE_PRECISION: [(&str, &str); 12] = [
     ("bone", "bindquat"),
 ];
 
-/// Whether `token`, read as a `float`, is neither past the largest float nor,
+/// `token` read as a `float`, when it is neither past the largest float nor,
 /// with digits not all zero, below the smallest normal one. Rust's parser
-/// rounds as `strtof` does.
-fn fits_a_float(token: &str) -> bool {
-    token.parse::<f32>().is_ok_and(|x| {
-        x.is_finite() && !(x.abs() < f32::MIN_POSITIVE && mantissa_is_nonzero(token))
-    })
+/// rounds as `strtof` does: from the decimal, once.
+fn as_a_float(token: &str) -> Option<f32> {
+    token
+        .parse::<f32>()
+        .ok()
+        .filter(|x| x.is_finite() && !(x.abs() < f32::MIN_POSITIVE && mantissa_is_nonzero(token)))
 }
 
 /// Whether `token` is a NaN written with a payload, `nan(…)` in any case and
@@ -260,15 +264,49 @@ impl Attrs {
         self.text(name).map(str::to_owned)
     }
 
+    /// A keyword, as MuJoCo's `MapValue` (`xml_util.cc`) reads it: the whole
+    /// text, untrimmed and case-sensitive, must be one `parse` knows; any other
+    /// text, the empty string included, is an invalid keyword.
+    pub(super) fn keyword<T>(
+        &self,
+        name: &str,
+        parse: impl Fn(&str) -> Option<T>,
+    ) -> Result<Option<T>> {
+        let Some(text) = self.text(name) else {
+            return Ok(None);
+        };
+        parse(text)
+            .map(Some)
+            .ok_or_else(|| MjcfError::invalid_keyword(&self.element, name, text))
+    }
+
+    /// A keyword checked as [`Attrs::keyword`] checks it and kept as written,
+    /// for a field the builder converts.
+    pub(super) fn keyword_text<T>(
+        &self,
+        name: &str,
+        parse: impl Fn(&str) -> Option<T>,
+    ) -> Result<Option<String>> {
+        self.keyword(name, |text| parse(text).map(|_| text.to_owned()))
+    }
+
     /// Whether the attribute is written.
     pub(super) fn has(&self, name: &str) -> bool {
         self.text(name).is_some()
     }
 
-    /// `Some(true)` for exactly `true`, `Some(false)` for any other text.
-    /// MuJoCo refuses any word but `false` and `true`.
-    pub(super) fn is_true(&self, name: &str) -> Option<bool> {
-        self.text(name).map(|s| s == "true")
+    /// A boolean, MuJoCo's `bool_map` keyword: exactly `false` or `true`.
+    pub(super) fn boolean(&self, name: &str) -> Result<Option<bool>> {
+        self.keyword(name, |s| match s {
+            "false" => Some(false),
+            "true" => Some(true),
+            _ => None,
+        })
+    }
+
+    /// MuJoCo's `TFAuto_map` keyword: exactly `false`, `true` or `auto`.
+    pub(super) fn tf_auto(&self, name: &str) -> Result<Option<TfAuto>> {
+        self.keyword(name, TfAuto::from_str)
     }
 
     /// The attribute's numbers, any count; `None` when absent or empty.
@@ -427,9 +465,13 @@ impl Attrs {
         })?;
         if x.is_finite() {
             let underflows = x.abs() < f64::MIN_POSITIVE && mantissa_is_nonzero(token);
-            let single = SINGLE_PRECISION.contains(&(self.element.as_str(), name));
-            if underflows || single && !fits_a_float(token) {
+            if underflows {
                 return Err(MjcfError::out_of_range_in(&self.element, name, token));
+            }
+            if SINGLE_PRECISION.contains(&(self.element.as_str(), name)) {
+                return as_a_float(token)
+                    .map(f64::from)
+                    .ok_or_else(|| MjcfError::out_of_range_in(&self.element, name, token));
             }
             return Ok(x);
         }

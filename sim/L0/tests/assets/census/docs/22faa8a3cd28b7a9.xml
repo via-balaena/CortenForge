@@ -1,0 +1,2 @@
+<mujoco><compiler angle="radian"/><compiler meshdir="./"/>
+        <worldbody><body euler="0.349 0 0"><freejoint/><geom size="0.1"/></body></worldbody></mujoco>

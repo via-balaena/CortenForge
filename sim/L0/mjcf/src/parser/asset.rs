@@ -5,8 +5,9 @@ use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
 use crate::error::{MjcfError, Result};
+use crate::keywords;
 
-use crate::types::{MeshInertia, MjcfHfield, MjcfMesh};
+use crate::types::{MjcfHfield, MjcfMesh};
 
 use super::attrs::{Attrs, parse_maxhullvert, skip_element};
 
@@ -109,17 +110,7 @@ pub(super) fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
     }
 
     // Parse mesh inertia mode
-    if let Some(inertia_str) = a.text("inertia") {
-        mesh.inertia = Some(match inertia_str {
-            "convex" => MeshInertia::Convex,
-            "exact" => MeshInertia::Exact,
-            "legacy" => MeshInertia::Legacy,
-            "shell" => MeshInertia::Shell,
-            other => {
-                return Err(MjcfError::invalid_keyword("mesh", "inertia", other));
-            }
-        });
-    }
+    mesh.inertia = a.keyword("inertia", keywords::mesh_inertia)?;
 
     Ok(mesh)
 }

@@ -5,11 +5,12 @@ use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
 use crate::error::{MjcfError, Result};
+use crate::keywords;
 
 use crate::types::{
-    FluidShape, MeshInertia, MjcfActuatorDefaults, MjcfDefault, MjcfEqualityDefaults,
-    MjcfGeomDefaults, MjcfGeomType, MjcfJointDefaults, MjcfJointType, MjcfMeshDefaults,
-    MjcfPairDefaults, MjcfSensorDefaults, MjcfSiteDefaults, MjcfTendonDefaults,
+    MjcfActuatorDefaults, MjcfDefault, MjcfEqualityDefaults, MjcfGeomDefaults, MjcfGeomType,
+    MjcfJointDefaults, MjcfJointType, MjcfMeshDefaults, MjcfPairDefaults, MjcfSensorDefaults,
+    MjcfSiteDefaults, MjcfTendonDefaults,
 };
 
 use super::attrs::{Attrs, parse_maxhullvert, skip_element};
@@ -119,11 +120,9 @@ pub(super) fn parse_joint_defaults(e: &BytesStart) -> Result<MjcfJointDefaults> 
     let a = Attrs::new(e)?;
     let mut defaults = MjcfJointDefaults::default();
 
-    if let Some(jtype) = a.text("type") {
-        defaults.joint_type = MjcfJointType::from_str(jtype);
-    }
+    defaults.joint_type = a.keyword("type", MjcfJointType::from_str)?;
     defaults.pos = a.vec3("pos")?;
-    defaults.limited = a.is_true("limited");
+    defaults.limited = a.tf_auto("limited")?;
     defaults.axis = a.vec3("axis")?;
     defaults.ref_pos = a.real("ref")?;
     defaults.spring_ref = a.real("springref")?;
@@ -139,7 +138,7 @@ pub(super) fn parse_joint_defaults(e: &BytesStart) -> Result<MjcfJointDefaults> 
     defaults.solimp_limit = a.prefix("solimplimit")?;
     defaults.solreffriction = a.prefix("solreffriction")?;
     defaults.solimpfriction = a.prefix("solimpfriction")?;
-    defaults.actuatorgravcomp = a.is_true("actuatorgravcomp");
+    defaults.actuatorgravcomp = a.boolean("actuatorgravcomp")?;
     defaults.margin = a.real("margin")?;
     defaults.user = a.vector("user")?;
 
@@ -151,9 +150,7 @@ pub(super) fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
     let a = Attrs::new(e)?;
     let mut defaults = MjcfGeomDefaults::default();
 
-    if let Some(gtype) = a.text("type") {
-        defaults.geom_type = MjcfGeomType::from_str(gtype);
-    }
+    defaults.geom_type = a.keyword("type", MjcfGeomType::from_str)?;
     defaults.friction = a.prefix("friction")?;
     defaults.density = a.real("density")?;
     defaults.mass = a.real("mass")?;
@@ -186,16 +183,10 @@ pub(super) fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
     defaults.material = a.string("material");
 
     // Fluid force parameters
-    if let Some(fs) = a.text("fluidshape") {
-        defaults.fluidshape = Some(match fs {
-            "none" => FluidShape::None,
-            "ellipsoid" => FluidShape::Ellipsoid,
-            _ => return Err(MjcfError::invalid_keyword("geom", "fluidshape", fs)),
-        });
-    }
+    defaults.fluidshape = a.keyword("fluidshape", keywords::fluid_shape)?;
     defaults.fluidcoef = a.prefix("fluidcoef")?;
     defaults.user = a.vector("user")?;
-    defaults.shellinertia = a.is_true("shellinertia");
+    defaults.shellinertia = a.boolean("shellinertia")?;
 
     Ok(defaults)
 }
@@ -217,34 +208,34 @@ pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefa
     defaults.kv = a.real("kv")?;
     defaults.dampratio = a.real("dampratio")?;
 
-    defaults.ctrllimited = a.is_true("ctrllimited");
-    defaults.forcelimited = a.is_true("forcelimited");
+    defaults.ctrllimited = a.tf_auto("ctrllimited")?;
+    defaults.forcelimited = a.tf_auto("forcelimited")?;
 
     // <general>-specific attributes — parsed unconditionally because
     // parse_actuator_defaults() is called for all actuator element names
     // (actuator|motor|position|velocity|general). The model builder
     // ignores these for shortcut types.
-    defaults.gaintype = a.string("gaintype");
-    defaults.biastype = a.string("biastype");
-    defaults.dyntype = a.string("dyntype");
+    defaults.gaintype = a.keyword_text("gaintype", keywords::gain_type)?;
+    defaults.biastype = a.keyword_text("biastype", keywords::bias_type)?;
+    defaults.dyntype = a.keyword_text("dyntype", keywords::dyn_type)?;
     defaults.gainprm = super::actuator::gain_or_bias(&a, "gainprm")?;
     defaults.biasprm = super::actuator::gain_or_bias(&a, "biasprm")?;
     defaults.dynprm = a.prefix("dynprm")?;
 
     // Activation parameters
     defaults.group = a.int("group")?;
-    defaults.actlimited = a.is_true("actlimited");
+    defaults.actlimited = a.tf_auto("actlimited")?;
     if let Some(pair) = a.array::<2>("actrange")? {
         defaults.actrange = Some(pair.into());
     }
-    defaults.actearly = a.is_true("actearly");
+    defaults.actearly = a.boolean("actearly")?;
     if let Some(pair) = a.array::<2>("lengthrange")? {
         defaults.lengthrange = Some(pair.into());
     }
 
     // Interpolation attributes (common to all actuator types)
     defaults.nsample = a.int("nsample")?;
-    defaults.interp = a.string("interp");
+    defaults.interp = a.keyword_text("interp", keywords::interp)?;
     defaults.delay = a.real("delay")?;
 
     // Cylinder-specific attributes
@@ -288,7 +279,7 @@ pub(super) fn parse_tendon_defaults(e: &BytesStart) -> Result<MjcfTendonDefaults
     if let Some(pair) = a.array::<2>("range")? {
         defaults.range = Some(pair.into());
     }
-    defaults.limited = a.is_true("limited");
+    defaults.limited = a.tf_auto("limited")?;
     defaults.stiffness = a.real("stiffness")?;
     defaults.damping = a.real("damping")?;
     defaults.frictionloss = a.real("frictionloss")?;
@@ -343,17 +334,7 @@ pub(super) fn parse_mesh_defaults(e: &BytesStart) -> Result<MjcfMeshDefaults> {
         defaults.maxhullvert = parse_maxhullvert(n)?;
     }
 
-    if let Some(inertia_str) = a.text("inertia") {
-        defaults.inertia = Some(match inertia_str {
-            "convex" => MeshInertia::Convex,
-            "exact" => MeshInertia::Exact,
-            "legacy" => MeshInertia::Legacy,
-            "shell" => MeshInertia::Shell,
-            other => {
-                return Err(MjcfError::invalid_keyword("mesh", "inertia", other));
-            }
-        });
-    }
+    defaults.inertia = a.keyword("inertia", keywords::mesh_inertia)?;
 
     Ok(defaults)
 }
@@ -363,7 +344,7 @@ pub(super) fn parse_site_defaults(e: &BytesStart) -> Result<MjcfSiteDefaults> {
     let a = Attrs::new(e)?;
     let mut defaults = MjcfSiteDefaults::default();
 
-    defaults.site_type = a.string("type");
+    defaults.site_type = a.keyword_text("type", MjcfGeomType::from_str)?;
     defaults.size = a.prefix("size")?;
     defaults.rgba = a.vec4("rgba")?;
     defaults.group = a.int("group")?;
@@ -406,7 +387,7 @@ pub(super) fn parse_equality_defaults(e: &BytesStart) -> Result<MjcfEqualityDefa
     let a = Attrs::new(e)?;
     let mut defaults = MjcfEqualityDefaults::default();
 
-    defaults.active = a.is_true("active");
+    defaults.active = a.boolean("active")?;
     defaults.solref = a.prefix("solref")?;
     defaults.solimp = a.prefix("solimp")?;
 
