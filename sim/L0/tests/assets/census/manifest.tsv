@@ -2120,3 +2120,4 @@ ecb5a767b60490ef	sim/L0/mjcf/tests/flex_vertex_bodies.rs:717
 12c399b156952ca8	sim/L0/mjcf/tests/flex_vertex_bodies.rs:700
 28b8a2aa1a101bc9	sim/L0/mjcf/tests/flex_vertex_bodies.rs:786
 860dfba8942c271f	sim/L0/mjcf/tests/flex_vertex_bodies.rs:810
+85766904c1bb4ce9	sim/L0/tests/integration/jacobian_parity.rs:350
