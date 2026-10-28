@@ -468,6 +468,10 @@ pub enum MjSensorType {
     /// Net actuator force at joint DOF (1D). MuJoCo: mjSENS_JOINTACTFRC.
     /// Reads `data.qfrc_actuator[model.jnt_dof_adr[objid]]`.
     JointActuatorFrc,
+    /// Net actuator force on a tendon (1D): the sum of `actuator_force` over
+    /// the actuators whose transmission is that tendon. MuJoCo:
+    /// mjSENS_TENDONACTFRC.
+    TendonActuatorFrc,
     /// Signed distance between two geoms or bodies (1D). MuJoCo: mjSENS_GEOMDIST.
     GeomDist,
     /// Surface normal at nearest point between geoms (3D). MuJoCo: mjSENS_GEOMNORMAL.
@@ -503,6 +507,7 @@ impl MjSensorType {
             | Self::Rangefinder
             | Self::Clock
             | Self::JointActuatorFrc
+            | Self::TendonActuatorFrc
             | Self::GeomDist => 1,
 
             Self::Accelerometer

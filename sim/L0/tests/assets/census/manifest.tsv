@@ -2125,3 +2125,4 @@ ecb5a767b60490ef	sim/L0/mjcf/tests/flex_vertex_bodies.rs:717
 5a5e786e7bd11eb6	sim/L0/mjcf/src/builder/actuator.rs:1477
 6a88f6d33032d3b9	sim/L0/mjcf/src/builder/actuator.rs:1466
 784a5ee6f7d42d92	sim/L0/mjcf/src/builder/actuator.rs:1509
+924ccd8af8ae71c4	sim/L0/tests/integration/sensor_phase6_spec_c.rs:1070

@@ -3398,6 +3398,8 @@ pub enum MjcfSensorType {
     Clock,
     /// Joint actuator force sensor (1D). MJCF element: `<jointactuatorfrc>`.
     Jointactuatorfrc,
+    /// Tendon actuator force sensor (1D). MJCF element: `<tendonactuatorfrc>`.
+    Tendonactuatorfrc,
     /// Geom distance sensor (1D). MJCF element: `<distance>`.
     Distance,
     /// Surface normal between geoms (3D). MJCF element: `<normal>`.
@@ -3447,6 +3449,7 @@ impl MjcfSensorType {
             "frameangacc" => Some(Self::Frameangacc),
             "clock" => Some(Self::Clock),
             "jointactuatorfrc" => Some(Self::Jointactuatorfrc),
+            "tendonactuatorfrc" => Some(Self::Tendonactuatorfrc),
             "distance" => Some(Self::Distance),
             "normal" => Some(Self::Normal),
             "fromto" => Some(Self::Fromto),
@@ -3492,6 +3495,7 @@ impl MjcfSensorType {
             Self::Frameangacc => "frameangacc",
             Self::Clock => "clock",
             Self::Jointactuatorfrc => "jointactuatorfrc",
+            Self::Tendonactuatorfrc => "tendonactuatorfrc",
             Self::Distance => "distance",
             Self::Normal => "normal",
             Self::Fromto => "fromto",
@@ -3517,6 +3521,7 @@ impl MjcfSensorType {
             | Self::Rangefinder
             | Self::Clock
             | Self::Jointactuatorfrc
+            | Self::Tendonactuatorfrc
             | Self::Distance => 1,
 
             Self::Framepos

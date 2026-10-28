@@ -564,6 +564,7 @@ pub fn sensor_type_to_gizmo(
         | MjSensorType::JointLimitFrc
         | MjSensorType::TendonLimitFrc
         | MjSensorType::JointActuatorFrc
+        | MjSensorType::TendonActuatorFrc
         | MjSensorType::Clock
         | MjSensorType::User
         | MjSensorType::Plugin => SensorGizmo::HudOnly,
@@ -800,6 +801,7 @@ mod tests {
             | MjSensorType::JointLimitFrc
             | MjSensorType::TendonLimitFrc
             | MjSensorType::JointActuatorFrc
+            | MjSensorType::TendonActuatorFrc
             | MjSensorType::GeomDist
             | MjSensorType::Clock
             | MjSensorType::User
@@ -843,6 +845,7 @@ mod tests {
             MjSensorType::SubtreeAngMom,
             MjSensorType::Clock,
             MjSensorType::JointActuatorFrc,
+            MjSensorType::TendonActuatorFrc,
             MjSensorType::GeomDist,
             MjSensorType::GeomNormal,
             MjSensorType::GeomFromTo,

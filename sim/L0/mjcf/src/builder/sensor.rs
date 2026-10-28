@@ -177,7 +177,10 @@ impl ModelBuilder {
             }
 
             // Tendon sensors: objname is a tendon name
-            MjSensorType::TendonPos | MjSensorType::TendonVel | MjSensorType::TendonLimitFrc => {
+            MjSensorType::TendonPos
+            | MjSensorType::TendonVel
+            | MjSensorType::TendonLimitFrc
+            | MjSensorType::TendonActuatorFrc => {
                 let id = *self
                     .tendon_name_to_id
                     .get(name)
@@ -481,6 +484,7 @@ fn convert_sensor_type(mjcf: MjcfSensorType) -> Option<MjSensorType> {
         MjcfSensorType::Tendonlimitfrc => Some(MjSensorType::TendonLimitFrc),
         MjcfSensorType::Clock => Some(MjSensorType::Clock),
         MjcfSensorType::Jointactuatorfrc => Some(MjSensorType::JointActuatorFrc),
+        MjcfSensorType::Tendonactuatorfrc => Some(MjSensorType::TendonActuatorFrc),
         MjcfSensorType::Distance => Some(MjSensorType::GeomDist),
         MjcfSensorType::Normal => Some(MjSensorType::GeomNormal),
         MjcfSensorType::Fromto => Some(MjSensorType::GeomFromTo),
@@ -532,6 +536,7 @@ fn sensor_datatype(t: MjSensorType) -> MjSensorDataType {
         | MjSensorType::FrameLinAcc
         | MjSensorType::FrameAngAcc
         | MjSensorType::JointActuatorFrc
+        | MjSensorType::TendonActuatorFrc
         | MjSensorType::User
         | MjSensorType::Plugin => MjSensorDataType::Acceleration,
     }
