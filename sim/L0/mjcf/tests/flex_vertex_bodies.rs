@@ -682,6 +682,45 @@ fn a_poisson_ratio_out_of_range_is_refused() {
     }
 }
 
+/// A positive edge stiffness on a flex of dim above 1 is refused as MuJoCo
+/// 3.5.0's compiler refuses it (`user_mesh.cc:4123-4125`); a stiffness of 0
+/// there and one on a cable load (measured on the same `<flex>` documents).
+/// The flexcomp twin is refused the same way. sim-mjcf loaded both.
+#[test]
+fn an_edge_stiffness_on_a_flex_of_dim_above_1_is_refused() {
+    let reason = "edge stiffness only available for dim=1, please use elasticity plugins";
+    let triangle = |stiffness: &str| {
+        doc(
+            &triangle_bodies(),
+            &format!(
+                r#"<flex name="f" dim="2" body="a b c" element="0 1 2"><edge stiffness="{stiffness}"/></flex>"#
+            ),
+        )
+    };
+    let flexcomp = r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1"><edge stiffness="1"/></flexcomp></deformable></mujoco>"#;
+    for (form, xml) in [("flex", triangle("1")), ("flexcomp", flexcomp.to_string())] {
+        match refusal(&xml) {
+            MjcfError::InvalidValue {
+                element,
+                attribute,
+                reason: got,
+                ..
+            } => assert_eq!(
+                (element.as_str(), attribute.as_str(), got.as_str()),
+                ("edge", "stiffness", reason),
+                "{form}"
+            ),
+            other => panic!("{form}: {other}"),
+        }
+    }
+    load_model(&triangle("0")).expect("a stiffness of 0");
+    load_model(&doc(
+        &triangle_bodies(),
+        r#"<flex name="f" dim="1" body="a b" element="0 1"><edge stiffness="1"/></flex>"#,
+    ))
+    .expect("a cable");
+}
+
 /// A `<deformable><flexcomp>` that generates no element (a grid one vertex
 /// wide) is refused, "elem is empty", as MuJoCo's compiler refuses an empty
 /// flex; MuJoCo's own grid flexcomp refuses it as "No elements were created

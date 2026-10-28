@@ -285,6 +285,7 @@ impl ModelBuilder {
         if flex.body.is_empty() && !interpolated {
             return Err(refuse("body", "vertbody and nodebody are both empty"));
         }
+        check_flex_edge_stiffness(flex)?;
         if interpolated && flex.selfcollide.as_deref() != Some("none") {
             return Err(refuse(
                 "node",
@@ -754,12 +755,13 @@ fn check_flexcomp(flex: &MjcfFlex) -> Result<()> {
     Ok(())
 }
 
-/// MuJoCo's checks of a flexcomp's elements and Poisson ratio before anything
+/// MuJoCo's checks of a flexcomp's elements, edge stiffness and Poisson ratio before anything
 /// is built from them (`mjCFlex::Compile`, `user_mesh.cc`), in its order, as
 /// the functions below make them. A `<flex>` takes them one by one in
 /// `resolve_vertex_bodies`, among the checks of its bodies, and not here.
 fn check_flex_elements(flex: &MjcfFlex) -> Result<()> {
     check_flex_dim_and_elements(flex)?;
+    check_flex_edge_stiffness(flex)?;
     check_flex_vertex_count(flex, flex.vertices.len())?;
     check_flex_element_ids(flex, flex.vertices.len())?;
     check_flex_repeated_vertices(flex)?;
@@ -813,6 +815,21 @@ fn check_flex_dim_and_elements(flex: &MjcfFlex) -> Result<()> {
         return Err(refuse_flex(
             "element",
             "elem size must be multiple of (dim+1)",
+        ));
+    }
+    Ok(())
+}
+
+/// A positive edge stiffness only on a flex of dim 1 (`user_mesh.cc:
+/// 4123-4125`). MuJoCo's passive edge spring has no dim check
+/// (`engine_passive.c:413-443`), nor has sim-core's, so a model built in
+/// code still reaches it.
+fn check_flex_edge_stiffness(flex: &MjcfFlex) -> Result<()> {
+    if flex.edge_stiffness > 0.0 && flex.dim > 1 {
+        return Err(MjcfError::invalid_value(
+            "edge",
+            "stiffness",
+            "edge stiffness only available for dim=1, please use elasticity plugins",
         ));
     }
     Ok(())
