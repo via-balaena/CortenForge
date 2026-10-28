@@ -774,3 +774,53 @@ fn a_code_built_flexcomp_with_body_or_node_is_refused() {
     let mjcf = parse_mjcf_str(xml).unwrap();
     model_from_mjcf(&mjcf, None).expect("without them");
 }
+
+/// With `vertcollide`, each vertex body a flexcomp makes gets a sphere of the
+/// flex's radius in group 4, in the root class (its `contype` here), as
+/// MuJoCo 3.5.0's flexcomp (`user_flexcomp.cc:505-511`); a pinned vertex
+/// gets none, MuJoCo making it no body. MuJoCo's own flexcomp under
+/// `<worldbody>` gives the same three spheres, and each vertex body the
+/// same inertia (measured). sim-mjcf stored the flag and made no geom.
+#[test]
+fn a_flexcomp_with_vertcollide_gives_its_vertex_bodies_spheres() {
+    let xml = r#"<mujoco><default><geom contype="2"/></default><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" radius="0.02" mass="1"><contact vertcollide="true"/><pin id="3"/></flexcomp></deformable></mujoco>"#;
+    let model = load_model(xml).unwrap();
+    assert_eq!(model.ngeom, 3);
+    for g in 0..3 {
+        assert_eq!(model.geom_type[g], sim_core::GeomType::Sphere, "{g}");
+        assert_eq!(model.geom_size[g].x.to_bits(), 0.02_f64.to_bits(), "{g}");
+        assert_eq!((model.geom_group[g], model.geom_contype[g]), (4, 2), "{g}");
+        assert_eq!(model.geom_body[g], model.flexvert_bodyid[g], "{g}");
+    }
+    assert_eq!(model.body_mass[1..4], [0.25; 3]);
+    assert_eq!(
+        model.body_inertia[1].x.to_bits(),
+        4.166_666_666_666_667e-6_f64.to_bits()
+    );
+    let plain = load_model(&xml.replace(r#" vertcollide="true""#, "")).unwrap();
+    assert_eq!(plain.ngeom, 0);
+}
+
+/// The spheres hold up a cloth whose own contact is off: a grid of four
+/// vertices with `vertcollide`, started on a plane, comes to rest with each
+/// vertex about its radius above it (0.0196 for 0.02, measured), and
+/// without the spheres it falls through.
+#[test]
+fn a_cloth_rests_on_its_vertex_spheres() {
+    let xml = r#"<mujoco><worldbody><geom type="plane" size="1 1 0.1"/></worldbody><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" radius="0.02" mass="1"><contact contype="0" conaffinity="0" vertcollide="true"/></flexcomp></deformable></mujoco>"#;
+    let lowest = |xml: &str| {
+        let model = load_model(xml).unwrap();
+        let mut data = model.make_data();
+        for _ in 0..500 {
+            data.step(&model).expect("step");
+        }
+        data.flexvert_xpos
+            .iter()
+            .map(|p| p.z)
+            .fold(f64::INFINITY, f64::min)
+    };
+    let resting = lowest(xml);
+    assert!((resting - 0.02).abs() < 2e-3, "on its spheres: {resting}");
+    let fallen = lowest(&xml.replace(r#" vertcollide="true""#, ""));
+    assert!(fallen < -0.1, "without them: {fallen}");
+}

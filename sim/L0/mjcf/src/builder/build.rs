@@ -269,7 +269,6 @@ impl ModelBuilder {
             flex_selfcollide: self.flex_selfcollide,
             flex_internal: self.flex_internal,
             flex_activelayers: self.flex_activelayers,
-            flex_vertcollide: self.flex_vertcollide,
             flex_passive: self.flex_passive,
             flex_edgestiffness: self.flex_edgestiffness,
             flex_edgedamping: self.flex_edgedamping,

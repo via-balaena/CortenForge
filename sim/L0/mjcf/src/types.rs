@@ -4110,8 +4110,10 @@ pub struct MjcfFlex {
     /// element is active while its layer, its distance from the border, is
     /// below it (`mj_isElemActive`).
     pub activelayers: i32,
-    /// Per-vertex collision mode (default false). When true, vertex spheres
-    /// collide with other geoms even when not part of a flex element face.
+    /// Vertex spheres (default false, MuJoCo's): a flexcomp's loader gives
+    /// each vertex body it makes, not a pinned vertex's, a sphere geom of the
+    /// flex's radius in group 4, as MuJoCo's flexcomp (`user_flexcomp.cc:
+    /// 505-511`). On a `<flex>` it is read and does nothing, as in MuJoCo.
     pub vertcollide: bool,
     /// Passive contact flag (default false, MuJoCo's). When true, flex
     /// contacts generate passive forces only (no constraint solver

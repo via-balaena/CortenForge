@@ -1,0 +1,1 @@
+<mujoco><default><geom contype="2"/></default><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" radius="0.02" mass="1"><contact vertcollide="true"/><pin id="3"/></flexcomp></deformable></mujoco>

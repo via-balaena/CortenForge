@@ -15,7 +15,7 @@ use nalgebra::{UnitQuaternion, Vector3};
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::keywords;
-use crate::types::{FlexVertexBodies, MjcfFlex};
+use crate::types::{FlexVertexBodies, MjcfFlex, MjcfGeom, MjcfGeomType};
 use sim_core::{EqualityType, FlexSelfCollide, MjJointType};
 
 /// Number of coefficients per bending element in the discrete thin-shell model.
@@ -87,7 +87,8 @@ impl ModelBuilder {
                 for (i, pos) in flex.vertices.iter().enumerate() {
                     let mass = vertex_masses[i];
                     let pinned = flex.pinned.contains(&i);
-                    self.create_flex_vertex_body(flex, pos, mass, pinned, flex_id);
+                    self.create_flex_vertex_body(flex, pos, mass, pinned, flex_id)
+                        .map_err(|e| e.with_location_if_unknown(at()))?;
                 }
             }
 
@@ -184,7 +185,6 @@ impl ModelBuilder {
             // DT-85: flex contact runtime attributes
             self.flex_internal.push(flex.internal);
             self.flex_activelayers.push(flex.activelayers);
-            self.flex_vertcollide.push(flex.vertcollide);
             self.flex_passive.push(flex.passive);
             self.flex_edgestiffness.push(flex.edge_stiffness);
             self.flex_edgedamping.push(flex.edge_damping);
@@ -448,7 +448,7 @@ impl ModelBuilder {
     ///
     /// Pushes body, joint, DOF, qpos, and flexvert arrays for the vertex at `pos`.
     /// Pinned vertices get a body with no joints/DOFs; unpinned get 3 slide joints (X, Y, Z),
-    /// each with the flex's damping.
+    /// each with the flex's damping, and with `vertcollide` a sphere geom.
     fn create_flex_vertex_body(
         &mut self,
         flex: &MjcfFlex,
@@ -456,7 +456,7 @@ impl ModelBuilder {
         mass: f64,
         pinned: bool,
         flex_id: usize,
-    ) {
+    ) -> Result<()> {
         let axes = [Vector3::x(), Vector3::y(), Vector3::z()];
 
         // `check_flexcomp` has refused a mass below mjMINVAL, and the density
@@ -567,7 +567,7 @@ impl ModelBuilder {
 
             self.body_jnt_num.push(3);
             self.body_dof_num.push(3);
-            self.body_geom_num.push(0);
+            self.body_geom_num.push(usize::from(flex.vertcollide));
 
             self.flexvert_qposadr.push(qpos_start); // first of 3 slide joint qpos addresses
             self.flexvert_dofadr.push(dof_adr); // first of 3 DOF addresses
@@ -580,6 +580,23 @@ impl ModelBuilder {
         self.flexvert_flexid.push(flex_id);
         self.flexvert_bodyid.push(body_id);
         self.flexvert_initial_pos.push(*pos);
+
+        // With `vertcollide`, MuJoCo's flexcomp gives each vertex body it
+        // makes a sphere of the flex's radius in group 4 (`user_flexcomp.cc:
+        // 505-511`); a pinned vertex has no body of its own there, so no
+        // sphere. The sphere takes its body's class, the root's here, as
+        // these bodies hang off the world; the body's mass and inertia stay
+        // the flexcomp's.
+        if flex.vertcollide && !pinned {
+            let sphere = self.resolver.apply_to_geom(&MjcfGeom {
+                geom_type: Some(MjcfGeomType::Sphere),
+                size: vec![flex.radius],
+                group: Some(4),
+                ..MjcfGeom::default()
+            });
+            self.process_geom(&sphere, body_id)?;
+        }
+        Ok(())
     }
 
     /// Extract edges from element connectivity for one flex.

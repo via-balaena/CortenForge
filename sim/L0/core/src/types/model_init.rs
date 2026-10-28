@@ -291,7 +291,6 @@ impl Model {
             flex_selfcollide: vec![],
             flex_internal: vec![],
             flex_activelayers: vec![],
-            flex_vertcollide: vec![],
             flex_passive: vec![],
             flex_edgestiffness: vec![],
             flex_edgedamping: vec![],

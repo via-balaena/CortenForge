@@ -1,0 +1,1 @@
+<mujoco><worldbody><geom type="plane" size="1 1 0.1"/></worldbody><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" radius="0.02" mass="1"><contact contype="0" conaffinity="0" vertcollide="true"/></flexcomp></deformable></mujoco>
