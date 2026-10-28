@@ -1787,7 +1787,9 @@ impl Default for MjcfSite {
 ///
 /// This constraint enforces that two attachment points (one on each body)
 /// coincide in 3D space, acting like a ball-and-socket joint without any
-/// rotational constraints.
+/// rotational constraints. As MuJoCo 3.5.0's, it is written in one of two
+/// forms: `body1` and `anchor` (and `body2`, else the world), or `site1` and
+/// `site2`, whose positions are the two points.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfConnect {
@@ -1795,12 +1797,16 @@ pub struct MjcfConnect {
     pub name: Option<String>,
     /// Default class for inheriting parameters.
     pub class: Option<String>,
-    /// Name of the first body.
-    pub body1: String,
-    /// Name of the second body (optional, defaults to world).
+    /// Name of the first body (the body form).
+    pub body1: Option<String>,
+    /// Name of the second body (the body form; the world when `None`).
     pub body2: Option<String>,
-    /// Anchor point in body1's local frame.
-    pub anchor: Vector3<f64>,
+    /// Anchor point in body1's local frame (the body form).
+    pub anchor: Option<Vector3<f64>>,
+    /// Name of the first site (the site form).
+    pub site1: Option<String>,
+    /// Name of the second site (the site form).
+    pub site2: Option<String>,
     /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
     /// Controls constraint softness/stiffness.
     pub solimp: Option<Prefix<5>>,
@@ -1816,9 +1822,11 @@ impl Default for MjcfConnect {
         Self {
             name: None,
             class: None,
-            body1: String::new(),
+            body1: None,
             body2: None,
-            anchor: Vector3::zeros(),
+            anchor: None,
+            site1: None,
+            site2: None,
             solimp: None,
             solref: None,
             active: None,
@@ -1827,22 +1835,36 @@ impl Default for MjcfConnect {
 }
 
 impl MjcfConnect {
-    /// Create a new connect constraint between two bodies.
+    /// Create a new connect constraint between two bodies, anchored at
+    /// body1's origin until [`with_anchor`](Self::with_anchor) sets it.
     #[must_use]
     pub fn new(body1: impl Into<String>, body2: impl Into<String>) -> Self {
         Self {
-            body1: body1.into(),
+            body1: Some(body1.into()),
             body2: Some(body2.into()),
+            anchor: Some(Vector3::zeros()),
             ..Default::default()
         }
     }
 
-    /// Create a connect constraint to the world frame.
+    /// Create a connect constraint to the world frame, anchored at body1's
+    /// origin until [`with_anchor`](Self::with_anchor) sets it.
     #[must_use]
     pub fn to_world(body1: impl Into<String>) -> Self {
         Self {
-            body1: body1.into(),
+            body1: Some(body1.into()),
             body2: None,
+            anchor: Some(Vector3::zeros()),
+            ..Default::default()
+        }
+    }
+
+    /// Create a connect constraint between two sites (the site form).
+    #[must_use]
+    pub fn between_sites(site1: impl Into<String>, site2: impl Into<String>) -> Self {
+        Self {
+            site1: Some(site1.into()),
+            site2: Some(site2.into()),
             ..Default::default()
         }
     }
@@ -1850,7 +1872,7 @@ impl MjcfConnect {
     /// Set the anchor point in body1's frame.
     #[must_use]
     pub fn with_anchor(mut self, anchor: Vector3<f64>) -> Self {
-        self.anchor = anchor;
+        self.anchor = Some(anchor);
         self
     }
 

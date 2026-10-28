@@ -2130,3 +2130,12 @@ ecb5a767b60490ef	sim/L0/mjcf/tests/flex_vertex_bodies.rs:717
 b2a9b10667ab7047	sim/L0/tests/integration/callbacks.rs:198
 c760b08a0468de51	sim/L0/mjcf/tests/user_sensors.rs:31
 ddd2cc2869d50122	sim/L0/mjcf/tests/user_sensors.rs:18
+02936f0a54b7eb1e	sim/L0/tests/integration/equality_constraints.rs:573
+137308cd48077ee9	sim/L0/mjcf/src/parser/tests.rs:1256
+247d18369c1f6327	sim/L0/mjcf/tests/connect_forms.rs:20
+3d37cf3ab7b6d937	sim/L0/mjcf/src/parser/tests.rs:1295
+64ec11c4130864a7	sim/L0/mjcf/src/parser/tests.rs:1324
+6c4d31e900e4dc70	sim/L0/mjcf/src/parser/tests.rs:1397
+6d39d833f3f392a7	sim/L0/mjcf/src/parser/tests.rs:1343
+8acfa2c1e1928df2	sim/L0/tests/integration/equality_constraints.rs:505
+f0b98fca9eede3ea	sim/L0/tests/integration/equality_constraints.rs:747

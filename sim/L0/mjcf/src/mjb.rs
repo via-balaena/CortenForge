@@ -58,8 +58,10 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
 ///
-/// 8 since `MjcfActuator` and `MjcfActuatorDefaults` took `inheritrange` and
-/// `MjcfActuatorType` took `IntVelocity` (Rigid-loading PR RL-4a). 7 since a
+/// 8 since Rigid-loading PR RL-4a: `MjcfActuator` and `MjcfActuatorDefaults`
+/// took `inheritrange`, `MjcfActuatorType` `IntVelocity`, `MjcfSensor` `dim`,
+/// `needstage` and `datatype`, `MjcfSensorType` `Tendonactuatorfrc`, and
+/// `MjcfConnect` `site1` and `site2`, its `body1` and `anchor` optional. 7 since a
 /// flexcomp's unwritten `inertiabox` reads as MuJoCo's 0.005 and
 /// one below mjMINVAL is refused (Rigid-loading PR RL-3b): a version-6 file
 /// holds 0.0 there for a flexcomp that did not write it. 6 since `MjcfFlex`

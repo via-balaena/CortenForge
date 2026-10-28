@@ -66,7 +66,9 @@ pub fn apply_fusestatic(mjcf: &mut MjcfModel) {
 
     // Equality constraints
     for c in &mjcf.equality.connects {
-        protected.insert(c.body1.clone());
+        if let Some(ref b1) = c.body1 {
+            protected.insert(b1.clone());
+        }
         if let Some(ref b2) = c.body2 {
             protected.insert(b2.clone());
         }

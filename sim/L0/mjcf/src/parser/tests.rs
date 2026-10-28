@@ -1242,11 +1242,12 @@ fn test_parse_connect_constraint_basic() {
     assert_eq!(model.equality.connects.len(), 1);
 
     let connect = &model.equality.connects[0];
-    assert_eq!(connect.body1, "body1");
+    assert_eq!(connect.body1.as_deref(), Some("body1"));
     assert_eq!(connect.body2, Some("body2".to_string()));
-    assert_relative_eq!(connect.anchor.x, 0.5, epsilon = 1e-10);
-    assert_relative_eq!(connect.anchor.y, 0.0, epsilon = 1e-10);
-    assert_relative_eq!(connect.anchor.z, 0.0, epsilon = 1e-10);
+    let anchor = connect.anchor.expect("anchor");
+    assert_relative_eq!(anchor.x, 0.5, epsilon = 1e-10);
+    assert_relative_eq!(anchor.y, 0.0, epsilon = 1e-10);
+    assert_relative_eq!(anchor.z, 0.0, epsilon = 1e-10);
     assert_eq!(connect.active, None);
 }
 
@@ -1259,7 +1260,7 @@ fn test_parse_connect_constraint_with_name() {
                     <body name="link2"/>
                 </worldbody>
                 <equality>
-                    <connect name="ball_joint" body1="link1" body2="link2"/>
+                    <connect name="ball_joint" body1="link1" body2="link2" anchor="0 0 0"/>
                 </equality>
             </mujoco>
         "#;
@@ -1284,9 +1285,9 @@ fn test_parse_connect_constraint_to_world() {
 
     let model = parse_mjcf_str(xml).expect("should parse");
     let connect = &model.equality.connects[0];
-    assert_eq!(connect.body1, "floating_body");
+    assert_eq!(connect.body1.as_deref(), Some("floating_body"));
     assert!(connect.body2.is_none()); // Defaults to world
-    assert_relative_eq!(connect.anchor.z, 1.0, epsilon = 1e-10);
+    assert_relative_eq!(connect.anchor.expect("anchor").z, 1.0, epsilon = 1e-10);
 }
 
 #[test]
@@ -1298,7 +1299,7 @@ fn test_parse_connect_constraint_with_solver_params() {
                     <body name="body2"/>
                 </worldbody>
                 <equality>
-                    <connect body1="body1" body2="body2"
+                    <connect body1="body1" body2="body2" anchor="0 0 0"
                              solref="0.02 1"
                              solimp="0.9 0.95 0.001 0.5 2"/>
                 </equality>
@@ -1327,7 +1328,7 @@ fn test_parse_connect_constraint_inactive() {
                     <body name="body2"/>
                 </worldbody>
                 <equality>
-                    <connect body1="body1" body2="body2" active="false"/>
+                    <connect body1="body1" body2="body2" anchor="0 0 0" active="false"/>
                 </equality>
             </mujoco>
         "#;
@@ -1347,8 +1348,8 @@ fn test_parse_multiple_connect_constraints() {
                     <body name="c"/>
                 </worldbody>
                 <equality>
-                    <connect name="c1" body1="a" body2="b"/>
-                    <connect name="c2" body1="b" body2="c"/>
+                    <connect name="c1" body1="a" body2="b" anchor="0 0 0"/>
+                    <connect name="c2" body1="b" body2="c" anchor="0 0 0"/>
                     <connect name="c3" body1="c" anchor="0 0 0"/>
                 </equality>
             </mujoco>
@@ -1400,8 +1401,8 @@ fn test_equality_len() {
                     <body name="b"/>
                 </worldbody>
                 <equality>
-                    <connect body1="a" body2="b"/>
-                    <connect body1="b"/>
+                    <connect body1="a" body2="b" anchor="0 0 0"/>
+                    <connect body1="b" anchor="0 0 0"/>
                 </equality>
             </mujoco>
         "#;

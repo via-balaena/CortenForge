@@ -117,18 +117,12 @@ pub(super) fn parse_connect_attrs(e: &BytesStart) -> Result<MjcfConnect> {
     connect.name = a.string("name");
     connect.class = a.string("class");
 
-    // body1 is required
-    connect.body1 = a
-        .string("body1")
-        .ok_or_else(|| MjcfError::missing_attribute("connect", "body1"))?;
-
-    // body2 is optional (defaults to world)
+    connect.body1 = a.string("body1");
     connect.body2 = a.string("body2");
-
-    // Parse anchor point
-    if let Some(anchor) = a.vec3("anchor")? {
-        connect.anchor = anchor;
-    }
+    connect.anchor = a.vec3("anchor")?;
+    connect.site1 = a.string("site1");
+    connect.site2 = a.string("site2");
+    crate::builder::equality::connect_form(&connect)?;
 
     // Parse solver parameters
     connect.solimp = a.prefix("solimp")?;

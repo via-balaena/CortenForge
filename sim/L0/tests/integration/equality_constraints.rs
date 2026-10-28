@@ -512,7 +512,7 @@ fn test_inactive_constraint_ignored() {
                 </body>
             </worldbody>
             <equality>
-                <connect body1="ball" active="false"/>
+                <connect body1="ball" anchor="0 0 0" active="false"/>
             </equality>
         </mujoco>
     "#;
@@ -580,7 +580,7 @@ fn test_constraint_with_solref() {
                 </body>
             </worldbody>
             <equality>
-                <connect body1="ball" solref="0.02 1.0"/>
+                <connect body1="ball" anchor="0 0 0" solref="0.02 1.0"/>
             </equality>
         </mujoco>
     "#;
@@ -753,7 +753,7 @@ fn test_invalid_body_name_returns_error() {
                 </body>
             </worldbody>
             <equality>
-                <connect body1="nonexistent_body"/>
+                <connect body1="nonexistent_body" anchor="0 0 0"/>
             </equality>
         </mujoco>
     "#;
