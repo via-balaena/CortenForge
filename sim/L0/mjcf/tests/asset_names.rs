@@ -69,6 +69,21 @@ fn an_unnamed_mesh_is_named_by_its_file() {
     assert!(err.to_string().contains("'a'"), "{err}");
 }
 
+/// The name is given before discardvisual drops the meshes no geom names:
+/// a geom naming an unnamed mesh by its file keeps it (MuJoCo: nmesh 1).
+#[test]
+fn an_unnamed_mesh_survives_discardvisual() {
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let model = load_model(&format!(
+        r#"<mujoco><compiler meshdir="{}" discardvisual="true"/><asset><mesh file="tet.obj"/></asset>
+<worldbody><body><freejoint/><geom type="mesh" mesh="tet"/></body></worldbody></mujoco>"#,
+        dir.path().display()
+    ))
+    .expect("loads");
+    assert_eq!(model.mesh_name, ["tet"]);
+}
+
 /// A mesh with no name and no file's name is refused, as MuJoCo refuses it
 /// ("empty name in mesh"); two of one name are a repeated name ("repeated
 /// name 'tet' in mesh").

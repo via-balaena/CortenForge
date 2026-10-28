@@ -97,3 +97,25 @@ fn a_connect_in_no_form_is_refused() {
         );
     }
 }
+
+/// The site form names each site's BODY, not the site: here the sites' ids
+/// (2 and 3, after two sites before them) are not their bodies' (1 and 2).
+#[test]
+fn a_site_form_connect_names_its_sites_bodies() {
+    let model = load_model(
+        r#"<mujoco><worldbody><site name="w"/>
+<body name="a" pos="0 0 1"><freejoint/><geom size="0.1" mass="1"/><site name="x"/><site name="sa" pos="0.1 0 0"/></body>
+<body name="b" pos="1 0 1"><freejoint/><geom size="0.1" mass="1"/><site name="sb"/></body></worldbody>
+<equality><connect site1="sa" site2="sb"/></equality></mujoco>"#,
+    )
+    .expect("loads");
+    let site = |name: &str| {
+        model
+            .site_name
+            .iter()
+            .position(|n| n.as_deref() == Some(name))
+            .unwrap()
+    };
+    assert_eq!((site("sa"), site("sb")), (2, 3));
+    assert_eq!((model.eq_obj1id[0], model.eq_obj2id[0]), (1, 2));
+}

@@ -1627,6 +1627,28 @@ mod tests {
         ))
         .expect("motor");
         assert!(motor.actuator_ctrlrange[0].0.is_infinite());
+        // An actuator takes a class's inheritrange only with a position
+        // servo's gain and bias: no bias, a bias not -kp, an affine gain each
+        // take nothing (MuJoCo: ctrllimited 0, measured).
+        for general in [
+            r#"<general joint="h" class="c" gaintype="fixed" biastype="none" gainprm="5" biasprm="0 -5"/>"#,
+            r#"<general joint="h" class="c" gaintype="fixed" biastype="affine" gainprm="5" biasprm="0 -4"/>"#,
+            r#"<general joint="h" class="c" gaintype="affine" biastype="affine" gainprm="5" biasprm="0 -5"/>"#,
+        ] {
+            let model = load_model(&inheritrange_model(general, class)).expect(general);
+            assert!(model.actuator_ctrlrange[0].0.is_infinite(), "{general}");
+        }
+        // A class's inheritrange reaches a class below it.
+        let nested = r#"<default><default class="p"><position inheritrange="1"/><default class="c"><position kp="3"/></default></default></default>"#;
+        assert_eq!(ctrl(r#"<position joint="h" class="c"/>"#, nested), hinge);
+        // A negative inheritrange beside a ctrlrange is no conflict: the range
+        // written stays (MuJoCo: ctrlrange -1 1).
+        let kept = load_model(&inheritrange_model(
+            r#"<position joint="h" kp="3" ctrlrange="-1 1" inheritrange="-1"/>"#,
+            "",
+        ))
+        .expect("kept");
+        assert_eq!(kept.actuator_ctrlrange[0], (-1.0, 1.0));
         // A negative inheritrange takes nothing.
         let negative = load_model(&inheritrange_model(
             r#"<position joint="h" kp="3" inheritrange="-1"/>"#,
@@ -1694,6 +1716,12 @@ mod tests {
                 r#"<intvelocity joint="h" kp="3" ctrlrange="-1 1" actrange="-1 1" inheritrange="1"/>"#,
                 "",
                 "actrange and inheritrange cannot both be defined",
+            ),
+            // MuJoCo refuses it as "invalid actrange for actuator".
+            (
+                r#"<intvelocity joint="h" kp="3" ctrlrange="-1 1" inheritrange="1"/>"#,
+                "",
+                "ctrlrange and inheritrange cannot both be defined",
             ),
             (
                 r#"<general joint="h" class="c" dyntype="filter" gaintype="fixed" biastype="affine" gainprm="5" biasprm="0 -5"/>"#,

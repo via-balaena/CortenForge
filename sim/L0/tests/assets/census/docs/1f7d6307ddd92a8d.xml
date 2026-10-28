@@ -1,0 +1,4 @@
+<mujoco><worldbody><site name="w"/>
+<body name="a" pos="0 0 1"><freejoint/><geom size="0.1" mass="1"/><site name="x"/><site name="sa" pos="0.1 0 0"/></body>
+<body name="b" pos="1 0 1"><freejoint/><geom size="0.1" mass="1"/><site name="sb"/></body></worldbody>
+<equality><connect site1="sa" site2="sb"/></equality></mujoco>
