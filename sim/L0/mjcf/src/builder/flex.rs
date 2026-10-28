@@ -1,8 +1,10 @@
 //! Flex deformable body processing.
 //!
 //! Converts MJCF `<flex>` / `<flexcomp>` elements into the flex body arrays.
-//! Creates a kinematic body (+ 3 slide joints for unpinned vertices) per flex
-//! vertex, extracts edges/hinges, and populates per-flex material properties.
+//! A `<flex>`'s vertices are the bodies it names (MuJoCo 3.5.0's form); a
+//! `<deformable><flexcomp>`'s each get a body of its own (+ 3 slide joints if
+//! unpinned). Then the edges and hinges are extracted and the per-flex material
+//! properties set.
 //!
 //! MuJoCo architecture: flex vertices ARE bodies in the kinematic tree.
 //! `mj_crb`/`mj_rne` have zero flex-specific code — the standard rigid-body
@@ -13,7 +15,7 @@ use nalgebra::{UnitQuaternion, Vector3};
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::keywords;
-use crate::types::MjcfFlex;
+use crate::types::{FlexVertexBodies, MjcfFlex};
 use sim_core::{EqualityType, FlexSelfCollide, MjJointType};
 
 /// Number of coefficients per bending element in the discrete thin-shell model.
@@ -25,52 +27,31 @@ const BENDING_COEFFS: usize = 17;
 const MIN_VERTEX_MASS: f64 = 0.001;
 
 impl ModelBuilder {
-    /// Process flex deformable bodies: create a real body (+ 3 slide joints for unpinned
-    /// vertices) per flex vertex, extract edges/hinges, populate Model flex_* arrays.
+    /// Process flex deformable bodies: a `<flex>`'s vertices on the bodies it names, a
+    /// flexcomp's on a body each (+ 3 slide joints if unpinned); extract edges/hinges,
+    /// populate Model flex_* arrays.
     ///
     /// MuJoCo architecture: flex vertices ARE bodies in the kinematic tree. `mj_crb`/`mj_rne`
     /// have zero flex-specific code — the standard rigid-body pipeline handles everything.
     pub(crate) fn process_flex_bodies(&mut self, flex_list: &[MjcfFlex]) -> Result<()> {
         for (index, flex_orig) in flex_list.iter().enumerate() {
             let at = || Location::nth(ElementKind::Flex, Some(&flex_orig.name), index);
-            // Resolve `node` attribute: if `node` names are present and no vertices
-            // exist, use the named bodies as flex vertices (MuJoCo semantics).
-            //
-            // Each node body IS the vertex. The new vertex body is parented to the
-            // node body with body_pos = zeros (vertex is at node body origin).
-            // We store the node body's world position as the vertex position so that
-            // edge rest-lengths and mass lumping use correct geometry. Then override
-            // body_pos to zeros when creating the vertex body (see `is_node_flex`
-            // flag below).
+            // A `<flex>`'s vertices are the bodies it names; a flexcomp's get
+            // bodies of their own below.
             let resolved;
-            let is_node_flex;
-            let flex = if !flex_orig.node.is_empty() && flex_orig.vertices.is_empty() {
-                resolved = {
-                    let mut f = flex_orig.clone();
-                    for node_name in &flex_orig.node {
-                        let &bid = self.body_name_to_id.get(node_name).ok_or_else(|| {
-                            MjcfError::undefined(ElementKind::Body, node_name).at(at())
-                        })?;
-                        // World position for geometry (rest-lengths, mass lumping).
-                        // body_world_pos is indexed by (body_id - 1) since worldbody
-                        // has no entry. Node bodies are always non-world (bid >= 1).
-                        let world_pos = if bid == 0 {
-                            Vector3::zeros()
-                        } else {
-                            self.body_world_pos[bid - 1]
-                        };
-                        f.vertices.push(world_pos);
-                        f.body.push(node_name.clone());
-                    }
-                    f
-                };
-                is_node_flex = true;
+            let mut vertex_bodies = None;
+            let flex = if flex_orig.vertex_bodies == FlexVertexBodies::Named {
+                let (named, bodies) = self
+                    .resolve_vertex_bodies(flex_orig)
+                    .map_err(|e| e.with_location_if_unknown(at()))?;
+                resolved = named;
+                vertex_bodies = Some(bodies);
                 &resolved
             } else {
-                is_node_flex = false;
+                // A flexcomp's checks; a `<flex>` has had them above.
+                check_flex_elements(flex_orig).map_err(|e| e.with_location_if_unknown(at()))?;
                 flex_orig
             };
-            check_flex_elements(flex).map_err(|e| e.with_location_if_unknown(at()))?;
             // Before the masses, edges, hinges and elements read the order.
             let oriented;
             let flex = if flex.dim == 3 {
@@ -89,19 +70,33 @@ impl ModelBuilder {
 
             let vert_start = self.nflexvert;
 
-            // Compute per-vertex masses (uniform from mass attr, or element-based lumping)
-            let vertex_masses = compute_vertex_masses(flex);
+            if let Some(bodies) = &vertex_bodies {
+                for (&body_id, pos) in bodies.iter().zip(&flex.vertices) {
+                    self.push_named_flex_vertex(flex, body_id, pos, flex_id);
+                }
+            } else {
+                // Compute per-vertex masses (uniform from mass attr, or element-based lumping)
+                let vertex_masses = compute_vertex_masses(flex);
 
-            // Create a body (+ joints for unpinned) per vertex
-            for (i, pos) in flex.vertices.iter().enumerate() {
-                let mass = vertex_masses[i];
-                let pinned = flex.pinned.contains(&i);
-                self.create_flex_vertex_body(flex, i, pos, mass, pinned, is_node_flex, flex_id);
+                // Create a body (+ joints for unpinned) per vertex
+                for (i, pos) in flex.vertices.iter().enumerate() {
+                    let mass = vertex_masses[i];
+                    let pinned = flex.pinned.contains(&i);
+                    self.create_flex_vertex_body(flex, pos, mass, pinned, flex_id);
+                }
             }
+
+            // A flex whose vertices are named bodies is rigid when they are one
+            // body (`mjCFlex::Compile`, `user_mesh.cc:4205-4213`), which
+            // `resolve_vertex_bodies` refuses. Where the loader makes the
+            // vertex bodies: when no vertex has an inverse mass.
+            let rigid = vertex_bodies.is_none()
+                && (vert_start..vert_start + flex.vertices.len())
+                    .all(|v| self.flexvert_invmass[v] == 0.0);
 
             // Extract edges from element connectivity
             let (edge_start, edge_key_to_global) =
-                self.extract_flex_edges(flex, vert_start, flex_id);
+                self.extract_flex_edges(flex, vert_start, flex_id, rigid);
 
             // Extract bending hinges from adjacent elements + compute bending coefficients
             self.extract_flex_bending_hinges(
@@ -189,10 +184,7 @@ impl ModelBuilder {
             self.flex_edgestiffness.push(flex.edge_stiffness);
             self.flex_edgedamping.push(flex.edge_damping);
 
-            // §42A-ii: Compute flex_rigid — true if ALL vertices have invmass == 0.
-            let all_rigid = (vert_start..vert_start + flex.vertices.len())
-                .all(|v| self.flexvert_invmass[v] == 0.0);
-            self.flex_rigid.push(all_rigid);
+            self.flex_rigid.push(rigid);
 
             // §42B S4: Push bending model type (default: Cotangent).
             self.flex_bending_type.push(flex.bending_model);
@@ -239,18 +231,223 @@ impl ModelBuilder {
         Ok(())
     }
 
-    /// Create a body (+ 3 slide joints for unpinned vertices) for one flex vertex.
+    /// The body `body` is welded to: itself if it has joints, else its
+    /// parent's, the world's id 0 at the root (MuJoCo's `weldid`,
+    /// `user_objects.cc:2393`).
+    fn weld_id(&self, mut body: usize) -> usize {
+        while body != 0 && self.body_jnt_num[body] == 0 {
+            body = self.body_parent[body];
+        }
+        body
+    }
+
+    /// Whether a body joined to `body` moves with it: one with joints at or
+    /// above `body`, or, when `mocap_too`, a mocap body there, which moves
+    /// without joints.
+    fn moves_with(&self, mut body: usize, mocap_too: bool) -> bool {
+        while body != 0 {
+            if self.body_jnt_num[body] > 0 || (mocap_too && self.body_mocapid[body].is_some()) {
+                return true;
+            }
+            body = self.body_parent[body];
+        }
+        false
+    }
+
+    /// A `<flex>` whose vertices are the bodies it names, given MuJoCo 3.5.0's
+    /// checks of its elements, vertices, bodies, nodes and Poisson ratio in
+    /// its order (`mjCFlex::Compile` and `ResolveReferences`, `user_mesh.cc:
+    /// 4076-4202`, `:4331-4334`; not `material` or `texcoord`, which this
+    /// crate does not read, Rigid-loading L47's, nor a node flex's element
+    /// count with a Young's modulus, `:4337-4343`), then held to the
+    /// subset sim-core's flex code takes: each vertex on a body of its own (a
+    /// flex on one body is MuJoCo's rigid flex), at its body's origin, and
+    /// each body either jointless with no joint above it, or with exactly
+    /// three slides along x, y and z, in that order, unrotated, with no joint
+    /// or mocap body above it. sim-core reads a vertex's three dofs as its
+    /// world x, y and z (the edge Jacobian, the passive forces) and a vertex
+    /// without dofs as fixed, so anything else is refused, a stated
+    /// limitation.
     ///
-    /// Pushes body, joint, DOF, qpos, and flexvert arrays for vertex `vert_idx`.
-    /// Pinned vertices get a body with no joints/DOFs; unpinned get 3 slide joints (X, Y, Z).
+    /// Returns the flex with each vertex's world position, its body's at
+    /// compile time (MuJoCo's centered flex: `vertxpos` is the body's
+    /// `xpos0`), and the vertex bodies' ids.
+    fn resolve_vertex_bodies(&self, flex: &MjcfFlex) -> Result<(MjcfFlex, Vec<usize>)> {
+        let refuse = |attribute: &str, reason: &str| {
+            MjcfError::invalid_value("flex", attribute, reason.to_string())
+        };
+        // MuJoCo's checks first, in its order; its rigid flex (one body for
+        // every vertex) passes them.
+        check_flex_dim_and_elements(flex)?;
+        let interpolated = !flex.node.is_empty();
+        if flex.body.is_empty() && !interpolated {
+            return Err(refuse("body", "vertbody and nodebody are both empty"));
+        }
+        if interpolated && flex.selfcollide.as_deref() != Some("none") {
+            return Err(refuse(
+                "node",
+                "trilinear interpolation cannot do self-collision",
+            ));
+        }
+        if interpolated && flex.internal {
+            return Err(refuse(
+                "node",
+                "trilinear interpolation cannot do internal collisions",
+            ));
+        }
+        let nvert = if flex.vertices.is_empty() {
+            flex.body.len()
+        } else if flex.body.len() == 1 || flex.body.len() == flex.vertices.len() {
+            flex.vertices.len()
+        } else {
+            return Err(refuse("body", "vertbody size must be 1 or nvert"));
+        };
+        check_flex_vertex_count(flex, nvert)?;
+        if interpolated {
+            // MuJoCo's expression, `pow(nnode, 1.0 / 3) - 1` truncated to an
+            // int (`:4150-4157`), whose truncation the check must repeat (not
+            // `cbrt`); a node count is far below 2^52.
+            let nnode = flex.node.len();
+            #[allow(
+                clippy::imprecise_flops,
+                clippy::cast_precision_loss,
+                clippy::cast_possible_truncation
+            )]
+            let order = ((nnode as f64).powf(1.0 / 3.0) - 1.0) as i64;
+            if usize::try_from((order + 1).pow(3)) != Ok(nnode) {
+                return Err(refuse(
+                    "node",
+                    &format!("number of nodes must be {order}^3 but it is {nnode}"),
+                ));
+            }
+        }
+        check_flex_element_ids(flex, nvert)?;
+        let mut bodies = Vec::with_capacity(flex.body.len());
+        for name in flex.body.iter().chain(&flex.node) {
+            let &id = self
+                .body_name_to_id
+                .get(name)
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Body, name))?;
+            bodies.push(id);
+        }
+        bodies.truncate(flex.body.len());
+        check_flex_repeated_vertices(flex)?;
+        check_flex_poisson(flex)?;
+
+        // The subset sim-core takes; the error's location names the flex.
+        if interpolated {
+            return Err(MjcfError::unsupported(
+                "a flex's node (MuJoCo's trilinear interpolation)",
+            ));
+        }
+        if bodies.len() == 1 && nvert > 1 {
+            return Err(MjcfError::unsupported(
+                "one body for every vertex (MuJoCo's rigid flex)",
+            ));
+        }
+        for (k, (name, id)) in flex.body.iter().zip(&bodies).enumerate() {
+            if bodies[..k].contains(id) {
+                return Err(MjcfError::unsupported(format!(
+                    "body '{name}' holds two of its vertices"
+                )));
+            }
+        }
+        if flex.vertices.iter().any(|v| *v != Vector3::zeros()) {
+            return Err(MjcfError::unsupported(
+                "a vertex away from its body's origin (a nonzero vertex offset)",
+            ));
+        }
+        let axes = [Vector3::x(), Vector3::y(), Vector3::z()];
+        for (name, &id) in flex.body.iter().zip(&bodies) {
+            let (adr, num) = (self.body_jnt_adr[id], self.body_jnt_num[id]);
+            let three_slides = num == 3
+                && (0..3).all(|k| {
+                    self.jnt_type[adr + k] == MjJointType::Slide
+                        && self.jnt_axis[adr + k] == axes[k]
+                });
+            if num != 0 && !three_slides {
+                return Err(MjcfError::unsupported(format!(
+                    "vertex body '{name}' has joints other than three slides along x, y and z"
+                )));
+            }
+            if id == 0 {
+                continue;
+            }
+            if num != 0 && self.body_world_quat[id - 1].angle() != 0.0 {
+                return Err(MjcfError::unsupported(format!(
+                    "vertex body '{name}' is rotated"
+                )));
+            }
+            // Slides turn with a mocap body above them; a jointless vertex
+            // on one has no dofs to misread.
+            if self.moves_with(self.body_parent[id], num != 0) {
+                return Err(MjcfError::unsupported(format!(
+                    "vertex body '{name}' moves with a body above it"
+                )));
+            }
+        }
+
+        let vertices = bodies
+            .iter()
+            .map(|&id| {
+                if id == 0 {
+                    Vector3::zeros()
+                } else {
+                    self.body_world_pos[id - 1]
+                }
+            })
+            .collect();
+        Ok((
+            MjcfFlex {
+                vertices,
+                ..flex.clone()
+            },
+            bodies,
+        ))
+    }
+
+    /// One vertex of a flex whose vertices are named bodies: the `flexvert_*`
+    /// entries of the vertex at world position `pos` on body `body_id`, its
+    /// mass the body's and its dofs the body's three slides, or none.
+    fn push_named_flex_vertex(
+        &mut self,
+        flex: &MjcfFlex,
+        body_id: usize,
+        pos: &Vector3<f64>,
+        flex_id: usize,
+    ) {
+        let mass = self.body_mass[body_id];
+        let moves = self.body_dof_num[body_id] > 0;
+        self.nflexvert += 1;
+        if moves {
+            let first = self.body_jnt_adr[body_id];
+            self.flexvert_qposadr.push(self.jnt_qpos_adr[first]);
+            self.flexvert_dofadr.push(self.body_dof_adr[body_id]);
+        } else {
+            self.flexvert_qposadr.push(usize::MAX);
+            self.flexvert_dofadr.push(usize::MAX);
+        }
+        self.flexvert_mass.push(mass);
+        self.flexvert_invmass
+            .push(if moves && mass > 0.0 { 1.0 / mass } else { 0.0 });
+        self.flexvert_radius.push(flex.radius);
+        self.flexvert_flexid.push(flex_id);
+        self.flexvert_bodyid.push(body_id);
+        self.flexvert_initial_pos.push(*pos);
+    }
+
+    /// Create a body (+ 3 slide joints for unpinned vertices) for one vertex
+    /// of a `<deformable><flexcomp>`, on the world body.
+    ///
+    /// Pushes body, joint, DOF, qpos, and flexvert arrays for the vertex at `pos`.
+    /// Pinned vertices get a body with no joints/DOFs; unpinned get 3 slide joints (X, Y, Z),
+    /// each with the flex's damping.
     fn create_flex_vertex_body(
         &mut self,
         flex: &MjcfFlex,
-        vert_idx: usize,
         pos: &Vector3<f64>,
         mass: f64,
         pinned: bool,
-        is_node_flex: bool,
         flex_id: usize,
     ) {
         let axes = [Vector3::x(), Vector3::y(), Vector3::z()];
@@ -266,49 +463,21 @@ impl ModelBuilder {
         // --- Create body for this vertex ---
         let body_id = self.body_parent.len();
 
-        // Resolve parent body: for bare <flex> use the named body attr;
-        // for <flexcomp> (no body attr), parent is worldbody (0).
-        let parent_id = if vert_idx < flex.body.len() {
-            if let Some(&bid) = self.body_name_to_id.get(&flex.body[vert_idx]) {
-                bid
-            } else {
-                tracing::warn!(
-                    "flex '{}' vertex {} references unknown body '{}', \
-                     parenting to worldbody",
-                    flex.name,
-                    vert_idx,
-                    flex.body[vert_idx]
-                );
-                0
-            }
-        } else {
-            0 // <flexcomp> → parent is worldbody
-        };
-
-        // Each flex vertex body parented to worldbody is its own kinematic tree root.
-        // For bodies parented to a non-world body, inherit the root.
-        let root_id = if parent_id == 0 {
-            body_id
-        } else {
-            self.body_rootid[parent_id]
-        };
-
+        // A flexcomp's vertex bodies hang off the world body, each the root of
+        // its own kinematic tree.
         let jnt_adr = self.jnt_type.len();
         let dof_adr = self.nv;
+        let qpos_start = self.nq;
         let geom_adr = self.geom_type.len();
 
         // Push body arrays (mirrors process_body_with_world_frame pattern)
-        self.body_parent.push(parent_id);
-        self.body_rootid.push(root_id);
+        self.body_parent.push(0);
+        self.body_rootid.push(body_id);
         self.body_jnt_adr.push(jnt_adr);
         self.body_dof_adr.push(dof_adr);
         self.body_geom_adr.push(geom_adr);
-        // For node-derived vertices, body_pos = zeros (vertex is at the node
-        // body's origin; the slide joints provide displacement from there).
-        // For flexcomp/bare-flex, body_pos = vertex world position (parent is
-        // worldbody, so local offset == world position).
-        let body_pos_val = if is_node_flex { Vector3::zeros() } else { *pos };
-        self.body_pos.push(body_pos_val);
+        // On the world body, the local offset is the world position.
+        self.body_pos.push(*pos);
         self.body_quat.push(UnitQuaternion::identity());
         self.body_ipos.push(Vector3::zeros()); // point mass: CoM at body origin
         self.body_iquat.push(UnitQuaternion::identity());
@@ -317,9 +486,9 @@ impl ModelBuilder {
         self.body_mocapid.push(None);
         self.body_name.push(None);
         self.body_sleep_policy.push(None);
-        // *pos is the vertex world position from node resolution or flexcomp.
-        // For flexcomp (parent=world), local offset == world position.
-        // For node-flex, *pos is the node body's world position.
+        // The defaults of a body written with none of these (`body.rs`).
+        self.body_gravcomp.push(0.0);
+        self.body_user_raw.push(Vec::new());
         self.body_world_pos.push(*pos);
         self.body_world_quat.push(UnitQuaternion::identity());
 
@@ -333,26 +502,12 @@ impl ModelBuilder {
             self.flexvert_qposadr.push(usize::MAX); // sentinel: no qpos
             self.flexvert_dofadr.push(usize::MAX); // sentinel: no dof
         } else {
-            // Unpinned vertex: 3 slide joints (X, Y, Z)
-            // dof_parent chain: first DOF has no parent (worldbody has no DOFs),
-            // subsequent DOFs chain to previous within this vertex.
+            // Unpinned vertex: 3 slide joints (X, Y, Z). The first dof has no
+            // parent (the world body has no dofs); each next one chains to the
+            // one before it.
             let mut last_dof: Option<usize> = None;
-            // Determine parent's last DOF for kinematic tree linkage.
-            // Worldbody (parent_id=0) has no DOFs → None.
-            // Non-world parent: use their last DOF.
-            let parent_last_dof = if parent_id == 0 {
-                None
-            } else {
-                let pdof_adr = self.body_dof_adr[parent_id];
-                let pdof_num = self.body_dof_num[parent_id];
-                if pdof_num > 0 {
-                    Some(pdof_adr + pdof_num - 1)
-                } else {
-                    None
-                }
-            };
 
-            for (axis_idx, axis) in axes.iter().enumerate() {
+            for axis in &axes {
                 let jnt_id = self.jnt_type.len();
                 let qpos_adr = self.nq;
                 let dof_idx = self.nv;
@@ -369,20 +524,25 @@ impl ModelBuilder {
                     .push((-std::f64::consts::PI, std::f64::consts::PI));
                 self.jnt_stiffness.push(0.0);
                 self.jnt_springref.push(0.0);
-                self.jnt_damping.push(0.0);
+                // The flex's damping as each slide's (MuJoCo's flex damping
+                // acts only through its elasticity and bending).
+                self.jnt_damping.push(flex.damping);
                 self.jnt_armature.push(0.0);
+                // The defaults of a joint written with none of these (`joint.rs`).
+                self.jnt_solref.push(DEFAULT_SOLREF);
+                self.jnt_solimp.push(DEFAULT_SOLIMP);
+                self.jnt_name.push(None);
+                self.jnt_group.push(0);
+                self.jnt_actgravcomp.push(false);
+                self.jnt_margin.push(0.0);
+                self.jnt_user_raw.push(Vec::new());
 
                 // DOF arrays
-                let dof_parent_val = if axis_idx == 0 {
-                    parent_last_dof // first DOF links to parent body's last DOF
-                } else {
-                    last_dof // subsequent DOFs chain within this vertex
-                };
-                self.dof_parent.push(dof_parent_val);
+                self.dof_parent.push(last_dof);
                 self.dof_body.push(body_id);
                 self.dof_jnt.push(jnt_id);
                 self.dof_armature.push(0.0);
-                self.dof_damping.push(0.0);
+                self.dof_damping.push(flex.damping);
                 self.dof_frictionloss.push(0.0);
                 self.dof_solref.push(DEFAULT_SOLREF);
                 self.dof_solimp.push(DEFAULT_SOLIMP);
@@ -401,7 +561,7 @@ impl ModelBuilder {
             self.body_dof_num.push(3);
             self.body_geom_num.push(0);
 
-            self.flexvert_qposadr.push(dof_adr); // first of 3 slide joint qpos addresses
+            self.flexvert_qposadr.push(qpos_start); // first of 3 slide joint qpos addresses
             self.flexvert_dofadr.push(dof_adr); // first of 3 DOF addresses
         }
 
@@ -426,6 +586,7 @@ impl ModelBuilder {
         flex: &MjcfFlex,
         vert_start: usize,
         flex_id: usize,
+        rigid: bool,
     ) -> (usize, std::collections::HashMap<(usize, usize), usize>) {
         use std::collections::HashMap;
 
@@ -438,7 +599,7 @@ impl ModelBuilder {
                 if edge_key_to_global.contains_key(&(a, b)) {
                     continue;
                 }
-                self.push_flex_edge(flex, vert_start, flex_id, a, b);
+                self.push_flex_edge(flex, vert_start, flex_id, a, b, rigid);
                 edge_key_to_global.insert((a, b), self.nflexedge);
                 self.nflexedge += 1;
             }
@@ -447,7 +608,8 @@ impl ModelBuilder {
         (edge_start, edge_key_to_global)
     }
 
-    /// One edge's `flexedge_*` entries, between the flex's vertices `a < b`.
+    /// One edge's `flexedge_*` entries, between the flex's vertices `a < b`,
+    /// of a flex that is `rigid` or not.
     fn push_flex_edge(
         &mut self,
         flex: &MjcfFlex,
@@ -455,16 +617,16 @@ impl ModelBuilder {
         flex_id: usize,
         a: usize,
         b: usize,
+        rigid: bool,
     ) {
         let rest_len = (flex.vertices[b] - flex.vertices[a]).norm();
         self.flexedge_vert.push([vert_start + a, vert_start + b]);
         self.flexedge_length0.push(rest_len);
         self.flexedge_flexid.push(flex_id);
-        // §42A-ii: flexedge_rigid — both endpoints pinned (invmass == 0).
-        let va = vert_start + a;
-        let vb = vert_start + b;
-        self.flexedge_rigid
-            .push(self.flexvert_invmass[va] == 0.0 && self.flexvert_invmass[vb] == 0.0);
+        // Every edge of a rigid flex, and an edge whose ends' bodies are
+        // welded together, is rigid (MuJoCo's rule, `user_model.cc:3511-3519`).
+        let weld = |v: usize| self.weld_id(self.flexvert_bodyid[vert_start + v]);
+        self.flexedge_rigid.push(rigid || weld(a) == weld(b));
         // §42B S1: Initialize flexedge_flap to [-1, -1] (boundary default).
         self.flexedge_flap.push([-1, -1]);
         // §42B S2+S3: Initialize flex_bending to zeros per edge.
@@ -576,34 +738,78 @@ const ELEMENT_EDGES: [&[(usize, usize)]; 3] = [
     &[(0, 1), (1, 2), (2, 0), (2, 3), (0, 3), (1, 3)],
 ];
 
-/// MuJoCo's checks of a flex's elements before anything is built from them
-/// (`mjCFlex::Compile`, `user_mesh.cc`), in its order: a dimension of 1, 2 or
-/// 3 (`:4108-4110`), each element of `dim + 1` vertices (`:4114-4116`), at
-/// least `dim + 1` vertices (`:4147-4149`), each element's vertices among
-/// them (`:4160-4165`), and none twice in an element (`:4189-4202`). Its
-/// "elem is empty" (`:4111-4113`) is Rigid-loading L10's; the other checks it
-/// makes between these are not this function's.
+/// MuJoCo's checks of a flexcomp's elements and Poisson ratio before anything
+/// is built from them (`mjCFlex::Compile`, `user_mesh.cc`), in its order, as
+/// the functions below make them. A `<flex>` takes them one by one in
+/// `resolve_vertex_bodies`, among the checks of its bodies, and not here.
 fn check_flex_elements(flex: &MjcfFlex) -> Result<()> {
-    let refuse =
-        |attribute: &str, reason: &str| MjcfError::invalid_value("flex", attribute, reason);
+    check_flex_dim_and_elements(flex)?;
+    check_flex_vertex_count(flex, flex.vertices.len())?;
+    check_flex_element_ids(flex, flex.vertices.len())?;
+    check_flex_repeated_vertices(flex)?;
+    check_flex_poisson(flex)
+}
+
+/// With a Young's modulus, a Poisson ratio in [0, 0.5), as MuJoCo's
+/// compiler requires (`user_mesh.cc:4331-4334`).
+fn check_flex_poisson(flex: &MjcfFlex) -> Result<()> {
+    if flex.young > 0.0 && !(0.0..0.5).contains(&flex.poisson) {
+        return Err(MjcfError::invalid_value(
+            "elasticity",
+            "poisson",
+            "Poisson ratio must be in [0, 0.5)",
+        ));
+    }
+    Ok(())
+}
+
+fn refuse_flex(attribute: &str, reason: &str) -> MjcfError {
+    MjcfError::invalid_value("flex", attribute, reason)
+}
+
+/// MuJoCo's first checks of a flex (`mjCFlex::Compile`, `user_mesh.cc:
+/// 4108-4116`): its dim, and its elements, some, each of `dim + 1` vertices.
+fn check_flex_dim_and_elements(flex: &MjcfFlex) -> Result<()> {
     if !(1..=3).contains(&flex.dim) {
-        return Err(refuse("dim", "dim must be 1, 2 or 3"));
+        return Err(refuse_flex("dim", "dim must be 1, 2 or 3"));
+    }
+    if flex.elements.is_empty() {
+        return Err(refuse_flex("element", "elem is empty"));
     }
     if flex.elements.iter().any(|e| e.len() != flex.dim + 1) {
-        return Err(refuse("element", "elem size must be multiple of (dim+1)"));
+        return Err(refuse_flex(
+            "element",
+            "elem size must be multiple of (dim+1)",
+        ));
     }
-    let nvert = flex.vertices.len();
+    Ok(())
+}
+
+/// Its vertex count against its dim (`user_mesh.cc:4146-4148`).
+fn check_flex_vertex_count(flex: &MjcfFlex, nvert: usize) -> Result<()> {
     if nvert < flex.dim + 1 {
-        return Err(refuse("vertex", "not enough vertices"));
+        return Err(refuse_flex("vertex", "not enough vertices"));
     }
+    Ok(())
+}
+
+/// Each element's vertex ids against its vertex count (`user_mesh.cc:
+/// 4160-4165`).
+fn check_flex_element_ids(flex: &MjcfFlex, nvert: usize) -> Result<()> {
     if flex.elements.iter().flatten().any(|&v| v >= nvert) {
-        return Err(refuse("element", "elem vertex id out of range"));
+        return Err(refuse_flex("element", "elem vertex id out of range"));
     }
+    Ok(())
+}
+
+/// A vertex twice in one element, checked after its bodies are named
+/// (`user_mesh.cc:4189-4202`).
+fn check_flex_repeated_vertices(flex: &MjcfFlex) -> Result<()> {
     for element in &flex.elements {
         let mut sorted = element.clone();
         sorted.sort_unstable();
         if sorted.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(refuse("element", "repeated vertex in element"));
+            return Err(refuse_flex("element", "repeated vertex in element"));
         }
     }
     Ok(())

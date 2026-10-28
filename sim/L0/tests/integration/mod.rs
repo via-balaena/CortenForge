@@ -265,6 +265,9 @@ pub mod sparse_rows_parity;
 /// edge, R from `flexedge_invweight0` and the diagonal approximation from R.
 pub mod flex_equality_rows;
 
+/// The vertex bodies of a `<flex body=...>` built at run time.
+pub mod flex_test_utils;
+
 /// A flex's radius, element layers, element–vertex pairs and hierarchy, and
 /// its element and node boxes each step, against MuJoCo 3.5.0's.
 pub mod flex_data_parity;

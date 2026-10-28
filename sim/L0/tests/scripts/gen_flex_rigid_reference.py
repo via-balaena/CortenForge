@@ -21,11 +21,11 @@ against every element; each geom against an element by type
 most after a cable that collides with nothing, so the flex's vertices and
 elements start past 0; a case may end with a fragment after the flexes (an
 actuator). Each vertex is a body with three slides and mass
-0.125, so the document is written twice: MuJoCo's <flex body=...> over
-declared bodies, and sim-mjcf's <deformable><flex> with its vertices and
-the flex's whole mass, whose bodies sim-mjcf adds after the others, in the
-same order; equality constraints disabled on both, as sim-mjcf makes a
-flex's edges equality constraints. A rigid body's mass and inertia are
+0.125, declared in MuJoCo's <flex body=...>; sim-mjcf's document is the same
+but where a vertex is pinned: MuJoCo's is on the world body at an offset,
+sim-mjcf's a jointless body of its own, after the others (registry
+D-FLEX-PINNED-BODY). Equality constraints disabled on both, as sim-mjcf
+makes a flex's edges equality constraints. A rigid body's mass and inertia are
 given and its quat is MuJoCo's compiled one, on both. Recorded: qpos0, each
 control (0.5, when the model has any), and after mj_forward each contact
 (sides, distance, position, frame, dim, includemargin, friction, solref,
@@ -214,46 +214,41 @@ def documents(rigid, flex, option, flag, asset, tail="", pins=None):
     MuJoCo's compiled model. A flex is (vertices, elements, dim, its <contact>
     attributes[, its own attributes, radius="0.01" without]). `pins` maps a
     flex's index to its pinned vertices: on MuJoCo's world body, as its
-    <flexcomp> pins them (user_flexcomp.cc:486-488), a <pin> in sim-mjcf's."""
+    <flexcomp> pins them (user_flexcomp.cc:486-488), each a jointless body of
+    its own, after the others, in sim-mjcf's."""
     head = (f'<mujoco><option timestep="0.002" {option}><flag equality="disable" {flag}/></option>'
             f'<asset>{asset}</asset><worldbody>{rigid}')
-    mj_bodies, mj_flexes, ours = "", "", ""
+    mj_bodies, mj_flexes, pin_bodies, ours_flexes = "", "", "", ""
     flexes = flex if isinstance(flex, list) else [DUMMY, flex]
     pins = pins or {}
     for f, (verts, elems, dim, contact, *own) in enumerate(flexes):
         attrs = own[0] if own else 'radius="0.01"'
-        names, offsets = [], []
+        names, offsets, ours_names = [], [], []
         for i, v in enumerate(verts):
+            pos = f"{v[0]!r} {v[1]!r} {v[2]!r}"
             if i in pins.get(f, ()):
                 names.append("world")
-                offsets.append(f"{v[0]!r} {v[1]!r} {v[2]!r}")
+                offsets.append(pos)
+                ours_names.append(f"f{f}p{i}")
+                pin_bodies += (f'<body name="f{f}p{i}" pos="{pos}">'
+                               f'<inertial pos="0 0 0" mass="{MASS}" diaginertia="1e-5 1e-5 1e-5"/></body>')
                 continue
             name = f"f{f}v{i}"
             names.append(name)
+            ours_names.append(name)
             offsets.append("0 0 0")
-            mj_bodies += (f'<body name="{name}" pos="{v[0]!r} {v[1]!r} {v[2]!r}">'
+            mj_bodies += (f'<body name="{name}" pos="{pos}">'
                           '<joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/>'
                           '<joint type="slide" axis="0 0 1"/>'
                           f'<inertial pos="0 0 0" mass="{MASS}" diaginertia="1e-5 1e-5 1e-5"/></body>')
+        element = " ".join(map(str, elems))
         mj_flexes += (f'<flex name="f{f}" dim="{dim}" {attrs} body="{" ".join(names)}" '
-                      f'vertex="{" ".join(offsets)}" '
-                      f'element="{" ".join(map(str, elems))}"><contact {contact}/></flex>')
+                      f'vertex="{" ".join(offsets)}" element="{element}"><contact {contact}/></flex>')
+        ours_flexes += (f'<flex name="f{f}" dim="{dim}" {attrs} body="{" ".join(ours_names)}" '
+                        f'element="{element}"><contact {contact}/></flex>')
     mj = f'{head}{mj_bodies}</worldbody><deformable>{mj_flexes}</deformable>{tail}</mujoco>'
     m = mujoco.MjModel.from_xml_string(mj)
-    for f, (verts, _, dim, contact, *own) in enumerate(flexes):
-        attrs = own[0] if own else 'radius="0.01"'
-        va, vn = m.flex_vertadr[f], m.flex_vertnum[f]
-        da, en = m.flex_elemdataadr[f], m.flex_elemnum[f]
-        position = [m.flex_vert[va + i] if i in pins.get(f, ()) else m.body_pos[b]
-                    for i, b in enumerate(m.flex_vertbodyid[va:va + vn])]
-        vtxt = "  ".join(" ".join(repr(float(x)) for x in p) for p in position)
-        etxt = " ".join(str(int(i)) for i in m.flex_elem[da:da + en * (dim + 1)])
-        total = MASS * len(verts)
-        assert total / len(verts) == MASS, "sim-mjcf's vertex mass must be exactly MASS"
-        pin = f'<pin id="{" ".join(map(str, sorted(pins[f])))}"/>' if pins.get(f) else ""
-        ours += (f'<flex name="f{f}" dim="{dim}" {attrs} mass="{total!r}"><contact {contact}/>'
-                 f'<vertex pos="{vtxt}"/><element data="{etxt}"/>{pin}</flex>')
-    ours = f'{head}</worldbody><deformable>{ours}</deformable>{tail}</mujoco>'
+    ours = f'{head}{mj_bodies}{pin_bodies}</worldbody><deformable>{ours_flexes}</deformable>{tail}</mujoco>'
     return mj, ours, m
 
 
@@ -317,8 +312,8 @@ def record(name, mj, ours, m, passive=()):
 
 
 # A world plane under a 3x3 cloth 5 mm up, its first vertex pinned: on the
-# world body in MuJoCo's document, a <pin> in sim-mjcf's; the others bodies of
-# mass MASS with three slides.
+# world body in MuJoCo's document, a jointless body of its own in sim-mjcf's;
+# the others bodies of mass MASS with three slides.
 PINNED_VERTS = [[x * 0.05, y * 0.05, 0.005] for y in range(3) for x in range(3)]
 PINNED_ELEMS = grid(3, 0.05, 0.005)[1]
 
@@ -337,9 +332,11 @@ def pinned_cloth(option, flag):
     elems = " ".join(map(str, PINNED_ELEMS))
     mj = (f'{head}{bodies}</worldbody><deformable><flex name="c" dim="2" radius="0.01" body="{names}" '
           f'vertex="{vertex}" element="{elems}"><contact {NONE}/></flex></deformable></mujoco>')
-    verts = "  ".join(" ".join(repr(x) for x in v) for v in PINNED_VERTS)
-    ours = (f'{head}</worldbody><deformable><flex name="c" dim="2" radius="0.01" mass="{MASS * len(PINNED_VERTS)!r}">'
-            f'<contact {NONE}/><vertex pos="{verts}"/><element data="{elems}"/><pin id="0"/></flex></deformable></mujoco>')
+    pin = (f'<body name="p0" pos="{v0[0]!r} {v0[1]!r} {v0[2]!r}">'
+           f'<inertial pos="0 0 0" mass="{MASS}" diaginertia="1e-5 1e-5 1e-5"/></body>')
+    ours_names = "p0 " + " ".join(f"v{i}" for i in range(1, len(PINNED_VERTS)))
+    ours = (f'{head}{bodies}{pin}</worldbody><deformable><flex name="c" dim="2" radius="0.01" body="{ours_names}" '
+            f'element="{elems}"><contact {NONE}/></flex></deformable></mujoco>')
     return mj, ours
 
 

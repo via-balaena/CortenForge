@@ -304,56 +304,37 @@ fn mass_product_and_kinetic_energy_match_mujoco_3_5_0_bit_for_bit() {
     );
 }
 
-/// A flex vertex whose body hangs off a moving body: the vertex–floor
-/// contact's normal row takes that body's dof columns through `mj_jac`, so
-/// the row's hinge column is the vertex's height moving with the hinge (by
-/// central differences, 1e-7) and its own vertical slide's column is 1.
-/// Checked against the rule: MuJoCo refuses this crate's `<flex>` form.
+/// A flex vertex whose body hangs off a moving body (a hinged arm): MuJoCo
+/// 3.5.0 loads it; sim-core's flex edge Jacobian and passive forces take only
+/// a vertex's own three dofs, so sim-mjcf refuses it, a stated limitation.
+/// Until Rigid-loading L10 this test loaded the form through sim-mjcf's own
+/// `<flex>` and checked the vertex–floor contact row's hinge column (ledger
+/// L114); no document reaches that row now.
 #[test]
-fn flex_vertex_contact_row_moves_with_its_parent() {
+fn flex_vertex_body_on_a_moving_body_is_refused() {
     let xml = r#"<mujoco>
       <worldbody>
         <geom name="floor" type="plane" size="2 2 .1"/>
         <body name="arm" pos="0 0 0.3">
           <joint name="h" type="hinge" axis="0 1 0" pos="-0.2 0 0"/>
           <geom type="sphere" size="0.02" mass="1" contype="0" conaffinity="0"/>
+          <body name="c_v0" pos="0.1 0 -0.28"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="c_v1" pos="0.2 0 -0.28"><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body>
         </body>
       </worldbody>
       <deformable>
-        <flex name="c" dim="1" body="arm arm" radius="0.05" mass="0.2">
-          <vertex pos="0.1 0 -0.28  0.2 0 -0.28"/>
-          <element data="0 1"/>
-          <pin id="1"/>
+        <flex name="c" dim="1" radius="0.05" body="c_v0 c_v1" element="0 1">
           <edge stiffness="10"/>
         </flex>
       </deformable>
     </mujoco>"#;
-    let model = load_model(xml).expect("load");
-    let mut data = model.make_data();
-    data.forward(&model).expect("forward");
-    let contact = data
-        .contacts
-        .iter()
-        .find(|c| c.flex_vertices(&model)[1] == Some(0))
-        .expect("the free vertex touches the floor")
-        .clone();
-    let row = compute_contact_jacobian(&model, &data, &contact);
-    let h = 1e-7;
-    let height = |dq: f64| {
-        let mut d = data.clone();
-        d.qpos[0] += dq;
-        d.forward(&model).expect("forward");
-        d.flexvert_xpos[0].z
-    };
-    let dz = (height(h) - height(-h)) / (2.0 * h);
-    assert!(dz.abs() > 0.1, "the hinge moves the vertex: {dz}");
-    assert!(
-        (row[(0, 0)] - dz).abs() <= 1e-6,
-        "hinge column {}, the vertex's height {dz}",
-        row[(0, 0)]
-    );
-    let z_slide = model.flexvert_dofadr[0] + 2;
-    assert_eq!(row[(0, z_slide)], 1.0, "the vertical slide's column");
+    match load_model(xml) {
+        Err(sim_mjcf::MjcfError::Unsupported { feature, .. }) => assert!(
+            feature.contains("vertex body 'c_v0' moves with a body above it"),
+            "{feature}"
+        ),
+        other => panic!("not a stated limitation: {other:?}"),
+    }
 }
 
 fn flex_golden() -> Value {

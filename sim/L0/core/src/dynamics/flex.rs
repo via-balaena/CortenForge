@@ -2,9 +2,8 @@
 //! lengths and Jacobians, as MuJoCo's `mj_flex` (`engine_core_smooth.c:
 //! 548-713`).
 //!
-//! Each flex vertex has an associated body (created by `process_flex_bodies`);
-//! its `xpos` — computed by standard forward kinematics — IS the vertex world
-//! position.
+//! Each flex vertex has a body (`flexvert_bodyid`); its `xpos`, computed by
+//! the standard forward kinematics, IS the vertex's world position.
 
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::types::{DISABLE_MIDPHASE, Data, Model, disabled};

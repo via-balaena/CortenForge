@@ -18,8 +18,9 @@ grading_profile = "integration-only"
 sim-mjcf = { workspace = true }
 # URDF loader under test in the conformance suite
 sim-urdf = { workspace = true }
-# Physics Model / Data being stepped and compared against MuJoCo
-sim-core = { workspace = true }
+# Physics Model / Data being stepped and compared against MuJoCo; its test
+# fixtures' structural checks run over the census documents
+sim-core = { workspace = true, features = ["test-fixtures"] }
 # BodyId / Pose primitives shared by fixtures and assertions
 sim-types = { workspace = true }
 # Matrix / vector primitives for state comparison and fixture construction

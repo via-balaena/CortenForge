@@ -17,6 +17,7 @@ use serde_json::Value;
 use sim_mjcf::load_model;
 
 use super::flex_golden::{differences, floats};
+use super::flex_test_utils::{triples, uniform, vertex_bodies};
 
 fn golden() -> Value {
     serde_json::from_str(include_str!("../assets/golden/flex/flex_self.json"))
@@ -51,41 +52,54 @@ fn flexes_collide_with_each_other_as_mujoco() {
     );
 }
 
-/// A flex whose every vertex is pinned is rigid and does not collide with
-/// itself (`engine_collision_driver.c:439`): the golden's folded strip, its
-/// elements within reach of each other, collides with itself unpinned, and
-/// not once every vertex is pinned.
+/// A rigid flex does not collide with itself (`engine_collision_driver.c:
+/// 439`): the golden's folded strip, its elements within reach of each other,
+/// collides with itself as a flex of bodies with three slides, and not once
+/// it is rigid. A flex of jointless bodies is not rigid (MuJoCo's rigid flex
+/// is one on a single body, which sim-mjcf refuses), so the jointless strip
+/// is set rigid on the loaded model.
 #[test]
 fn a_rigid_flex_does_not_collide_with_itself() {
-    let strip = |pins: &str| {
+    let strip = |pinned: &[usize]| {
+        let (bodies, names) = vertex_bodies(
+            "s",
+            &triples(
+                "0 0 0  0 0.05 0  0.05 0 0  0.05 0.05 0  0.1 0 0  0.1 0.05 0  0.15 0 0
+                 0.15 0.05 0  0.2 0 0  0.2 0.05 0  0.212 0.012 0.012  0.212 0.062 0.012
+                 0.162 0.012 0.012  0.162 0.062 0.012  0.112 0.012 0.012
+                 0.112 0.062 0.012  0.062 0.012 0.012  0.062 0.062 0.012
+                 0.012 0.012 0.012  0.012 0.062 0.012",
+            ),
+            &uniform(2.0, 20),
+            pinned,
+            None,
+        );
         format!(
-            r#"<mujoco><option gravity="0 0 0"><flag equality="disable"/></option><worldbody/>
-              <deformable><flex name="s" dim="2" radius="0.01" mass="2">
+            r#"<mujoco><option gravity="0 0 0"><flag equality="disable"/></option><worldbody>{bodies}</worldbody>
+              <deformable><flex name="s" dim="2" radius="0.01" body="{names}"
+                  element="0 2 1  2 3 1  2 4 3  4 5 3  4 6 5  6 7 5  6 8 7  8 9 7  8 10 9
+                           10 11 9  10 12 11  12 13 11  12 14 13  14 15 13  14 16 15
+                           16 17 15  16 18 17  18 19 17">
                 <contact selfcollide="narrow" internal="false"/>
-                <vertex pos="0 0 0  0 0.05 0  0.05 0 0  0.05 0.05 0  0.1 0 0  0.1 0.05 0  0.15 0 0
-                             0.15 0.05 0  0.2 0 0  0.2 0.05 0  0.212 0.012 0.012  0.212 0.062 0.012
-                             0.162 0.012 0.012  0.162 0.062 0.012  0.112 0.012 0.012
-                             0.112 0.062 0.012  0.062 0.012 0.012  0.062 0.062 0.012
-                             0.012 0.012 0.012  0.012 0.062 0.012"/>
-                <element data="0 2 1  2 3 1  2 4 3  4 5 3  4 6 5  6 7 5  6 8 7  8 9 7  8 10 9
-                               10 11 9  10 12 11  12 13 11  12 14 13  14 15 13  14 16 15
-                               16 17 15  16 18 17  18 19 17"/>
-                {pins}
               </flex></deformable></mujoco>"#
         )
     };
-    let contacts = |xml: &str| {
-        let model = load_model(xml).expect("load");
+    let contacts = |xml: &str, rigid: bool| {
+        let mut model = load_model(xml).expect("load");
+        assert!(!model.flex_rigid[0], "loaded: no rigid flex");
+        model.flex_rigid[0] = rigid;
         let mut data = model.make_data();
         data.forward(&model).expect("forward");
-        (model.flex_rigid[0], data.ncon)
+        data.ncon
     };
-    let (rigid, ncon) = contacts(&strip(""));
-    assert!(!rigid && ncon > 0, "unpinned: {ncon} contacts with itself");
-    let all = (0..20).map(|v| v.to_string()).collect::<Vec<_>>().join(" ");
-    let (rigid, ncon) = contacts(&strip(&format!(r#"<pin id="{all}"/>"#)));
-    assert!(rigid, "every vertex pinned: rigid");
-    assert_eq!(ncon, 0, "a rigid flex: no contact with itself");
+    let ncon = contacts(&strip(&[]), false);
+    assert!(ncon > 0, "three slides each: {ncon} contacts with itself");
+    let all: Vec<usize> = (0..20).collect();
+    assert_eq!(
+        contacts(&strip(&all), true),
+        0,
+        "a rigid flex: no contact with itself"
+    );
 }
 
 /// An elliptic cone of condim 4, 5 or 6 on a flex's contacts at the dense
@@ -146,9 +160,10 @@ fn an_elliptic_cone_s_rows_stay_in_their_contact_s_island() {
     }
 }
 
-/// A pinned vertex is a body of its own in sim-mjcf, on its parent body in
-/// MuJoCo (registry `D-FLEX-PINNED-BODY`): two elements each holding a
-/// pinned vertex, or a world geom and such an element, collide here, where
+/// A pinned vertex is on its parent body in MuJoCo's document; sim-mjcf
+/// refuses that form, so its document gives each pinned vertex a jointless
+/// body of its own (registry `D-FLEX-PINNED-BODY`): two elements each holding
+/// a pinned vertex, or a world geom and such an element, collide here, where
 /// MuJoCo's same-body skip drops them. On each of the golden's pinned scenes
 /// sim-core lists every contact MuJoCo lists, and adds some, each between two
 /// such sides.

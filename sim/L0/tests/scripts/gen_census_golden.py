@@ -15,12 +15,13 @@ names another oracle; moving the golden to a new oracle is a deliberate act
 
 For every <docs>/<id>.xml (or every id in ids-file) it writes <golden>/<id>.json:
 
-    {"doc", "status": "ok" | "refused", "model"?, "e1"?, "e2"?}
+    {"doc", "status": "ok" | "refused" | "stops", "model"?, "e1"?, "e2"?}
     eK = {"dump": {"0", "1", "100"}, "traj_steps", "traj": {"q", "v", "a", "t"}, "warn_end"}
 
 "refused" carries no message: MuJoCo's message varies between runs for some
 docs (which of two missing mesh files it names), and the golden must be
-byte-stable. Non-finite numbers are the strings "inf", "-inf" and "nan",
+byte-stable. "stops": MuJoCo loads the doc and stops (mju_error) while it
+runs it, in mj_forward or mj_step; like "refused" it carries no data. Non-finite numbers are the strings "inf", "-inf" and "nan",
 because JSON has none. Without an ids-file it also writes <golden>/meta.json:
 the oracle, the platform, the versions and the rules below, with no timestamp.
 
@@ -192,15 +193,21 @@ def data_json(m, d):
         out['qM_full'], out['qM'] = 1, floats(full)
     else:
         out['qM_full'], out['qM'] = 0, [float(d.qM[m.dof_Madr[i]]) for i in range(m.nv)]
+    # A contact: each side's geom, each side's flex vertex among every flex's,
+    # the distance, position and frame, then each side's flex and each side's
+    # element in its flex; -1 where a side has none. Goldens written before the
+    # last four (none of which holds a flex contact) end at the frame.
     contacts = []
     c = d.contact
     for i in range(d.ncon):
         geom, flex, vert = ints(c.geom[i]), ints(c.flex[i]), ints(c.vert[i])
         flexvert = [int(m.flex_vertadr[flex[j]] + vert[j]) if flex[j] >= 0 and vert[j] >= 0 else -1
                     for j in range(2)]
+        elem = ints(c.elem[i])
         frame = floats(c.frame[i])
         contacts.append([geom[0], geom[1], flexvert[0], flexvert[1], float(c.dist[i]),
-                         floats(c.pos[i]), frame[0:3], frame[3:6], frame[6:9]])
+                         floats(c.pos[i]), frame[0:3], frame[3:6], frame[6:9],
+                         flex[0], flex[1], elem[0], elem[1]])
     counts = {}
     for t in d.efc_type[:d.nefc]:
         kind = CONSTRAINT[int(t)]
@@ -261,8 +268,11 @@ def golden(path):
     except Exception:  # noqa: BLE001 — any refusal is the same verdict: status only
         return {'doc': doc, 'status': 'refused'}
     out = {'doc': doc, 'status': 'ok', 'model': model_json(m)}
-    for name, qvel_of in EXCITATIONS.items():
-        out[name] = run_excitation(m, qvel_of)
+    try:
+        for name, qvel_of in EXCITATIONS.items():
+            out[name] = run_excitation(m, qvel_of)
+    except mujoco.FatalError:
+        return {'doc': doc, 'status': 'stops'}
     return finite_or_string(out)
 
 

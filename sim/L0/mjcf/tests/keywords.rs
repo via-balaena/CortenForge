@@ -258,10 +258,9 @@ fn a_sensors_interp_is_a_keyword() {
 fn flex(child: &str) -> String {
     format!(
         r#"<mujoco><worldbody>
-            <body name="v0"><freejoint/><geom size="0.01"/></body>
-            <body name="v1" pos="1 0 0"><freejoint/><geom size="0.01"/></body>
-        </worldbody><deformable><flex name="f" dim="1">
-            <vertex pos="0 0 0"/><vertex pos="1 0 0"/><element data="0 1"/>{child}
+            <body name="v0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><geom size="0.01"/></body>
+            <body name="v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><geom size="0.01"/></body>
+        </worldbody><deformable><flex name="f" dim="1" body="v0 v1" element="0 1">{child}
         </flex></deformable></mujoco>"#
     )
 }

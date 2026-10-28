@@ -1,0 +1,16 @@
+<mujoco model="soft_body">
+        <option gravity="0 0 -9.81" timestep="0.001" solver="PGS"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" pos="0 0 -2"/>
+          <body name="block_v0" pos="0 0 0"><joint type="slide" axis="1 0 0" damping="10.0"/><joint type="slide" axis="0 1 0" damping="10.0"/><joint type="slide" axis="0 0 1" damping="10.0"/><inertial pos="0 0 0" mass="41.666666666666664" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="block_v1" pos="1 0 0"><joint type="slide" axis="1 0 0" damping="10.0"/><joint type="slide" axis="0 1 0" damping="10.0"/><joint type="slide" axis="0 0 1" damping="10.0"/><inertial pos="0 0 0" mass="41.666666666666664" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="block_v2" pos="0 1 0"><joint type="slide" axis="1 0 0" damping="10.0"/><joint type="slide" axis="0 1 0" damping="10.0"/><joint type="slide" axis="0 0 1" damping="10.0"/><inertial pos="0 0 0" mass="41.666666666666664" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="block_v3" pos="0 0 1"><joint type="slide" axis="1 0 0" damping="10.0"/><joint type="slide" axis="0 1 0" damping="10.0"/><joint type="slide" axis="0 0 1" damping="10.0"/><inertial pos="0 0 0" mass="41.666666666666664" diaginertia="1e-15 1e-15 1e-15"/></body>
+        </worldbody>
+        <deformable>
+            <flex name="block" dim="3" radius="0.02" body="block_v0 block_v1 block_v2 block_v3" element="0 1 2 3">
+                <contact margin="0.005" solref="0.5 2.0"/>
+                <elasticity young="100" poisson="0.3" damping="10.0"/>
+            </flex>
+        </deformable>
+    </mujoco>

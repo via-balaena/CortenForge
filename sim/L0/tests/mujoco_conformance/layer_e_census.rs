@@ -9,7 +9,8 @@
 //!
 //! Each doc gets one verdict: `agree`; the first differing model field; the
 //! first differing step or quantity; or a load status (`ours-panic`,
-//! `ours-refused`, `mj-refuses`, `both-refuse`). `assets/census/verdicts.tsv` pins each doc's
+//! `ours-refused`, `mj-refuses`, `both-refuse`, or `mj-stops`: MuJoCo loads
+//! the doc and stops while running it). `assets/census/verdicts.tsv` pins each doc's
 //! class (see `ratchet::class`) and is a ratchet:
 //!
 //! - **An improvement fails until blessed.** Run with `CENSUS_BLESS=1` to
@@ -146,4 +147,40 @@ fn layer_e_parity_census() {
             println!("{msg}");
         }
     }
+}
+
+/// Every census doc ours loads (the model loads and makes its data, as
+/// [`ours::record`] takes it) sizes every per-joint, per-dof, per-body,
+/// per-geom, per-site, per-tendon, per-actuator and per-sensor array to its
+/// element count (sim-core's `short_arrays`; not the flex arrays): a flex's
+/// vertex bodies and their joints once skipped some (ledger L63, measured on
+/// 77 flex docs).
+#[test]
+fn every_loaded_census_doc_sizes_its_per_element_arrays() {
+    let dir = census_dir().join("docs");
+    let mut loaded = 0;
+    let mut short = Vec::new();
+    for doc in ids_in(&dir, ".xml") {
+        let path = dir.join(format!("{doc}.xml"));
+        let xml = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let Ok(Ok(model)) = std::panic::catch_unwind(|| sim_mjcf::load_model(&xml)) else {
+            continue;
+        };
+        if model.try_make_data().is_err() {
+            continue;
+        }
+        loaded += 1;
+        let (arrays, _) = sim_core::test_fixtures::checks::short_arrays(&model);
+        if !arrays.is_empty() {
+            short.push((doc, arrays));
+        }
+    }
+    assert!(loaded > 1000, "the census docs ours loads: {loaded}");
+    let mut msg = format!(
+        "{} of {loaded} loaded docs leave arrays short\n",
+        short.len()
+    );
+    list(&mut msg, "short", &short);
+    assert!(short.is_empty(), "{msg}");
 }

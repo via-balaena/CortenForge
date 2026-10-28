@@ -2051,10 +2051,12 @@ fn dt16_flex_density_attribute_silently_ignored() {
     let model = parse_mjcf_str(
         r#"
             <mujoco model="dt16_density">
+                <worldbody>
+                  <body name="test_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="500.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+                  <body name="test_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="500.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+                </worldbody>
                 <deformable>
-                    <flex name="test" dim="1" density="500">
-                        <vertex pos="0 0 0  1 0 0"/>
-                        <element data="0 1"/>
+                    <flex name="test" dim="1" density="500" body="test_v0 test_v1" element="0 1">
                     </flex>
                 </deformable>
             </mujoco>
@@ -2066,23 +2068,28 @@ fn dt16_flex_density_attribute_silently_ignored() {
 }
 
 #[test]
-fn dt16_flex_mass_attribute_works() {
-    // DT-16 positive: mass="1.5" on <flex> is the conformant API.
-    let model = parse_mjcf_str(
+fn dt16_flex_mass_attribute_is_refused() {
+    // A `<flex>`'s vertex mass is its body's: MuJoCo 3.5.0's schema refuses
+    // `mass` ("unrecognized attribute: 'mass'", measured), as here.
+    let err = parse_mjcf_str(
         r#"
             <mujoco model="dt16_mass">
+                <worldbody>
+                  <body name="test_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.75" diaginertia="1e-15 1e-15 1e-15"/></body>
+                  <body name="test_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.75" diaginertia="1e-15 1e-15 1e-15"/></body>
+                </worldbody>
                 <deformable>
-                    <flex name="test" dim="1" mass="1.5">
-                        <vertex pos="0 0 0  1 0 0"/>
-                        <element data="0 1"/>
+                    <flex name="test" dim="1" mass="1.5" body="test_v0 test_v1" element="0 1">
                     </flex>
                 </deformable>
             </mujoco>
             "#,
     )
-    .unwrap();
-    assert_eq!(model.flex.len(), 1);
-    assert_eq!(model.flex[0].mass, Some(1.5));
+    .unwrap_err();
+    assert!(
+        matches!(&err, MjcfError::UnknownAttribute { element, attribute, .. } if element == "flex" && attribute == "mass"),
+        "{err}"
+    );
 }
 
 // ========================================================================
@@ -2095,11 +2102,13 @@ fn dt90_flex_friction_three_values() {
     let model = parse_mjcf_str(
         r#"
             <mujoco model="dt90_friction3">
+                <worldbody>
+                  <body name="test_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="500.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+                  <body name="test_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="500.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+                </worldbody>
                 <deformable>
-                    <flex name="test" dim="1">
+                    <flex name="test" dim="1" body="test_v0 test_v1" element="0 1">
                         <contact friction="0.8 0.01 0.002"/>
-                        <vertex pos="0 0 0  1 0 0"/>
-                        <element data="0 1"/>
                     </flex>
                 </deformable>
             </mujoco>
@@ -2119,11 +2128,13 @@ fn dt90_flex_friction_one_value_fills_defaults() {
     let model = parse_mjcf_str(
         r#"
             <mujoco model="dt90_friction1">
+                <worldbody>
+                  <body name="test_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="500.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+                  <body name="test_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="500.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+                </worldbody>
                 <deformable>
-                    <flex name="test" dim="1">
+                    <flex name="test" dim="1" body="test_v0 test_v1" element="0 1">
                         <contact friction="0.5"/>
-                        <vertex pos="0 0 0  1 0 0"/>
-                        <element data="0 1"/>
                     </flex>
                 </deformable>
             </mujoco>

@@ -281,7 +281,7 @@ forward():
                                      (body: from the contacts, §36)
   Velocity     mj_fwd_velocity        Body spatial velocities (skips sleeping DOFs)
                mj_actuator_velocity   Actuator velocities (lengths: position stage)
-               mj_fwd_passive         Springs, dampers, flex bending + vertex damping;
+               mj_fwd_passive         Springs, dampers, flex bending;
                                       cb_passive, then passive plugins, at its end
                mj_reference_constraint  The rows' velocities (J·qvel) and reference accelerations
                mj_rne                 Bias forces (Recursive Newton-Euler)
@@ -472,8 +472,9 @@ and the sim-mjcf `builder/flex.rs` module.
 | 2D (shell) | Membranes, cloth, shells | `<flexcomp type="grid">` |
 | 3D (solid) | Tetrahedral volumetric meshes | `<flexcomp type="box">` |
 
-**Architecture:** Flex vertex DOFs are appended to `qpos`/`qvel`/`qacc` after
-rigid DOFs. Edge constraints enter the unified Jacobian as a flex equality's
+**Architecture:** A flex vertex's DOFs are its body's: a `<flex>`'s vertex
+bodies are declared bodies, wherever they sit in the tree; a flexcomp's are
+appended after every other body. Edge constraints enter the unified Jacobian as a flex equality's
 rows (`EqualityType::Flex`, one per non-rigid edge).
 Bending acts as passive spring-damper forces in `mj_fwd_passive()` (matching
 MuJoCo `engine_passive.c`). Flex-rigid contacts are regular `Contact` entries
@@ -488,7 +489,8 @@ damping. Bending stiffness derived from material (Kirchhoff-Love for shells,
 characteristic stiffness for solids). Pinned vertices use `mass = 1e20`,
 `invmass = 0`.
 
-**Parsed from MJCF:** `<flex>` (direct vertex/element specification) and
+**Parsed from MJCF:** `<flex>` (MuJoCo's form: its vertices are the bodies it
+names, each jointless or with three slides along x, y and z) and
 `<flexcomp>` (procedural generation: grid, box, cable types).
 
 See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) for the full

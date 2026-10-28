@@ -26,6 +26,8 @@
 use sim_core::validation::{max_abs_or_nan, max_or_nan};
 use sim_mjcf::load_model;
 
+use super::flex_test_utils::{triples, uniform, vertex_bodies};
+
 // ============================================================================
 // Energy Boundedness Tests
 // ============================================================================
@@ -1925,17 +1927,22 @@ fn implicit_steps_take_flex_edge_damping_as_mujoco_3_5_0() {
             ],
         ),
     ];
+    let (bodies, names) = vertex_bodies(
+        "c",
+        &triples("0 0 1  0.1 0 1"),
+        &uniform(0.2, 2),
+        &[0],
+        None,
+    );
     for (integrator, mujoco) in want {
         let model = load_model(&format!(
             r#"<mujoco>
               <option timestep="0.002" integrator="{integrator}">
                 <flag equality="disable"/>
               </option>
+              <worldbody>{bodies}</worldbody>
               <deformable>
-                <flex name="c" dim="1" mass="0.2">
-                  <vertex pos="0 0 1  0.1 0 1"/>
-                  <element data="0 1"/>
-                  <pin id="0"/>
+                <flex name="c" dim="1" body="{names}" element="0 1">
                   <edge damping="3"/>
                   <contact contype="0" conaffinity="0"/>
                 </flex>
@@ -2000,16 +2007,22 @@ fn implicit_steps_take_flex_edge_damping_as_mujoco_3_5_0() {
             ],
         ),
     ];
+    let (bodies, names) = vertex_bodies(
+        "c",
+        &triples("0 0 1  0.1 0 1  0.2 0 1  0.3 0 1"),
+        &uniform(0.4, 4),
+        &[],
+        None,
+    );
     for (integrator, mujoco) in cable {
         let model = load_model(&format!(
             r#"<mujoco>
               <option timestep="0.002" integrator="{integrator}">
                 <flag equality="disable"/>
               </option>
+              <worldbody>{bodies}</worldbody>
               <deformable>
-                <flex name="c" dim="1" mass="0.4">
-                  <vertex pos="0 0 1  0.1 0 1  0.2 0 1  0.3 0 1"/>
-                  <element data="0 1  1 2  2 3"/>
+                <flex name="c" dim="1" body="{names}" element="0 1  1 2  2 3">
                   <edge damping="3"/>
                   <contact contype="0" conaffinity="0"/>
                 </flex>
@@ -2159,16 +2172,21 @@ fn a_short_flex_edge_acts_as_mujoco_3_5_0() {
         ),
     ];
     for (vertex, offset, passive, integrator, mujoco) in want {
+        let (bodies, names) = vertex_bodies(
+            "c",
+            &triples(&format!("0 0 1  {vertex}")),
+            &uniform(0.2, 2),
+            &[0],
+            None,
+        );
         let model = load_model(&format!(
             r#"<mujoco>
               <option timestep="0.002" integrator="{integrator}">
                 <flag equality="disable"/>
               </option>
+              <worldbody>{bodies}</worldbody>
               <deformable>
-                <flex name="c" dim="1" mass="0.2">
-                  <vertex pos="0 0 1  {vertex}"/>
-                  <element data="0 1"/>
-                  <pin id="0"/>
+                <flex name="c" dim="1" body="{names}" element="0 1">
                   <edge damping="3" stiffness="50"/>
                   <contact contype="0" conaffinity="0"/>
                 </flex>
@@ -2200,11 +2218,12 @@ fn a_short_flex_edge_acts_as_mujoco_3_5_0() {
     let model = load_model(
         r#"<mujoco>
           <option timestep="0.002"/>
+          <worldbody>
+            <body name="c_v0" pos="0 0 1"><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body>
+            <body name="c_v1" pos="0.1 0 1"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body>
+          </worldbody>
           <deformable>
-            <flex name="c" dim="1" mass="0.2">
-              <vertex pos="0 0 1  0.1 0 1"/>
-              <element data="0 1"/>
-              <pin id="0"/>
+            <flex name="c" dim="1" body="c_v0 c_v1" element="0 1">
               <contact contype="0" conaffinity="0"/>
             </flex>
           </deformable>

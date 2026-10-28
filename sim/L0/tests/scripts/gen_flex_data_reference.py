@@ -21,8 +21,8 @@ hierarchy node's box after mj_forward (engine_core_smooth.c:610-662).
 Each case is a MuJoCo document, a free sphere then flexcomps under
 <worldbody>, in most the first a cable so the second's vertices, elements
 and nodes start past 0; with its vertex positions and elements, from which the test
-writes the same flexes in sim-mjcf's <deformable><flex> form (sim-mjcf adds
-a flex's vertex bodies after every other body, so the flexcomps come last).
+writes the same flexes as <flex body=...> over vertex bodies of its own, of
+1 g each, after every other body (so the flexcomps come last here too).
 """
 import math
 import os

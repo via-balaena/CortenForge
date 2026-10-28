@@ -93,7 +93,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `<actuator>` | ✓ | ✓ | All 8 shortcut types (motor, position, velocity, damper, cylinder, adhesion, muscle, general) with MuJoCo-compatible gain/bias force model, GainType/BiasType dispatch, FilterExact dynamics. `<general>` supports explicit `gaintype`/`biastype`/`dyntype`/`gainprm`/`biasprm`/`dynprm` attributes with default class inheritance. Activation params (group/actlimited/actrange/actearly/lengthrange) parsed and defaultable. Body transmission (adhesion) via `mj_transmission_body()` with contact normal Jacobian moment arms (§36). |
 | `<sensor>` | ✓ | ✓ | Various sensor types |
 | `<keyframe>` | ✓ | ✓ | State snapshots: `<key>` elements with qpos/qvel/act/ctrl/mpos/mquat/time, `Data::reset_to_keyframe()` |
-| `<flex>` | ✓ | ✓ | Direct flex body specification (vertices, elements); parsed via `parse_flex()` + `process_flex()` |
+| `<flex>` | ✓ | ✓ | MuJoCo's form: `body` names the vertex bodies, `element` the elements; a vertex body must be jointless with no joint above it, or have three slides along x, y and z, unrotated, with no joint or mocap body above it, one per vertex at its origin (else refused, a stated limitation); `node` refused; parsed via `parse_flex()` + `process_flex_bodies()` |
 | `<flexcomp>` | ✓ | ✓ | Procedural flex generation: grid (2D shell), box (3D solid), cable (1D); parsed via `parse_flexcomp()` |
 
 #### Body/Geom/Joint attributes

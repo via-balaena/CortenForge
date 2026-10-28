@@ -1,0 +1,12 @@
+<mujoco model="mixed_pins">
+        <worldbody>
+          <body name="cable_v0" pos="0 0 0"><inertial pos="0 0 0" mass="500.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="cable_v1" pos="1 0 0"><joint type="slide" axis="1 0 0" damping="1.0"/><joint type="slide" axis="0 1 0" damping="1.0"/><joint type="slide" axis="0 0 1" damping="1.0"/><inertial pos="0 0 0" mass="1000.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="cable_v2" pos="2 0 0"><inertial pos="0 0 0" mass="500.0" diaginertia="1e-15 1e-15 1e-15"/></body>
+        </worldbody>
+        <deformable>
+            <flex name="cable" dim="1" body="cable_v0 cable_v1 cable_v2" element="0 1  1 2">
+                <elasticity young="100" damping="1.0"/>
+            </flex>
+        </deformable>
+    </mujoco>

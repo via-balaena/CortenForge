@@ -4051,8 +4051,8 @@ impl Default for MjcfKeyframe {
 /// properties. Maps to MuJoCo's `<flex>` element within `<deformable>`.
 ///
 /// Contact parameters come from `<flex><contact>`, elasticity from `<flex><elasticity>`,
-/// and edge spring-damper from `<flex><edge>`. Direct `<flex>` attributes are only
-/// `name`, `dim`, `radius`, `body`, `node`, `group` (plus structural data arrays).
+/// and edge spring-damper from `<flex><edge>`. Direct `<flex>` attributes are
+/// `name`, `dim`, `radius`, `group`, `body`, `vertex` and `element`.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfFlex {
@@ -4063,10 +4063,15 @@ pub struct MjcfFlex {
     pub dim: usize,
     /// Collision vertex radius `[m]`.
     pub radius: f64,
-    /// Body names for vertex attachment (one per vertex). Required on `<flex>`.
-    /// For `<flexcomp>`, auto-generated during expansion (one body per vertex).
+    /// A `<flex>`'s vertex bodies, one per vertex: each vertex is the body
+    /// it names, as MuJoCo 3.5.0's `vertbody`. Not read for a flexcomp, whose
+    /// vertex bodies the loader makes ([`FlexVertexBodies::Generated`]); the
+    /// parser refuses `body` on one.
     pub body: Vec<String>,
-    /// Node body names (alternative to `<vertex>` positions).
+    /// A `<flex>`'s `node` bodies (MuJoCo's trilinear interpolation): refused,
+    /// a stated limitation, after MuJoCo's checks of its collisions, its node
+    /// count and its node names; empty when the attribute is omitted or
+    /// empty.
     pub node: Vec<String>,
     /// Visualization group (0-5).
     pub group: i32,
@@ -4154,12 +4159,28 @@ pub struct MjcfFlex {
     pub flexcomp_file: Option<String>,
 
     // --- Structural data arrays ---
-    /// Vertex positions.
+    /// A `<flex>`'s `vertex`: each vertex's offset in its body (sim-mjcf
+    /// takes only zero offsets; empty when the attribute is omitted). Where
+    /// the loader makes the vertex bodies, each vertex's position.
     pub vertices: Vec<Vector3<f64>>,
     /// Element connectivity (each element is a list of vertex indices).
     pub elements: Vec<Vec<usize>>,
     /// Pinned vertex indices (infinite mass, fixed in place).
     pub pinned: Vec<usize>,
+    /// Where the vertex bodies come from.
+    pub vertex_bodies: FlexVertexBodies,
+}
+
+/// Where a flex's vertex bodies come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum FlexVertexBodies {
+    /// Each vertex is the body [`MjcfFlex::body`] names: a `<flex>`, as
+    /// MuJoCo 3.5.0's `vertbody`.
+    #[default]
+    Named,
+    /// The loader makes a body for each vertex: a `<deformable><flexcomp>`'s.
+    Generated,
 }
 
 impl Default for MjcfFlex {
@@ -4210,6 +4231,7 @@ impl Default for MjcfFlex {
             vertices: Vec::new(),
             elements: Vec::new(),
             pinned: Vec::new(),
+            vertex_bodies: FlexVertexBodies::Named,
         }
     }
 }

@@ -1,0 +1,13 @@
+<mujoco>
+  <worldbody>
+    <body name="curved_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="6.477993710685535" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="curved_v1" pos="2 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="6.477993710685535" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="curved_v2" pos="0.5 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="3.3333333333333335" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="curved_v3" pos="1.5 -0.8 0.5"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="3.1446603773522015" diaginertia="1e-15 1e-15 1e-15"/></body>
+  </worldbody>
+  <deformable>
+    <flex name="curved" dim="2" radius="0.005" body="curved_v0 curved_v1 curved_v2 curved_v3" element="0 1 2  1 0 3">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+    </flex>
+  </deformable>
+</mujoco>

@@ -10,18 +10,33 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::fmt::Write as _;
+
 use sim_mjcf::{MjcfError, load_model, model_from_mjcf, parse_mjcf_str};
 
+/// A flex of `dim` whose vertices are bodies `v0`, `v1`, ... at `vertices`
+/// (three numbers each), each with three slides, as MuJoCo 3.5.0's
+/// `<flex body=...>`.
 fn flex_doc(dim: usize, vertices: &str, elements: &str) -> String {
+    let coords: Vec<&str> = vertices.split_whitespace().collect();
+    let mut bodies = String::new();
+    for (i, pos) in coords.chunks(3).enumerate() {
+        write!(
+            bodies,
+            r#"<body name="v{i}" pos="{}"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>"#,
+            pos.join(" ")
+        )
+        .unwrap();
+    }
+    let names: Vec<String> = (0..coords.len() / 3).map(|i| format!("v{i}")).collect();
     format!(
         r#"<mujoco>
+            <worldbody>{bodies}</worldbody>
             <deformable>
-                <flex name="f" dim="{dim}">
-                    <vertex pos="{vertices}"/>
-                    <element data="{elements}"/>
-                </flex>
+                <flex name="f" dim="{dim}" body="{}" element="{elements}"></flex>
             </deformable>
-        </mujoco>"#
+        </mujoco>"#,
+        names.join(" ")
     )
 }
 
@@ -165,9 +180,14 @@ fn a_flex_with_fewer_vertices_than_an_element_takes_is_refused() {
 fn an_unnamed_flexs_refusal_names_it_by_its_index() {
     let err = load_model(
         r#"<mujoco>
+            <worldbody>
+                <body name="a0"></body><body name="a1" pos="1 0 0"></body><body name="a2" pos="0 1 0"></body>
+                <body name="b0"></body><body name="b1" pos="1 0 0"></body><body name="b2" pos="0 1 0"></body>
+                <body name="b3" pos="0 0 1"></body><body name="b4" pos="1 1 1"></body>
+            </worldbody>
             <deformable>
-                <flex name="a" dim="2"><vertex pos="0 0 0  1 0 0  0 1 0"/><element data="0 1 2"/></flex>
-                <flex dim="4"><vertex pos="0 0 0  1 0 0  0 1 0  0 0 1  1 1 1"/><element data="0 1 2 3 4"/></flex>
+                <flex name="a" dim="2" body="a0 a1 a2" element="0 1 2"></flex>
+                <flex dim="4" body="b0 b1 b2 b3 b4" element="0 1 2 3 4"></flex>
             </deformable>
         </mujoco>"#,
     )

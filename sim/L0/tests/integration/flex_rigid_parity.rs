@@ -21,6 +21,7 @@ use sim_core::{DISABLE_ISLAND, Data, GeomType, Model, SdfGrid, ShapeSphere, Slee
 use sim_mjcf::load_model;
 
 use super::flex_golden::{differences, usizes};
+use super::flex_test_utils::{triples, uniform, vertex_bodies};
 
 fn golden() -> Value {
     serde_json::from_str(include_str!("../assets/golden/flex/flex_rigid.json"))
@@ -49,13 +50,9 @@ fn a_body_s_geoms_collide_with_a_flex_as_mujoco() {
 fn rows_in_no_island_take_the_whole_solve_s_force() {
     let model = load_model(
         r#"<mujoco><option><flag equality="disable"/></option>
-          <worldbody><geom type="plane" size="1 1 0.1"/></worldbody>
-          <deformable><flex name="c" dim="2" radius="0.01" mass="0.9">
+          <worldbody><geom type="plane" size="1 1 0.1"/><body name="c_v0" pos="0 0 0.005"><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body><body name="c_v1" pos="0.05 0 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body><body name="c_v2" pos="0.1 0 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body><body name="c_v3" pos="0 0.05 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body><body name="c_v4" pos="0.05 0.05 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body><body name="c_v5" pos="0.1 0.05 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body><body name="c_v6" pos="0 0.1 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body><body name="c_v7" pos="0.05 0.1 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body><body name="c_v8" pos="0.1 0.1 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body></worldbody>
+          <deformable><flex name="c" dim="2" radius="0.01" body="c_v0 c_v1 c_v2 c_v3 c_v4 c_v5 c_v6 c_v7 c_v8" element="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7">
             <contact selfcollide="none"/>
-            <vertex pos="0 0 0.005  0.05 0 0.005  0.1 0 0.005  0 0.05 0.005  0.05 0.05 0.005
-                         0.1 0.05 0.005  0 0.1 0.005  0.05 0.1 0.005  0.1 0.1 0.005"/>
-            <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
-            <pin id="0"/>
           </flex></deformable>
         </mujoco>"#,
     )
@@ -95,16 +92,41 @@ fn rows_in_no_island_take_the_whole_solve_s_force() {
     }
 }
 
-/// A flex of nine vertices, all pinned, 1 m up and colliding with nothing:
-/// declared first, it numbers the next flex's elements and vertices past its
-/// own, which are on no tree.
-const PINNED_FIRST: &str = r#"<flex name="p" dim="2" radius="0.01">
+/// A flex of nine vertices, all pinned (jointless bodies of 1 g), 1 m up and
+/// colliding with nothing: declared first, it numbers the next flex's
+/// elements and vertices past its own, which are on no tree. Its bodies, for
+/// the end of `<worldbody>`, and the flex.
+fn pinned_first() -> (String, String) {
+    let (bodies, names) = vertex_bodies(
+        "p",
+        &triples(
+            "0 0 1  0.05 0 1  0.1 0 1  0 0.05 1  0.05 0.05 1  0.1 0.05 1  0 0.1 1  0.05 0.1 1  0.1 0.1 1",
+        ),
+        &[0.001; 9],
+        &[0, 1, 2, 3, 4, 5, 6, 7, 8],
+        None,
+    );
+    let flex = format!(
+        r#"<flex name="p" dim="2" radius="0.01" body="{names}" element="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7">
             <contact contype="0" conaffinity="0" selfcollide="none" internal="false"/>
-            <vertex pos="0 0 1  0.05 0 1  0.1 0 1  0 0.05 1  0.05 0.05 1  0.1 0.05 1
-                         0 0.1 1  0.05 0.1 1  0.1 0.1 1"/>
-            <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
-            <pin id="0 1 2 3 4 5 6 7 8"/>
-          </flex>"#;
+          </flex>"#
+    );
+    (bodies, flex)
+}
+
+/// The 3 × 3 cloth of the sphere scenes, 5 cm apart at height 0, each vertex
+/// a body of 1 g with three slides: its bodies and names.
+fn cloth_bodies() -> (String, String) {
+    vertex_bodies(
+        "c",
+        &triples(
+            "-0.05 -0.05 0  0 -0.05 0  0.05 -0.05 0  -0.05 0 0  0 0 0  0.05 0 0  -0.05 0.05 0  0 0.05 0  0.05 0.05 0",
+        ),
+        &[0.001; 9],
+        &[],
+        None,
+    )
+}
 
 /// A box of 0.1 kg asleep (`sleep="init"`) on the floor, a flex triangle of
 /// 0.375 kg falling onto it from 2 mm (registry `D-FLEX-WAKE`): the
@@ -113,9 +135,17 @@ const PINNED_FIRST: &str = r#"<flex name="p" dim="2" radius="0.01">
 /// with a flex side (`mj_wakeCollision`, `engine_sleep.c:290-293`): with the
 /// box declared after the flex the box stays asleep and the triangle passes
 /// through it, with the box first MuJoCo stops (`gen_flex_rigid_reference.py`'s
-/// `mujoco_stops` asserts both). The triangle comes after [`PINNED_FIRST`].
+/// `mujoco_stops` asserts both). The triangle comes after [`pinned_first`]'s flex.
 #[test]
 fn a_flex_contact_wakes_a_sleeping_body() {
+    let (pinned_bodies, pinned) = pinned_first();
+    let (bodies, names) = vertex_bodies(
+        "t",
+        &triples("-0.02 -0.02 0.112  0.02 -0.02 0.112  0 0.02 0.112"),
+        &uniform(0.375, 3),
+        &[],
+        None,
+    );
     let model = load_model(&format!(
         r#"<mujoco><option timestep="0.002"><flag equality="disable" sleep="enable"/></option>
           <worldbody>
@@ -124,11 +154,10 @@ fn a_flex_contact_wakes_a_sleeping_body() {
               <inertial pos="0 0 0" mass="0.1" diaginertia="2e-5 3e-5 4e-5"/>
               <geom type="box" size="0.05 0.05 0.05"/>
             </body>
+            {pinned_bodies}{bodies}
           </worldbody>
-          <deformable>{PINNED_FIRST}<flex name="t" dim="2" radius="0.01" mass="0.375">
+          <deformable>{pinned}<flex name="t" dim="2" radius="0.01" body="{names}" element="0 1 2">
             <contact selfcollide="none" internal="false"/>
-            <vertex pos="-0.02 -0.02 0.112  0.02 -0.02 0.112  0 0.02 0.112"/>
-            <element data="0 1 2"/>
           </flex></deformable>
         </mujoco>"#
     ))
@@ -172,19 +201,18 @@ fn cloth_over_a_sphere(midphase: bool, bits: &str) -> (Model, Data) {
     } else {
         r#"<flag midphase="disable"/>"#
     };
+    let (bodies, names) = cloth_bodies();
     let xml = format!(
         r#"<mujoco>
           <option gravity="0 0 0">{flag}</option>
           <worldbody>
             <geom type="sphere" size="0.065" pos="0 0 -0.05" {bits}/>
             <geom type="box" size="0.01 0.01 0.01" pos="1 1 1"/>
+            {bodies}
           </worldbody>
           <deformable>
-            <flex name="c" dim="2" radius="0.01">
+            <flex name="c" dim="2" radius="0.01" body="{names}" element="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7">
               <contact selfcollide="none" internal="false" margin="0.005"/>
-              <vertex pos="-0.05 -0.05 0  0 -0.05 0  0.05 -0.05 0  -0.05 0 0  0 0 0  0.05 0 0
-                           -0.05 0.05 0  0 0.05 0  0.05 0.05 0"/>
-              <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
             </flex>
           </deformable>
         </mujoco>"#
@@ -256,21 +284,21 @@ fn a_signed_distance_field_meets_each_flex_vertex() {
 /// A signed distance field on a body asleep (`sleep="init"`) under a cloth
 /// falling onto it from 5 mm beyond reach (registry `D-FLEX-WAKE`): the
 /// first contacts list a vertex, not an element, and wake the body in the
-/// step that makes them. The cloth comes after [`PINNED_FIRST`].
+/// step that makes them. The cloth comes after [`pinned_first`]'s flex.
 #[test]
 fn a_flex_vertex_contact_wakes_a_sleeping_field() {
+    let (pinned_bodies, pinned) = pinned_first();
+    let (bodies, names) = cloth_bodies();
     let mut model = load_model(&format!(
         r#"<mujoco><option timestep="0.002"><flag equality="disable" sleep="enable"/></option>
           <worldbody>
             <body name="b" pos="0 0 -0.085" sleep="init"><freejoint/>
               <geom type="sphere" size="0.065"/>
             </body>
+            {pinned_bodies}{bodies}
           </worldbody>
-          <deformable>{PINNED_FIRST}<flex name="c" dim="2" radius="0.01">
+          <deformable>{pinned}<flex name="c" dim="2" radius="0.01" body="{names}" element="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7">
             <contact selfcollide="none" internal="false" margin="0.005"/>
-            <vertex pos="-0.05 -0.05 0  0 -0.05 0  0.05 -0.05 0  -0.05 0 0  0 0 0  0.05 0 0
-                         -0.05 0.05 0  0 0.05 0  0.05 0.05 0"/>
-            <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
           </flex></deformable>
         </mujoco>"#
     ))
@@ -311,12 +339,20 @@ fn a_flex_vertex_contact_wakes_a_sleeping_field() {
 #[test]
 fn a_non_finite_turn_against_a_flex_returns() {
     use nalgebra::{Quaternion, UnitQuaternion};
-    let cloth = r#"<deformable><flex name="c" dim="2" radius="0.01">
+    let (bodies, names) = vertex_bodies(
+        "c",
+        &triples(
+            "0 0 0.005  0.05 0 0.005  0.1 0 0.005  0 0.05 0.005  0.05 0.05 0.005  0.1 0.05 0.005  0 0.1 0.005  0.05 0.1 0.005  0.1 0.1 0.005",
+        ),
+        &[0.001; 9],
+        &[],
+        None,
+    );
+    let cloth = format!(
+        r#"<deformable><flex name="c" dim="2" radius="0.01" body="{names}" element="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7">
       <contact selfcollide="none" internal="false"/>
-      <vertex pos="0 0 0.005  0.05 0 0.005  0.1 0 0.005  0 0.05 0.005  0.05 0.05 0.005  0.1 0.05 0.005
-                   0 0.1 0.005  0.05 0.1 0.005  0.1 0.1 0.005"/>
-      <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
-    </flex></deformable>"#;
+    </flex></deformable>"#
+    );
     let geoms = [
         (
             "hfield",
@@ -353,7 +389,7 @@ fn a_non_finite_turn_against_a_flex_returns() {
             };
             let xml = format!(
                 r#"<mujoco><option><flag equality="disable" {flag}/></option>{asset}
-                   <worldbody>{geom}</worldbody>{cloth}</mujoco>"#
+                   <worldbody>{geom}{bodies}</worldbody>{cloth}</mujoco>"#
             );
             let mut model = load_model(&xml).expect("load");
             if name == "sdf" {

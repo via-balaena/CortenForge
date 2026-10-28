@@ -19,10 +19,8 @@ a free geom (its condim set) against a flex, or a tetrahedron's internal
 contact (its element on side 0, one of its own vertices on side 1), with
 the elliptic cone, whose rows are the Jacobian's in the contact frame; a
 cable first, so the second flex's vertices and elements start past 0. Each
-vertex is a body with three slides, so the document is written twice:
-MuJoCo's <flex body=...> over declared bodies, and sim-mjcf's
-<deformable><flex> with its vertices, whose bodies sim-mjcf adds after the
-others, in the same order. Recorded: each contact's sides (geom, flex,
+vertex is a body with three slides, declared in MuJoCo's <flex body=...>,
+which sim-mjcf loads as it is. Recorded: each contact's sides (geom, flex,
 elem, vert), position, frame and dim, and its rows: at the dense size
 efc_J's, at the sparse one each row's columns (efc_J_colind) and values.
 """
@@ -70,7 +68,7 @@ CASES = {
 def documents(rigid, flexes, size):
     head = (f'<mujoco><option gravity="0 0 0" cone="elliptic" jacobian="{size}"><flag equality="disable"/>'
             f'</option><worldbody>{rigid}')
-    mj_bodies, mj_flexes, ours = "", "", ""
+    mj_bodies, mj_flexes = "", ""
     for f, (verts, elems, dim) in enumerate(flexes):
         names = []
         for i, v in enumerate(verts):
@@ -87,17 +85,8 @@ def documents(rigid, flexes, size):
                       f'element="{" ".join(map(str, elems))}">{contact}</flex>')
     mj = f'{head}{mj_bodies}</worldbody><deformable>{mj_flexes}</deformable></mujoco>'
     m = mujoco.MjModel.from_xml_string(mj)
-    for f, (_, _, dim) in enumerate(flexes):
-        va, vn = m.flex_vertadr[f], m.flex_vertnum[f]
-        da, en = m.flex_elemdataadr[f], m.flex_elemnum[f]
-        vtxt = "  ".join(" ".join(repr(float(x)) for x in m.body_pos[b]) for b in m.flex_vertbodyid[va:va + vn])
-        etxt = " ".join(str(int(i)) for i in m.flex_elem[da:da + en * (dim + 1)])
-        contact = '<contact selfcollide="none" internal="true"/>' if dim == 3 else \
-            '<contact selfcollide="none" internal="false"/>'
-        ours += (f'<flex name="f{f}" dim="{dim}" radius="0.01">{contact}'
-                 f'<vertex pos="{vtxt}"/><element data="{etxt}"/></flex>')
-    ours = f'{head}</worldbody><deformable>{ours}</deformable></mujoco>'
-    return mj, ours, m
+    # sim-mjcf's flex is MuJoCo's: its vertices are the declared bodies.
+    return mj, mj, m
 
 
 def case(name, rigid, flexes, size):

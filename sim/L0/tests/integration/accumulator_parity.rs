@@ -277,12 +277,14 @@ fn a_flex_contact_stays_out_of_cfrc_ext() {
               <geom type="sphere" size="1.0" mass="100"/>
               <site name="s" pos="0.1 0 0"/>
             </body>
+            <body name="f_v0" pos="-0.15 -0.15 0.49"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+            <body name="f_v1" pos="0.15 -0.15 0.49"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+            <body name="f_v2" pos="-0.15 0.15 0.49"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
+            <body name="f_v3" pos="0.15 0.15 0.49"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.001" diaginertia="1e-15 1e-15 1e-15"/></body>
           </worldbody>
           <deformable>
-            <flex name="f" dim="2" density="1000" radius="0.02">
+            <flex name="f" dim="2" radius="0.02" body="f_v0 f_v1 f_v2 f_v3" element="0 1 2  1 3 2">
               <contact condim="1"/>
-              <vertex pos="-0.15 -0.15 0.49  0.15 -0.15 0.49  -0.15 0.15 0.49  0.15 0.15 0.49"/>
-              <element data="0 1 2  1 3 2"/>
             </flex>
           </deformable>
           <sensor>

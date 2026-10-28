@@ -1,0 +1,16 @@
+<mujoco>
+      <worldbody>
+        <geom name="floor" type="plane" size="2 2 .1"/>
+        <body name="arm" pos="0 0 0.3">
+          <joint name="h" type="hinge" axis="0 1 0" pos="-0.2 0 0"/>
+          <geom type="sphere" size="0.02" mass="1" contype="0" conaffinity="0"/>
+          <body name="c_v0" pos="0.1 0 -0.28"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body>
+          <body name="c_v1" pos="0.2 0 -0.28"><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body>
+        </body>
+      </worldbody>
+      <deformable>
+        <flex name="c" dim="1" radius="0.05" body="c_v0 c_v1" element="0 1">
+          <edge stiffness="10"/>
+        </flex>
+      </deformable>
+    </mujoco>

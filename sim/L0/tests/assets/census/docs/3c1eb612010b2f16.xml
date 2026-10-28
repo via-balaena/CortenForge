@@ -1,0 +1,20 @@
+<mujoco>
+  <option gravity="0 0 0"><flag equality="disable"/></option>
+  <worldbody>
+    <body name="ground"><geom name="floor" type="plane" size="2 2 0.1"/></body>
+    <body name="A_v0" pos="-0.05 -0.05 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.011111111111111112" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="A_v1" pos="-0.05 0 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.011111111111111112" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="A_v2" pos="-0.05 0.05 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.011111111111111112" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="A_v3" pos="0 -0.05 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.011111111111111112" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="A_v4" pos="0 0 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.011111111111111112" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="A_v5" pos="0 0.05 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.011111111111111112" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="A_v6" pos="0.05 -0.05 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.011111111111111112" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="A_v7" pos="0.05 0 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.011111111111111112" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="A_v8" pos="0.05 0.05 0.005"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.011111111111111112" diaginertia="1e-15 1e-15 1e-15"/></body>
+  </worldbody>
+  <deformable>
+    <flex name="A" dim="2" radius="0.01" body="A_v0 A_v1 A_v2 A_v3 A_v4 A_v5 A_v6 A_v7 A_v8" element="0 3 4  0 4 1  1 4 5  1 5 2  3 6 7  3 7 4  4 7 8  4 8 5">
+      <contact selfcollide="none" internal="false"/>
+    </flex>
+  </deformable>
+</mujoco>

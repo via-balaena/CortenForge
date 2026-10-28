@@ -8,7 +8,7 @@ use std::io::BufRead;
 use crate::error::{MjcfError, Result};
 use crate::keywords;
 
-use crate::types::{MjcfFlex, MjcfSkin, MjcfSkinBone, MjcfSkinVertex};
+use crate::types::{FlexVertexBodies, MjcfFlex, MjcfSkin, MjcfSkinBone, MjcfSkinVertex};
 
 use super::attrs::{Attrs, skip_element};
 
@@ -73,12 +73,31 @@ pub(super) fn parse_deformable<R: BufRead>(
     Ok((skins, flex_bodies))
 }
 
-/// Parse a `<flex>` element and its children (`<vertex>`, `<element>`, `<pin>`).
+/// Parse a `<flex>` element: MuJoCo 3.5.0's, whose vertices are the bodies
+/// `body` names, with `vertex` offsets and `element` ids, and its `<contact>`,
+/// `<elasticity>` and `<edge>` children. MuJoCo's schema refuses the
+/// `<vertex>`, `<element>` and `<pin>` children and the `mass` sim-mjcf once
+/// read, before a missing `body` or `element`, as here; a bad attribute value
+/// read here before a refused child is refused first here, the child first
+/// by MuJoCo's schema (Rigid-loading L47).
 pub(super) fn parse_flex<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
 ) -> Result<MjcfFlex> {
+    let a = Attrs::new(start)?;
+    if a.has("mass") {
+        return Err(MjcfError::unknown_attribute("flex", "mass"));
+    }
     let mut flex = parse_flex_attrs(start)?;
+    read_flex_data(&a, &mut flex)?;
+    // The vertex bodies; MuJoCo 3.5.0 requires `body` (checked below).
+    if let Some(s) = a.text("body") {
+        flex.body = s.split_whitespace().map(str::to_string).collect();
+    }
+    // An empty `node` is no node, as MuJoCo 3.5.0 reads it (measured).
+    if let Some(s) = a.text("node") {
+        flex.node = s.split_whitespace().map(str::to_string).collect();
+    }
     let mut buf = Vec::new();
 
     loop {
@@ -86,96 +105,31 @@ pub(super) fn parse_flex<R: BufRead>(
             Ok(Event::Start(ref e)) => {
                 let elem_name = e.name().as_ref().to_vec();
                 match elem_name.as_slice() {
-                    b"contact" => {
-                        parse_flex_contact_attrs(e, &mut flex)?;
-                        skip_element(reader, &elem_name)?;
-                    }
-                    b"elasticity" => {
-                        parse_flex_elasticity_attrs(e, &mut flex)?;
-                        skip_element(reader, &elem_name)?;
-                    }
-                    b"edge" => {
-                        parse_flex_edge_attrs(e, &mut flex)?;
-                        skip_element(reader, &elem_name)?;
-                    }
-                    b"vertex" => {
-                        // Parse child vertex elements until end of <vertex>
-                        if let Some(floats) = Attrs::new(e)?.vector("pos")? {
-                            // Inline attribute: flat array of xyz triples
-                            for chunk in floats.chunks(3) {
-                                if chunk.len() == 3 {
-                                    flex.vertices
-                                        .push(Vector3::new(chunk[0], chunk[1], chunk[2]));
-                                }
-                            }
-                        }
-                        skip_element(reader, &elem_name)?;
-                    }
-                    b"element" => {
-                        if let Some(ints) = indices(&Attrs::new(e)?, "data")? {
-                            // Element connectivity
-                            let verts_per_elem = match flex.dim {
-                                1 => 2, // cable: edges
-                                3 => 4, // solid: tetrahedra
-                                _ => 3, // shell (dim=2) and default: triangles
-                            };
-                            for chunk in ints.chunks(verts_per_elem) {
-                                if chunk.len() == verts_per_elem {
-                                    flex.elements.push(chunk.to_vec());
-                                }
-                            }
-                        }
-                        skip_element(reader, &elem_name)?;
-                    }
-                    b"pin" => {
-                        if let Some(ids) = indices(&Attrs::new(e)?, "id")? {
-                            flex.pinned.extend(ids);
-                        }
-                        skip_element(reader, &elem_name)?;
-                    }
-                    _ => {
-                        skip_element(reader, &elem_name)?;
-                    }
-                }
-            }
-            Ok(Event::Empty(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
                     b"contact" => parse_flex_contact_attrs(e, &mut flex)?,
                     b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex)?,
                     b"edge" => parse_flex_edge_attrs(e, &mut flex)?,
-                    b"vertex" => {
-                        if let Some(floats) = Attrs::new(e)?.vector("pos")? {
-                            for chunk in floats.chunks(3) {
-                                if chunk.len() == 3 {
-                                    flex.vertices
-                                        .push(Vector3::new(chunk[0], chunk[1], chunk[2]));
-                                }
-                            }
-                        }
-                    }
-                    b"element" => {
-                        if let Some(ints) = indices(&Attrs::new(e)?, "data")? {
-                            let verts_per_elem = match flex.dim {
-                                1 => 2,
-                                3 => 4,
-                                _ => 3, // shell (dim=2) and default
-                            };
-                            for chunk in ints.chunks(verts_per_elem) {
-                                if chunk.len() == verts_per_elem {
-                                    flex.elements.push(chunk.to_vec());
-                                }
-                            }
-                        }
-                    }
-                    b"pin" => {
-                        if let Some(ids) = indices(&Attrs::new(e)?, "id")? {
-                            flex.pinned.extend(ids);
-                        }
+                    b"vertex" | b"element" | b"pin" => {
+                        return Err(MjcfError::unknown_element(
+                            String::from_utf8_lossy(&elem_name),
+                            "flex",
+                        ));
                     }
                     _ => {}
                 }
+                skip_element(reader, &elem_name)?;
             }
+            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
+                b"contact" => parse_flex_contact_attrs(e, &mut flex)?,
+                b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex)?,
+                b"edge" => parse_flex_edge_attrs(e, &mut flex)?,
+                name @ (b"vertex" | b"element" | b"pin") => {
+                    return Err(MjcfError::unknown_element(
+                        String::from_utf8_lossy(name),
+                        "flex",
+                    ));
+                }
+                _ => {}
+            },
             Ok(Event::End(ref e)) if e.name().as_ref() == b"flex" => break,
             Ok(Event::Eof) => {
                 return Err(MjcfError::eof_in("flex"));
@@ -186,7 +140,47 @@ pub(super) fn parse_flex<R: BufRead>(
         buf.clear();
     }
 
+    // MuJoCo 3.5.0 requires both (`xml_native_reader.cc`, `OneFlex`); it
+    // reads an empty `element` as missing, an empty `body` as given (measured).
+    if !a.has("body") {
+        return Err(MjcfError::missing_attribute("flex", "body"));
+    }
+    if flex.elements.is_empty() {
+        return Err(MjcfError::missing_attribute("flex", "element"));
+    }
     Ok(flex)
+}
+
+/// A `<flex>`'s `vertex` and `element` attributes, read as MuJoCo 3.5.0
+/// reads them (`OneFlex`) and sized as its compiler checks them
+/// (`mjCFlex::Compile`, `user_mesh.cc`): three reals per vertex, `dim + 1`
+/// vertex ids per element. A trailing partial element is kept for the
+/// builder's element check, which refuses it.
+fn read_flex_data(a: &Attrs, flex: &mut MjcfFlex) -> Result<()> {
+    if let Some(reals) = a.vector("vertex")? {
+        if reals.len() % 3 != 0 {
+            return Err(MjcfError::invalid_value(
+                a.element(),
+                "vertex",
+                "vert size must be a multiple of 3",
+            ));
+        }
+        flex.vertices = reals
+            .chunks(3)
+            .map(|c| Vector3::new(c[0], c[1], c[2]))
+            .collect();
+    }
+    if let Some(ids) = indices(a, "element")? {
+        // Under a dim that is not 1, 2 or 3 the ids stay one element, and the
+        // builder refuses the dim, as MuJoCo's compiler does.
+        let size = if (1..=3).contains(&flex.dim) {
+            flex.dim + 1
+        } else {
+            ids.len()
+        };
+        flex.elements = ids.chunks(size).map(<[usize]>::to_vec).collect();
+    }
+    Ok(())
 }
 
 /// Parse direct `<flex>` / `<flexcomp>` top-level attributes.
@@ -210,14 +204,6 @@ pub(super) fn parse_flex_attrs(e: &BytesStart) -> Result<MjcfFlex> {
     }
     if let Some(radius) = a.real("radius")? {
         flex.radius = radius;
-    }
-    // Body names for vertex attachment (required on <flex>, auto-generated by <flexcomp>).
-    if let Some(s) = a.text("body") {
-        flex.body = s.split_whitespace().map(|t| t.to_string()).collect();
-    }
-    // Node body names (alternative to <vertex> positions).
-    if let Some(s) = a.text("node") {
-        flex.node = s.split_whitespace().map(|t| t.to_string()).collect();
     }
     // Visualization group (0-5).
     if let Some(group) = a.int("group")? {
@@ -405,8 +391,14 @@ pub(super) fn parse_flexcomp_empty(e: &BytesStart) -> Result<MjcfFlex> {
 /// A `<flexcomp>`'s attributes and the mesh they generate. MuJoCo reads
 /// `count` and `spacing` as exactly three values each (`xml_native_reader.cc`).
 fn flexcomp_mesh(e: &BytesStart) -> Result<MjcfFlex> {
-    let mut flex = parse_flex_attrs(e)?;
     let a = Attrs::new(e)?;
+    // A flexcomp makes its vertices' bodies; MuJoCo 3.5.0's schema has no
+    // `body` on it ("unrecognized attribute", measured).
+    if a.has("body") {
+        return Err(MjcfError::unknown_attribute("flexcomp", "body"));
+    }
+    let mut flex = parse_flex_attrs(e)?;
+    flex.vertex_bodies = FlexVertexBodies::Generated;
 
     let comp_type = a
         .keyword("type", keywords::flexcomp_type)?

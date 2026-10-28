@@ -1,0 +1,6 @@
+<mujoco>
+        <worldbody><body name="ball" pos="1 1 1"><freejoint/><geom type="sphere" size="0.05"/></body></worldbody>
+        <deformable>
+            <flexcomp name="grid" type="grid" count="2 2 1" spacing="0.04 0.04 0.04" dim="2" mass="1"/>
+        </deformable>
+    </mujoco>

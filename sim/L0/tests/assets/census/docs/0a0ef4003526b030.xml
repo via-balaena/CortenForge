@@ -1,0 +1,14 @@
+<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="rigid_shell_v0" pos="0 0 0"><inertial pos="0 0 0" mass="2.8866666666666667" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="rigid_shell_v1" pos="1 0 0"><inertial pos="0 0 0" mass="2.8866666666666667" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="rigid_shell_v2" pos="0.5 0.866 0"><inertial pos="0 0 0" mass="1.4433333333333334" diaginertia="1e-15 1e-15 1e-15"/></body>
+    <body name="rigid_shell_v3" pos="0.5 -0.866 0"><inertial pos="0 0 0" mass="1.4433333333333334" diaginertia="1e-15 1e-15 1e-15"/></body>
+  </worldbody>
+  <deformable>
+    <flex name="rigid_shell" dim="2" body="rigid_shell_v0 rigid_shell_v1 rigid_shell_v2 rigid_shell_v3" element="0 1 2  1 0 3">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+    </flex>
+  </deformable>
+</mujoco>

@@ -12,6 +12,8 @@ use serde_json::Value;
 use sim_core::Model;
 use sim_mjcf::load_model;
 
+use super::flex_test_utils::{triples, vertex_bodies};
+
 fn golden() -> Value {
     serde_json::from_str(include_str!("../assets/golden/flex/flex_data.json"))
         .expect("flex data golden parses")
@@ -42,13 +44,11 @@ fn id(x: Option<usize>) -> i64 {
     x.map_or(-1, |x| i64::try_from(x).expect("index"))
 }
 
-/// The case's flexes in sim-mjcf's form, after the same free ball.
+/// The case's flexes as `<flex>`es of vertex bodies (each 1 g; only
+/// positions and boxes are compared), after the same free ball.
 fn ours(case: &Value) -> Model {
-    let mut xml = String::from(
-        r#"<mujoco><option gravity="0 0 0"><flag equality="disable"/></option><worldbody>
-<body name="ball" pos="1 1 1"><freejoint/><geom type="sphere" size="0.05"/></body>
-</worldbody><deformable>"#,
-    );
+    let mut bodies = String::new();
+    let mut flexes = String::new();
     for (k, flex) in case["flexes"]
         .as_array()
         .expect("flexes")
@@ -64,17 +64,28 @@ fn ours(case: &Value) -> Model {
                 format!("{:?} {:?} {:?}", p[0], p[1], p[2])
             })
             .collect();
+        let (vertex_bodies, names) = vertex_bodies(
+            &format!("f{k}"),
+            &vertices,
+            &vec![0.001; vertices.len()],
+            &[],
+            None,
+        );
+        bodies += &vertex_bodies;
         let elements: Vec<String> = ints(&flex["elements"]).iter().map(i64::to_string).collect();
-        xml += &format!(
-            r#"<flex name="f{k}" dim="{}" radius="{:?}"><contact selfcollide="none" internal="false" activelayers="{}"/><vertex pos="{}"/><element data="{}"/></flex>"#,
+        flexes += &format!(
+            r#"<flex name="f{k}" dim="{}" radius="{:?}" body="{names}" element="{}"><contact selfcollide="none" internal="false" activelayers="{}"/></flex>"#,
             flex["dim"],
             flex["radius"].as_f64().expect("radius"),
-            flex["activelayers"],
-            vertices.join("  "),
             elements.join(" "),
+            flex["activelayers"],
         );
     }
-    xml += "</deformable></mujoco>";
+    let xml = format!(
+        r#"<mujoco><option gravity="0 0 0"><flag equality="disable"/></option><worldbody>
+<body name="ball" pos="1 1 1"><freejoint/><geom type="sphere" size="0.05"/></body>
+{bodies}</worldbody><deformable>{flexes}</deformable></mujoco>"#
+    );
     load_model(&xml).expect("load")
 }
 
@@ -249,18 +260,19 @@ fn flex_element_and_hierarchy_boxes_as_mujoco() {
 /// midphase, bit for bit.
 #[test]
 fn a_tetrahedral_flex_with_no_active_layer_loads() {
+    let vertices = triples("-0.1 -0.1 -0.05  0.12 -0.08 -0.04  -0.02 0.13 -0.06  0 0 0.08");
+    let (bodies, names) = vertex_bodies("t", &vertices, &[0.001; 4], &[], None);
     let xml = |flag: &str| {
         format!(
             r#"<mujoco>
               <option gravity="0 0 0"><flag {flag}/></option>
               <worldbody>
                 <body pos="0.02 0.02 0.12"><freejoint/><geom type="sphere" size="0.05"/></body>
+                {bodies}
               </worldbody>
               <deformable>
-                <flex name="t" dim="3" radius="0.01">
+                <flex name="t" dim="3" radius="0.01" body="{names}" element="0 1 2 3">
                   <contact selfcollide="none" internal="false" activelayers="0"/>
-                  <vertex pos="-0.1 -0.1 -0.05  0.12 -0.08 -0.04  -0.02 0.13 -0.06  0 0 0.08"/>
-                  <element data="0 1 2 3"/>
                 </flex>
               </deformable>
             </mujoco>"#

@@ -42,6 +42,7 @@ pub mod arms;
 pub mod bodies;
 pub(crate) mod builders;
 pub mod chains;
+pub mod checks;
 pub mod collision;
 pub mod conformance;
 pub mod particles;

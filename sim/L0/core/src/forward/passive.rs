@@ -471,24 +471,6 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         }
     }
 
-    // S4.7b: Flex vertex damping → qfrc_damper (gated on DISABLE_DAMPER).
-    if has_damper {
-        for i in 0..model.nflexvert {
-            let dof_base = model.flexvert_dofadr[i];
-            if dof_base == usize::MAX {
-                continue; // Pinned vertex: no DOFs
-            }
-            let flex_id = model.flexvert_flexid[i];
-            let damp = model.flex_damping[flex_id];
-            if damp <= 0.0 {
-                continue;
-            }
-            for k in 0..3 {
-                data.qfrc_damper[dof_base + k] -= damp * data.qvel[dof_base + k];
-            }
-        }
-    }
-
     // Flex edge passive spring-damper forces.
     // MuJoCo architecture: <edge stiffness="..." damping="..."/> drives passive
     // forces (engine_passive.c), separate from constraint-based edge enforcement
