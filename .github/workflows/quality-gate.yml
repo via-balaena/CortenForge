@@ -54,8 +54,8 @@
 # - `feature-combos` (ubuntu): explicit non-default-feature paths, plus
 #   the workspace-union `--all-features` gate. Currently sim-soft
 #   `gpu-probe` (the only feature that flips a tier per
-#   `tier_up_features`) and the `cortenforge` facade subsets. Add new
-#   combos here as features land.
+#   `tier_up_features`), sim-mjcf `mjb` and the `cortenforge` facade
+#   subsets. Add new combos here as features land.
 #
 # Relocated (NOT dropped):
 # - `--all-features` from the test matrix (plan §6.1). The union is a
@@ -692,12 +692,6 @@ jobs:
           case " $PKGS " in
             *" -p cortenforge-mesh-io "*) cargo test -p cortenforge-mesh-io --features threemf ;;
           esac
-          # sim-mjcf's .mjb tests (the `mjb` module, version refusals
-          # included) are behind the non-default `mjb` feature: run them
-          # too, only when sim-mjcf is in this shard's selected set.
-          case " $PKGS " in
-            *" -p cortenforge-sim-mjcf "*) cargo test -p cortenforge-sim-mjcf --features mjb --lib mjb:: ;;
-          esac
         shell: bash
 
   # ============================================================================
@@ -1173,11 +1167,20 @@ jobs:
           echo "SOFT_PKGS=$SOFT_PKGS" >> "$GITHUB_ENV"
           FACADE_PKGS=$(bash .github/scripts/affected-packages.sh "cortenforge")
           echo "FACADE_PKGS=$FACADE_PKGS" >> "$GITHUB_ENV"
+          MJCF_PKGS=$(bash .github/scripts/affected-packages.sh "cortenforge-sim-mjcf")
+          echo "MJCF_PKGS=$MJCF_PKGS" >> "$GITHUB_ENV"
         shell: bash
 
       - name: Test sim-soft with gpu-probe
         if: env.SOFT_PKGS != ''
         run: cargo test --features gpu-probe -p cortenforge-sim-soft
+
+      # sim-mjcf's .mjb tests (the `mjb` module, its version refusals
+      # included) are behind the non-default `mjb` feature.
+      - name: Test sim-mjcf's mjb module
+        if: env.MJCF_PKGS != ''
+        run: |
+          cargo test -p cortenforge-sim-mjcf --features mjb --lib mjb::
 
       # The default-feature build (tests-debug) only exercises the facade with
       # ALL domains on. These subset builds guard the per-domain feature gating
