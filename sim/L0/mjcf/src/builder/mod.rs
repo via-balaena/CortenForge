@@ -230,6 +230,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
 
     // Apply compiler pre-processing passes on a mutable clone
     let mut mjcf = mjcf.clone();
+    mesh::name_assets(&mut mjcf)?;
 
     // Active ingress validation (Phase 0): full validate() promoted from
     // defense-in-depth dead code. Fail-closed on any finding. Runs against

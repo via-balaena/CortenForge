@@ -16,7 +16,41 @@ use tracing::warn;
 use super::ModelBuilder;
 use super::asset::{AssetKind, resolve_asset_path};
 use crate::error::{ElementKind, Location, MjcfError, Result};
-use crate::types::{MeshInertia, MjcfCompiler, MjcfGeom, MjcfGeomType, MjcfHfield, MjcfMesh};
+use crate::types::{
+    MeshInertia, MjcfCompiler, MjcfGeom, MjcfGeomType, MjcfHfield, MjcfMesh, MjcfModel,
+};
+
+/// Gives each unnamed mesh and height field the name MuJoCo 3.5.0 gives it
+/// (`mjCMesh::CopyFromSpec`, `mjCHField::CopyFromSpec`): its `file`'s text
+/// past the last `/` or `\`, cut at the last `.` (`mjuu_strippath`,
+/// `mjuu_stripext`, `user_util.cc:768-829`), an empty one refused as
+/// MuJoCo refuses it ("empty name in mesh", "empty name in height field",
+/// `user_model.cc:2034-2041`). It runs on the model before validation and
+/// every compiler pass, which find assets by name.
+pub fn name_assets(mjcf: &mut MjcfModel) -> Result<()> {
+    let named = |name: &str, file: Option<&str>, what: &str| {
+        if !name.is_empty() {
+            return Ok(name.to_owned());
+        }
+        let stem = file.map_or("", |file| {
+            let base = file.rsplit(['/', '\\']).next().unwrap_or(file);
+            base.rfind('.').map_or(base, |dot| &base[..dot])
+        });
+        if stem.is_empty() {
+            return Err(MjcfError::invalid_model(format!("empty name in {what}")));
+        }
+        Ok(stem.to_owned())
+    };
+    for (i, mesh) in mjcf.meshes.iter_mut().enumerate() {
+        mesh.name = named(&mesh.name, mesh.file.as_deref(), "mesh")
+            .map_err(|e| e.at(Location::nth(ElementKind::Mesh, None, i)))?;
+    }
+    for (i, hfield) in mjcf.hfields.iter_mut().enumerate() {
+        hfield.name = named(&hfield.name, hfield.file.as_deref(), "height field")
+            .map_err(|e| e.at(Location::nth(ElementKind::Hfield, None, i)))?;
+    }
+    Ok(())
+}
 
 /// Cached mesh mass properties: `(volume, com, inertia_at_com_unit_density)`.
 /// Avoids recomputing `compute_mesh_inertia()` multiple times per mesh geom.

@@ -124,9 +124,8 @@ pub(super) fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
 /// At least one of `file` or `elevation` must be present.
 pub(super) fn parse_hfield_attrs(e: &BytesStart) -> Result<MjcfHfield> {
     let a = Attrs::new(e)?;
-    let name = a
-        .string("name")
-        .ok_or_else(|| MjcfError::missing_attribute("hfield", "name"))?;
+    // Unwritten, the name is the file's (the builder's `name_assets`).
+    let name = a.string("name").unwrap_or_default();
 
     let file = a.string("file");
 
