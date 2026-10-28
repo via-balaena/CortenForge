@@ -119,3 +119,120 @@ fn a_site_form_connect_names_its_sites_bodies() {
     assert_eq!((site("sa"), site("sb")), (2, 3));
     assert_eq!((model.eq_obj1id[0], model.eq_obj2id[0]), (1, 2));
 }
+
+/// A site-form connect's residual, as `site_xpos[a] − site_xpos[b]` sim-core
+/// computes, bit for bit (it places sites as MuJoCo's `mj_local2Global`).
+fn residual_is_the_sites(xml: &str, a: &str, b: &str) {
+    let model = load_model(xml).expect("loads");
+    let site = |name: &str| {
+        model
+            .site_name
+            .iter()
+            .position(|n| n.as_deref() == Some(name))
+            .unwrap()
+    };
+    let (i, j) = (site(a), site(b));
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let rows: Vec<usize> = (0..data.efc_type.len())
+        .filter(|&r| data.efc_type[r] == ConstraintType::Equality)
+        .collect();
+    assert_eq!(rows.len(), 3);
+    for (k, &r) in rows.iter().enumerate() {
+        let want = data.site_xpos[i][k] - data.site_xpos[j][k];
+        assert_eq!(data.efc_pos[r].to_bits(), want.to_bits(), "{a}-{b} row {k}");
+    }
+}
+
+/// A site MuJoCo places by its body's frame (within 1e-6 of its origin) or
+/// by its inertial frame reads that frame's position, not its own: a
+/// residual differing by the offset (measured, 3.6e-7 and 2.9e-7) before
+/// the build set each point from the site's frame.
+#[test]
+fn a_site_form_connect_reads_a_site_placed_by_its_bodys_frame() {
+    residual_is_the_sites(
+        r#"<mujoco><worldbody>
+<body name="a" pos="0 0 1" quat="0.9 0.1 0.2 0.3"><freejoint/><geom size="0.1" mass="1"/><site name="sa" pos="5e-7 0 0"/></body>
+<site name="sw" pos="0.2 0.1 1.3"/></worldbody>
+<equality><connect site1="sa" site2="sw"/></equality></mujoco>"#,
+        "sa",
+        "sw",
+    );
+    residual_is_the_sites(
+        r#"<mujoco><worldbody>
+<body name="b" pos="0 0 1" quat="0.9 0.1 0.2 0.3"><freejoint/><inertial pos="0.1 0 0" quat="0.7071068 0 0.7071068 0" mass="1" diaginertia="0.01 0.02 0.03"/><geom size="0.05" mass="0"/><site name="sb" pos="0.1000004 0 0" quat="0.7071068 0 0.7071068 0"/></body>
+<site name="sw" pos="0.2 0.1 1.3"/></worldbody>
+<equality><connect site1="sb" site2="sw"/></equality></mujoco>"#,
+        "sb",
+        "sw",
+    );
+}
+
+/// An equality whose two objects are one is refused, as MuJoCo refuses
+/// every kind of it ("element 'a' is repeated in equality constraint 0",
+/// measured), the world standing for an unwritten `body2`.
+#[test]
+fn an_equality_on_one_object_twice_is_refused() {
+    for (equality, name) in [
+        (r#"<connect site1="sa" site2="sa"/>"#, "sa"),
+        (r#"<connect body1="a" body2="a" anchor="0 0 0"/>"#, "a"),
+        (r#"<connect body1="world" anchor="0 0 0"/>"#, "world"),
+        (r#"<weld body1="a" body2="a"/>"#, "a"),
+        (r#"<joint joint1="j1" joint2="j1"/>"#, "j1"),
+        (r#"<tendon tendon1="t1" tendon2="t1"/>"#, "t1"),
+    ] {
+        let err = load_model(&format!(
+            r#"<mujoco><worldbody><body name="a"><freejoint/><geom size="0.1"/><site name="sa"/></body>
+<body name="b" pos="1 0 0"><joint name="j1" type="hinge"/><joint name="j2" type="slide"/><geom size="0.1"/></body></worldbody>
+<tendon><fixed name="t1"><joint joint="j1" coef="1"/></fixed></tendon><equality>{equality}</equality></mujoco>"#
+        ))
+        .expect_err(equality)
+        .to_string();
+        assert!(
+            err.contains(&format!(
+                "element '{name}' is repeated in equality constraint 0"
+            )),
+            "{equality}: {err}"
+        );
+    }
+}
+
+/// Under `fusestatic`, a site-form connect holds the sites it names. MuJoCo
+/// 3.5.0 resolves a site's name to its index from before the fusion, which
+/// moving a fused body's sites renumbers (`user_model.cc:4346`, `:4371`), so
+/// here its connect holds `sw` and `sb` (measured: `eq_obj1id` 0 = `sw`) and
+/// its body `a` falls free (D-FUSESTATIC-SITE-INDEX).
+#[test]
+fn a_fused_models_site_connect_holds_the_sites_it_names() {
+    let xml = r#"<mujoco><compiler fusestatic="true"/><worldbody>
+<body name="a" pos="0 0 1"><freejoint/><geom size="0.1" mass="1"/><site name="sa" pos="0.1 0 0"/></body>
+<body name="w" pos="0.5 0 2"><site name="sw" pos="0 0 0"/></body>
+<body name="b" pos="1 0 1"><freejoint/><geom size="0.1" mass="1"/><site name="sb" pos="-0.1 0 0"/></body>
+</worldbody>
+<equality><connect site1="sa" site2="sb"/></equality></mujoco>"#;
+    let model = load_model(xml).expect("loads");
+    assert_eq!(model.nbody, 3, "w is fused into the world");
+    residual_is_the_sites(xml, "sa", "sb");
+}
+
+/// An empty site name is refused as no site's: MuJoCo binds an unnamed site
+/// to it (measured), D-EMPTY-NAME. A connect mixing forms names the site
+/// attribute it holds.
+#[test]
+fn an_empty_or_mixed_connect_is_refused() {
+    let err = load_model(
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><freejoint/><geom size="0.1" mass="1"/><site pos="0.1 0 0"/></body>
+<site name="sw" pos="0 0 1.3"/></worldbody><equality><connect site1="" site2="sw"/></equality></mujoco>"#,
+    )
+    .expect_err("empty site1");
+    assert!(err.to_string().contains("unknown site ''"), "{err}");
+    let err = load_model(
+        r#"<mujoco><worldbody><body name="a"><freejoint/><geom size="0.1"/></body><site name="sw"/></worldbody>
+<equality><connect site2="sw" body1="a"/></equality></mujoco>"#,
+    )
+    .expect_err("mixed");
+    assert!(
+        matches!(&err, MjcfError::InvalidValue { attribute, .. } if attribute == "site2"),
+        "{err}"
+    );
+}

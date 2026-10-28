@@ -2146,3 +2146,8 @@ f0b98fca9eede3ea	sim/L0/tests/integration/equality_constraints.rs:747
 5150d646a763178e	sim/L0/mjcf/tests/errors.rs:525
 734f3d415939c0c5	sim/L0/mjcf/tests/user_sensors.rs:211
 da35e3e8a6be9f97	sim/L0/mjcf/tests/user_sensors.rs:224
+3431ea3d39a0708b	sim/L0/mjcf/tests/connect_forms.rs:207
+4989fb5b114fb91f	sim/L0/mjcf/tests/connect_forms.rs:154
+8db9458398658199	sim/L0/mjcf/tests/connect_forms.rs:224
+8ee3855ff707f302	sim/L0/mjcf/tests/connect_forms.rs:162
+91560c0b93b5f3d7	sim/L0/mjcf/tests/connect_forms.rs:230

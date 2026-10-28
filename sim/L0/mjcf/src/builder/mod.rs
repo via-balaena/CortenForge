@@ -657,6 +657,9 @@ pub struct ModelBuilder {
     // Sensor/equality name lookup (§59)
     pub(crate) sensor_name_to_id: HashMap<String, usize>,
     pub(crate) eq_name_to_id: HashMap<String, usize>,
+    /// Each site-form connect's equality id and its two sites, whose points
+    /// `build` sets once the sites' frames are known.
+    pub(crate) site_connects: Vec<(usize, usize, usize)>,
 
     // Tendon arrays (populated by process_tendons)
     pub(crate) tendon_name_to_id: HashMap<String, usize>,

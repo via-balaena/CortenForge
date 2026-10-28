@@ -12,6 +12,7 @@ use sim_core::{Model, SleepPolicy, compute_dof_lengths};
 use tracing::warn;
 
 use super::ModelBuilder;
+use super::equality::site_connect_point;
 use super::flex::{
     compute_flex_address_table, compute_flex_count_table, compute_flexedge_crosssection,
 };
@@ -22,11 +23,21 @@ impl ModelBuilder {
     /// Orchestrates model assembly and all post-construction computations.
     pub(crate) fn build(self) -> Model {
         let body_sleep_policy = self.body_sleep_policy.clone();
+        let site_connects = self.site_connects.clone();
         let mut model = self.assemble_model();
 
         // Structural pre-computation
         model.compute_ancestors();
         model.compute_simple_bodies();
+        // A site-form connect's points, now the sites' frames are known.
+        for &(eq, site1, site2) in &site_connects {
+            let (p1, p2) = (
+                site_connect_point(&model, site1),
+                site_connect_point(&model, site2),
+            );
+            model.eq_data[eq][..3].copy_from_slice(p1.as_slice());
+            model.eq_data[eq][3..6].copy_from_slice(p2.as_slice());
+        }
         model.compute_dof_patterns();
         model.compute_implicit_params();
         model.compute_history_addresses();

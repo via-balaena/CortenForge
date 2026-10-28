@@ -1016,7 +1016,10 @@ pub struct MjcfMeshDefaults {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfMesh {
-    /// Asset name (used to reference the mesh from geoms).
+    /// Asset name (used to reference the mesh from geoms). An empty name is
+    /// the file's, without its directory and last extension, as MuJoCo names
+    /// it; the build gives it that name, so a parsed model's mesh keeps it
+    /// empty until then.
     pub name: String,
     /// File path for external mesh (STL, OBJ, etc.).
     pub file: Option<String>,
@@ -1060,7 +1063,8 @@ impl Default for MjcfMesh {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfHfield {
-    /// Asset name (referenced by `<geom hfield="...">`).
+    /// Asset name (referenced by `<geom hfield="...">`). An empty name is the
+    /// file's, as a mesh's (see [`MjcfMesh::name`]).
     pub name: String,
     /// Size: `[x, y, z_top, z_bottom]`.
     /// x/y = half-extents; z_top = elevation scale; z_bottom = base depth.

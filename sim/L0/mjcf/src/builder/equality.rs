@@ -16,7 +16,7 @@ use crate::types::{
     EqualityKind, MjcfConnect, MjcfDistance, MjcfEquality, MjcfJointEquality, MjcfTendonEquality,
     MjcfWeld,
 };
-use sim_core::EqualityType;
+use sim_core::{EqualityType, Model, SameFrame};
 
 /// The form a `<connect>` is written in.
 pub enum ConnectForm<'a> {
@@ -42,9 +42,14 @@ pub fn connect_form(connect: &MjcfConnect) -> Result<ConnectForm<'_>> {
     let site = connect.site1.is_some() || connect.site2.is_some();
     let body = connect.body1.is_some() || connect.body2.is_some() || connect.anchor.is_some();
     if site && body {
+        let written = if connect.site1.is_some() {
+            "site1"
+        } else {
+            "site2"
+        };
         return Err(MjcfError::invalid_value(
             "connect",
-            "site1",
+            written,
             "body and site semantics cannot be mixed",
         ));
     }
@@ -61,6 +66,37 @@ pub fn connect_form(connect: &MjcfConnect) -> Result<ConnectForm<'_>> {
         body2: connect.body2.as_deref(),
         anchor,
     })
+}
+
+/// Where MuJoCo's `mj_local2Global` places a site, in its body's frame, as a
+/// point the connect's body form maps as `xmat·p + xpos`
+/// (`engine_core_util.c:849-865`): a site in its body's frame (`site_sameframe`
+/// body) at the body's position, so 0; one in its body's inertial frame
+/// (inertia) at `xipos`, so 0 when that frame is the body's
+/// (`body_sameframe` body) and the body's `ipos` else, which sim-core maps
+/// to `xipos` the same way; any other at its own position. The model's
+/// `site_sameframe` and `body_sameframe` classify the frames as MuJoCo's
+/// compiler does, within 1e-6.
+pub fn site_connect_point(model: &Model, site: usize) -> Vector3<f64> {
+    let body = model.site_body[site];
+    match model.site_sameframe[site] {
+        SameFrame::Body => Vector3::zeros(),
+        SameFrame::Inertia if model.body_sameframe[body] == SameFrame::Body => Vector3::zeros(),
+        SameFrame::Inertia => model.body_ipos[body],
+        SameFrame::None | SameFrame::BodyRot | SameFrame::InertiaRot => model.site_pos[site],
+    }
+}
+
+/// MuJoCo refuses an equality whose two objects are one, the world standing
+/// for a connect's or a weld's unwritten `body2` ("element 'a' is repeated
+/// in equality constraint 0", `user_objects.cc:6024-6034`, measured on each
+/// kind).
+fn repeated(element: &str, attribute: &str, first: &str, eq_id: usize) -> MjcfError {
+    MjcfError::invalid_value(
+        element,
+        attribute,
+        format!("element '{first}' is repeated in equality constraint {eq_id}"),
+    )
 }
 
 impl ModelBuilder {
@@ -112,12 +148,12 @@ impl ModelBuilder {
     /// In the body form the first is the anchor written and the second is
     /// computed so both map to the same world point at qpos0, matching
     /// MuJoCo's `engine_setconst.c` behavior. The site form is kept as the
-    /// sites' bodies, each point its site's position in its body, not
-    /// computed: MuJoCo's site connect is `site_xpos1 − site_xpos2`
-    /// (`engine_core_constraint.c:438-443`), which `mj_local2Global` computes
-    /// as the body form computes its points, `xmat·p + xpos`; sim-core's
-    /// equality rows name bodies, so the model names the sites' bodies where
-    /// MuJoCo's names the sites (D-CONNECT-SITE).
+    /// sites' bodies, sim-core's equality rows naming bodies where MuJoCo's
+    /// name the sites (D-CONNECT-SITE): MuJoCo's site connect is
+    /// `site_xpos1 − site_xpos2` (`engine_core_constraint.c:438-443`), and
+    /// each point is set, once the build knows the sites' frames, to where
+    /// `mj_local2Global` places its site, in its body's frame
+    /// ([`site_connect_point`]).
     fn process_connect(&mut self, connect: &MjcfConnect) -> Result<()> {
         let body_id = |name: &str| {
             self.body_name_to_id
@@ -140,6 +176,9 @@ impl ModelBuilder {
             } => {
                 let body1_id = body_id(body1)?;
                 let body2_id = body2.map_or(Ok(0), body_id)?; // else the world
+                if body1_id == body2_id {
+                    return Err(repeated("connect", "body2", body1, self.eq_type.len()));
+                }
                 data[..3].copy_from_slice(anchor.as_slice());
                 // Auto-compute body2 anchor: convert body1 anchor to world, then to body2 frame.
                 let (p1, q1) = self.body_world_pose(body1_id);
@@ -151,8 +190,11 @@ impl ModelBuilder {
             }
             ConnectForm::Sites { site1, site2 } => {
                 let (s1, s2) = (site_id(site1)?, site_id(site2)?);
-                data[..3].copy_from_slice(self.site_pos[s1].as_slice());
-                data[3..6].copy_from_slice(self.site_pos[s2].as_slice());
+                if s1 == s2 {
+                    return Err(repeated("connect", "site2", site1, self.eq_type.len()));
+                }
+                // The points are set when the sites' frames are known (`build`).
+                self.site_connects.push((self.eq_type.len(), s1, s2));
                 (self.site_body[s1], self.site_body[s2])
             }
         };
@@ -208,6 +250,9 @@ impl ModelBuilder {
         } else {
             0 // World body
         };
+        if *body1_id == body2_id {
+            return Err(repeated("weld", "body2", &weld.body1, self.eq_type.len()));
+        }
 
         let mut data = [0.0; 11];
 
@@ -287,6 +332,14 @@ impl ModelBuilder {
         } else {
             usize::MAX
         };
+        if *joint1_id == joint2_id {
+            return Err(repeated(
+                "joint",
+                "joint2",
+                &joint_eq.joint1,
+                self.eq_type.len(),
+            ));
+        }
 
         let mut data = [0.0; 11];
         for (i, &coef) in joint_eq.polycoef.iter().take(11).enumerate() {
@@ -385,6 +438,14 @@ impl ModelBuilder {
         } else {
             usize::MAX
         };
+        if t1_id == t2_id {
+            return Err(repeated(
+                "tendon",
+                "tendon2",
+                &ten_eq.tendon1,
+                self.eq_type.len(),
+            ));
+        }
 
         let mut data = [0.0; 11];
         for (i, &coef) in ten_eq.polycoef.iter().take(5).enumerate() {

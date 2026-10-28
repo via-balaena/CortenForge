@@ -25,8 +25,10 @@ use crate::types::{
 /// past the last `/` or `\`, cut at the last `.` (`mjuu_strippath`,
 /// `mjuu_stripext`, `user_util.cc:768-829`), an empty one refused as
 /// MuJoCo refuses it ("empty name in mesh", "empty name in height field",
-/// `user_model.cc:2034-2041`). It runs on the model before validation and
-/// every compiler pass, which find assets by name.
+/// `user_model.cc:2034-2041`), and two of one name refused as a repeated
+/// name, as MuJoCo's `ProcessLists` refuses them before any pass drops an
+/// unused mesh (`user_model.cc:4888-4891`). It runs on the model before
+/// validation and every compiler pass, which find assets by name.
 pub fn name_assets(mjcf: &mut MjcfModel) -> Result<()> {
     let named = |name: &str, file: Option<&str>, what: &str| {
         if !name.is_empty() {
@@ -49,6 +51,21 @@ pub fn name_assets(mjcf: &mut MjcfModel) -> Result<()> {
         hfield.name = named(&hfield.name, hfield.file.as_deref(), "height field")
             .map_err(|e| e.at(Location::nth(ElementKind::Hfield, None, i)))?;
     }
+    let repeated = |kind: ElementKind, names: Vec<&str>| {
+        let mut seen = std::collections::HashSet::new();
+        names
+            .into_iter()
+            .find(|name| !seen.insert(*name))
+            .map_or(Ok(()), |name| Err(MjcfError::duplicate_name(kind, name)))
+    };
+    repeated(
+        ElementKind::Mesh,
+        mjcf.meshes.iter().map(|m| m.name.as_str()).collect(),
+    )?;
+    repeated(
+        ElementKind::Hfield,
+        mjcf.hfields.iter().map(|h| h.name.as_str()).collect(),
+    )?;
     Ok(())
 }
 

@@ -47,17 +47,23 @@ fn an_unnamed_mesh_is_named_by_its_file() {
     }
     // A `\` ends the directory too. MuJoCo also opens the file there, reading
     // `\` as a separator on every platform (`FilePath::PathReduce`); sim-mjcf
-    // does not yet (ledger L329), so only the name is checked, in the error.
-    let err = load(
+    // hands the path to the operating system (ledger L329), which on Windows
+    // reads it as MuJoCo does and elsewhere finds no such file, so elsewhere
+    // the name is checked in the error.
+    let backslash = load(
         dir.path(),
         r#"<mesh file="sub\two.obj"/>"#,
         r#"<geom type="mesh" mesh="two"/>"#,
-    )
-    .expect_err("backslash");
-    assert!(
-        matches!(&err, MjcfError::Asset { name, .. } if name == "two"),
-        "{err}"
     );
+    if cfg!(windows) {
+        assert_eq!(backslash.expect("loads on Windows").mesh_name, ["two"]);
+    } else {
+        let err = backslash.expect_err("no such file elsewhere");
+        assert!(
+            matches!(&err, MjcfError::Asset { name, .. } if name == "two"),
+            "{err}"
+        );
+    }
     // Only the last extension goes: `a` names no mesh (MuJoCo: "mesh 'a'
     // not found in geom 0").
     let err = load(
@@ -101,6 +107,17 @@ fn a_mesh_with_no_name_or_a_repeated_one_is_refused() {
             "{assets}: {err}"
         );
     }
+    // Unused, under discardvisual, as MuJoCo checks names before that pass.
+    let err = load_model(&format!(
+        r#"<mujoco><compiler meshdir="{}" discardvisual="true"/><asset><mesh file="tet.obj"/><mesh file="sub/tet.obj"/></asset>
+<worldbody><body><freejoint/><geom size="0.1"/></body></worldbody></mujoco>"#,
+        dir.path().display()
+    ))
+    .expect_err("unused repeated");
+    assert!(
+        matches!(&err, MjcfError::DuplicateName { name, .. } if name == "tet"),
+        "{err}"
+    );
     for assets in [
         r#"<mesh file="tet.obj"/><mesh file="sub/tet.obj"/>"#,
         r#"<mesh name="tet" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 2 1 0 1 3 0 3 2 1 2 3"/><mesh file="tet.obj"/>"#,

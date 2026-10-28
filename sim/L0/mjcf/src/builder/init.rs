@@ -37,7 +37,8 @@ impl ModelBuilder {
             body_name: vec![Some("world".to_string())],
             body_mocapid: vec![None],      // world body is not mocap
             body_sleep_policy: vec![None], // world body has no sleep policy
-            body_gravcomp: vec![0.0],      // world body has no gravcomp
+            site_connects: vec![],
+            body_gravcomp: vec![0.0], // world body has no gravcomp
             nmocap: 0,
 
             jnt_type: vec![],

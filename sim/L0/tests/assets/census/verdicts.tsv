@@ -404,6 +404,7 @@
 340567b32d82e767	agree
 3417ef6191afdd9f	agree
 3421581294d1496f	model:geom_quat;dyn:agree
+3431ea3d39a0708b	model:eq_obj1id;dyn:e1:t0:qfrc_constraint	divergence=D-FUSESTATIC-SITE-INDEX
 34593f3ba52c2e8a	both-refuse
 3486dd3e43cb05ca	both-refuse
 34e084197442a3f7	agree
@@ -587,6 +588,7 @@
 49803276715a9956	agree
 4984d5606f8039a7	both-refuse
 49876f34be2305c4	agree
+4989fb5b114fb91f	model:eq_data;dyn:agree	divergence=D-CONNECT-SITE
 499b364df2378dc1	agree
 49b2f19df66d840c	mj-refuses	divergence=D-CABLE-TWO-BODY
 49c63d4bcdd0691d	model:geom_quat;dyn:agree
@@ -1114,6 +1116,7 @@
 8cef1f2155033a74	agree
 8d3b7020409ee595	both-refuse
 8d5ab200f4ebddec	agree
+8db9458398658199	ours-refused	divergence=D-EMPTY-NAME
 8dc6f00b72b3f1c2	agree
 8dd503a51aabe25f	both-refuse
 8e1037abcfd94699	mj-refuses
@@ -1124,6 +1127,7 @@
 8e905b5934dfec0b	agree
 8e916ecff214019a	agree
 8eb53334ea400487	agree
+8ee3855ff707f302	model:eq_data;dyn:agree	divergence=D-CONNECT-SITE
 8ef74b6597d3b47c	agree
 8efff1853bab69bd	both-refuse
 8f02ce2052146d2a	model:neq
@@ -1142,6 +1146,7 @@
 91072568fd158c07	agree
 912cf5702fb3db07	agree
 91360c1567d07cd0	both-refuse
+91560c0b93b5f3d7	both-refuse
 91563743601ec523	both-refuse
 917250fdd99ca2b2	agree
 9180448c0bdf8889	agree
