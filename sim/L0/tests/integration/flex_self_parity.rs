@@ -160,9 +160,10 @@ fn an_elliptic_cone_s_rows_stay_in_their_contact_s_island() {
     }
 }
 
-/// A pinned vertex is a body of its own in sim-mjcf, on its parent body in
-/// MuJoCo (registry `D-FLEX-PINNED-BODY`): two elements each holding a
-/// pinned vertex, or a world geom and such an element, collide here, where
+/// A pinned vertex is on its parent body in MuJoCo's document; sim-mjcf
+/// refuses that form, so its document gives each pinned vertex a jointless
+/// body of its own (registry `D-FLEX-PINNED-BODY`): two elements each holding
+/// a pinned vertex, or a world geom and such an element, collide here, where
 /// MuJoCo's same-body skip drops them. On each of the golden's pinned scenes
 /// sim-core lists every contact MuJoCo lists, and adds some, each between two
 /// such sides.

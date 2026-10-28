@@ -330,8 +330,10 @@ def as_written(name, flexes, option, flag):
 # body (user_flexcomp.cc:486-488), so two elements each holding one share the
 # world body and mj_collideElems skips them (:2018-2029), as
 # mj_collideGeomElem skips a world geom against such an element (:1880);
-# sim-mjcf gives each pinned vertex a body of its own. Each scene's MuJoCo
-# contacts are recorded, and the test compares sim-core's.
+# sim-mjcf refuses that form (several vertices on the world body, at
+# offsets), so its document gives each pinned vertex a jointless body of its
+# own. Each scene's MuJoCo contacts are recorded, and the test compares
+# sim-core's on the sim-mjcf document.
 PINNED = {
     "folded_ends_pinned": ("", [DUMMY, folded('selfcollide="narrow" internal="false"')], {1: [0, 1, 18, 19]}),
     "two_cloths_corner_pinned": ("", [DUMMY, CLOTH, OVER], {1: [0], 2: [0]}),

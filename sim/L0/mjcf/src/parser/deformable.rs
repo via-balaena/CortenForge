@@ -77,7 +77,9 @@ pub(super) fn parse_deformable<R: BufRead>(
 /// `body` names, with `vertex` offsets and `element` ids, and its `<contact>`,
 /// `<elasticity>` and `<edge>` children. MuJoCo's schema refuses the
 /// `<vertex>`, `<element>` and `<pin>` children and the `mass` sim-mjcf once
-/// read (before it reads any attribute, so those refusals come first).
+/// read, before a missing `body` or `element`, as here; a bad attribute value
+/// read here before a refused child is refused first here, the child first
+/// by MuJoCo's schema (Rigid-loading L47).
 pub(super) fn parse_flex<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,

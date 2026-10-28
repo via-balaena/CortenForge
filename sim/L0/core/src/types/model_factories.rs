@@ -596,8 +596,7 @@ mod tests {
 
     /// A factory or test-fixture model sizes every per-joint, per-dof,
     /// per-body, per-geom, per-site, per-tendon, per-actuator and per-sensor
-    /// array to its element count, as the MJCF builder does for a model
-    /// without flex. Not
+    /// array to its element count, as the MJCF builder does. Not
     /// `collision_geoms`, which holds only the contact parameters the
     /// narrow-phase tests read and is never stepped.
     #[test]

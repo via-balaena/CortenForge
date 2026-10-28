@@ -337,7 +337,9 @@ fn flex_child_forms_are_refused() {
         r#"<vertex pos="0 0 0"/>"#,
         r#"<vertex pos="0 0 0"></vertex>"#,
         r#"<element data="0 1 2"/>"#,
+        r#"<element data="0 1 2"></element>"#,
         r#"<pin id="0"/>"#,
+        r#"<pin id="0"></pin>"#,
     ] {
         for flex in [
             format!(r#"<flex name="f" dim="2" body="a b c" element="0 1 2">{child}</flex>"#),

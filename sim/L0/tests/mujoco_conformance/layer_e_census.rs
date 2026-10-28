@@ -150,9 +150,11 @@ fn layer_e_parity_census() {
 }
 
 /// Every census doc ours loads (the model loads and makes its data, as
-/// [`ours::record`] takes it) sizes every per-element array to its element
-/// count (sim-core's `short_arrays`): a flex's vertex bodies and their joints
-/// once skipped some (ledger L63, measured on 77 flex docs).
+/// [`ours::record`] takes it) sizes every per-joint, per-dof, per-body,
+/// per-geom, per-site, per-tendon, per-actuator and per-sensor array to its
+/// element count (sim-core's `short_arrays`; not the flex arrays): a flex's
+/// vertex bodies and their joints once skipped some (ledger L63, measured on
+/// 77 flex docs).
 #[test]
 fn every_loaded_census_doc_sizes_its_per_element_arrays() {
     let dir = census_dir().join("docs");

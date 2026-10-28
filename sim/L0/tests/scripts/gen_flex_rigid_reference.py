@@ -214,7 +214,8 @@ def documents(rigid, flex, option, flag, asset, tail="", pins=None):
     MuJoCo's compiled model. A flex is (vertices, elements, dim, its <contact>
     attributes[, its own attributes, radius="0.01" without]). `pins` maps a
     flex's index to its pinned vertices: on MuJoCo's world body, as its
-    <flexcomp> pins them (user_flexcomp.cc:486-488), a <pin> in sim-mjcf's."""
+    <flexcomp> pins them (user_flexcomp.cc:486-488), each a jointless body of
+    its own, after the others, in sim-mjcf's."""
     head = (f'<mujoco><option timestep="0.002" {option}><flag equality="disable" {flag}/></option>'
             f'<asset>{asset}</asset><worldbody>{rigid}')
     mj_bodies, mj_flexes, pin_bodies, ours_flexes = "", "", "", ""

@@ -6,7 +6,8 @@
 //! vertex body jointless or with three slides along x, y and z. The in-tree
 //! flex documents were rewritten into that form (Rigid-loading L10): one body
 //! per vertex, at the end of `<worldbody>`, with the mass sim-mjcf had lumped
-//! onto the vertex.
+//! onto the vertex where a test reads the dynamics (`flex_data_parity`, which
+//! compares positions and boxes only, gives each vertex 1 g).
 
 /// The bodies of a flex `flex`'s vertices at `positions` (each three numbers
 /// as written), named `<flex>_v<i>`, each with three slides along x, y and z
