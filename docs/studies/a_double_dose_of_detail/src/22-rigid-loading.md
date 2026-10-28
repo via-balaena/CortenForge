@@ -30,7 +30,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Hazards:** a must-fail whose parent side hangs or grows is marked either "established by reading; do not run at the parent" or "run only under the 2.5 GB RSS watchdog (40-verification)".
 - A research sketch that returns `ModelConversionError` means L01's `MjcfError`.
 - Per-commit greenness in this order was not run by any section (A3 says each of its four is "green on its own" as a design statement; A4 §9 likewise; A5 §5; none ran a series).
-- **Decided in L01's pull request.** An `MjcfError` variant is added by the commit that first constructs it, not all by L01: an entry below that names an L01 variant (`TooDeep` aside, added by L04) adds it. `MJB_VERSION` stayed 3 through L01, whose change left `MjcfModel`'s serialized shape alone; it moves once in the first commit of each pull request that changes that shape.
+- **Decided in L01's pull request.** An `MjcfError` variant is added by the commit that first constructs it, not all by L01: an entry below that names an L01 variant (`TooDeep` aside, added by L04) adds it. `MJB_VERSION` stayed 3 through L01, whose change left `MjcfModel`'s serialized shape alone; it moves once in the first commit of each pull request that changes that shape, or that changes what a value it stores means: Rigid-loading PR RL-3b moved it to 7 when a flexcomp's unwritten `inertiabox`, stored as 0.0 by version 6, came to be read as MuJoCo's 0.005 and a stored 0.0 refused.
 
 ## Summary
 
