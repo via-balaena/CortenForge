@@ -337,6 +337,73 @@ fn flex_vertex_body_on_a_moving_body_is_refused() {
     }
 }
 
+/// The contact row of a flex vertex whose body hangs off a moving body,
+/// which no document reaches since Rigid-loading L10 (the test above), on a
+/// `Model` built in code (ledger L320): the scene above with both vertex
+/// bodies on the world, each with three slides, then the first hung off the
+/// hinged arm, which is unrotated, and derived again. The vertex–floor
+/// contact's normal row takes the arm's hinge column through `mj_jac`, the
+/// vertex's height moving with the hinge (by central differences, 1e-7), and
+/// its own vertical slide's column is 1. The flex edge Jacobian keeps the
+/// builder's pattern, which has no hinge column (`recompute_derived` does not
+/// remake it, ledger L326); no edge force acts here.
+#[test]
+fn a_code_built_flex_vertex_contact_row_moves_with_its_parent() {
+    let mut model = load_model(
+        r#"<mujoco>
+      <option><flag equality="disable"/></option>
+      <worldbody>
+        <geom name="floor" type="plane" size="2 2 .1"/>
+        <body name="arm" pos="0 0 0.3">
+          <joint name="h" type="hinge" axis="0 1 0" pos="-0.2 0 0"/>
+          <geom type="sphere" size="0.02" mass="1" contype="0" conaffinity="0"/>
+        </body>
+        <body name="c_v0" pos="0.1 0 0.02"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body>
+        <body name="c_v1" pos="0.2 0 0.02"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-15 1e-15 1e-15"/></body>
+      </worldbody>
+      <deformable>
+        <flex name="c" dim="1" radius="0.05" body="c_v0 c_v1" element="0 1"></flex>
+      </deformable>
+    </mujoco>"#,
+    )
+    .expect("load");
+    let (arm, vertex) = (1, model.flexvert_bodyid[0]);
+    assert_eq!((vertex, model.body_parent[vertex]), (2, 0));
+    // Hang the vertex body off the arm, where it is in the world.
+    model.body_parent[vertex] = arm;
+    model.body_rootid[vertex] = arm;
+    let arm_pos = model.body_pos[arm];
+    model.body_pos[vertex] -= arm_pos;
+    model.dof_parent[model.body_dof_adr[vertex]] =
+        Some(model.body_dof_adr[arm] + model.body_dof_num[arm] - 1);
+    model.recompute_derived().expect("derived");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let contact = data
+        .contacts
+        .iter()
+        .find(|c| c.flex_vertices(&model)[1] == Some(0))
+        .expect("the free vertex touches the floor")
+        .clone();
+    let row = compute_contact_jacobian(&model, &data, &contact);
+    let h = 1e-7;
+    let height = |dq: f64| {
+        let mut d = data.clone();
+        d.qpos[0] += dq;
+        d.forward(&model).expect("forward");
+        d.flexvert_xpos[0].z
+    };
+    let dz = (height(h) - height(-h)) / (2.0 * h);
+    assert!(dz.abs() > 0.1, "the hinge moves the vertex: {dz}");
+    assert!(
+        (row[(0, 0)] - dz).abs() <= 1e-6,
+        "hinge column {}, the vertex's height {dz}",
+        row[(0, 0)]
+    );
+    let z_slide = model.flexvert_dofadr[0] + 2;
+    assert_eq!(row[(0, z_slide)], 1.0, "the vertical slide's column");
+}
+
 fn flex_golden() -> Value {
     serde_json::from_str(include_str!("../assets/golden/flex/flex_jacobian.json"))
         .expect("flex jacobian golden parses")

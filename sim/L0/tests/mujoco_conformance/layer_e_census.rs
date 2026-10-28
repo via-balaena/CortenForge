@@ -154,11 +154,15 @@ fn layer_e_parity_census() {
 /// per-geom, per-site, per-tendon, per-actuator and per-sensor array to its
 /// element count (sim-core's `short_arrays`; not the flex arrays): a flex's
 /// vertex bodies and their joints once skipped some (ledger L63, measured on
-/// 77 flex docs).
+/// 77 flex docs). A doc whose model loads and whose data is refused leaves
+/// `dof_M0` alone short, and only when the joint layout or a range is
+/// refused: the builder makes it only past those checks, as the derivations
+/// that build a `Data` (ledger L319).
 #[test]
 fn every_loaded_census_doc_sizes_its_per_element_arrays() {
     let dir = census_dir().join("docs");
     let mut loaded = 0;
+    let mut refused = 0;
     let mut short = Vec::new();
     for doc in ids_in(&dir, ".xml") {
         let path = dir.join(format!("{doc}.xml"));
@@ -167,19 +171,32 @@ fn every_loaded_census_doc_sizes_its_per_element_arrays() {
         let Ok(Ok(model)) = std::panic::catch_unwind(|| sim_mjcf::load_model(&xml)) else {
             continue;
         };
-        if model.try_make_data().is_err() {
-            continue;
-        }
-        loaded += 1;
         let (arrays, _) = sim_core::test_fixtures::checks::short_arrays(&model);
-        if !arrays.is_empty() {
+        let expected = if model.try_make_data().is_ok() {
+            loaded += 1;
+            Vec::new()
+        } else {
+            refused += 1;
+            let skipped = model.check_joint_layout().is_err() || model.check_ranges().is_err();
+            if skipped && model.nv > 0 {
+                vec![format!("dof_M0 0/{}", model.nv)]
+            } else {
+                Vec::new()
+            }
+        };
+        if arrays != expected {
             short.push((doc, arrays));
         }
     }
     assert!(loaded > 1000, "the census docs ours loads: {loaded}");
+    assert!(
+        refused > 0,
+        "the census docs whose data ours refuses: {refused}"
+    );
     let mut msg = format!(
-        "{} of {loaded} loaded docs leave arrays short\n",
-        short.len()
+        "{} of {} docs whose model loads leave arrays short\n",
+        short.len(),
+        loaded + refused
     );
     list(&mut msg, "short", &short);
     assert!(short.is_empty(), "{msg}");

@@ -920,24 +920,32 @@ fn flexcomp_with_a_gravcomp_body_steps() {
     assert!(data.qpos.iter().all(|x| x.is_finite()));
 }
 
-/// Every edge of a rigid flex is rigid, whatever its ends' bodies, as
-/// MuJoCo's compiler makes them (`user_model.cc:3511-3513`): a flexcomp of
-/// mass 0 is rigid (no vertex has an inverse mass) though each vertex has
-/// three slides of its own. MuJoCo refuses a flexcomp of mass 0 (ledger L144,
-/// Rigid-loading PR RL-3b), which makes this test that refusal.
+/// A flexcomp of mass 0, or of inertiabox 0, is refused, as MuJoCo 3.5.0's
+/// flexcomp refuses either below mjMINVAL (`user_flexcomp.cc:143-145`;
+/// ledger L144). sim-mjcf loaded a mass of 0 as a rigid flex whose vertices
+/// each had three slides, and its positions were NaN after 100 steps.
 #[test]
-fn every_edge_of_a_rigid_flex_is_rigid() {
-    let model = load_model(
-        r#"<mujoco>
+fn a_flexcomp_of_mass_or_inertiabox_0_is_refused() {
+    let mass_0 = r#"<mujoco>
         <deformable>
             <flexcomp name="grid" type="grid" count="2 2 1" spacing="0.04 0.04 0.04" dim="2" mass="0"/>
         </deformable>
-    </mujoco>"#,
-    )
-    .expect("load");
-    assert_eq!(model.flex_rigid, [true]);
-    assert_eq!(model.nv, 12, "each vertex has its three slides");
-    assert!(model.nflexedge > 0 && model.flexedge_rigid.iter().all(|&r| r));
+    </mujoco>"#;
+    let inertiabox_0 = mass_0.replace(r#"mass="0""#, r#"mass="1" inertiabox="0""#);
+    for (attribute, xml) in [("mass", mass_0.to_string()), ("inertiabox", inertiabox_0)] {
+        match load_model(&xml) {
+            Err(sim_mjcf::MjcfError::InvalidValue {
+                element,
+                attribute: got,
+                reason,
+                ..
+            }) => {
+                assert_eq!((element.as_str(), got.as_str()), ("flexcomp", attribute));
+                assert_eq!(reason, "Mass and inertiabox must be larger than mjMINVAL");
+            }
+            other => panic!("{attribute}: {other:?}"),
+        }
+    }
 }
 
 /// Under implicitspringdamper the slides' joint damping, which carries a

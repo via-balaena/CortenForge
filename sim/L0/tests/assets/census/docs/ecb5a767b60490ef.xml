@@ -1,0 +1,1 @@
+<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1"/></deformable></mujoco>

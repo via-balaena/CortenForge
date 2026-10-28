@@ -736,7 +736,6 @@ pub struct ModelBuilder {
     pub(crate) flex_selfcollide: Vec<FlexSelfCollide>,
     pub(crate) flex_internal: Vec<bool>,
     pub(crate) flex_activelayers: Vec<i32>,
-    pub(crate) flex_vertcollide: Vec<bool>,
     pub(crate) flex_passive: Vec<bool>,
     pub(crate) flex_edgestiffness: Vec<f64>,
     pub(crate) flex_edgedamping: Vec<f64>,
@@ -1395,7 +1394,12 @@ mod tests {
         assert_eq!(model.nflex, 1);
         assert!(!model.flex_internal[0], "internal should be false");
         assert_eq!(model.flex_activelayers[0], 3);
-        assert!(model.flex_vertcollide[0], "vertcollide should be true");
+        // Read, and on a `<flex>` it makes no geom, as MuJoCo's (measured:
+        // one geom on this document); only a flexcomp's vertices get spheres.
+        let xml = std::fs::read_to_string(&mjcf_path).unwrap();
+        let mjcf = crate::parser::parse_mjcf_str(&xml).unwrap();
+        assert!(mjcf.flex[0].vertcollide, "vertcollide should be true");
+        assert_eq!(model.ngeom, 1);
         assert!(!model.flex_passive[0], "passive should be false");
     }
 
@@ -1434,8 +1438,10 @@ mod tests {
         assert_eq!(model.nflex, 1);
         assert!(!model.flex_internal[0], "internal default should be false");
         assert_eq!(model.flex_activelayers[0], 1);
+        let xml = std::fs::read_to_string(&mjcf_path).unwrap();
+        let mjcf = crate::parser::parse_mjcf_str(&xml).unwrap();
         assert!(
-            !model.flex_vertcollide[0],
+            !mjcf.flex[0].vertcollide,
             "vertcollide default should be false"
         );
         assert!(!model.flex_passive[0], "passive default should be false");

@@ -4064,14 +4064,16 @@ pub struct MjcfFlex {
     /// Collision vertex radius `[m]`.
     pub radius: f64,
     /// A `<flex>`'s vertex bodies, one per vertex: each vertex is the body
-    /// it names, as MuJoCo 3.5.0's `vertbody`. Not read for a flexcomp, whose
-    /// vertex bodies the loader makes ([`FlexVertexBodies::Generated`]); the
-    /// parser refuses `body` on one.
+    /// it names, as MuJoCo 3.5.0's `vertbody`. Refused on a flexcomp, whose
+    /// vertex bodies the loader makes ([`FlexVertexBodies::Generated`]), as
+    /// the parser refuses `body` on one.
     pub body: Vec<String>,
     /// A `<flex>`'s `node` bodies (MuJoCo's trilinear interpolation): refused,
     /// a stated limitation, after MuJoCo's checks of its collisions, its node
-    /// count and its node names; empty when the attribute is omitted or
-    /// empty.
+    /// count, its node names and, with a Young's modulus, its element count;
+    /// empty when the attribute is omitted or empty. Refused on a flexcomp
+    /// built in code; a `<flexcomp>`'s in a document is not read (MuJoCo's
+    /// schema refuses it, Rigid-loading L47's).
     pub node: Vec<String>,
     /// Visualization group (0-5).
     pub group: i32,
@@ -4110,8 +4112,10 @@ pub struct MjcfFlex {
     /// element is active while its layer, its distance from the border, is
     /// below it (`mj_isElemActive`).
     pub activelayers: i32,
-    /// Per-vertex collision mode (default false). When true, vertex spheres
-    /// collide with other geoms even when not part of a flex element face.
+    /// Vertex spheres (default false, MuJoCo's): a flexcomp's loader gives
+    /// each vertex body it makes, not a pinned vertex's, a sphere geom of the
+    /// flex's radius in group 4, as MuJoCo's flexcomp (`user_flexcomp.cc:
+    /// 505-511`). On a `<flex>` it is read and does nothing, as in MuJoCo.
     pub vertcollide: bool,
     /// Passive contact flag (default false, MuJoCo's). When true, flex
     /// contacts generate passive forces only (no constraint solver
@@ -4142,14 +4146,18 @@ pub struct MjcfFlex {
     // --- Internal / derived ---
     /// Total mass `[kg]` for uniform distribution across all vertices (including pinned).
     /// MuJoCo semantics: `mass / npnt` per vertex, pinned share silently discarded.
-    /// When `Some`, overrides element-based mass lumping from `density`.
+    /// When `Some`, overrides element-based mass lumping from `density`; below
+    /// mjMINVAL it is refused, as MuJoCo's flexcomp refuses it.
     pub mass: Option<f64>,
     /// Volumetric density [kg/m³] (dim=2,3) or linear density [kg/m] (dim=1).
     /// Fallback for element-based mass lumping when `mass` is `None`.
     pub density: f64,
 
     // --- Flexcomp attributes (DT-88) ---
-    /// Flexcomp inertia box size (scalar). Used for vertex inertia calculation.
+    /// A flexcomp's inertia box size: each vertex body's inertia is
+    /// `mass · (2 · inertiabox²) / 3` about each axis, MuJoCo's formula
+    /// (`user_flexcomp.cc:470-471`); MuJoCo's default 0.005, at least
+    /// mjMINVAL.
     pub inertiabox: f64,
     /// Flexcomp non-uniform scale applied to generated vertices.
     pub flexcomp_scale: Option<Vector3<f64>>,
@@ -4223,7 +4231,7 @@ impl Default for MjcfFlex {
             mass: None,
             density: 1000.0,
             // Flexcomp attributes (DT-88)
-            inertiabox: 0.0,
+            inertiabox: 0.005,
             flexcomp_scale: None,
             flexcomp_quat: None,
             flexcomp_file: None,

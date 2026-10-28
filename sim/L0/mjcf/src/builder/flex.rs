@@ -15,7 +15,7 @@ use nalgebra::{UnitQuaternion, Vector3};
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::keywords;
-use crate::types::{FlexVertexBodies, MjcfFlex};
+use crate::types::{FlexVertexBodies, MjcfFlex, MjcfGeom, MjcfGeomType};
 use sim_core::{EqualityType, FlexSelfCollide, MjJointType};
 
 /// Number of coefficients per bending element in the discrete thin-shell model.
@@ -25,6 +25,16 @@ const BENDING_COEFFS: usize = 17;
 /// Minimum vertex mass (kg) applied when computed mass is near-zero.
 /// Prevents singular mass matrices in the deformable body integrator.
 const MIN_VERTEX_MASS: f64 = 0.001;
+
+/// MuJoCo's `mjMINVAL` (`mjtnum.h`).
+const MJ_MINVAL: f64 = 1e-15;
+
+/// A flexcomp vertex body's inertia about each axis, MuJoCo's
+/// `mass · (2 · inertiabox²) / 3` (`user_flexcomp.cc:470-471`, set at
+/// `:518-521`).
+fn vertex_inertia(mass: f64, inertiabox: f64) -> f64 {
+    mass * (2.0 * inertiabox * inertiabox) / 3.0
+}
 
 impl ModelBuilder {
     /// Process flex deformable bodies: a `<flex>`'s vertices on the bodies it names, a
@@ -49,7 +59,10 @@ impl ModelBuilder {
                 &resolved
             } else {
                 // A flexcomp's checks; a `<flex>` has had them above.
-                check_flex_elements(flex_orig).map_err(|e| e.with_location_if_unknown(at()))?;
+                check_flexcomp(flex_orig)
+                    .and_then(|()| check_vertex_spheres(flex_orig))
+                    .and_then(|()| check_flex_elements(flex_orig))
+                    .map_err(|e| e.with_location_if_unknown(at()))?;
                 flex_orig
             };
             // Before the masses, edges, hinges and elements read the order.
@@ -77,12 +90,26 @@ impl ModelBuilder {
             } else {
                 // Compute per-vertex masses (uniform from mass attr, or element-based lumping)
                 let vertex_masses = compute_vertex_masses(flex);
+                // A vertex body whose mass or inertia is not finite is refused,
+                // as any other body's is (registry D-INERTIA-NONFINITE): a mass
+                // or inertiabox built in code, an inertiabox whose square
+                // overflows, a lumped mass that does.
+                if !vertex_masses
+                    .iter()
+                    .all(|&m| m.is_finite() && vertex_inertia(m, flex.inertiabox).is_finite())
+                {
+                    return Err(MjcfError::invalid_model(
+                        "a flexcomp vertex body's mass or inertia is not finite",
+                    )
+                    .at(at()));
+                }
 
                 // Create a body (+ joints for unpinned) per vertex
                 for (i, pos) in flex.vertices.iter().enumerate() {
                     let mass = vertex_masses[i];
                     let pinned = flex.pinned.contains(&i);
-                    self.create_flex_vertex_body(flex, pos, mass, pinned, flex_id);
+                    self.create_flex_vertex_body(flex, pos, mass, pinned, flex_id)
+                        .map_err(|e| e.with_location_if_unknown(at()))?;
                 }
             }
 
@@ -179,7 +206,6 @@ impl ModelBuilder {
             // DT-85: flex contact runtime attributes
             self.flex_internal.push(flex.internal);
             self.flex_activelayers.push(flex.activelayers);
-            self.flex_vertcollide.push(flex.vertcollide);
             self.flex_passive.push(flex.passive);
             self.flex_edgestiffness.push(flex.edge_stiffness);
             self.flex_edgedamping.push(flex.edge_damping);
@@ -255,13 +281,13 @@ impl ModelBuilder {
     }
 
     /// A `<flex>` whose vertices are the bodies it names, given MuJoCo 3.5.0's
-    /// checks of its elements, vertices, bodies, nodes and Poisson ratio in
-    /// its order (`mjCFlex::Compile` and `ResolveReferences`, `user_mesh.cc:
-    /// 4076-4202`, `:4331-4334`; not `material` or `texcoord`, which this
-    /// crate does not read, Rigid-loading L47's, nor a node flex's element
-    /// count with a Young's modulus, `:4337-4343`), then held to the
-    /// subset sim-core's flex code takes: each vertex on a body of its own (a
-    /// flex on one body is MuJoCo's rigid flex), at its body's origin, and
+    /// checks of its elements, edge stiffness, vertices, bodies, nodes,
+    /// Poisson ratio and a node flex's element count in its order
+    /// (`mjCFlex::Compile` and `ResolveReferences`, `user_mesh.cc:4076-4202`,
+    /// `:4331-4343`; not `material` or `texcoord`, which this crate does not
+    /// read, Rigid-loading L47's), then held to the subset sim-core's flex
+    /// code takes: each vertex on a body of its own (a flex on one body is
+    /// MuJoCo's rigid flex), at its body's origin, and
     /// each body either jointless with no joint above it, or with exactly
     /// three slides along x, y and z, in that order, unrotated, with no joint
     /// or mocap body above it. sim-core reads a vertex's three dofs as its
@@ -283,6 +309,7 @@ impl ModelBuilder {
         if flex.body.is_empty() && !interpolated {
             return Err(refuse("body", "vertbody and nodebody are both empty"));
         }
+        check_flex_edge_stiffness(flex)?;
         if interpolated && flex.selfcollide.as_deref() != Some("none") {
             return Err(refuse(
                 "node",
@@ -333,6 +360,7 @@ impl ModelBuilder {
         bodies.truncate(flex.body.len());
         check_flex_repeated_vertices(flex)?;
         check_flex_poisson(flex)?;
+        check_flex_node_elements(flex)?;
 
         // The subset sim-core takes; the error's location names the flex.
         if interpolated {
@@ -441,7 +469,7 @@ impl ModelBuilder {
     ///
     /// Pushes body, joint, DOF, qpos, and flexvert arrays for the vertex at `pos`.
     /// Pinned vertices get a body with no joints/DOFs; unpinned get 3 slide joints (X, Y, Z),
-    /// each with the flex's damping.
+    /// each with the flex's damping, and with `vertcollide` a sphere geom.
     fn create_flex_vertex_body(
         &mut self,
         flex: &MjcfFlex,
@@ -449,14 +477,13 @@ impl ModelBuilder {
         mass: f64,
         pinned: bool,
         flex_id: usize,
-    ) {
+    ) -> Result<()> {
         let axes = [Vector3::x(), Vector3::y(), Vector3::z()];
 
-        let inv_mass = if pinned || mass <= 0.0 {
-            0.0
-        } else {
-            1.0 / mass
-        };
+        // `check_flexcomp` has refused a mass below mjMINVAL, the density path
+        // floors each vertex's, and the caller a mass that is not finite, so
+        // `mass` is positive and finite.
+        let inv_mass = if pinned { 0.0 } else { 1.0 / mass };
 
         self.nflexvert += 1;
 
@@ -479,10 +506,11 @@ impl ModelBuilder {
         // On the world body, the local offset is the world position.
         self.body_pos.push(*pos);
         self.body_quat.push(UnitQuaternion::identity());
-        self.body_ipos.push(Vector3::zeros()); // point mass: CoM at body origin
+        self.body_ipos.push(Vector3::zeros()); // CoM at the body origin
         self.body_iquat.push(UnitQuaternion::identity());
         self.body_mass.push(mass);
-        self.body_inertia.push(Vector3::zeros()); // point mass: zero inertia
+        self.body_inertia
+            .push(Vector3::repeat(vertex_inertia(mass, flex.inertiabox)));
         self.body_mocapid.push(None);
         self.body_name.push(None);
         self.body_sleep_policy.push(None);
@@ -572,6 +600,26 @@ impl ModelBuilder {
         self.flexvert_flexid.push(flex_id);
         self.flexvert_bodyid.push(body_id);
         self.flexvert_initial_pos.push(*pos);
+
+        // With `vertcollide`, MuJoCo's flexcomp gives each vertex body it
+        // makes a sphere of the flex's radius in group 4 (`user_flexcomp.cc:
+        // 505-511`); a pinned vertex has no body of its own there, so no
+        // sphere. The sphere takes its body's class, the root's here, as
+        // these bodies hang off the world; the body's mass and inertia stay
+        // the flexcomp's, as MuJoCo's (`explicitinertial`), except where a
+        // compiler setting would change them there: sim-mjcf makes these
+        // bodies after its compiler passes (ledger L325).
+        if flex.vertcollide && !pinned {
+            let sphere = self.resolver.apply_to_geom(&MjcfGeom {
+                geom_type: Some(MjcfGeomType::Sphere),
+                size: vec![flex.radius],
+                group: Some(4),
+                ..MjcfGeom::default()
+            });
+            self.process_geom(&sphere, body_id)?;
+            self.body_geom_num[body_id] = self.geom_type.len() - geom_adr;
+        }
+        Ok(())
     }
 
     /// Extract edges from element connectivity for one flex.
@@ -624,7 +672,11 @@ impl ModelBuilder {
         self.flexedge_length0.push(rest_len);
         self.flexedge_flexid.push(flex_id);
         // Every edge of a rigid flex, and an edge whose ends' bodies are
-        // welded together, is rigid (MuJoCo's rule, `user_model.cc:3511-3519`).
+        // welded together, is rigid (MuJoCo's rule, `user_model.cc:3512-3520`).
+        // No model sim-mjcf builds makes the first half decide an edge: a
+        // flexcomp's vertex masses are finite and positive, so it is rigid
+        // only when every vertex is pinned, and the pinned vertices' bodies
+        // all weld to the world.
         let weld = |v: usize| self.weld_id(self.flexvert_bodyid[vert_start + v]);
         self.flexedge_rigid.push(rigid || weld(a) == weld(b));
         // §42B S1: Initialize flexedge_flap to [-1, -1] (boundary default).
@@ -738,12 +790,54 @@ const ELEMENT_EDGES: [&[(usize, usize)]; 3] = [
     &[(0, 1), (1, 2), (2, 0), (2, 3), (0, 3), (1, 3)],
 ];
 
-/// MuJoCo's checks of a flexcomp's elements and Poisson ratio before anything
-/// is built from them (`mjCFlex::Compile`, `user_mesh.cc`), in its order, as
-/// the functions below make them. A `<flex>` takes them one by one in
-/// `resolve_vertex_bodies`, among the checks of its bodies, and not here.
+/// A flexcomp's own checks, before its flex's: no `body` or `node`, which
+/// MuJoCo 3.5.0's `<flexcomp>` does not have (its schema,
+/// `xml_native_reader.cc:312-315`; the parser refuses `body` on one, and an
+/// [`MjcfFlex`] built in code can carry either), then MuJoCo's check of its
+/// mass and `inertiabox` (`mjCFlexcomp::Make`, `user_flexcomp.cc:143-145`).
+/// Not the rest of MuJoCo's `Make` checks (ledger L324).
+fn check_flexcomp(flex: &MjcfFlex) -> Result<()> {
+    for (attribute, names) in [("body", &flex.body), ("node", &flex.node)] {
+        if !names.is_empty() {
+            return Err(MjcfError::unknown_attribute("flexcomp", attribute));
+        }
+    }
+    let low_mass = flex.mass.is_some_and(|mass| mass < MJ_MINVAL);
+    if low_mass || flex.inertiabox < MJ_MINVAL {
+        return Err(MjcfError::invalid_value(
+            "flexcomp",
+            if low_mass { "mass" } else { "inertiabox" },
+            "Mass and inertiabox must be larger than mjMINVAL",
+        ));
+    }
+    Ok(())
+}
+
+/// With `vertcollide`, a sphere's radius, the flex's, positive, as MuJoCo's
+/// compiler requires of the spheres its flexcomp makes ("size 0 must be
+/// positive in geom", `checksize`, `user_objects.cc:152-167`), when it makes
+/// one: on a vertex that is not pinned. MuJoCo makes the check after the
+/// flexcomp's own and before its flex's (measured).
+fn check_vertex_spheres(flex: &MjcfFlex) -> Result<()> {
+    let makes_one = (0..flex.vertices.len()).any(|v| !flex.pinned.contains(&v));
+    if flex.vertcollide && makes_one && flex.radius <= 0.0 {
+        return Err(MjcfError::invalid_value(
+            "flexcomp",
+            "radius",
+            "size 0 must be positive in geom",
+        ));
+    }
+    Ok(())
+}
+
+/// MuJoCo's checks of a flexcomp's elements, edge stiffness and Poisson
+/// ratio before anything is built from them (`mjCFlex::Compile`,
+/// `user_mesh.cc`), in its order, as the functions below make them. A
+/// `<flex>` takes them one by one in `resolve_vertex_bodies`, among the
+/// checks of its bodies, and not here.
 fn check_flex_elements(flex: &MjcfFlex) -> Result<()> {
     check_flex_dim_and_elements(flex)?;
+    check_flex_edge_stiffness(flex)?;
     check_flex_vertex_count(flex, flex.vertices.len())?;
     check_flex_element_ids(flex, flex.vertices.len())?;
     check_flex_repeated_vertices(flex)?;
@@ -758,6 +852,23 @@ fn check_flex_poisson(flex: &MjcfFlex) -> Result<()> {
             "elasticity",
             "poisson",
             "Poisson ratio must be in [0, 0.5)",
+        ));
+    }
+    Ok(())
+}
+
+/// With a Young's modulus, a node flex's elements, at least `(3 n)² / 21`
+/// for its `n` nodes (integer division), as MuJoCo's compiler requires
+/// (`user_mesh.cc:4339-4343`). MuJoCo's message prints a number that is not
+/// the count (its format call passes a string where the count goes;
+/// measured); this one prints the count.
+fn check_flex_node_elements(flex: &MjcfFlex) -> Result<()> {
+    let coordinates = 3 * flex.node.len();
+    let least = coordinates * coordinates / 21;
+    if flex.young > 0.0 && !flex.node.is_empty() && flex.elements.len() < least {
+        return Err(refuse_flex(
+            "element",
+            &format!("Trilinear dofs are require at least {least} elements"),
         ));
     }
     Ok(())
@@ -780,6 +891,21 @@ fn check_flex_dim_and_elements(flex: &MjcfFlex) -> Result<()> {
         return Err(refuse_flex(
             "element",
             "elem size must be multiple of (dim+1)",
+        ));
+    }
+    Ok(())
+}
+
+/// A positive edge stiffness only on a flex of dim 1 (`user_mesh.cc:
+/// 4123-4125`). MuJoCo's passive edge spring has no dim check
+/// (`engine_passive.c:413-443`), nor has sim-core's, so a model built in
+/// code still reaches it.
+fn check_flex_edge_stiffness(flex: &MjcfFlex) -> Result<()> {
+    if flex.edge_stiffness > 0.0 && flex.dim > 1 {
+        return Err(MjcfError::invalid_value(
+            "edge",
+            "stiffness",
+            "edge stiffness only available for dim=1, please use elasticity plugins",
         ));
     }
     Ok(())
@@ -929,9 +1055,8 @@ pub fn compute_vertex_masses(flex: &MjcfFlex) -> Vec<f64> {
         return Vec::new();
     }
 
-    // Path 1: uniform mass from <flexcomp mass="...">
-    // No min-mass floor: mass=0 → per_vert=0 → invmass=0 (static vertices).
-    // This matches MuJoCo semantics where explicit mass=0 pins vertices.
+    // Path 1: uniform mass from <flexcomp mass="...">, at least mjMINVAL
+    // (`check_flexcomp`), so no floor.
     if let Some(total_mass) = flex.mass {
         #[allow(clippy::cast_precision_loss)] // npnt is vertex count, never near 2^52
         let per_vert = total_mass / npnt as f64;
@@ -1173,9 +1298,27 @@ fn compute_bending_coefficients(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
-    use super::{MIN_VERTEX_MASS, compute_vertex_masses};
+    use super::{MIN_VERTEX_MASS, check_flexcomp, compute_vertex_masses};
     use crate::types::MjcfFlex;
     use nalgebra::Vector3;
+
+    /// A flexcomp's own check refuses a mass or an inertiabox below mjMINVAL,
+    /// 1e-15, as MuJoCo's does (`user_flexcomp.cc:143-145`; `mjtnum.h:26`):
+    /// 1e-16 is refused, 2e-15 passes. MuJoCo's own flexcomp refuses 1e-16
+    /// at this check and 2e-15 at its later check of moving bodies (both
+    /// measured), which sim-mjcf does not make yet (ledger L207).
+    #[test]
+    fn check_flexcomp_refuses_below_mjminval() {
+        let flex = |mass: f64, inertiabox: f64| MjcfFlex {
+            mass: Some(mass),
+            inertiabox,
+            ..MjcfFlex::default()
+        };
+        assert!(check_flexcomp(&flex(1e-16, 0.005)).is_err());
+        assert!(check_flexcomp(&flex(1.0, 1e-16)).is_err());
+        assert!(check_flexcomp(&flex(2e-15, 0.005)).is_ok());
+        assert!(check_flexcomp(&flex(1.0, 2e-15)).is_ok());
+    }
 
     // -- compute_vertex_masses: mass attribute path --
 
@@ -1199,30 +1342,6 @@ mod tests {
         // 1.0 / 4 = 0.25 per vertex
         for &m in &masses {
             assert!((m - 0.25).abs() < 1e-15, "expected 0.25, got {m}");
-        }
-    }
-
-    /// #27E AC2: mass=0 -> per_vert=0 (static vertices, no min-mass floor)
-    #[test]
-    fn test_vertex_masses_zero_mass_produces_zero() {
-        let mut flex = MjcfFlex::default();
-        flex.dim = 2;
-        flex.mass = Some(0.0);
-        flex.vertices = vec![
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(1.0, 0.0, 0.0),
-            Vector3::new(0.0, 1.0, 0.0),
-        ];
-        flex.elements = vec![vec![0, 1, 2]];
-
-        let masses = compute_vertex_masses(&flex);
-
-        assert_eq!(masses.len(), 3);
-        for &m in &masses {
-            assert!(
-                m == 0.0,
-                "mass=0 should produce per_vert=0.0 (static), got {m}"
-            );
         }
     }
 

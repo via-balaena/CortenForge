@@ -473,9 +473,6 @@ pub struct Model {
     /// border, is below it (`mj_isElemActive`); only an active element is
     /// in the flex's hierarchy ([`Model::compute_flex_bvhs`]).
     pub flex_activelayers: Vec<i32>,
-    /// Per-flex: per-vertex collision mode (default false). When true, vertex spheres
-    /// collide with other geoms even when not part of a flex element face.
-    pub flex_vertcollide: Vec<bool>,
     /// Per-flex: passive contact flag (MuJoCo's default false). When true,
     /// flex contacts generate passive forces only (no constraint solver
     /// involvement; MuJoCo's `mj_nc` and `mj_contactPassive`):

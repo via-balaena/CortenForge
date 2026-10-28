@@ -442,8 +442,9 @@ const TRILINEAR: &str = r#"<mujoco model="trilinear">
 </mujoco>"#;
 
 /// `node` (MuJoCo's trilinear interpolation): MuJoCo 3.5.0's own checks of
-/// it first, each with MuJoCo's message (measured), then a stated
-/// limitation (registry `D-FLEX-NODE`). `node` alone is refused for the
+/// it first, each with MuJoCo's message (measured; the element count's with
+/// the count, which MuJoCo's message misprints), then a stated limitation
+/// (registry `D-FLEX-NODE`). `node` alone is refused for the
 /// missing `body`, and an empty `node` is no node, as MuJoCo reads them.
 #[test]
 fn flex_node_is_refused() {
@@ -477,6 +478,12 @@ fn flex_node_is_refused() {
                 ),
             ),
             "number of nodes must be 2^3 but it is 64",
+        ),
+        // With a Young's modulus, at least (3·8)²/21 = 27 elements for 8
+        // nodes, where the flex has 8 (MuJoCo refuses it, measured).
+        (
+            TRILINEAR.replace("<elasticity/>", r#"<elasticity young="1e4"/>"#),
+            "Trilinear dofs are require at least 27 elements",
         ),
     ] {
         match refusal(&xml) {
@@ -675,6 +682,45 @@ fn a_poisson_ratio_out_of_range_is_refused() {
     }
 }
 
+/// A positive edge stiffness on a flex of dim above 1 is refused as MuJoCo
+/// 3.5.0's compiler refuses it (`user_mesh.cc:4123-4125`); a stiffness of 0
+/// there and one on a cable load (measured on the same `<flex>` documents).
+/// The flexcomp twin is refused the same way. sim-mjcf loaded both.
+#[test]
+fn an_edge_stiffness_on_a_flex_of_dim_above_1_is_refused() {
+    let reason = "edge stiffness only available for dim=1, please use elasticity plugins";
+    let triangle = |stiffness: &str| {
+        doc(
+            &triangle_bodies(),
+            &format!(
+                r#"<flex name="f" dim="2" body="a b c" element="0 1 2"><edge stiffness="{stiffness}"/></flex>"#
+            ),
+        )
+    };
+    let flexcomp = r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1"><edge stiffness="1"/></flexcomp></deformable></mujoco>"#;
+    for (form, xml) in [("flex", triangle("1")), ("flexcomp", flexcomp.to_string())] {
+        match refusal(&xml) {
+            MjcfError::InvalidValue {
+                element,
+                attribute,
+                reason: got,
+                ..
+            } => assert_eq!(
+                (element.as_str(), attribute.as_str(), got.as_str()),
+                ("edge", "stiffness", reason),
+                "{form}"
+            ),
+            other => panic!("{form}: {other}"),
+        }
+    }
+    load_model(&triangle("0")).expect("a stiffness of 0");
+    load_model(&doc(
+        &triangle_bodies(),
+        r#"<flex name="f" dim="1" body="a b" element="0 1"><edge stiffness="1"/></flex>"#,
+    ))
+    .expect("a cable");
+}
+
 /// A `<deformable><flexcomp>` that generates no element (a grid one vertex
 /// wide) is refused, "elem is empty", as MuJoCo's compiler refuses an empty
 /// flex; MuJoCo's own grid flexcomp refuses it as "No elements were created
@@ -700,5 +746,349 @@ fn a_flexcomp_body_is_refused() {
             element, attribute, ..
         } => assert_eq!((element.as_str(), attribute.as_str()), ("flexcomp", "body")),
         other => panic!("{other}"),
+    }
+}
+
+/// A flexcomp built in code with a `<flex>`'s `body` or `node` is refused
+/// as the parser refuses `body` on one; it loaded with them ignored.
+#[test]
+fn a_code_built_flexcomp_with_body_or_node_is_refused() {
+    let xml = r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1"/></deformable></mujoco>"#;
+    for attribute in ["body", "node"] {
+        let mut mjcf = parse_mjcf_str(xml).unwrap();
+        let names = vec!["world".to_string(); 4];
+        if attribute == "body" {
+            mjcf.flex[0].body = names;
+        } else {
+            mjcf.flex[0].node = names;
+        }
+        match model_from_mjcf(&mjcf, None) {
+            Err(MjcfError::UnknownAttribute {
+                element,
+                attribute: got,
+                ..
+            }) => assert_eq!((element.as_str(), got.as_str()), ("flexcomp", attribute)),
+            other => panic!("{attribute}: {other:?}"),
+        }
+    }
+    let mjcf = parse_mjcf_str(xml).unwrap();
+    model_from_mjcf(&mjcf, None).expect("without them");
+}
+
+/// With `vertcollide`, each vertex body a flexcomp makes gets a sphere of the
+/// flex's radius in group 4, in the root class (its `contype` here), as
+/// MuJoCo 3.5.0's flexcomp (`user_flexcomp.cc:505-511`); a pinned vertex
+/// gets none, MuJoCo making it no body. MuJoCo's own flexcomp under
+/// `<worldbody>` gives the same three spheres, and each vertex body the
+/// same inertia (measured). sim-mjcf stored the flag and made no geom.
+#[test]
+fn a_flexcomp_with_vertcollide_gives_its_vertex_bodies_spheres() {
+    let xml = r#"<mujoco><default><geom contype="2"/></default><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" radius="0.02" mass="1"><contact vertcollide="true"/><pin id="3"/></flexcomp></deformable></mujoco>"#;
+    let model = load_model(xml).unwrap();
+    assert_eq!(model.ngeom, 3);
+    for g in 0..3 {
+        assert_eq!(model.geom_type[g], sim_core::GeomType::Sphere, "{g}");
+        assert_eq!(model.geom_size[g].x.to_bits(), 0.02_f64.to_bits(), "{g}");
+        assert_eq!((model.geom_group[g], model.geom_contype[g]), (4, 2), "{g}");
+        assert_eq!(model.geom_body[g], model.flexvert_bodyid[g], "{g}");
+    }
+    assert_eq!(model.body_mass[1..4], [0.25; 3]);
+    assert_eq!(
+        model.body_geom_num,
+        [0, 1, 1, 1, 0],
+        "the pinned vertex's body has none"
+    );
+    assert_eq!(
+        model.body_inertia[1].x.to_bits(),
+        4.166_666_666_666_667e-6_f64.to_bits()
+    );
+    let plain = load_model(&xml.replace(r#" vertcollide="true""#, "")).unwrap();
+    assert_eq!(plain.ngeom, 0);
+}
+
+/// The spheres hold up a cloth whose own contact is off: a grid of four
+/// vertices with `vertcollide`, started on a plane, comes to rest after 500
+/// steps with each vertex 0.01963281815753985 above it for a radius of 0.02,
+/// and without the spheres it falls through. The height is MuJoCo's own
+/// flexcomp's bit for bit on macOS arm64, where it was measured; elsewhere
+/// within 1e-12, and a `NaN` never, as sim-conformance-tests' flex runs: whether
+/// another platform's libm rounds this run otherwise has not been measured.
+#[test]
+fn a_cloth_rests_on_its_vertex_spheres() {
+    let xml = r#"<mujoco><worldbody><geom type="plane" size="1 1 0.1"/></worldbody><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" radius="0.02" mass="1"><contact contype="0" conaffinity="0" vertcollide="true"/></flexcomp></deformable></mujoco>"#;
+    let lowest = |xml: &str| {
+        let model = load_model(xml).unwrap();
+        let mut data = model.make_data();
+        for _ in 0..500 {
+            data.step(&model).expect("step");
+        }
+        data.flexvert_xpos
+            .iter()
+            .map(|p| p.z)
+            .fold(f64::INFINITY, f64::min)
+    };
+    let resting = lowest(xml);
+    let mujoco = 0.019_632_818_157_539_85_f64;
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        assert_eq!(
+            resting.to_bits(),
+            mujoco.to_bits(),
+            "on its spheres: {resting}"
+        );
+    } else {
+        assert!(
+            (resting - mujoco).abs() <= 1e-12,
+            "on its spheres: {resting}"
+        );
+    }
+    let fallen = lowest(&xml.replace(r#" vertcollide="true""#, ""));
+    assert!(fallen < -0.1, "without them: {fallen}");
+}
+
+/// MuJoCo 3.5.0's element count for a node flex at its boundary: with a
+/// Young's modulus, 27 elements for 8 nodes pass it (MuJoCo loads the flex,
+/// measured) and 26 do not, so 27 reach the node limitation here.
+#[test]
+fn a_node_flex_with_27_elements_passes_mujocos_element_count() {
+    let elements = |n: usize| {
+        let ids = "0 3 4 0 4 1 1 4 5 1 5 2 3 6 7 3 7 4 4 7 8 4 8 5"
+            .split(' ')
+            .cycle()
+            .take(3 * n)
+            .collect::<Vec<_>>()
+            .join(" ");
+        TRILINEAR
+            .replace(
+                r#"element="0 3 4 0 4 1 1 4 5 1 5 2 3 6 7 3 7 4 4 7 8 4 8 5""#,
+                &format!(r#"element="{ids}""#),
+            )
+            .replace("<elasticity/>", r#"<elasticity young="1e4"/>"#)
+    };
+    assert_unsupported(&elements(27), "a flex's node");
+    match refusal(&elements(26)) {
+        MjcfError::InvalidValue { reason, .. } => {
+            assert_eq!(reason, "Trilinear dofs are require at least 27 elements");
+        }
+        other => panic!("{other}"),
+    }
+}
+
+/// MuJoCo 3.5.0's check order around the new refusals (measured on the same
+/// documents, and on MuJoCo's own flexcomp under `<worldbody>` for the
+/// flexcomp ones): an edge stiffness on dim 2 is refused before a Poisson
+/// ratio out of range or an element id out of range; a flexcomp's mass of 0
+/// before its flex's edge stiffness.
+#[test]
+fn the_new_refusals_come_in_mujocos_order() {
+    let edge = "edge stiffness only available for dim=1, please use elasticity plugins";
+    let flexcomp = |attrs: &str, children: &str| {
+        format!(
+            r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1"{attrs}>{children}</flexcomp></deformable></mujoco>"#
+        )
+    };
+    let poisson = r#"<elasticity young="100" poisson="0.6" thickness="0.01"/>"#;
+    for (case, xml, reason) in [
+        (
+            "flex: edge stiffness, Poisson ratio",
+            doc(
+                &triangle_bodies(),
+                &format!(
+                    r#"<flex name="f" dim="2" body="a b c" element="0 1 2"><edge stiffness="1"/>{poisson}</flex>"#
+                ),
+            ),
+            edge,
+        ),
+        (
+            "flex: edge stiffness, element id",
+            doc(
+                &triangle_bodies(),
+                r#"<flex name="f" dim="2" body="a b c" element="0 1 5"><edge stiffness="1"/></flex>"#,
+            ),
+            edge,
+        ),
+        (
+            "flexcomp: edge stiffness, Poisson ratio",
+            flexcomp("", &format!(r#"<edge stiffness="1"/>{poisson}"#)),
+            edge,
+        ),
+        (
+            "flexcomp: mass, edge stiffness",
+            flexcomp(r#" mass="0""#, r#"<edge stiffness="1"/>"#),
+            "Mass and inertiabox must be larger than mjMINVAL",
+        ),
+    ] {
+        match refusal(&xml) {
+            MjcfError::InvalidValue { reason: got, .. } => assert_eq!(got, reason, "{case}"),
+            other => panic!("{case}: {other}"),
+        }
+    }
+}
+
+/// A flexcomp vertex body whose mass or inertia is not finite is refused, as
+/// sim-mjcf refuses any other body's (registry `D-INERTIA-NONFINITE`): a
+/// lumped mass that overflows (no `mass`, thickness 1e306), an inertiabox
+/// whose square overflows, and, built in code, a `NaN` or infinite mass or
+/// inertiabox. MuJoCo's own flexcomp loads its inertiabox 1e200 with an
+/// infinite inertia (measured). The overflowing mass loaded as a rigid flex
+/// whose vertices kept three slides each.
+#[test]
+fn a_flexcomp_vertex_mass_or_inertia_that_is_not_finite_is_refused() {
+    let grid = |attrs: &str, children: &str| {
+        format!(
+            r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="10 10 10"{attrs}>{children}</flexcomp></deformable></mujoco>"#
+        )
+    };
+    let reason = "a flexcomp vertex body's mass or inertia is not finite";
+    let refused = |case: &str, result: Result<sim_core::Model, MjcfError>| match result {
+        Err(MjcfError::InvalidModel { reason: got, .. }) => assert_eq!(got, reason, "{case}"),
+        other => panic!("{case}: {other:?}"),
+    };
+    refused(
+        "lumped mass",
+        load_model(&grid("", r#"<elasticity thickness="1e306"/>"#)),
+    );
+    refused(
+        "inertiabox",
+        load_model(&grid(r#" mass="1" inertiabox="1e200""#, "")),
+    );
+    for (case, mass, inertiabox) in [
+        ("NaN mass", f64::NAN, 0.005),
+        ("infinite mass", f64::INFINITY, 0.005),
+        ("NaN inertiabox", 1.0, f64::NAN),
+        ("infinite inertiabox", 1.0, f64::INFINITY),
+    ] {
+        let mut mjcf = parse_mjcf_str(&grid(r#" mass="1""#, "")).unwrap();
+        mjcf.flex[0].mass = Some(mass);
+        mjcf.flex[0].inertiabox = inertiabox;
+        refused(case, model_from_mjcf(&mjcf, None));
+    }
+}
+
+/// With `vertcollide`, a flex radius of 0 or below is refused, as MuJoCo
+/// 3.5.0 refuses the spheres its flexcomp makes ("size 0 must be positive in
+/// geom"), after the flexcomp's mass and before its flex's edge stiffness;
+/// without `vertcollide`, or with every vertex pinned, there is no sphere
+/// and it loads (each measured on MuJoCo's own flexcomp). A negative radius
+/// loaded a sphere that came to rest below the floor.
+#[test]
+fn a_vertcollide_radius_of_0_or_below_is_refused() {
+    let grid = |radius: &str, attrs: &str, children: &str| {
+        format!(
+            r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" radius="{radius}"{attrs}>{children}</flexcomp></deformable></mujoco>"#
+        )
+    };
+    let spheres = r#"<contact vertcollide="true"/>"#;
+    let size = "size 0 must be positive in geom";
+    for (case, xml, reason) in [
+        ("radius 0", grid("0", "", spheres), size),
+        ("radius -0.01", grid("-0.01", "", spheres), size),
+        (
+            "radius 0 and an edge stiffness",
+            grid("0", "", &format!(r#"{spheres}<edge stiffness="1"/>"#)),
+            size,
+        ),
+        (
+            "radius 0 and a mass of 0",
+            grid("0", r#" mass="0""#, spheres),
+            "Mass and inertiabox must be larger than mjMINVAL",
+        ),
+    ] {
+        match refusal(&xml) {
+            MjcfError::InvalidValue { reason: got, .. } => assert_eq!(got, reason, "{case}"),
+            other => panic!("{case}: {other}"),
+        }
+    }
+    load_model(&grid("0", "", "")).expect("no sphere without vertcollide");
+    let pinned = load_model(&grid("0", "", &format!(r#"{spheres}<pin id="0 1 2 3"/>"#)))
+        .expect("no sphere with every vertex pinned");
+    assert_eq!(pinned.ngeom, 0);
+}
+
+/// A flexcomp vertex body's inertia is MuJoCo's on every axis, from the
+/// written inertiabox: mass 2 over four vertices, inertiabox 0.3, 0.03 about
+/// each, as MuJoCo's own flexcomp gives (measured).
+#[test]
+fn a_flexcomp_vertex_inertia_takes_its_inertiabox() {
+    let model = load_model(&format!(
+        r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" {}/></deformable></mujoco>"#,
+        r#"mass="2" inertiabox="0.3""#
+    ))
+    .unwrap();
+    for body in 1..5 {
+        assert_eq!(model.body_mass[body].to_bits(), 0.5_f64.to_bits(), "{body}");
+        for axis in 0..3 {
+            assert_eq!(
+                model.body_inertia[body][axis].to_bits(),
+                0.03_f64.to_bits(),
+                "body {body} axis {axis}"
+            );
+        }
+    }
+}
+
+/// A flexcomp's mass and inertiabox just above what MuJoCo refuses load as
+/// MuJoCo's own flexcomp loads them: mass 8e-15 over four vertices,
+/// inertiabox 2, each vertex body 2e-15 with an inertia of
+/// 5.333333333333334e-15 (measured), both above mjMINVAL. The flexcomp's
+/// check is at mjMINVAL itself (`check_flexcomp_refuses_below_mjminval`).
+#[test]
+fn a_flexcomp_mass_above_mjminval_loads_as_mujocos() {
+    let model = load_model(&format!(
+        r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" {}/></deformable></mujoco>"#,
+        r#"mass="8e-15" inertiabox="2""#
+    ))
+    .unwrap();
+    assert_eq!(model.body_mass[1].to_bits(), 2e-15_f64.to_bits());
+    assert_eq!(
+        model.body_inertia[1].x.to_bits(),
+        5.333_333_333_333_334e-15_f64.to_bits()
+    );
+}
+
+/// A flexcomp with every vertex pinned is a rigid flex, every edge rigid, as
+/// MuJoCo's own flexcomp makes it (its vertices on the parent body; measured
+/// by the review): sim-mjcf makes a jointless body per vertex, all welded to
+/// the world.
+#[test]
+fn a_flexcomp_with_every_vertex_pinned_is_rigid() {
+    let model = load_model(&format!(
+        r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1">{}</flexcomp></deformable></mujoco>"#,
+        r#"<pin id="0 1 2 3"/>"#
+    ))
+    .unwrap();
+    assert_eq!(model.nv, 0);
+    assert_eq!(model.flex_rigid, [true]);
+    assert!(model.nflexedge > 0 && model.flexedge_rigid.iter().all(|&r| r));
+}
+
+/// A flexcomp's dim outside 1 to 3 and a count of 0 are refused, as MuJoCo
+/// 3.5.0's flexcomp refuses them, dim first, then count, each before its
+/// mass (measured on its own flexcomp, the same cases). A dim of 0 or 4
+/// loaded as a grid of dim 2; a count of 0 made the grid's element loop
+/// subtract past 0 (a panic with overflow checks, an unbounded loop
+/// without).
+#[test]
+fn a_flexcomp_dim_or_count_outside_mujocos_range_is_refused() {
+    let grid = |attrs: &str| {
+        format!(
+            r#"<mujoco><deformable><flexcomp name="g" type="grid" spacing="0.1 0.1 0.1" {attrs}/></deformable></mujoco>"#
+        )
+    };
+    let dim = "Invalid dim, must be between 1 and 3";
+    let count = "Count too small";
+    for (attrs, reason) in [
+        (r#"count="0 2 1""#, count),
+        (r#"count="2 0 1""#, count),
+        (r#"count="2 2 0""#, count),
+        (r#"count="2 2 1" dim="0""#, dim),
+        (r#"count="2 2 1" dim="4""#, dim),
+        (r#"count="2 2 1" dim="4" mass="0""#, dim),
+        (r#"count="0 2 1" mass="0""#, count),
+        (r#"count="0 2 1" dim="4""#, dim),
+    ] {
+        match refusal(&grid(attrs)) {
+            MjcfError::InvalidValue { reason: got, .. } => assert_eq!(got, reason, "{attrs}"),
+            other => panic!("{attrs}: {other}"),
+        }
     }
 }

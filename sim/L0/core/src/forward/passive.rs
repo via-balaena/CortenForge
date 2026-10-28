@@ -475,10 +475,10 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     // MuJoCo architecture: <edge stiffness="..." damping="..."/> drives passive
     // forces (engine_passive.c), separate from constraint-based edge enforcement
     // (mjEQ_FLEX in engine_core_constraint.c which uses eq_solref/eq_solimp).
-    // Note: MuJoCo docs say <edge stiffness> is "Only for 1D flex" (cables).
-    // For 2D/3D, elasticity comes from FEM via <elasticity>. The code applies
-    // to all dims (matching MuJoCo's runtime behavior), but users should only
-    // set nonzero stiffness for dim=1 flex bodies.
+    // For dim 2 and 3, elasticity comes from <elasticity>: MuJoCo's compiler
+    // and sim-mjcf refuse a positive edge stiffness there. The loop applies
+    // to all dims, as MuJoCo's runtime (`engine_passive.c:413-443`), so a
+    // model built in code still reaches it.
     for e in 0..model.nflexedge {
         let flex_id = model.flexedge_flexid[e];
         let stiffness = model.flex_edgestiffness[flex_id];
