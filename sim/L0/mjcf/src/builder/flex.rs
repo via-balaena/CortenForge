@@ -26,6 +26,9 @@ const BENDING_COEFFS: usize = 17;
 /// Prevents singular mass matrices in the deformable body integrator.
 const MIN_VERTEX_MASS: f64 = 0.001;
 
+/// MuJoCo's `mjMINVAL` (`mjtnum.h`).
+const MJ_MINVAL: f64 = 1e-15;
+
 impl ModelBuilder {
     /// Process flex deformable bodies: a `<flex>`'s vertices on the bodies it names, a
     /// flexcomp's on a body each (+ 3 slide joints if unpinned); extract edges/hinges,
@@ -456,11 +459,9 @@ impl ModelBuilder {
     ) {
         let axes = [Vector3::x(), Vector3::y(), Vector3::z()];
 
-        let inv_mass = if pinned || mass <= 0.0 {
-            0.0
-        } else {
-            1.0 / mass
-        };
+        // `check_flexcomp` has refused a mass below mjMINVAL, and the density
+        // path floors each vertex's, so `mass` is positive.
+        let inv_mass = if pinned { 0.0 } else { 1.0 / mass };
 
         self.nflexvert += 1;
 
@@ -483,10 +484,13 @@ impl ModelBuilder {
         // On the world body, the local offset is the world position.
         self.body_pos.push(*pos);
         self.body_quat.push(UnitQuaternion::identity());
-        self.body_ipos.push(Vector3::zeros()); // point mass: CoM at body origin
+        self.body_ipos.push(Vector3::zeros()); // CoM at the body origin
         self.body_iquat.push(UnitQuaternion::identity());
         self.body_mass.push(mass);
-        self.body_inertia.push(Vector3::zeros()); // point mass: zero inertia
+        // MuJoCo's flexcomp body inertia (`user_flexcomp.cc:471`, `:474-477`).
+        self.body_inertia.push(Vector3::repeat(
+            mass * (2.0 * flex.inertiabox * flex.inertiabox) / 3.0,
+        ));
         self.body_mocapid.push(None);
         self.body_name.push(None);
         self.body_sleep_policy.push(None);
@@ -629,6 +633,9 @@ impl ModelBuilder {
         self.flexedge_flexid.push(flex_id);
         // Every edge of a rigid flex, and an edge whose ends' bodies are
         // welded together, is rigid (MuJoCo's rule, `user_model.cc:3511-3519`).
+        // No document makes the first half decide an edge: a flexcomp is
+        // rigid only when every vertex is pinned, and the pinned vertices'
+        // bodies all weld to the world.
         let weld = |v: usize| self.weld_id(self.flexvert_bodyid[vert_start + v]);
         self.flexedge_rigid.push(rigid || weld(a) == weld(b));
         // §42B S1: Initialize flexedge_flap to [-1, -1] (boundary default).
@@ -744,13 +751,22 @@ const ELEMENT_EDGES: [&[(usize, usize)]; 3] = [
 
 /// A flexcomp's own checks, before its flex's: no `body` or `node`, which
 /// MuJoCo 3.5.0's `<flexcomp>` does not have (its schema,
-/// `xml_native_reader.cc:312-315`). The parser refuses `body` on one; an
-/// [`MjcfFlex`] built in code can carry either.
+/// `xml_native_reader.cc:312-315`; the parser refuses `body` on one, and an
+/// [`MjcfFlex`] built in code can carry either), then MuJoCo's check of its
+/// mass and `inertiabox` (`mjCFlexcomp::Make`, `user_flexcomp.cc:143-145`).
 fn check_flexcomp(flex: &MjcfFlex) -> Result<()> {
     for (attribute, names) in [("body", &flex.body), ("node", &flex.node)] {
         if !names.is_empty() {
             return Err(MjcfError::unknown_attribute("flexcomp", attribute));
         }
+    }
+    let low_mass = flex.mass.is_some_and(|mass| mass < MJ_MINVAL);
+    if low_mass || flex.inertiabox < MJ_MINVAL {
+        return Err(MjcfError::invalid_value(
+            "flexcomp",
+            if low_mass { "mass" } else { "inertiabox" },
+            "Mass and inertiabox must be larger than mjMINVAL",
+        ));
     }
     Ok(())
 }
@@ -979,9 +995,8 @@ pub fn compute_vertex_masses(flex: &MjcfFlex) -> Vec<f64> {
         return Vec::new();
     }
 
-    // Path 1: uniform mass from <flexcomp mass="...">
-    // No min-mass floor: mass=0 → per_vert=0 → invmass=0 (static vertices).
-    // This matches MuJoCo semantics where explicit mass=0 pins vertices.
+    // Path 1: uniform mass from <flexcomp mass="...">, at least mjMINVAL
+    // (`check_flexcomp`), so no floor.
     if let Some(total_mass) = flex.mass {
         #[allow(clippy::cast_precision_loss)] // npnt is vertex count, never near 2^52
         let per_vert = total_mass / npnt as f64;
@@ -1249,30 +1264,6 @@ mod tests {
         // 1.0 / 4 = 0.25 per vertex
         for &m in &masses {
             assert!((m - 0.25).abs() < 1e-15, "expected 0.25, got {m}");
-        }
-    }
-
-    /// #27E AC2: mass=0 -> per_vert=0 (static vertices, no min-mass floor)
-    #[test]
-    fn test_vertex_masses_zero_mass_produces_zero() {
-        let mut flex = MjcfFlex::default();
-        flex.dim = 2;
-        flex.mass = Some(0.0);
-        flex.vertices = vec![
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(1.0, 0.0, 0.0),
-            Vector3::new(0.0, 1.0, 0.0),
-        ];
-        flex.elements = vec![vec![0, 1, 2]];
-
-        let masses = compute_vertex_masses(&flex);
-
-        assert_eq!(masses.len(), 3);
-        for &m in &masses {
-            assert!(
-                m == 0.0,
-                "mass=0 should produce per_vert=0.0 (static), got {m}"
-            );
         }
     }
 

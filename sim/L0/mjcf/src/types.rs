@@ -4142,14 +4142,17 @@ pub struct MjcfFlex {
     // --- Internal / derived ---
     /// Total mass `[kg]` for uniform distribution across all vertices (including pinned).
     /// MuJoCo semantics: `mass / npnt` per vertex, pinned share silently discarded.
-    /// When `Some`, overrides element-based mass lumping from `density`.
+    /// When `Some`, overrides element-based mass lumping from `density`; below
+    /// mjMINVAL it is refused, as MuJoCo's flexcomp refuses it.
     pub mass: Option<f64>,
     /// Volumetric density [kg/m³] (dim=2,3) or linear density [kg/m] (dim=1).
     /// Fallback for element-based mass lumping when `mass` is `None`.
     pub density: f64,
 
     // --- Flexcomp attributes (DT-88) ---
-    /// Flexcomp inertia box size (scalar). Used for vertex inertia calculation.
+    /// A flexcomp's inertia box size: each vertex body's inertia is
+    /// `mass · (2 · inertiabox²) / 3` about each axis, as MuJoCo's
+    /// (`user_flexcomp.cc:471`); MuJoCo's default 0.005, at least mjMINVAL.
     pub inertiabox: f64,
     /// Flexcomp non-uniform scale applied to generated vertices.
     pub flexcomp_scale: Option<Vector3<f64>>,
@@ -4223,7 +4226,7 @@ impl Default for MjcfFlex {
             mass: None,
             density: 1000.0,
             // Flexcomp attributes (DT-88)
-            inertiabox: 0.0,
+            inertiabox: 0.005,
             flexcomp_scale: None,
             flexcomp_quat: None,
             flexcomp_file: None,
