@@ -1255,9 +1255,27 @@ fn compute_bending_coefficients(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
-    use super::{MIN_VERTEX_MASS, compute_vertex_masses};
+    use super::{MIN_VERTEX_MASS, check_flexcomp, compute_vertex_masses};
     use crate::types::MjcfFlex;
     use nalgebra::Vector3;
+
+    /// A flexcomp's own check refuses a mass or an inertiabox below mjMINVAL,
+    /// 1e-15, as MuJoCo's does (`user_flexcomp.cc:143-145`; `mjtnum.h:26`):
+    /// 1e-16 is refused, 2e-15 passes. MuJoCo's own flexcomp refuses 1e-16
+    /// at this check and 2e-15 at its later check of moving bodies (both
+    /// measured), which sim-mjcf does not make yet (ledger L207).
+    #[test]
+    fn check_flexcomp_refuses_below_mjminval() {
+        let flex = |mass: f64, inertiabox: f64| MjcfFlex {
+            mass: Some(mass),
+            inertiabox,
+            ..MjcfFlex::default()
+        };
+        assert!(check_flexcomp(&flex(1e-16, 0.005)).is_err());
+        assert!(check_flexcomp(&flex(1.0, 1e-16)).is_err());
+        assert!(check_flexcomp(&flex(2e-15, 0.005)).is_ok());
+        assert!(check_flexcomp(&flex(1.0, 2e-15)).is_ok());
+    }
 
     // -- compute_vertex_masses: mass attribute path --
 

@@ -794,6 +794,11 @@ fn a_flexcomp_with_vertcollide_gives_its_vertex_bodies_spheres() {
     }
     assert_eq!(model.body_mass[1..4], [0.25; 3]);
     assert_eq!(
+        model.body_geom_num,
+        [0, 1, 1, 1, 0],
+        "the pinned vertex's body has none"
+    );
+    assert_eq!(
         model.body_inertia[1].x.to_bits(),
         4.166_666_666_666_667e-6_f64.to_bits()
     );
@@ -823,4 +828,83 @@ fn a_cloth_rests_on_its_vertex_spheres() {
     assert!((resting - 0.02).abs() < 2e-3, "on its spheres: {resting}");
     let fallen = lowest(&xml.replace(r#" vertcollide="true""#, ""));
     assert!(fallen < -0.1, "without them: {fallen}");
+}
+
+/// MuJoCo 3.5.0's element count for a node flex at its boundary: with a
+/// Young's modulus, 27 elements for 8 nodes pass it (MuJoCo loads the flex,
+/// measured) and 26 do not, so 27 reach the node limitation here.
+#[test]
+fn a_node_flex_with_27_elements_passes_mujocos_element_count() {
+    let elements = |n: usize| {
+        let ids = "0 3 4 0 4 1 1 4 5 1 5 2 3 6 7 3 7 4 4 7 8 4 8 5"
+            .split(' ')
+            .cycle()
+            .take(3 * n)
+            .collect::<Vec<_>>()
+            .join(" ");
+        TRILINEAR
+            .replace(
+                r#"element="0 3 4 0 4 1 1 4 5 1 5 2 3 6 7 3 7 4 4 7 8 4 8 5""#,
+                &format!(r#"element="{ids}""#),
+            )
+            .replace("<elasticity/>", r#"<elasticity young="1e4"/>"#)
+    };
+    assert_unsupported(&elements(27), "a flex's node");
+    match refusal(&elements(26)) {
+        MjcfError::InvalidValue { reason, .. } => {
+            assert_eq!(reason, "Trilinear dofs are require at least 27 elements");
+        }
+        other => panic!("{other}"),
+    }
+}
+
+/// MuJoCo 3.5.0's check order around the new refusals (measured on the same
+/// documents, and on MuJoCo's own flexcomp under `<worldbody>` for the
+/// flexcomp ones): an edge stiffness on dim 2 is refused before a Poisson
+/// ratio out of range or an element id out of range; a flexcomp's mass of 0
+/// before its flex's edge stiffness.
+#[test]
+fn the_new_refusals_come_in_mujocos_order() {
+    let edge = "edge stiffness only available for dim=1, please use elasticity plugins";
+    let flexcomp = |attrs: &str, children: &str| {
+        format!(
+            r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1"{attrs}>{children}</flexcomp></deformable></mujoco>"#
+        )
+    };
+    let poisson = r#"<elasticity young="100" poisson="0.6" thickness="0.01"/>"#;
+    for (case, xml, reason) in [
+        (
+            "flex: edge stiffness, Poisson ratio",
+            doc(
+                &triangle_bodies(),
+                &format!(
+                    r#"<flex name="f" dim="2" body="a b c" element="0 1 2"><edge stiffness="1"/>{poisson}</flex>"#
+                ),
+            ),
+            edge,
+        ),
+        (
+            "flex: edge stiffness, element id",
+            doc(
+                &triangle_bodies(),
+                r#"<flex name="f" dim="2" body="a b c" element="0 1 5"><edge stiffness="1"/></flex>"#,
+            ),
+            edge,
+        ),
+        (
+            "flexcomp: edge stiffness, Poisson ratio",
+            flexcomp("", &format!(r#"<edge stiffness="1"/>{poisson}"#)),
+            edge,
+        ),
+        (
+            "flexcomp: mass, edge stiffness",
+            flexcomp(r#" mass="0""#, r#"<edge stiffness="1"/>"#),
+            "Mass and inertiabox must be larger than mjMINVAL",
+        ),
+    ] {
+        match refusal(&xml) {
+            MjcfError::InvalidValue { reason: got, .. } => assert_eq!(got, reason, "{case}"),
+            other => panic!("{case}: {other}"),
+        }
+    }
 }
