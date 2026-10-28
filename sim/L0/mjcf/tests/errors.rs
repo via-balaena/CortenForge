@@ -520,4 +520,15 @@ fn a_rangefinders_data_is_read_as_mujoco_reads_it() {
         let model = load_model(&doc(data)).expect(data);
         assert_eq!(model.sensor_dim, [1, 1], "{data}");
     }
+    // MuJoCo checks the attachment before the data.
+    let err = load_model(
+        r#"<mujoco><worldbody><body><geom size="0.1"/></body></worldbody>
+<sensor><rangefinder data="bogus"/></sensor></mujoco>"#,
+    )
+    .expect_err("no site")
+    .to_string();
+    assert!(
+        err.contains("rangefinder requires exactly one of 'site' or 'camera'"),
+        "{err}"
+    );
 }

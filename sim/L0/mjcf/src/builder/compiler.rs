@@ -101,6 +101,13 @@ pub fn apply_fusestatic(mjcf: &mut MjcfModel) {
                     protected.insert(name.clone());
                 }
             }
+            // A user sensor on a body (not an xbody: MuJoCo fuses that body
+            // and then refuses the sensor's name, measured).
+            MjcfSensorType::User if sensor.objtype.as_deref() == Some("body") => {
+                if let Some(ref name) = sensor.objname {
+                    protected.insert(name.clone());
+                }
+            }
             // Distance/normal/fromto sensors: protect body references
             MjcfSensorType::Distance | MjcfSensorType::Normal | MjcfSensorType::Fromto => {
                 if let Some(ref name) = sensor.body1 {

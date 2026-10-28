@@ -283,6 +283,22 @@ fn sensor_callback_fires_for_user_sensor() {
     );
 }
 
+/// A user sensor no callback writes reads 0 after `forward`, at each stage,
+/// as MuJoCo clears a user sensor's values before its callback (measured:
+/// all 0 from values of 5).
+#[test]
+fn a_user_sensor_no_callback_writes_reads_zero() {
+    let model = sim_mjcf::load_model(
+        r#"<mujoco><worldbody><body><joint type="hinge"/><geom size="0.1"/></body></worldbody>
+<sensor><user dim="2" needstage="pos"/><user dim="1" needstage="vel"/><user dim="2"/></sensor></mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    data.sensordata.fill(5.0);
+    data.forward(&model).expect("forward");
+    assert_eq!(data.sensordata.as_slice(), [0.0; 5]);
+}
+
 /// T5/G18: actuator user callbacks — dyntype, gaintype, biastype all User,
 /// loaded from `<general dyntype="user" gaintype="user" biastype="user">`
 /// (one activation, as MuJoCo 3.5.0 compiles it).

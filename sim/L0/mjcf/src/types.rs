@@ -3570,8 +3570,9 @@ impl MjcfSensorType {
 
             Self::Fromto => 6,
 
-            // User sensors have configurable dimension, default to 1
-            Self::User => 1,
+            // A user sensor's is its own `dim` (`MjcfSensor::dim`), required:
+            // the type alone gives none.
+            Self::User => 0,
         }
     }
 }
@@ -3759,10 +3760,16 @@ impl MjcfSensor {
         self
     }
 
-    /// Get the output dimensionality of this sensor.
+    /// Get the output dimensionality of this sensor: a user sensor's own
+    /// `dim` (0 when it is unwritten or negative, which the build refuses),
+    /// else its type's.
     #[must_use]
     pub fn dim(&self) -> usize {
-        self.sensor_type.dim()
+        if self.sensor_type == MjcfSensorType::User {
+            self.dim.and_then(|d| usize::try_from(d).ok()).unwrap_or(0)
+        } else {
+            self.sensor_type.dim()
+        }
     }
 }
 

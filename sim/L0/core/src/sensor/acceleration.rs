@@ -281,6 +281,8 @@ pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usiz
         MjSensorType::User
             if model.sensor_datatype[sensor_id] == MjSensorDataType::Acceleration =>
         {
+            // As at the position stage (`engine_sensor.c:1597-1598`).
+            super::position::clear_user_sensor(model, data, sensor_id);
             if let Some(ref cb) = model.cb_sensor {
                 (cb.0)(model, data, sensor_id, SensorStage::Acc);
             }

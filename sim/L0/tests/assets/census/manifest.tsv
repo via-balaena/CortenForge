@@ -2142,3 +2142,7 @@ f0b98fca9eede3ea	sim/L0/tests/integration/equality_constraints.rs:747
 1f7d6307ddd92a8d	sim/L0/mjcf/tests/connect_forms.rs:106
 8cef1f2155033a74	sim/L0/tests/integration/sensor_phase6_spec_c.rs:1123
 16b7f780332e005f	sim/L0/mjcf/src/builder/actuator.rs:1607
+03848e9d63e70955	sim/L0/tests/integration/callbacks.rs:292
+5150d646a763178e	sim/L0/mjcf/tests/errors.rs:525
+734f3d415939c0c5	sim/L0/mjcf/tests/user_sensors.rs:211
+da35e3e8a6be9f97	sim/L0/mjcf/tests/user_sensors.rs:224

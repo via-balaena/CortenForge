@@ -1,0 +1,2 @@
+<mujoco><worldbody><body><joint type="hinge"/><geom size="0.1"/></body></worldbody>
+<sensor><user dim="3"/><user dim="0"/></sensor></mujoco>

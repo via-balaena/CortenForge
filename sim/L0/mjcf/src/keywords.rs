@@ -181,7 +181,7 @@ pub fn sensor_stage(s: &str) -> Option<&'static str> {
 }
 
 /// A user sensor's `datatype` (`datatype_map`), as its word.
-pub fn sensor_datatype(s: &str) -> Option<&'static str> {
+pub fn sensor_data_kind(s: &str) -> Option<&'static str> {
     ["real", "positive", "axis", "quaternion"]
         .into_iter()
         .find(|word| *word == s)

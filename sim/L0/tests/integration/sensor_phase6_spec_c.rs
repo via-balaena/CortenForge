@@ -1062,7 +1062,8 @@ fn distance_from_a_body_takes_its_geoms_in_index_order_on_a_tie() {
 /// A `<tendonactuatorfrc>` reads the forces of the actuators whose
 /// transmission is its tendon, summed in actuator order, as MuJoCo 3.5.0's
 /// `mjSENS_TENDONACTFRC` (`engine_sensor.c:1273-1281`): a joint motor is not
-/// summed, and the sensor after it keeps its address. sim-mjcf dropped the
+/// summed (its joint's id, 0, is the tendon's, so only the transmission's
+/// type tells them apart), and the sensor after it keeps its address. sim-mjcf dropped the
 /// element before; the census compares this document's sensor data with
 /// MuJoCo's.
 #[test]

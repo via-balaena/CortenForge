@@ -112,6 +112,37 @@ fn a_user_sensor_is_refused_as_mujoco_refuses_it() {
             r#"<user dim="1" objtype="bogus" objname="b1"/>"#,
             "invalid keyword \"bogus\"",
         ),
+        (
+            r#"<user dim="1" objtype="dof" objname="x"/>"#,
+            "unrecognized name 'x' of sensorized object",
+        ),
+        (
+            r#"<user dim="1" objtype="body" objname=""/>"#,
+            "missing name of sensorized object in sensor",
+        ),
+        (
+            r#"<user dim="2" datatype="axis"/>"#,
+            "datatype AXIS requires dim=3 in sensor",
+        ),
+        (
+            r#"<user dim="3" datatype="quaternion"/>"#,
+            "datatype QUATERNION requires dim=4 in sensor",
+        ),
+        // MuJoCo's order: the object pair before `dim`, the keywords and a
+        // limitation; the object's name before a negative `dim`.
+        (
+            r#"<user objtype="body"/>"#,
+            "objtype 'body' given but objname is missing",
+        ),
+        (
+            r#"<user dim="1" needstage="bogus" objtype="body"/>"#,
+            "objtype 'body' given but objname is missing",
+        ),
+        (
+            r#"<user dim="1" datatype="positive" objname="b1"/>"#,
+            "objname 'b1' given but objtype is missing",
+        ),
+        (r#"<user dim="-1" objtype="body" objname="nope"/>"#, "nope"),
     ] {
         let err = refusal(sensors).to_string();
         assert!(err.contains(message), "{sensors}: {err}");
@@ -130,16 +161,13 @@ fn what_sim_mjcf_cannot_make_is_not_supported() {
         ),
         (r#"<user dim="3" datatype="axis"/>"#, "datatype \"axis\""),
         (
+            r#"<user dim="4" datatype="quaternion"/>"#,
+            "datatype \"quaternion\"",
+        ),
+        (
             r#"<user dim="1" objtype="camera" objname="c"/>"#,
             "on a camera",
         ),
-        (r#"<jointlimitpos joint="j"/>"#, "<jointlimitpos>"),
-        ("<e_potential/>", "<e_potential>"),
-        (
-            r#"<insidesite site="s" objtype="body" objname="b1"/>"#,
-            "<insidesite>",
-        ),
-        (r#"<plugin plugin="x"/>"#, "<plugin>"),
     ] {
         let err = refusal(sensors);
         assert!(
@@ -148,6 +176,56 @@ fn what_sim_mjcf_cannot_make_is_not_supported() {
         );
         assert!(err.to_string().contains(what), "{sensors}: {err}");
     }
+    // Every sensor MuJoCo 3.5.0's schema has that sim-mjcf cannot make
+    // (D-UNREAD-SENSOR), refused by its element, whatever it holds.
+    for name in [
+        "camprojection",
+        "contact",
+        "e_kinetic",
+        "e_potential",
+        "insidesite",
+        "jointlimitpos",
+        "jointlimitvel",
+        "plugin",
+        "tactile",
+        "tendonlimitpos",
+        "tendonlimitvel",
+    ] {
+        let err = refusal(&format!("<{name}/>"));
+        assert!(
+            matches!(err, MjcfError::Unsupported { .. }),
+            "{name}: {err}"
+        );
+        assert!(
+            err.to_string().contains(&format!("<{name}>")),
+            "{name}: {err}"
+        );
+    }
+}
+
+/// A body a user sensor names is not fused away by `fusestatic`, as MuJoCo
+/// keeps a body something names (measured: nbody 3, the sensor on body 2).
+#[test]
+fn fusestatic_keeps_a_body_a_user_sensor_names() {
+    let model = load_model(
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="h"><joint type="hinge"/><geom size="0.1"/>
+<body name="s" pos="0 0 1"><geom size="0.1"/></body></body></worldbody>
+<sensor><user dim="1" objtype="body" objname="s"/></sensor></mujoco>"#,
+    )
+    .expect("loads");
+    assert_eq!(model.nbody, 3);
+    assert_eq!(model.sensor_objid, [2]);
+}
+
+/// `MjcfSensor::dim` reads a user sensor's own `dim`.
+#[test]
+fn a_parsed_user_sensors_dim_is_its_own() {
+    let mjcf = sim_mjcf::parse_mjcf_str(
+        r#"<mujoco><worldbody><body><joint type="hinge"/><geom size="0.1"/></body></worldbody>
+<sensor><user dim="3"/><user dim="0"/></sensor></mujoco>"#,
+    )
+    .expect("parses");
+    assert_eq!([mjcf.sensors[0].dim(), mjcf.sensors[1].dim()], [3, 0]);
 }
 
 /// An element in `<sensor>` that MuJoCo's schema does not know is refused,

@@ -1,0 +1,3 @@
+<mujoco><compiler fusestatic="true"/><worldbody><body name="h"><joint type="hinge"/><geom size="0.1"/>
+<body name="s" pos="0 0 1"><geom size="0.1"/></body></body></worldbody>
+<sensor><user dim="1" objtype="body" objname="s"/></sensor></mujoco>

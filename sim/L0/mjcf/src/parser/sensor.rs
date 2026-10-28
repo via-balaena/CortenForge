@@ -56,7 +56,7 @@ pub(super) fn parse_sensors<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<Mj
 /// `xml_native_reader.cc:446-503`; registry D-UNREAD-SENSOR), or any other
 /// element, which MuJoCo's schema refuses as unrecognized.
 fn unread_sensor(element: &str) -> MjcfError {
-    const MUJOCO_SENSORS: [&str; 11] = [
+    const UNMADE_SENSORS: [&str; 11] = [
         "camprojection",
         "contact",
         "e_kinetic",
@@ -69,7 +69,7 @@ fn unread_sensor(element: &str) -> MjcfError {
         "tendonlimitpos",
         "tendonlimitvel",
     ];
-    if MUJOCO_SENSORS.contains(&element) {
+    if UNMADE_SENSORS.contains(&element) {
         MjcfError::unsupported(format!("the <{element}> sensor"))
     } else {
         MjcfError::unknown_element(element, "sensor")
@@ -171,7 +171,7 @@ pub(super) fn parse_sensor_attrs(
         }
     }
 
-    // Explicit object type (frame sensors only — builder validates)
+    // Explicit object type (frame and user sensors — builder validates)
     sensor.objtype = a.string("objtype");
 
     // Separate reftype and refname (previously conflated)
@@ -200,12 +200,28 @@ pub(super) fn parse_sensor_attrs(
         .map(|interval| interval.given()[0]);
 
     if sensor_type == MjcfSensorType::Rangefinder {
+        // MuJoCo's reader checks the attachment before the data
+        // (`xml_native_reader.cc:4097-4101`).
+        if a.has("site") == a.has("camera") {
+            return Err(MjcfError::invalid_value(
+                "rangefinder",
+                "site",
+                "rangefinder requires exactly one of 'site' or 'camera'",
+            ));
+        }
         check_ray_data(&a)?;
     }
     if sensor_type == MjcfSensorType::User {
         sensor.dim = a.int("dim")?;
-        sensor.needstage = a.keyword_text("needstage", keywords::sensor_stage)?;
-        sensor.datatype = a.keyword_text("datatype", keywords::sensor_datatype)?;
+        sensor.needstage = a.string("needstage");
+        sensor.datatype = a.string("datatype");
+        crate::builder::sensor::user_sensor_read_checks(
+            sensor.objtype.as_deref(),
+            sensor.objname.as_deref(),
+            sensor.dim,
+            sensor.needstage.as_deref(),
+            sensor.datatype.as_deref(),
+        )?;
     }
 
     Ok(sensor)
