@@ -1114,7 +1114,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | `<contact>` | Full | `<pair>` (explicit geom pairs with per-pair condim/friction/solref/solimp overrides), `<exclude>` (body-pair exclusions), contype/conaffinity bitmasks; two-mechanism collision architecture |
 | `<equality>` | Full | `<connect>`, `<weld>`, `<joint>`, `<distance>`, `<flex>` (edge-length) — unified solver rows for all solver types |
 | `<keyframe>` | Full | `<key>` elements with qpos/qvel/act/ctrl/mpos/mquat/time; `Data::reset_to_keyframe()` |
-| `<flex>` | Partial | MuJoCo's form: `body` names the vertex bodies, `element` the elements; a vertex body jointless or with three slides along x, y and z, unrotated, with no dof above it, one per vertex at its origin (else refused, a stated limitation); `node` (trilinear interpolation) refused; parsed via `parse_flex()` + `process_flex_bodies()` |
+| `<flex>` | Partial | MuJoCo's form: `body` names the vertex bodies, `element` the elements; a vertex body jointless with no joint above it, or with three slides along x, y and z, unrotated, with no joint or mocap body above it, one per vertex at its origin (else refused, a stated limitation); `node` (trilinear interpolation) refused; parsed via `parse_flex()` + `process_flex_bodies()` |
 | `<flexcomp>` | Full | Procedural flex body generation: grid (2D shell), box (3D solid), cable (1D); parsed via `parse_flexcomp()` |
 
 **Supported Joint Types:**

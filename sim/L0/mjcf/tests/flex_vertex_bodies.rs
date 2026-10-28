@@ -11,7 +11,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use sim_mjcf::{ElementKind, MjcfError, load_model};
+use sim_mjcf::{ElementKind, MjcfError, load_model, model_from_mjcf, parse_mjcf_str};
 
 /// A body named `name` at `pos`, with three slides along x, y and z, or none.
 fn body(name: &str, pos: &str, slides: bool) -> String {
@@ -433,4 +433,100 @@ fn a_vertex_after_a_free_joint_takes_its_slides_qpos_address() {
     let model = load_model(&doc(&(free.to_string() + &triangle_bodies()), TRIANGLE)).unwrap();
     assert_eq!(model.flexvert_dofadr, [6, 9, 12]);
     assert_eq!(model.flexvert_qposadr, [7, 10, 13]);
+}
+
+/// MuJoCo 3.5.0's own refusals come first, in its order, before sim-mjcf's
+/// stated limitations (measured on the oracle for each document): a rigid
+/// flex (one body) with too few vertices, an element id out of range or a
+/// partial element, and an unknown body named after a repeated one or with
+/// a repeated vertex in an element.
+#[test]
+fn mujocos_refusals_come_before_the_stated_limitations() {
+    let one = |dim: usize, vertex: &str, element: &str| {
+        doc(
+            &triangle_bodies(),
+            &format!(
+                r#"<flex name="f" dim="{dim}" body="a" vertex="{vertex}" element="{element}"></flex>"#
+            ),
+        )
+    };
+    for (xml, reason) in [
+        (one(1, "0 0 0", "0 1"), "not enough vertices"),
+        (
+            one(1, "0 0 0 0.1 0 0", "0 5"),
+            "elem vertex id out of range",
+        ),
+        (
+            one(1, "0 0 0 0.1 0 0", "0 1 1"),
+            "elem size must be multiple of (dim+1)",
+        ),
+    ] {
+        match refusal(&xml) {
+            MjcfError::InvalidValue { reason: got, .. } => assert_eq!(got, reason, "{xml}"),
+            other => panic!("{xml}: {other}"),
+        }
+    }
+    for flex in [
+        r#"<flex name="f" dim="2" body="a a nope" element="0 1 2"></flex>"#,
+        r#"<flex name="f" dim="2" body="a b nope" element="0 0 1"></flex>"#,
+    ] {
+        match refusal(&doc(&triangle_bodies(), flex)) {
+            MjcfError::UndefinedReference {
+                kind: ElementKind::Body,
+                name,
+                ..
+            } => assert_eq!(name, "nope", "{flex}"),
+            other => panic!("{flex}: {other}"),
+        }
+    }
+}
+
+/// Slides inside a mocap body turn with it, so their dofs stop being world
+/// x, y and z, which sim-core's flex code assumes: refused. MuJoCo loads it;
+/// turned 90° about z its edge Jacobian takes the x-slide (measured). A
+/// jointless vertex body on the mocap body has no dofs to misread and loads.
+#[test]
+fn flex_slide_vertex_body_under_a_mocap_body_is_refused() {
+    let bodies = |slides: bool| {
+        format!(
+            r#"{}<body name="m" mocap="true" pos="0 0 1">{}</body>"#,
+            body("a", "0 0 1", false),
+            body("b", "0.1 0 0", slides),
+        )
+    };
+    let flex = r#"<flex name="f" dim="1" body="a b" element="0 1"><edge stiffness="10"/></flex>"#;
+    assert_unsupported(
+        &doc(&bodies(true), flex),
+        "vertex body 'b' moves with a body above it",
+    );
+    let model = load_model(&doc(&bodies(false), flex)).unwrap();
+    assert_eq!(model.flexvert_dofadr, [usize::MAX, usize::MAX]);
+}
+
+/// A jointless vertex body may be rotated: it has no dofs, and its vertex
+/// is at its origin whatever its frame. MuJoCo 3.5.0 loads the same
+/// document (measured).
+#[test]
+fn a_rotated_jointless_vertex_body_loads() {
+    let rotated = r#"<body name="a" pos="0 0 1" euler="0 0 30"><inertial pos="0 0 0" mass="0.5" diaginertia="1e-15 1e-15 1e-15"/></body>"#;
+    let model = load_model(&doc(
+        &(rotated.to_string() + &body("b", "0.1 0 1", true)),
+        r#"<flex name="f" dim="1" body="a b" element="0 1"></flex>"#,
+    ))
+    .unwrap();
+    assert!((model.flexedge_length0[0] - 0.1).abs() < 1e-15);
+    assert_eq!(model.flexedge_rigid, [false]);
+}
+
+/// A flex built in code with no element is refused as MuJoCo's compiler
+/// refuses it ("elem is empty"); the parser reads an empty `element` as
+/// missing.
+#[test]
+fn a_code_built_flex_with_no_element_is_refused() {
+    let mut mjcf = parse_mjcf_str(&doc(&triangle_bodies(), TRIANGLE)).unwrap();
+    mjcf.flex[0].elements.clear();
+    match model_from_mjcf(&mjcf, None) {
+        Err(MjcfError::InvalidValue { reason, .. }) => assert_eq!(reason, "elem is empty"),
+        other => panic!("{other:?}"),
+    }
 }

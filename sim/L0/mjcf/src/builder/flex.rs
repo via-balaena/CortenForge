@@ -88,7 +88,7 @@ impl ModelBuilder {
             // A flex whose vertices are named bodies is rigid when they are one
             // body (`mjCFlex::Compile`, `user_mesh.cc:4205-4213`), which
             // `resolve_vertex_bodies` refuses. Where the loader makes the
-            // vertex bodies: when no vertex moves.
+            // vertex bodies: when no vertex has an inverse mass.
             let rigid = vertex_bodies.is_none()
                 && (vert_start..vert_start + flex.vertices.len())
                     .all(|v| self.flexvert_invmass[v] == 0.0);
@@ -240,15 +240,29 @@ impl ModelBuilder {
         body
     }
 
+    /// Whether a body joined to `body` moves with it: one with joints at or
+    /// above `body`, or a mocap body, which moves without joints.
+    fn moves_with(&self, mut body: usize, mocap_too: bool) -> bool {
+        while body != 0 {
+            if self.body_jnt_num[body] > 0 || (mocap_too && self.body_mocapid[body].is_some()) {
+                return true;
+            }
+            body = self.body_parent[body];
+        }
+        false
+    }
+
     /// A `<flex>` whose vertices are the bodies it names, checked as MuJoCo
-    /// 3.5.0's compiler checks it (`mjCFlex::Compile`, `user_mesh.cc:
-    /// 4103-4202`), then held to the subset sim-core's flex code takes: each
-    /// vertex on a body of its own (a flex on one body is MuJoCo's rigid
-    /// flex), at its body's origin, and each body either jointless or with
-    /// exactly three slides along x, y and z, in that order, unrotated, with
-    /// no dof above it. sim-core reads a vertex's three dofs as its world x,
-    /// y and z (the edge Jacobian, the passive forces) and a vertex without
-    /// dofs as fixed, so anything else is refused, a stated limitation.
+    /// 3.5.0's compiler checks it and in its order (`mjCFlex::Compile` and
+    /// `ResolveReferences`, `user_mesh.cc:4076-4202`), then held to the
+    /// subset sim-core's flex code takes: each vertex on a body of its own (a
+    /// flex on one body is MuJoCo's rigid flex), at its body's origin, and
+    /// each body either jointless with no joint above it, or with exactly
+    /// three slides along x, y and z, in that order, unrotated, with no joint
+    /// or mocap body above it. sim-core reads a vertex's three dofs as its
+    /// world x, y and z (the edge Jacobian, the passive forces) and a vertex
+    /// without dofs as fixed, so anything else is refused, a stated
+    /// limitation.
     ///
     /// Returns the flex with each vertex's world position, its body's at
     /// compile time (MuJoCo's centered flex: `vertxpos` is the body's
@@ -257,44 +271,46 @@ impl ModelBuilder {
         let refuse = |attribute: &str, reason: &str| {
             MjcfError::invalid_value("flex", attribute, reason.to_string())
         };
-        // The error's location names the flex.
-        let unsupported = |what: String| MjcfError::unsupported(what);
+        // MuJoCo's checks first, in its order; its rigid flex (one body for
+        // every vertex) passes them.
+        check_flex_dim_and_elements(flex)?;
         if flex.body.is_empty() {
             return Err(refuse("body", "vertbody and nodebody are both empty"));
         }
-        // nvert as MuJoCo sets it: one vertex per body, or `vertex`'s count.
         let nvert = if flex.vertices.is_empty() {
             flex.body.len()
-        } else if flex.body.len() == 1 {
-            return Err(unsupported(
-                "one body for every vertex (MuJoCo's rigid flex)".to_string(),
-            ));
-        } else if flex.body.len() == flex.vertices.len() {
+        } else if flex.body.len() == 1 || flex.body.len() == flex.vertices.len() {
             flex.vertices.len()
         } else {
             return Err(refuse("body", "vertbody size must be 1 or nvert"));
         };
-        check_flex_elements(&MjcfFlex {
-            vertices: vec![Vector3::zeros(); nvert],
-            ..flex.clone()
-        })?;
-
-        let mut bodies = Vec::with_capacity(nvert);
+        check_flex_vertex_ids(flex, nvert)?;
+        let mut bodies = Vec::with_capacity(flex.body.len());
         for name in &flex.body {
             let &id = self
                 .body_name_to_id
                 .get(name)
                 .ok_or_else(|| MjcfError::undefined(ElementKind::Body, name))?;
-            if bodies.contains(&id) {
-                return Err(unsupported(format!(
+            bodies.push(id);
+        }
+        check_flex_repeated_vertices(flex)?;
+
+        // The subset sim-core takes; the error's location names the flex.
+        if bodies.len() == 1 && nvert > 1 {
+            return Err(MjcfError::unsupported(
+                "one body for every vertex (MuJoCo's rigid flex)",
+            ));
+        }
+        for (k, (name, id)) in flex.body.iter().zip(&bodies).enumerate() {
+            if bodies[..k].contains(id) {
+                return Err(MjcfError::unsupported(format!(
                     "body '{name}' holds two of its vertices"
                 )));
             }
-            bodies.push(id);
         }
         if flex.vertices.iter().any(|v| *v != Vector3::zeros()) {
-            return Err(unsupported(
-                "a vertex away from its body's origin (a nonzero vertex offset)".to_string(),
+            return Err(MjcfError::unsupported(
+                "a vertex away from its body's origin (a nonzero vertex offset)",
             ));
         }
         let axes = [Vector3::x(), Vector3::y(), Vector3::z()];
@@ -306,15 +322,22 @@ impl ModelBuilder {
                         && self.jnt_axis[adr + k] == axes[k]
                 });
             if num != 0 && !three_slides {
-                return Err(unsupported(format!(
+                return Err(MjcfError::unsupported(format!(
                     "vertex body '{name}' has joints other than three slides along x, y and z"
                 )));
             }
-            if id != 0 && self.body_world_quat[id - 1].angle() != 0.0 {
-                return Err(unsupported(format!("vertex body '{name}' is rotated")));
+            if id == 0 {
+                continue;
             }
-            if id != 0 && self.weld_id(self.body_parent[id]) != 0 {
-                return Err(unsupported(format!(
+            if num != 0 && self.body_world_quat[id - 1].angle() != 0.0 {
+                return Err(MjcfError::unsupported(format!(
+                    "vertex body '{name}' is rotated"
+                )));
+            }
+            // Slides turn with a mocap body above them; a jointless vertex
+            // on one has no dofs to misread.
+            if self.moves_with(self.body_parent[id], num != 0) {
+                return Err(MjcfError::unsupported(format!(
                     "vertex body '{name}' moves with a body above it"
                 )));
             }
@@ -679,26 +702,53 @@ const ELEMENT_EDGES: [&[(usize, usize)]; 3] = [
 /// "elem is empty" (`:4111-4113`) is Rigid-loading L10's; the other checks it
 /// makes between these are not this function's.
 fn check_flex_elements(flex: &MjcfFlex) -> Result<()> {
-    let refuse =
-        |attribute: &str, reason: &str| MjcfError::invalid_value("flex", attribute, reason);
+    check_flex_dim_and_elements(flex)?;
+    check_flex_vertex_ids(flex, flex.vertices.len())?;
+    check_flex_repeated_vertices(flex)
+}
+
+fn refuse_flex(attribute: &str, reason: &str) -> MjcfError {
+    MjcfError::invalid_value("flex", attribute, reason)
+}
+
+/// MuJoCo's first checks of a flex (`mjCFlex::Compile`, `user_mesh.cc:
+/// 4108-4116`): its dim, and its elements, some, each of `dim + 1` vertices.
+fn check_flex_dim_and_elements(flex: &MjcfFlex) -> Result<()> {
     if !(1..=3).contains(&flex.dim) {
-        return Err(refuse("dim", "dim must be 1, 2 or 3"));
+        return Err(refuse_flex("dim", "dim must be 1, 2 or 3"));
+    }
+    if flex.elements.is_empty() {
+        return Err(refuse_flex("element", "elem is empty"));
     }
     if flex.elements.iter().any(|e| e.len() != flex.dim + 1) {
-        return Err(refuse("element", "elem size must be multiple of (dim+1)"));
+        return Err(refuse_flex(
+            "element",
+            "elem size must be multiple of (dim+1)",
+        ));
     }
-    let nvert = flex.vertices.len();
+    Ok(())
+}
+
+/// Its vertex count against its dim, then each element's vertex ids against
+/// it (`user_mesh.cc:4146-4165`).
+fn check_flex_vertex_ids(flex: &MjcfFlex, nvert: usize) -> Result<()> {
     if nvert < flex.dim + 1 {
-        return Err(refuse("vertex", "not enough vertices"));
+        return Err(refuse_flex("vertex", "not enough vertices"));
     }
     if flex.elements.iter().flatten().any(|&v| v >= nvert) {
-        return Err(refuse("element", "elem vertex id out of range"));
+        return Err(refuse_flex("element", "elem vertex id out of range"));
     }
+    Ok(())
+}
+
+/// A vertex twice in one element, checked after its bodies are named
+/// (`user_mesh.cc:4189-4202`).
+fn check_flex_repeated_vertices(flex: &MjcfFlex) -> Result<()> {
     for element in &flex.elements {
         let mut sorted = element.clone();
         sorted.sort_unstable();
         if sorted.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(refuse("element", "repeated vertex in element"));
+            return Err(refuse_flex("element", "repeated vertex in element"));
         }
     }
     Ok(())
