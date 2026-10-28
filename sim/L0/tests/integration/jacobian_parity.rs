@@ -341,9 +341,12 @@ fn flex_vertex_body_on_a_moving_body_is_refused() {
 /// which no document reaches since Rigid-loading L10 (the test above), on a
 /// `Model` built in code (ledger L320): the scene above with both vertex
 /// bodies on the world, each with three slides, then the first hung off the
-/// hinged arm and derived again. The vertex–floor contact's normal row takes the arm's hinge
-/// column through `mj_jac`, the vertex's height moving with the hinge (by
-/// central differences, 1e-7), and its own vertical slide's column is 1.
+/// hinged arm, which is unrotated, and derived again. The vertex–floor
+/// contact's normal row takes the arm's hinge column through `mj_jac`, the
+/// vertex's height moving with the hinge (by central differences, 1e-7), and
+/// its own vertical slide's column is 1. The flex edge Jacobian keeps the
+/// builder's pattern, which has no hinge column (`recompute_derived` does not
+/// remake it, ledger L326); no edge force acts here.
 #[test]
 fn a_code_built_flex_vertex_contact_row_moves_with_its_parent() {
     let mut model = load_model(
@@ -371,7 +374,8 @@ fn a_code_built_flex_vertex_contact_row_moves_with_its_parent() {
     model.body_rootid[vertex] = arm;
     let arm_pos = model.body_pos[arm];
     model.body_pos[vertex] -= arm_pos;
-    model.dof_parent[model.body_dof_adr[vertex]] = Some(model.body_dof_adr[arm]);
+    model.dof_parent[model.body_dof_adr[vertex]] =
+        Some(model.body_dof_adr[arm] + model.body_dof_num[arm] - 1);
     model.recompute_derived().expect("derived");
     let mut data = model.make_data();
     data.forward(&model).expect("forward");

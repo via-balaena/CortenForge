@@ -45,7 +45,12 @@ impl Model {
     /// `tendon_lengthspring` of `[-1, -1]` are replaced by the values derived
     /// from them; a later edit of the input is not derived again. Not
     /// recomputed here: the tree's own tables `body_rootid` and `dof_parent`,
-    /// which an edit of the tree sets.
+    /// which an edit of the tree sets; and the flex edge Jacobian's pattern
+    /// (`flexedge_J_rownnz`, `flexedge_J_rowadr`, `flexedge_J_colind`), the
+    /// MJCF builder's, from each end body's own dofs, where MuJoCo's `set0`
+    /// remakes it over each end's whole dof chain (`makeFlexSparse`,
+    /// `engine_setconst.c:286`): the two differ once a vertex body has a dof
+    /// above it.
     ///
     /// # Errors
     /// The [`ModelError`] `check_joint_layout`, `check_ranges` or
