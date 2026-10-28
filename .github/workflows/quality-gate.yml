@@ -692,6 +692,12 @@ jobs:
           case " $PKGS " in
             *" -p cortenforge-mesh-io "*) cargo test -p cortenforge-mesh-io --features threemf ;;
           esac
+          # sim-mjcf's .mjb tests (the `mjb` module, version refusals
+          # included) are behind the non-default `mjb` feature: run them
+          # too, only when sim-mjcf is in this shard's selected set.
+          case " $PKGS " in
+            *" -p cortenforge-sim-mjcf "*) cargo test -p cortenforge-sim-mjcf --features mjb --lib mjb:: ;;
+          esac
         shell: bash
 
   # ============================================================================
