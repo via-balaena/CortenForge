@@ -56,9 +56,13 @@ use crate::types::MjcfModel;
 /// Magic bytes identifying an MJB file.
 pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
-/// Current MJB format version: 6 since `MjcfFlex` took `vertex_bodies`
-/// (Rigid-loading L10).
-pub const MJB_VERSION: u32 = 6;
+/// Current MJB format version.
+///
+/// 7 since a flexcomp's unwritten `inertiabox` reads as MuJoCo's 0.005 and
+/// one below mjMINVAL is refused (Rigid-loading PR RL-3b): a version-6 file
+/// holds 0.0 there for a flexcomp that did not write it. 6 since `MjcfFlex`
+/// took `vertex_bodies` (Rigid-loading L10).
+pub const MJB_VERSION: u32 = 7;
 
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;
@@ -615,6 +619,20 @@ mod tests {
         assert!(matches!(
             load_mjb_bytes(&bytes),
             Err(MjcfError::MjbVersion { found: 5, .. })
+        ));
+    }
+
+    /// A version-6 file is refused for its version: it holds 0.0 as the
+    /// `inertiabox` of a flexcomp that did not write one, which decoded as
+    /// version 7 is refused as below mjMINVAL (measured on a file written
+    /// at `6c2b5f5c`).
+    #[test]
+    fn a_version_6_file_is_refused_for_its_version() {
+        let mut bytes = save_mjb_bytes(&simple_model()).expect("should serialize");
+        bytes[4..8].copy_from_slice(&6u32.to_le_bytes());
+        assert!(matches!(
+            load_mjb_bytes(&bytes),
+            Err(MjcfError::MjbVersion { found: 6, .. })
         ));
     }
 
