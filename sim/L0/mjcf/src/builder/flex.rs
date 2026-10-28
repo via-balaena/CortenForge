@@ -286,8 +286,8 @@ impl ModelBuilder {
         let refuse = |attribute: &str, reason: &str| {
             MjcfError::invalid_value("flex", attribute, reason.to_string())
         };
-        let unsupported =
-            |what: String| MjcfError::unsupported(format!("flex '{}': {what}", flex.name));
+        // The error's location names the flex.
+        let unsupported = |what: String| MjcfError::unsupported(what);
         if flex.body.is_empty() {
             return Err(refuse("body", "vertbody and nodebody are both empty"));
         }

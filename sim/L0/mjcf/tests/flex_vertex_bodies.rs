@@ -315,3 +315,14 @@ fn two_flexes_on_one_body_skip_their_pairs() {
     assert_eq!(contacts("a2"), 1, "the control");
     assert_eq!(contacts("a"), 0);
 }
+
+/// A refusal names its flex once, in its location.
+#[test]
+fn a_flex_refusal_names_its_flex_once() {
+    let xml = doc(
+        &triangle_bodies(),
+        r#"<flex name="cloth" dim="2" body="a a b" element="0 1 2"></flex>"#,
+    );
+    let message = refusal(&xml).to_string();
+    assert_eq!(message.matches("cloth").count(), 1, "{message}");
+}
