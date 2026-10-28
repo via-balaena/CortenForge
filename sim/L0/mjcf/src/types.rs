@@ -4064,14 +4064,14 @@ pub struct MjcfFlex {
     /// Collision vertex radius `[m]`.
     pub radius: f64,
     /// A `<flex>`'s vertex bodies, one per vertex: each vertex is the body
-    /// it names, as MuJoCo 3.5.0's `vertbody`. Not read for a flexcomp, whose
-    /// vertex bodies the loader makes ([`FlexVertexBodies::Generated`]); the
-    /// parser refuses `body` on one.
+    /// it names, as MuJoCo 3.5.0's `vertbody`. Refused on a flexcomp, whose
+    /// vertex bodies the loader makes ([`FlexVertexBodies::Generated`]), as
+    /// the parser refuses `body` on one.
     pub body: Vec<String>,
     /// A `<flex>`'s `node` bodies (MuJoCo's trilinear interpolation): refused,
     /// a stated limitation, after MuJoCo's checks of its collisions, its node
-    /// count and its node names; empty when the attribute is omitted or
-    /// empty.
+    /// count, its node names and, with a Young's modulus, its element count;
+    /// empty when the attribute is omitted or empty. Refused on a flexcomp.
     pub node: Vec<String>,
     /// Visualization group (0-5).
     pub group: i32,

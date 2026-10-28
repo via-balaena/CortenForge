@@ -49,7 +49,9 @@ impl ModelBuilder {
                 &resolved
             } else {
                 // A flexcomp's checks; a `<flex>` has had them above.
-                check_flex_elements(flex_orig).map_err(|e| e.with_location_if_unknown(at()))?;
+                check_flexcomp(flex_orig)
+                    .and_then(|()| check_flex_elements(flex_orig))
+                    .map_err(|e| e.with_location_if_unknown(at()))?;
                 flex_orig
             };
             // Before the masses, edges, hinges and elements read the order.
@@ -255,11 +257,11 @@ impl ModelBuilder {
     }
 
     /// A `<flex>` whose vertices are the bodies it names, given MuJoCo 3.5.0's
-    /// checks of its elements, vertices, bodies, nodes and Poisson ratio in
-    /// its order (`mjCFlex::Compile` and `ResolveReferences`, `user_mesh.cc:
-    /// 4076-4202`, `:4331-4334`; not `material` or `texcoord`, which this
-    /// crate does not read, Rigid-loading L47's, nor a node flex's element
-    /// count with a Young's modulus, `:4337-4343`), then held to the
+    /// checks of its elements, vertices, bodies, nodes, Poisson ratio and a
+    /// node flex's element count in its order (`mjCFlex::Compile` and
+    /// `ResolveReferences`, `user_mesh.cc:4076-4202`, `:4331-4343`; not
+    /// `material` or `texcoord`, which this crate does not read,
+    /// Rigid-loading L47's), then held to the
     /// subset sim-core's flex code takes: each vertex on a body of its own (a
     /// flex on one body is MuJoCo's rigid flex), at its body's origin, and
     /// each body either jointless with no joint above it, or with exactly
@@ -333,6 +335,7 @@ impl ModelBuilder {
         bodies.truncate(flex.body.len());
         check_flex_repeated_vertices(flex)?;
         check_flex_poisson(flex)?;
+        check_flex_node_elements(flex)?;
 
         // The subset sim-core takes; the error's location names the flex.
         if interpolated {
@@ -738,6 +741,19 @@ const ELEMENT_EDGES: [&[(usize, usize)]; 3] = [
     &[(0, 1), (1, 2), (2, 0), (2, 3), (0, 3), (1, 3)],
 ];
 
+/// A flexcomp's own checks, before its flex's: no `body` or `node`, which
+/// MuJoCo 3.5.0's `<flexcomp>` does not have (its schema,
+/// `xml_native_reader.cc:312-315`). The parser refuses `body` on one; an
+/// [`MjcfFlex`] built in code can carry either.
+fn check_flexcomp(flex: &MjcfFlex) -> Result<()> {
+    for (attribute, names) in [("body", &flex.body), ("node", &flex.node)] {
+        if !names.is_empty() {
+            return Err(MjcfError::unknown_attribute("flexcomp", attribute));
+        }
+    }
+    Ok(())
+}
+
 /// MuJoCo's checks of a flexcomp's elements and Poisson ratio before anything
 /// is built from them (`mjCFlex::Compile`, `user_mesh.cc`), in its order, as
 /// the functions below make them. A `<flex>` takes them one by one in
@@ -758,6 +774,23 @@ fn check_flex_poisson(flex: &MjcfFlex) -> Result<()> {
             "elasticity",
             "poisson",
             "Poisson ratio must be in [0, 0.5)",
+        ));
+    }
+    Ok(())
+}
+
+/// With a Young's modulus, a node flex's elements, at least `(3 n)² / 21`
+/// for its `n` nodes (integer division), as MuJoCo's compiler requires
+/// (`user_mesh.cc:4339-4343`). MuJoCo's message prints a number that is not
+/// the count (its format call passes a string where the count goes;
+/// measured); this one prints the count.
+fn check_flex_node_elements(flex: &MjcfFlex) -> Result<()> {
+    let coordinates = 3 * flex.node.len();
+    let least = coordinates * coordinates / 21;
+    if flex.young > 0.0 && !flex.node.is_empty() && flex.elements.len() < least {
+        return Err(refuse_flex(
+            "element",
+            &format!("Trilinear dofs are require at least {least} elements"),
         ));
     }
     Ok(())

@@ -442,8 +442,9 @@ const TRILINEAR: &str = r#"<mujoco model="trilinear">
 </mujoco>"#;
 
 /// `node` (MuJoCo's trilinear interpolation): MuJoCo 3.5.0's own checks of
-/// it first, each with MuJoCo's message (measured), then a stated
-/// limitation (registry `D-FLEX-NODE`). `node` alone is refused for the
+/// it first, each with MuJoCo's message (measured; the element count's with
+/// the count, which MuJoCo's message misprints), then a stated limitation
+/// (registry `D-FLEX-NODE`). `node` alone is refused for the
 /// missing `body`, and an empty `node` is no node, as MuJoCo reads them.
 #[test]
 fn flex_node_is_refused() {
@@ -477,6 +478,12 @@ fn flex_node_is_refused() {
                 ),
             ),
             "number of nodes must be 2^3 but it is 64",
+        ),
+        // With a Young's modulus, at least (3·8)²/21 = 27 elements for 8
+        // nodes, where the flex has 8 (MuJoCo refuses it, measured).
+        (
+            TRILINEAR.replace("<elasticity/>", r#"<elasticity young="1e4"/>"#),
+            "Trilinear dofs are require at least 27 elements",
         ),
     ] {
         match refusal(&xml) {
@@ -701,4 +708,30 @@ fn a_flexcomp_body_is_refused() {
         } => assert_eq!((element.as_str(), attribute.as_str()), ("flexcomp", "body")),
         other => panic!("{other}"),
     }
+}
+
+/// A flexcomp built in code with a `<flex>`'s `body` or `node` is refused
+/// as the parser refuses `body` on one; it loaded with them ignored.
+#[test]
+fn a_code_built_flexcomp_with_body_or_node_is_refused() {
+    let xml = r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1"/></deformable></mujoco>"#;
+    for attribute in ["body", "node"] {
+        let mut mjcf = parse_mjcf_str(xml).unwrap();
+        let names = vec!["world".to_string(); 4];
+        if attribute == "body" {
+            mjcf.flex[0].body = names;
+        } else {
+            mjcf.flex[0].node = names;
+        }
+        match model_from_mjcf(&mjcf, None) {
+            Err(MjcfError::UnknownAttribute {
+                element,
+                attribute: got,
+                ..
+            }) => assert_eq!((element.as_str(), got.as_str()), ("flexcomp", attribute)),
+            other => panic!("{attribute}: {other:?}"),
+        }
+    }
+    let mjcf = parse_mjcf_str(xml).unwrap();
+    model_from_mjcf(&mjcf, None).expect("without them");
 }
