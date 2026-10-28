@@ -281,12 +281,12 @@ impl ModelBuilder {
     }
 
     /// A `<flex>` whose vertices are the bodies it names, given MuJoCo 3.5.0's
-    /// checks of its elements, vertices, bodies, nodes, Poisson ratio and a
-    /// node flex's element count in its order (`mjCFlex::Compile` and
-    /// `ResolveReferences`, `user_mesh.cc:4076-4202`, `:4331-4343`; not
-    /// `material` or `texcoord`, which this crate does not read,
-    /// Rigid-loading L47's), then held to the
-    /// subset sim-core's flex code takes: each vertex on a body of its own (a
+    /// checks of its elements, edge stiffness, vertices, bodies, nodes,
+    /// Poisson ratio and a node flex's element count in its order
+    /// (`mjCFlex::Compile` and `ResolveReferences`, `user_mesh.cc:4076-4202`,
+    /// `:4331-4343`; not `material` or `texcoord`, which this crate does not
+    /// read, Rigid-loading L47's), then held to the subset sim-core's flex
+    /// code takes: each vertex on a body of its own (a
     /// flex on one body is MuJoCo's rigid flex), at its body's origin, and
     /// each body either jointless with no joint above it, or with exactly
     /// three slides along x, y and z, in that order, unrotated, with no joint
@@ -606,7 +606,9 @@ impl ModelBuilder {
         // 505-511`); a pinned vertex has no body of its own there, so no
         // sphere. The sphere takes its body's class, the root's here, as
         // these bodies hang off the world; the body's mass and inertia stay
-        // the flexcomp's.
+        // the flexcomp's, as MuJoCo's (`explicitinertial`), except where a
+        // compiler setting would change them there: sim-mjcf makes these
+        // bodies after its compiler passes (ledger L325).
         if flex.vertcollide && !pinned {
             let sphere = self.resolver.apply_to_geom(&MjcfGeom {
                 geom_type: Some(MjcfGeomType::Sphere),
@@ -670,7 +672,7 @@ impl ModelBuilder {
         self.flexedge_length0.push(rest_len);
         self.flexedge_flexid.push(flex_id);
         // Every edge of a rigid flex, and an edge whose ends' bodies are
-        // welded together, is rigid (MuJoCo's rule, `user_model.cc:3511-3519`).
+        // welded together, is rigid (MuJoCo's rule, `user_model.cc:3512-3520`).
         // No model sim-mjcf builds makes the first half decide an edge: a
         // flexcomp's vertex masses are finite and positive, so it is rigid
         // only when every vertex is pinned, and the pinned vertices' bodies
@@ -793,6 +795,8 @@ const ELEMENT_EDGES: [&[(usize, usize)]; 3] = [
 /// `xml_native_reader.cc:312-315`; the parser refuses `body` on one, and an
 /// [`MjcfFlex`] built in code can carry either), then MuJoCo's check of its
 /// mass and `inertiabox` (`mjCFlexcomp::Make`, `user_flexcomp.cc:143-145`).
+/// Not MuJoCo's checks of its count, spacing and scale, which come before
+/// the mass's there, nor of its pin ids (ledger L324).
 fn check_flexcomp(flex: &MjcfFlex) -> Result<()> {
     for (attribute, names) in [("body", &flex.body), ("node", &flex.node)] {
         if !names.is_empty() {
@@ -827,9 +831,9 @@ fn check_vertex_spheres(flex: &MjcfFlex) -> Result<()> {
     Ok(())
 }
 
-/// MuJoCo's checks of a flexcomp's elements, edge stiffness and Poisson ratio before anything
-/// is built from them (`mjCFlex::Compile`, `user_mesh.cc`), in its order, as
-/// the functions below make them. A `<flex>` takes them one by one in
+/// MuJoCo's checks of a flexcomp's elements, edge stiffness and Poisson
+/// ratio before anything is built from them (`mjCFlex::Compile`,
+/// `user_mesh.cc`), in its order, as the functions below make them. A `<flex>` takes them one by one in
 /// `resolve_vertex_bodies`, among the checks of its bodies, and not here.
 fn check_flex_elements(flex: &MjcfFlex) -> Result<()> {
     check_flex_dim_and_elements(flex)?;

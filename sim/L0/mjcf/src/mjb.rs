@@ -9,7 +9,7 @@
 //!
 //! The MJB file format consists of:
 //! 1. **Magic bytes**: `MJB1` (4 bytes) - identifies the file format
-//! 2. **Version**: `u32` little-endian (4 bytes) - format version (currently 1)
+//! 2. **Version**: `u32` little-endian (4 bytes) - format version ([`MJB_VERSION`])
 //! 3. **Flags**: `u32` little-endian (4 bytes) - reserved for future use
 //! 4. **Payload**: bincode-encoded [`MjcfModel`] data
 //!

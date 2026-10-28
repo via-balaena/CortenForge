@@ -4071,7 +4071,9 @@ pub struct MjcfFlex {
     /// A `<flex>`'s `node` bodies (MuJoCo's trilinear interpolation): refused,
     /// a stated limitation, after MuJoCo's checks of its collisions, its node
     /// count, its node names and, with a Young's modulus, its element count;
-    /// empty when the attribute is omitted or empty. Refused on a flexcomp.
+    /// empty when the attribute is omitted or empty. Refused on a flexcomp
+    /// built in code; a `<flexcomp>`'s in a document is not read (MuJoCo's
+    /// schema refuses it, Rigid-loading L47's).
     pub node: Vec<String>,
     /// Visualization group (0-5).
     pub group: i32,
@@ -4153,8 +4155,10 @@ pub struct MjcfFlex {
 
     // --- Flexcomp attributes (DT-88) ---
     /// A flexcomp's inertia box size: each vertex body's inertia is
-    /// `mass · (2 · inertiabox²) / 3` about each axis, as MuJoCo's
-    /// (`user_flexcomp.cc:471`); MuJoCo's default 0.005, at least mjMINVAL.
+    /// `mass · (2 · inertiabox²) / 3` about each axis, MuJoCo's formula
+    /// (`user_flexcomp.cc:470-471`), on the vertex's mass, which is MuJoCo's
+    /// when `mass` is written (ledger L323); MuJoCo's default 0.005, at least
+    /// mjMINVAL.
     pub inertiabox: f64,
     /// Flexcomp non-uniform scale applied to generated vertices.
     pub flexcomp_scale: Option<Vector3<f64>>,
