@@ -145,3 +145,27 @@ fn a_config_with_an_end_tag_is_read() {
     assert_eq!(config.len(), 1);
     assert_eq!(config[0].key, "twist");
 }
+
+/// A document with two root elements: MuJoCo 3.5.0 reads the first
+/// (tinyxml2's `RootElement`), whichever of them closes itself. The documents
+/// are built by `format!` so that the census does not take them: it takes a
+/// literal's `<mujoco>` spans one by one, which would split each in two.
+#[test]
+fn only_the_first_root_is_read() {
+    let geom = r#"<worldbody><geom size=".1"/></worldbody>"#;
+    let model = load_model(&format!(
+        r#"<mujoco model="a">{geom}</mujoco><mujoco model="b"/>"#
+    ))
+    .unwrap();
+    assert_eq!(model.ngeom, 1);
+    let model = load_model(&format!(
+        r#"<mujoco model="b"/><mujoco model="a">{geom}</mujoco>"#
+    ))
+    .unwrap();
+    assert_eq!(model.ngeom, 0);
+    // A later root is still read to its end: one cut short is refused.
+    load_model(&format!(
+        r#"<mujoco model="a">{geom}</mujoco><mujoco model="b"><worldbody>"#
+    ))
+    .unwrap_err();
+}

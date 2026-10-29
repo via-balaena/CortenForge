@@ -200,7 +200,13 @@ fn parse_mjcf_reader<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfModel> {
                 if e.name().as_ref() == b"mujoco" =>
             {
                 let empty = matches!(event, Event::Empty(_));
-                model = Some(parse_mujoco(reader, e, empty)?);
+                // MuJoCo 3.5.0 reads the first root element (tinyxml2's
+                // `RootElement`); a later one is skipped.
+                if model.is_none() {
+                    model = Some(parse_mujoco(reader, e, empty)?);
+                } else {
+                    skip_element(reader, b"mujoco", empty)?;
+                }
             }
             Ok(Event::Eof) => break,
             Ok(_) => {}
