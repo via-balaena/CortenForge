@@ -241,7 +241,7 @@ fn expand_single_frame(
 
         if let Some(ref mut fromto) = g.fromto {
             // fromto geoms: transform both endpoints through the composed frame.
-            // Leave pos/quat untouched — compute_fromto_pose() will derive them later.
+            // Leave pos/quat untouched — resolve_geom_fromto derives them later.
             let from = Vector3::new(fromto[0], fromto[1], fromto[2]);
             let to = Vector3::new(fromto[3], fromto[4], fromto[5]);
             let from_new = composed_pos + composed_quat.transform_vector(&from);

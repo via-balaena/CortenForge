@@ -2162,3 +2162,16 @@ db22f3d74562cddf	sim/L0/mjcf/src/builder/orientation.rs:506
 a0fc6cf32effc0b4	sim/L0/mjcf/tests/written_orientation.rs:1780
 c3a571f6d8159d54	sim/L0/mjcf/tests/written_orientation.rs:1759
 f60abd53f94d04c9	sim/L0/mjcf/tests/written_orientation.rs:1773
+0c2386dbaebc3f15	sim/L0/mjcf/tests/geom_fromto.rs:650
+31fe9796893b55d5	sim/L0/mjcf/tests/geom_fromto.rs:610
+3d05be1c103015e6	sim/L0/mjcf/tests/geom_fromto.rs:615
+4c090d1e6ad38cf5	sim/L0/mjcf/tests/geom_fromto.rs:595
+72cb975c208fac25	sim/L0/mjcf/tests/geom_fromto.rs:630
+74c562a4eff50782	sim/L0/mjcf/tests/geom_fromto.rs:701
+9530af5ff87fb45d	sim/L0/mjcf/tests/geom_fromto.rs:635
+993ce9a40d7d3525	sim/L0/mjcf/tests/geom_fromto.rs:645
+a471409f7847657f	sim/L0/mjcf/tests/geom_fromto.rs:600
+beeed51b03e9d16b	sim/L0/mjcf/tests/geom_fromto.rs:605
+d118c1da40826c5e	sim/L0/mjcf/tests/geom_fromto.rs:640
+d1d5405e2c698043	sim/L0/mjcf/tests/geom_fromto.rs:625
+e157e605c7215b98	sim/L0/mjcf/tests/geom_fromto.rs:620

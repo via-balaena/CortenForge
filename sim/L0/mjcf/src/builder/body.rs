@@ -7,6 +7,7 @@
 use nalgebra::{UnitQuaternion, Vector3};
 
 use super::ModelBuilder;
+use super::geom::resolve_geom_fromto;
 use super::mass::{
     check_replaced_full_inertia, compute_inertia_from_geoms, extract_inertial_properties,
 };
@@ -30,7 +31,19 @@ impl ModelBuilder {
 
         // Process worldbody geoms
         for geom in &worldbody.geoms {
-            let geom = self.resolver.apply_to_geom(geom);
+            let mut geom = self.resolver.apply_to_geom(geom);
+            resolve_geom_fromto(&mut geom).map_err(|e| {
+                e.at(Location::nth(
+                    ElementKind::Geom,
+                    geom.name.as_deref(),
+                    self.geom_type.len(),
+                )
+                .within_nth(
+                    ElementKind::Body,
+                    self.body_name.first().and_then(Option::as_deref),
+                    0,
+                ))
+            })?;
             self.process_geom(&geom, 0)?;
         }
 
@@ -159,17 +172,27 @@ impl ModelBuilder {
 
         // Resolve geom defaults once for both inertia computation and geom processing.
         // Apply childclass: if a geom has no explicit class, set it from effective_childclass.
-        let resolved_geoms: Vec<MjcfGeom> = body
+        // Then its `fromto`, which its class may give and whose pose its mass needs.
+        let first_geom = self.geom_type.len();
+        let resolved_geoms = body
             .geoms
             .iter()
-            .map(|g| {
+            .enumerate()
+            .map(|(k, g)| {
                 let mut g = g.clone();
                 if g.class.is_none() {
                     g.class = effective_childclass.map(|s| s.to_string());
                 }
-                self.resolver.apply_to_geom(&g)
+                let mut g = self.resolver.apply_to_geom(&g);
+                resolve_geom_fromto(&mut g).map_err(|e| {
+                    e.at(
+                        Location::nth(ElementKind::Geom, g.name.as_deref(), first_geom + k)
+                            .within_nth(ElementKind::Body, Some(&body.name), body_id),
+                    )
+                })?;
+                Ok(g)
             })
-            .collect();
+            .collect::<Result<Vec<MjcfGeom>>>()?;
 
         let (mass, inertia, ipos, iquat) = self
             .resolve_body_inertia(body, &resolved_geoms)
