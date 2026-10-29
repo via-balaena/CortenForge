@@ -11,7 +11,7 @@ use crate::types::{
     MjcfBody, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfInertial, MjcfJoint, MjcfJointType, MjcfSite,
 };
 
-use super::attrs::{Attrs, safe_normalize_axis, skip_element};
+use super::attrs::{Attrs, skip_element};
 use super::composite::parse_composite;
 use super::extension::{parse_plugin_ref, parse_plugin_ref_empty};
 
@@ -268,9 +268,7 @@ pub(super) fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     joint.joint_type = a.keyword("type", MjcfJointType::from_str)?;
 
     joint.pos = a.vec3("pos")?;
-    if let Some(axis) = a.vec3("axis")? {
-        joint.axis = Some(safe_normalize_axis(axis));
-    }
+    joint.axis = a.vec3("axis")?;
     joint.limited = a.tf_auto("limited")?;
     if let Some(pair) = a.array::<2>("range")? {
         joint.range = Some(pair.into());

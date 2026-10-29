@@ -1857,6 +1857,192 @@ fn a_class_alternative_is_layered_as_mujocos_reader_layers_it() {
     );
 }
 
+/// A joint's written axis made unit once, as MuJoCo 3.5.0 makes it
+/// (`mjuu_normvec` in `mjCJoint::Compile`, `user_objects.cc:2957-2960`; ledger
+/// L146): its `jnt_axis` as bits, the same for a hinge and a slide. A sum, a
+/// square root and divisions only, so bit for bit on every platform. L146's
+/// axes, a unit one, two whose norm is exact, 20 drawn with Python's
+/// `random.Random(146)`, and three within mjEPS of unit length, which MuJoCo
+/// keeps as written.
+const JOINT_AXES: &[(&str, [u64; 3])] = &[
+    (
+        "1 0 1",
+        [0x3fe6a09e667f3bcc, 0x0000000000000000, 0x3fe6a09e667f3bcc],
+    ),
+    (
+        "1 1 0",
+        [0x3fe6a09e667f3bcc, 0x3fe6a09e667f3bcc, 0x0000000000000000],
+    ),
+    (
+        "1 -1 0",
+        [0x3fe6a09e667f3bcc, 0xbfe6a09e667f3bcc, 0x0000000000000000],
+    ),
+    (
+        "0 1 0.3",
+        [0x0000000000000000, 0x3feea6834f48c4b7, 0x3fd263e862c542d4],
+    ),
+    (
+        "0.3 -0.7 1.1",
+        [0x3fccb395ffe349b9, 0xbfe0be177fef4057, 0x3fea4f497fe5ae40],
+    ),
+    (
+        "0.3 1 0.2",
+        [0x3fd20fd4ca53f295, 0x3fee1a62a68be9a4, 0x3fc8151bb86fee1d],
+    ),
+    (
+        "0 0 1",
+        [0x0000000000000000, 0x0000000000000000, 0x3ff0000000000000],
+    ),
+    (
+        "3 4 0",
+        [0x3fe3333333333333, 0x3fe999999999999a, 0x0000000000000000],
+    ),
+    (
+        "0 0 2",
+        [0x0000000000000000, 0x0000000000000000, 0x3ff0000000000000],
+    ),
+    (
+        "-2.199989 0.739929 1.635676",
+        [0xbfe8caf3fcbe31ef, 0x3fd0ad614f0beb64, 0x3fe26ee9f9b68876],
+    ),
+    (
+        "-2.608998 0.382392 2.38984",
+        [0xbfe775ccd5e3e40d, 0x3fbb81ff8ee420d8, 0x3fe57d4ed4ebb3fd],
+    ),
+    (
+        "-0.917843 -2.762746 2.848001",
+        [0xbfccd8e13dce590d, 0xbfe5b5331d86c499, 0x3fe660b029431fc1],
+    ),
+    (
+        "-0.517664 1.767707 1.242195",
+        [0xbfcdd32ae61a9252, 0x3fe9761924418bcc, 0x3fe1e45e4528708b],
+    ),
+    (
+        "-0.441513 2.880307 2.632335",
+        [0xbfbcc877a02c62c4, 0x3fe778ba0e82817e, 0x3fe5736c15aa4c1b],
+    ),
+    (
+        "-2.555888 -2.770968 2.475812",
+        [0xbfe2227e2e174a2e, 0xbfe3a9298f7789e6, 0x3fe1910b252b8dfc],
+    ),
+    (
+        "-0.336757 -2.804286 2.701321",
+        [0xbfb60eed68b2ae66, 0xbfe6f5fa2136ca34, 0x3fe61e27c313f717],
+    ),
+    (
+        "1.339977 1.652151 -1.834662",
+        [0x3fde8756ab55b779, 0x3fe2d209a6a5972d, 0xbfe4e647b727c401],
+    ),
+    (
+        "0.475137 -1.686601 2.294746",
+        [0x3fc5106ba65b39ad, 0xbfe2b163a0c41f5b, 0x3fe96ee0a9fc4f1c],
+    ),
+    (
+        "-0.662856 0.890793 -0.288305",
+        [0xbfe27d7810acff69, 0x3fe8d92c0aed0286, 0xbfd015959ef4f9fb],
+    ),
+    (
+        "2.988966 2.308089 -0.037354",
+        [0x3fe953888bf603fc, 0x3fe38e9ae0948e01, 0xbf8441b4a803f718],
+    ),
+    (
+        "2.533646 -0.955432 0.956737",
+        [0x3fec3b4078cbb9f3, 0xbfd54ac277f46360, 0x3fd5523466e92617],
+    ),
+    (
+        "-2.351602 -1.982212 -1.956664",
+        [0xbfe4a4cc30ca60a9, 0xbfe166a92a882bed, 0xbfe12d3f0f121a48],
+    ),
+    (
+        "-0.312274 -0.84184 -2.209465",
+        [0xbfc0c2806297402b, 0xbfd6973f6977922f, 0xbfeda54245c54196],
+    ),
+    (
+        "2.224664 -0.487036 -2.854058",
+        [0x3fe37f393e6f82cf, 0xbfc112d3cf4a8458, 0xbfe90352a1c3accf],
+    ),
+    (
+        "1.650887 -0.439885 -2.565537",
+        [0x3fe12393bdaeeace, 0xbfc244585c762512, 0xbfeaa27359435551],
+    ),
+    (
+        "-2.216432 -0.372246 1.000409",
+        [0xbfecd4ae7f47929a, 0xbfc35e4abaa452b7, 0x3fda06b0cb4e72a3],
+    ),
+    (
+        "-0.234738 2.839575 0.572968",
+        [0xbfb4ad4172132558, 0x3fef43ebee82106c, 0x3fc93c1be30a9cfb],
+    ),
+    (
+        "1.554873 -0.973123 0.191181",
+        [0x3feafab92f932413, 0xbfe0e29929d2b942, 0x3fba89c930bb47b6],
+    ),
+    (
+        "-2.27121 -1.149744 -2.454567",
+        [0xbfe48d67f508a540, 0xbfd4cee9f641af4a, 0xbfe6362a1eb1a708],
+    ),
+    (
+        "0.7071067811865476 0 0.7071067811865476",
+        [0x3fe6a09e667f3bcd, 0x0000000000000000, 0x3fe6a09e667f3bcd],
+    ),
+    (
+        "0 0.7071067811865489 0.7071067811865489",
+        [0x0000000000000000, 0x3fe6a09e667f3bd9, 0x3fe6a09e667f3bd9],
+    ),
+    (
+        "0.6 0.8 1e-9",
+        [0x3fe3333333333333, 0x3fe999999999999a, 0x3e112e0be826d695],
+    ),
+];
+
+#[test]
+fn a_joint_axis_is_made_unit_once_as_mujocos_is() {
+    let mut differ = Vec::new();
+    for &(axis, bits) in JOINT_AXES {
+        for kind in ["hinge", "slide"] {
+            let model = load_model(&format!(
+                r#"<mujoco><worldbody><body name="b"><joint type="{kind}" axis="{axis}"/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#
+            ))
+            .unwrap_or_else(|e| panic!("{kind} {axis}: {e}"));
+            let got = model.jnt_axis[0];
+            let mujoco = bits.map(f64::from_bits);
+            if (0..3).any(|k| got[k].to_bits() != mujoco[k].to_bits()) {
+                differ.push(format!("{kind} {axis}: {got:?}, MuJoCo {mujoco:?}"));
+            }
+        }
+    }
+    assert!(
+        differ.is_empty(),
+        "{} of {} differ:\n  {}",
+        differ.len(),
+        2 * JOINT_AXES.len(),
+        differ.join("\n  ")
+    );
+}
+
+/// A joint axis too small to make unit (`normvec` returns 0 below a norm of
+/// 1e-7) falls back to z. MuJoCo 3.5.0 refuses both ("axis too small in
+/// joint"); that refusal is the Rigid-loading book's L20 (pull request RL-6).
+#[test]
+fn a_joint_axis_too_small_to_make_unit_falls_back_to_z() {
+    for axis in ["0 0 0", "1e-8 0 0"] {
+        let model = load_model(&format!(
+            r#"<mujoco><worldbody><body name="b"><joint type="hinge" axis="{axis}"/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#
+        ))
+        .unwrap();
+        assert_eq!(
+            [
+                model.jnt_axis[0].x,
+                model.jnt_axis[0].y,
+                model.jnt_axis[0].z
+            ]
+            .map(f64::to_bits),
+            [0.0_f64, 0.0, 1.0].map(f64::to_bits),
+            "{axis}"
+        );
+    }
+}
+
 /// A frame's turn and its geom's: MuJoCo 3.5.0's `geom_quat`, within 1e-14 (the
 /// composition is not MuJoCo's arithmetic: ledger L255).
 const FRAME_CASES: &[(&str, &str, [u64; 4])] = &[
