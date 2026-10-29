@@ -1,0 +1,2 @@
+<mujoco><worldbody><body name="b1"><joint name="j" type="hinge"/><geom size="0.1"/></body></worldbody>
+<sensor><user dim="0"/><user dim="3"/><jointpos joint="j"/></sensor></mujoco>

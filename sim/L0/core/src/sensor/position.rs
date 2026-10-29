@@ -290,6 +290,9 @@ pub fn compute_pos_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
 
         // DT-79: User-defined sensors at position stage
         MjSensorType::User if model.sensor_datatype[sensor_id] == MjSensorDataType::Position => {
+            // MuJoCo clears a user sensor's values before its callback, so
+            // one no callback writes reads 0 (`engine_sensor.c:1489-1490`).
+            clear_user_sensor(model, data, sensor_id);
             if let Some(ref cb) = model.cb_sensor {
                 (cb.0)(model, data, sensor_id, SensorStage::Pos);
             }
@@ -356,4 +359,12 @@ pub fn compute_pos_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
         // Skip velocity/acceleration-dependent sensors
         _ => {}
     }
+}
+
+/// Sets a user sensor's values to 0, as MuJoCo does at its stage before the
+/// sensor callback runs.
+pub(super) fn clear_user_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
+    let adr = model.sensor_adr[sensor_id];
+    let dim = model.sensor_dim[sensor_id];
+    data.sensordata.as_mut_slice()[adr..adr + dim].fill(0.0);
 }

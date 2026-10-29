@@ -1,0 +1,24 @@
+<mujoco model="t29">
+            <worldbody>
+                <body name="b" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.05 0.2" mass="1"/>
+                    <body pos="0 0 -0.4">
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <geom type="capsule" size="0.05 0.2" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+            <tendon>
+                <fixed name="t"><joint joint="j1" coef="1"/><joint joint="j2" coef="-0.5"/></fixed>
+            </tendon>
+            <actuator>
+                <motor name="m1" tendon="t" gear="2"/>
+                <motor name="m2" joint="j1"/>
+                <position name="p" tendon="t" kp="3"/>
+            </actuator>
+            <sensor>
+                <tendonactuatorfrc name="taf" tendon="t"/>
+                <actuatorfrc name="after" actuator="m2"/>
+            </sensor>
+        </mujoco>

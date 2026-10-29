@@ -57,6 +57,29 @@ pub(super) fn refuse_actdim(a: &Attrs) -> Result<()> {
     Ok(())
 }
 
+/// A servo's `inheritrange`, read only where MuJoCo 3.5.0's schema has it:
+/// on a `<position>` or `<intvelocity>`, as an element or a default class's
+/// (`xml_native_reader.cc:189-196`, `:402-416`); elsewhere refused, as its
+/// schema refuses it. An intvelocity's schema has no `timeconst` and no
+/// `actlimited` (its activation is always limited); both are refused.
+pub(super) fn servo_attributes(a: &Attrs) -> Result<Option<f64>> {
+    let element = a.element();
+    if element == "intvelocity" {
+        for attribute in ["timeconst", "actlimited"] {
+            if a.has(attribute) {
+                return Err(MjcfError::unknown_attribute(element, attribute));
+            }
+        }
+    }
+    if matches!(element, "position" | "intvelocity") {
+        a.real("inheritrange")
+    } else if a.has("inheritrange") {
+        Err(MjcfError::unknown_attribute(element, "inheritrange"))
+    } else {
+        Ok(None)
+    }
+}
+
 /// `gainprm` or `biasprm`: MuJoCo 3.5.0 reads up to ten (`mjNGAIN`,
 /// `mjNBIAS`); sim-core stores nine. A tenth equal to MuJoCo's default, 0, is
 /// read as unwritten; any other is refused (D-GAINPRM-10).
@@ -125,6 +148,7 @@ pub(super) fn parse_actuator_attrs(
     if let Some(dampratio) = a.real("dampratio")? {
         actuator.dampratio = Some(dampratio);
     }
+    actuator.inheritrange = servo_attributes(&a)?;
 
     // Interpolation attributes (common to all actuator types)
     actuator.nsample = a.int("nsample")?;
@@ -217,6 +241,12 @@ pub(super) fn parse_actuator_attrs(
     if let Some(user) = a.vector("user")? {
         actuator.user = user;
     }
+    crate::builder::actuator::check_servo_gains(
+        a.element(),
+        actuator.kv,
+        actuator.dampratio,
+        actuator.timeconst,
+    )?;
 
     Ok(actuator)
 }

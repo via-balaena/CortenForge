@@ -66,7 +66,9 @@ pub fn apply_fusestatic(mjcf: &mut MjcfModel) {
 
     // Equality constraints
     for c in &mjcf.equality.connects {
-        protected.insert(c.body1.clone());
+        if let Some(ref b1) = c.body1 {
+            protected.insert(b1.clone());
+        }
         if let Some(ref b2) = c.body2 {
             protected.insert(b2.clone());
         }
@@ -95,6 +97,13 @@ pub fn apply_fusestatic(mjcf: &mut MjcfModel) {
             | MjcfSensorType::Frameangvel
             | MjcfSensorType::Framelinacc
             | MjcfSensorType::Frameangacc => {
+                if let Some(ref name) = sensor.objname {
+                    protected.insert(name.clone());
+                }
+            }
+            // A user sensor on a body (not an xbody: MuJoCo fuses that body
+            // and then refuses the sensor's name, measured).
+            MjcfSensorType::User if sensor.objtype.as_deref() == Some("body") => {
                 if let Some(ref name) = sensor.objname {
                     protected.insert(name.clone());
                 }

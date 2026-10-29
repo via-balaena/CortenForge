@@ -37,7 +37,8 @@ impl ModelBuilder {
             body_name: vec![Some("world".to_string())],
             body_mocapid: vec![None],      // world body is not mocap
             body_sleep_policy: vec![None], // world body has no sleep policy
-            body_gravcomp: vec![0.0],      // world body has no gravcomp
+            site_connects: vec![],
+            body_gravcomp: vec![0.0], // world body has no gravcomp
             nmocap: 0,
 
             jnt_type: vec![],
@@ -48,6 +49,7 @@ impl ModelBuilder {
             jnt_axis: vec![],
             jnt_limited: vec![],
             jnt_range: vec![],
+            jnt_range_compiled: vec![],
             jnt_stiffness: vec![],
             jnt_springref: vec![],
             jnt_damping: vec![],
@@ -189,6 +191,7 @@ impl ModelBuilder {
             tendon_name_to_id: HashMap::new(),
             tendon_type: vec![],
             tendon_range: vec![],
+            tendon_range_compiled: vec![],
             tendon_limited: vec![],
             tendon_stiffness: vec![],
             tendon_damping: vec![],

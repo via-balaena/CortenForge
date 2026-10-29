@@ -373,6 +373,9 @@ impl DefaultResolver {
             {
                 result.dampratio = Some(dr);
             }
+            if result.inheritrange.is_none() {
+                result.inheritrange = defaults.inheritrange;
+            }
 
             // Apply <general>-specific defaults.
             // These only matter for <general> actuators, but we apply them
@@ -863,6 +866,7 @@ impl DefaultResolver {
                 kp: c.kp.or(p.kp),
                 kv: c.kv.or(p.kv),
                 dampratio: c.dampratio.or(p.dampratio),
+                inheritrange: c.inheritrange.or(p.inheritrange),
                 ctrllimited: c.ctrllimited.or(p.ctrllimited),
                 forcelimited: c.forcelimited.or(p.forcelimited),
                 gaintype: c.gaintype.clone().or_else(|| p.gaintype.clone()),

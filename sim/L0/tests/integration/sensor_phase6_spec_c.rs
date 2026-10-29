@@ -1054,3 +1054,113 @@ fn distance_from_a_body_takes_its_geoms_in_index_order_on_a_tie() {
         assert_relative_eq!(got, w, epsilon = 1e-12);
     }
 }
+
+// ============================================================================
+// T29: TendonActuatorFrc sums its tendon's actuators (ledger L163)
+// ============================================================================
+
+/// A `<tendonactuatorfrc>` reads the forces of the actuators whose
+/// transmission is its tendon, summed in actuator order, as MuJoCo 3.5.0's
+/// `mjSENS_TENDONACTFRC` (`engine_sensor.c:1273-1281`): a joint motor is not
+/// summed (its joint's id, 0, is the tendon's, so only the transmission's
+/// type tells them apart), and the sensor after it keeps its address. sim-mjcf dropped the
+/// element before; the census compares this document's sensor data with
+/// MuJoCo's.
+#[test]
+fn t29_tendonactuatorfrc_sums_its_tendons_actuators() {
+    let mjcf = r#"
+        <mujoco model="t29">
+            <worldbody>
+                <body name="b" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.05 0.2" mass="1"/>
+                    <body pos="0 0 -0.4">
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <geom type="capsule" size="0.05 0.2" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+            <tendon>
+                <fixed name="t"><joint joint="j1" coef="1"/><joint joint="j2" coef="-0.5"/></fixed>
+            </tendon>
+            <actuator>
+                <motor name="m1" tendon="t" gear="2"/>
+                <motor name="m2" joint="j1"/>
+                <position name="p" tendon="t" kp="3"/>
+            </actuator>
+            <sensor>
+                <tendonactuatorfrc name="taf" tendon="t"/>
+                <actuatorfrc name="after" actuator="m2"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    assert_eq!(model.sensor_type[0], MjSensorType::TendonActuatorFrc);
+    assert_eq!(model.sensor_dim[0], 1);
+    assert_eq!(model.sensor_adr[1], 1);
+
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.ctrl[0] = 1.5;
+    data.ctrl[1] = 4.0;
+    data.ctrl[2] = 0.2;
+    data.forward(&model).expect("forward");
+
+    let summed = data.actuator_force[0] + data.actuator_force[2];
+    assert_eq!(data.sensordata[0].to_bits(), summed.to_bits());
+    assert!(summed != 0.0 && data.actuator_force[1] != 0.0);
+    assert_eq!(
+        data.sensordata[1].to_bits(),
+        data.actuator_force[1].to_bits()
+    );
+}
+
+/// A `<tendonactuatorfrc>` sums only its own tendon's actuators: a motor on
+/// another tendon is not summed (MuJoCo tests `actuator_trnid` against the
+/// sensor's tendon, `engine_sensor.c:1276`).
+#[test]
+fn t29b_tendonactuatorfrc_skips_another_tendons_actuators() {
+    let mjcf = r#"
+        <mujoco model="t29b">
+            <worldbody>
+                <body name="b" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.05 0.2" mass="1"/>
+                    <body pos="0 0 -0.4">
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <geom type="capsule" size="0.05 0.2" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+            <tendon>
+                <fixed name="t1"><joint joint="j1" coef="1"/></fixed>
+                <fixed name="t2"><joint joint="j2" coef="1"/></fixed>
+            </tendon>
+            <actuator>
+                <motor name="m1" tendon="t1" gear="2"/>
+                <motor name="m2" tendon="t2" gear="3"/>
+            </actuator>
+            <sensor>
+                <tendonactuatorfrc tendon="t1"/>
+                <tendonactuatorfrc tendon="t2"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+    data.ctrl[0] = 1.5;
+    data.ctrl[1] = -0.5;
+    data.forward(&model).expect("forward");
+
+    assert_eq!(
+        data.sensordata[0].to_bits(),
+        data.actuator_force[0].to_bits()
+    );
+    assert_eq!(
+        data.sensordata[1].to_bits(),
+        data.actuator_force[1].to_bits()
+    );
+    assert!(data.actuator_force[0] != data.actuator_force[1]);
+}

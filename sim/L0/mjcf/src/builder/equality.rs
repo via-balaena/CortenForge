@@ -16,7 +16,88 @@ use crate::types::{
     EqualityKind, MjcfConnect, MjcfDistance, MjcfEquality, MjcfJointEquality, MjcfTendonEquality,
     MjcfWeld,
 };
-use sim_core::EqualityType;
+use sim_core::{EqualityType, Model, SameFrame};
+
+/// The form a `<connect>` is written in.
+pub enum ConnectForm<'a> {
+    /// `body1` (its anchor in that body's frame) and `body2` (the world when
+    /// `None`).
+    Bodies {
+        body1: &'a str,
+        body2: Option<&'a str>,
+        anchor: Vector3<f64>,
+    },
+    /// `site1` and `site2`, whose positions are the two points.
+    Sites { site1: &'a str, site2: &'a str },
+}
+
+/// A `<connect>`'s form, as MuJoCo 3.5.0's reader takes it
+/// (`xml_native_reader.cc:2114-2145`): a site and a body attribute together
+/// are refused ("body and site semantics cannot be mixed"); else `site1` and
+/// `site2`, or `body1` and `anchor`, must both be written, where MuJoCo
+/// refuses the rest in one message and this names the one attribute missing.
+/// The parser checks it on what it read, and the builder on a connect built
+/// in code.
+pub fn connect_form(connect: &MjcfConnect) -> Result<ConnectForm<'_>> {
+    let site = connect.site1.is_some() || connect.site2.is_some();
+    let body = connect.body1.is_some() || connect.body2.is_some() || connect.anchor.is_some();
+    if site && body {
+        let written = if connect.site1.is_some() {
+            "site1"
+        } else {
+            "site2"
+        };
+        return Err(MjcfError::invalid_value(
+            "connect",
+            written,
+            "body and site semantics cannot be mixed",
+        ));
+    }
+    let missing = |attribute| MjcfError::missing_attribute("connect", attribute);
+    if site {
+        let site1 = connect.site1.as_deref().ok_or_else(|| missing("site1"))?;
+        let site2 = connect.site2.as_deref().ok_or_else(|| missing("site2"))?;
+        return Ok(ConnectForm::Sites { site1, site2 });
+    }
+    let body1 = connect.body1.as_deref().ok_or_else(|| missing("body1"))?;
+    let anchor = connect.anchor.ok_or_else(|| missing("anchor"))?;
+    Ok(ConnectForm::Bodies {
+        body1,
+        body2: connect.body2.as_deref(),
+        anchor,
+    })
+}
+
+/// Where MuJoCo's `mj_local2Global` places a site, in its body's frame, as a
+/// point the connect's body form maps as `xmat·p + xpos`
+/// (`engine_core_util.c:849-865`): a site in its body's frame (`site_sameframe`
+/// body) at the body's position, so 0; one in its body's inertial frame
+/// (inertia) at `xipos`, so 0 when that frame is the body's
+/// (`body_sameframe` body) and the body's `ipos` else, which sim-core maps
+/// to `xipos` the same way; any other at its own position. The model's
+/// `site_sameframe` and `body_sameframe` classify the frames as MuJoCo's
+/// compiler does, within 1e-6.
+pub fn site_connect_point(model: &Model, site: usize) -> Vector3<f64> {
+    let body = model.site_body[site];
+    match model.site_sameframe[site] {
+        SameFrame::Body => Vector3::zeros(),
+        SameFrame::Inertia if model.body_sameframe[body] == SameFrame::Body => Vector3::zeros(),
+        SameFrame::Inertia => model.body_ipos[body],
+        SameFrame::None | SameFrame::BodyRot | SameFrame::InertiaRot => model.site_pos[site],
+    }
+}
+
+/// MuJoCo refuses an equality whose two objects are one, the world standing
+/// for a connect's or a weld's unwritten `body2` ("element 'a' is repeated
+/// in equality constraint 0", `user_objects.cc:6024-6034`, measured on each
+/// kind).
+fn repeated(element: &str, attribute: &str, first: &str, eq_id: usize) -> MjcfError {
+    MjcfError::invalid_value(
+        element,
+        attribute,
+        format!("element '{first}' is repeated in equality constraint {eq_id}"),
+    )
+}
 
 impl ModelBuilder {
     /// Process equality constraints from MJCF **in document order**.
@@ -61,24 +142,61 @@ impl ModelBuilder {
     /// Process a single Connect constraint (3 DOF position constraint).
     ///
     /// eq_data layout (matching MuJoCo's dual-anchor convention):
-    ///   `[0..3]` = anchor in body1's local frame (user-specified)
-    ///   `[3..6]` = anchor in body2's local frame (auto-computed)
+    ///   `[0..3]` = the point in body1's local frame
+    ///   `[3..6]` = the point in body2's local frame
     ///
-    /// The body2 anchor is auto-computed so both anchors map to the same world
-    /// point at qpos0, matching MuJoCo's `engine_setconst.c` behavior.
+    /// In the body form the first is the anchor written and the second is
+    /// computed so both map to the same world point at qpos0, matching
+    /// MuJoCo's `engine_setconst.c` behavior. The site form is kept as the
+    /// sites' bodies, sim-core's equality rows naming bodies where MuJoCo's
+    /// name the sites (D-CONNECT-SITE): MuJoCo's site connect is
+    /// `site_xpos1 − site_xpos2` (`engine_core_constraint.c:438-443`), and
+    /// each point is set, once the build knows the sites' frames, to where
+    /// `mj_local2Global` places its site, in its body's frame
+    /// ([`site_connect_point`]).
     fn process_connect(&mut self, connect: &MjcfConnect) -> Result<()> {
-        let body1_id = self
-            .body_name_to_id
-            .get(&connect.body1)
-            .ok_or_else(|| MjcfError::undefined(ElementKind::Body, &connect.body1))?;
-
-        let body2_id = if let Some(ref body2_name) = connect.body2 {
-            *self
-                .body_name_to_id
-                .get(body2_name)
-                .ok_or_else(|| MjcfError::undefined(ElementKind::Body, body2_name))?
-        } else {
-            0 // World body
+        let body_id = |name: &str| {
+            self.body_name_to_id
+                .get(name)
+                .copied()
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Body, name))
+        };
+        let site_id = |name: &str| {
+            self.site_name_to_id
+                .get(name)
+                .copied()
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Site, name))
+        };
+        let mut data = [0.0; 11];
+        let (body1_id, body2_id) = match connect_form(connect)? {
+            ConnectForm::Bodies {
+                body1,
+                body2,
+                anchor,
+            } => {
+                let body1_id = body_id(body1)?;
+                let body2_id = body2.map_or(Ok(0), body_id)?; // else the world
+                if body1_id == body2_id {
+                    return Err(repeated("connect", "body2", body1, self.eq_type.len()));
+                }
+                data[..3].copy_from_slice(anchor.as_slice());
+                // Auto-compute body2 anchor: convert body1 anchor to world, then to body2 frame.
+                let (p1, q1) = self.body_world_pose(body1_id);
+                let anchor_world = p1 + q1 * anchor;
+                let (p2, q2) = self.body_world_pose(body2_id);
+                let anchor_body2 = q2.inverse() * (anchor_world - p2);
+                data[3..6].copy_from_slice(anchor_body2.as_slice());
+                (body1_id, body2_id)
+            }
+            ConnectForm::Sites { site1, site2 } => {
+                let (s1, s2) = (site_id(site1)?, site_id(site2)?);
+                if s1 == s2 {
+                    return Err(repeated("connect", "site2", site1, self.eq_type.len()));
+                }
+                // The points are set when the sites' frames are known (`build`).
+                self.site_connects.push((self.eq_type.len(), s1, s2));
+                (self.site_body[s1], self.site_body[s2])
+            }
         };
 
         let mut active = connect.active;
@@ -91,22 +209,8 @@ impl ModelBuilder {
             &mut solimp,
         );
 
-        let mut data = [0.0; 11];
-        data[0] = connect.anchor.x;
-        data[1] = connect.anchor.y;
-        data[2] = connect.anchor.z;
-
-        // Auto-compute body2 anchor: convert body1 anchor to world, then to body2 frame.
-        let (p1, q1) = self.body_world_pose(*body1_id);
-        let anchor_world = p1 + q1 * connect.anchor;
-        let (p2, q2) = self.body_world_pose(body2_id);
-        let anchor_body2 = q2.inverse() * (anchor_world - p2);
-        data[3] = anchor_body2.x;
-        data[4] = anchor_body2.y;
-        data[5] = anchor_body2.z;
-
         self.eq_type.push(EqualityType::Connect);
-        self.eq_obj1id.push(*body1_id);
+        self.eq_obj1id.push(body1_id);
         self.eq_obj2id.push(body2_id);
         self.eq_data.push(data);
         self.eq_active.push(active.unwrap_or(true));
@@ -146,6 +250,9 @@ impl ModelBuilder {
         } else {
             0 // World body
         };
+        if *body1_id == body2_id {
+            return Err(repeated("weld", "body2", &weld.body1, self.eq_type.len()));
+        }
 
         let mut data = [0.0; 11];
 
@@ -225,6 +332,14 @@ impl ModelBuilder {
         } else {
             usize::MAX
         };
+        if *joint1_id == joint2_id {
+            return Err(repeated(
+                "joint",
+                "joint2",
+                &joint_eq.joint1,
+                self.eq_type.len(),
+            ));
+        }
 
         let mut data = [0.0; 11];
         for (i, &coef) in joint_eq.polycoef.iter().take(11).enumerate() {
@@ -323,6 +438,14 @@ impl ModelBuilder {
         } else {
             usize::MAX
         };
+        if t1_id == t2_id {
+            return Err(repeated(
+                "tendon",
+                "tendon2",
+                &ten_eq.tendon1,
+                self.eq_type.len(),
+            ));
+        }
 
         let mut data = [0.0; 11];
         for (i, &coef) in ten_eq.polycoef.iter().take(5).enumerate() {

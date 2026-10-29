@@ -207,6 +207,7 @@ pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefa
     defaults.kp = a.real("kp")?;
     defaults.kv = a.real("kv")?;
     defaults.dampratio = a.real("dampratio")?;
+    defaults.inheritrange = super::actuator::servo_attributes(&a)?;
 
     defaults.ctrllimited = a.tf_auto("ctrllimited")?;
     defaults.forcelimited = a.tf_auto("forcelimited")?;
@@ -267,6 +268,24 @@ pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefa
     // Adhesion-specific attributes
     defaults.gain = a.real("gain")?;
     defaults.user = a.vector("user")?;
+    crate::builder::actuator::check_servo_gains(
+        a.element(),
+        defaults.kv,
+        defaults.dampratio,
+        defaults.timeconst,
+    )?;
+    // MuJoCo's `mjs_setToIntVelocity` drops an intvelocity class's
+    // `ctrlrange` refusal (measured: such a class loads); an element using it
+    // is refused at the build (D-INTVELOCITY-SERVO), as MuJoCo refuses it.
+    let ctrlrange = (a.element() != "intvelocity")
+        .then_some(defaults.ctrlrange)
+        .flatten();
+    crate::builder::actuator::check_servo_ranges(
+        a.element(),
+        defaults.inheritrange,
+        ctrlrange,
+        defaults.actrange,
+    )?;
 
     Ok(defaults)
 }

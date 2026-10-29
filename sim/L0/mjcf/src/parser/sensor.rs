@@ -9,7 +9,7 @@ use crate::keywords;
 
 use crate::types::{MjcfSensor, MjcfSensorType};
 
-use super::attrs::{Attrs, skip_element};
+use super::attrs::{Attrs, is_c_space, skip_element};
 use super::extension::{parse_plugin_ref, parse_plugin_ref_empty};
 
 // ============================================================================
@@ -25,20 +25,20 @@ pub(super) fn parse_sensors<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<Mj
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                if let Some(sensor_type) = MjcfSensorType::from_str(&elem_name) {
-                    let mut sensor = parse_sensor_attrs(e, sensor_type)?;
-                    // Parse children (may contain <plugin> sub-element)
-                    parse_sensor_children(reader, elem_name.as_bytes(), &mut sensor)?;
-                    sensors.push(sensor);
-                }
+                let sensor_type = MjcfSensorType::from_str(&elem_name)
+                    .ok_or_else(|| unread_sensor(&elem_name))?;
+                let mut sensor = parse_sensor_attrs(e, sensor_type)?;
+                // Parse children (may contain <plugin> sub-element)
+                parse_sensor_children(reader, elem_name.as_bytes(), &mut sensor)?;
+                sensors.push(sensor);
             }
             Ok(Event::Empty(ref e)) => {
                 let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                if let Some(sensor_type) = MjcfSensorType::from_str(&elem_name) {
-                    let sensor = parse_sensor_attrs(e, sensor_type)?;
-                    sensors.push(sensor);
-                    // Self-closing, no need to skip
-                }
+                let sensor_type = MjcfSensorType::from_str(&elem_name)
+                    .ok_or_else(|| unread_sensor(&elem_name))?;
+                let sensor = parse_sensor_attrs(e, sensor_type)?;
+                sensors.push(sensor);
+                // Self-closing, no need to skip
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"sensor" => break,
             Ok(Event::Eof) => return Err(MjcfError::eof_in("sensor")),
@@ -49,6 +49,71 @@ pub(super) fn parse_sensors<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<Mj
     }
 
     Ok(sensors)
+}
+
+/// The refusal of an element in `<sensor>` that is not a sensor sim-mjcf
+/// reads: a sensor MuJoCo 3.5.0 makes and sim-mjcf cannot (its schema,
+/// `xml_native_reader.cc:446-503`; registry D-UNREAD-SENSOR), or any other
+/// element, which MuJoCo's schema refuses as unrecognized.
+fn unread_sensor(element: &str) -> MjcfError {
+    const UNMADE_SENSORS: [&str; 11] = [
+        "camprojection",
+        "contact",
+        "e_kinetic",
+        "e_potential",
+        "insidesite",
+        "jointlimitpos",
+        "jointlimitvel",
+        "plugin",
+        "tactile",
+        "tendonlimitpos",
+        "tendonlimitvel",
+    ];
+    if UNMADE_SENSORS.contains(&element) {
+        MjcfError::unsupported(format!("the <{element}> sensor"))
+    } else {
+        MjcfError::unknown_element(element, "sensor")
+    }
+}
+
+/// A rangefinder's `data`, read as MuJoCo 3.5.0 reads it
+/// (`xml_native_reader.cc:4104-4124`, `MapValues` at `xml_util.cc:953-984`):
+/// words of `raydata_map` separated by space, none twice, then in the map's
+/// order; unwritten or empty, `dist`. sim-core computes a rangefinder's
+/// distance only, so any other word is not supported (D-RANGEFINDER-DATA).
+fn check_ray_data(a: &Attrs) -> Result<()> {
+    const WORDS: [&str; 6] = ["dist", "dir", "origin", "point", "normal", "depth"];
+    let Some(text) = a.text("data") else {
+        return Ok(());
+    };
+    let mut keys = Vec::new();
+    for word in text.split(is_c_space).filter(|w| !w.is_empty()) {
+        let key = WORDS
+            .iter()
+            .position(|w| *w == word)
+            .ok_or_else(|| MjcfError::invalid_keyword("rangefinder", "data", word))?;
+        if keys.contains(&key) {
+            return Err(MjcfError::invalid_value(
+                "rangefinder",
+                "data",
+                format!("duplicate keyword: '{word}'"),
+            ));
+        }
+        keys.push(key);
+    }
+    if keys.windows(2).any(|pair| pair[1] <= pair[0]) {
+        return Err(MjcfError::invalid_value(
+            "rangefinder",
+            "data",
+            format!("data attributes must be in order: {}", WORDS.join(", ")),
+        ));
+    }
+    if keys.iter().any(|&key| key != 0) {
+        return Err(MjcfError::unsupported(format!(
+            "a rangefinder's data \"{text}\""
+        )));
+    }
+    Ok(())
 }
 
 /// Parse sensor attributes.
@@ -106,7 +171,7 @@ pub(super) fn parse_sensor_attrs(
         }
     }
 
-    // Explicit object type (frame sensors only — builder validates)
+    // Explicit object type (frame and user sensors — builder validates)
     sensor.objtype = a.string("objtype");
 
     // Separate reftype and refname (previously conflated)
@@ -133,6 +198,31 @@ pub(super) fn parse_sensor_attrs(
     sensor.interval = a
         .prefix::<2>("interval")?
         .map(|interval| interval.given()[0]);
+
+    if sensor_type == MjcfSensorType::Rangefinder {
+        // MuJoCo's reader checks the attachment before the data
+        // (`xml_native_reader.cc:4097-4101`).
+        if a.has("site") == a.has("camera") {
+            return Err(MjcfError::invalid_value(
+                "rangefinder",
+                "site",
+                "rangefinder requires exactly one of 'site' or 'camera'",
+            ));
+        }
+        check_ray_data(&a)?;
+    }
+    if sensor_type == MjcfSensorType::User {
+        sensor.dim = a.int("dim")?;
+        sensor.needstage = a.string("needstage");
+        sensor.datatype = a.string("datatype");
+        crate::builder::sensor::user_sensor_read_checks(
+            sensor.objtype.as_deref(),
+            sensor.objname.as_deref(),
+            sensor.dim,
+            sensor.needstage.as_deref(),
+            sensor.datatype.as_deref(),
+        )?;
+    }
 
     Ok(sensor)
 }

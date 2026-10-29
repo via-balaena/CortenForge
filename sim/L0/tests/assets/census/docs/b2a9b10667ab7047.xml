@@ -1,0 +1,14 @@
+<mujoco>
+      <option gravity="0 0 -9.81"/>
+      <worldbody>
+        <body name="link" pos="0 0 0">
+          <joint name="hinge" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" size="0.05 0.5" mass="1.0"/>
+        </body>
+      </worldbody>
+      <sensor>
+        <user name="pos_sensor" dim="1" needstage="pos"/>
+        <user name="vel_sensor" dim="1" needstage="vel"/>
+        <user name="acc_sensor" dim="1" needstage="acc"/>
+      </sensor>
+    </mujoco>

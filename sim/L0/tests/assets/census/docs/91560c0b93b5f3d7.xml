@@ -1,0 +1,2 @@
+<mujoco><worldbody><body name="a"><freejoint/><geom size="0.1"/></body><site name="sw"/></worldbody>
+<equality><connect site2="sw" body1="a"/></equality></mujoco>

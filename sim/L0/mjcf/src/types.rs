@@ -867,6 +867,8 @@ pub struct MjcfActuatorDefaults {
     pub kv: Option<f64>,
     /// Damping ratio for position actuators.
     pub dampratio: Option<f64>,
+    /// A position or intvelocity servo's `inheritrange`.
+    pub inheritrange: Option<f64>,
     /// Control limited.
     pub ctrllimited: Option<TfAuto>,
     /// Force limited.
@@ -1014,7 +1016,10 @@ pub struct MjcfMeshDefaults {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfMesh {
-    /// Asset name (used to reference the mesh from geoms).
+    /// Asset name (used to reference the mesh from geoms). An empty name is
+    /// the file's, without its directory and last extension, as MuJoCo names
+    /// it; the build gives it that name, so a parsed model's mesh keeps it
+    /// empty until then.
     pub name: String,
     /// File path for external mesh (STL, OBJ, etc.).
     pub file: Option<String>,
@@ -1058,7 +1063,8 @@ impl Default for MjcfMesh {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfHfield {
-    /// Asset name (referenced by `<geom hfield="...">`).
+    /// Asset name (referenced by `<geom hfield="...">`). An empty name is the
+    /// file's, as a mesh's (see [`MjcfMesh::name`]).
     pub name: String,
     /// Size: `[x, y, z_top, z_bottom]`.
     /// x/y = half-extents; z_top = elevation scale; z_bottom = base depth.
@@ -1785,7 +1791,9 @@ impl Default for MjcfSite {
 ///
 /// This constraint enforces that two attachment points (one on each body)
 /// coincide in 3D space, acting like a ball-and-socket joint without any
-/// rotational constraints.
+/// rotational constraints. As MuJoCo 3.5.0's, it is written in one of two
+/// forms: `body1` and `anchor` (and `body2`, else the world), or `site1` and
+/// `site2`, whose positions are the two points.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfConnect {
@@ -1793,12 +1801,16 @@ pub struct MjcfConnect {
     pub name: Option<String>,
     /// Default class for inheriting parameters.
     pub class: Option<String>,
-    /// Name of the first body.
-    pub body1: String,
-    /// Name of the second body (optional, defaults to world).
+    /// Name of the first body (the body form).
+    pub body1: Option<String>,
+    /// Name of the second body (the body form; the world when `None`).
     pub body2: Option<String>,
-    /// Anchor point in body1's local frame.
-    pub anchor: Vector3<f64>,
+    /// Anchor point in body1's local frame (the body form).
+    pub anchor: Option<Vector3<f64>>,
+    /// Name of the first site (the site form).
+    pub site1: Option<String>,
+    /// Name of the second site (the site form).
+    pub site2: Option<String>,
     /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
     /// Controls constraint softness/stiffness.
     pub solimp: Option<Prefix<5>>,
@@ -1814,9 +1826,11 @@ impl Default for MjcfConnect {
         Self {
             name: None,
             class: None,
-            body1: String::new(),
+            body1: None,
             body2: None,
-            anchor: Vector3::zeros(),
+            anchor: None,
+            site1: None,
+            site2: None,
             solimp: None,
             solref: None,
             active: None,
@@ -1825,22 +1839,36 @@ impl Default for MjcfConnect {
 }
 
 impl MjcfConnect {
-    /// Create a new connect constraint between two bodies.
+    /// Create a new connect constraint between two bodies, anchored at
+    /// body1's origin until [`with_anchor`](Self::with_anchor) sets it.
     #[must_use]
     pub fn new(body1: impl Into<String>, body2: impl Into<String>) -> Self {
         Self {
-            body1: body1.into(),
+            body1: Some(body1.into()),
             body2: Some(body2.into()),
+            anchor: Some(Vector3::zeros()),
             ..Default::default()
         }
     }
 
-    /// Create a connect constraint to the world frame.
+    /// Create a connect constraint to the world frame, anchored at body1's
+    /// origin until [`with_anchor`](Self::with_anchor) sets it.
     #[must_use]
     pub fn to_world(body1: impl Into<String>) -> Self {
         Self {
-            body1: body1.into(),
+            body1: Some(body1.into()),
             body2: None,
+            anchor: Some(Vector3::zeros()),
+            ..Default::default()
+        }
+    }
+
+    /// Create a connect constraint between two sites (the site form).
+    #[must_use]
+    pub fn between_sites(site1: impl Into<String>, site2: impl Into<String>) -> Self {
+        Self {
+            site1: Some(site1.into()),
+            site2: Some(site2.into()),
             ..Default::default()
         }
     }
@@ -1848,7 +1876,7 @@ impl MjcfConnect {
     /// Set the anchor point in body1's frame.
     #[must_use]
     pub fn with_anchor(mut self, anchor: Vector3<f64>) -> Self {
-        self.anchor = anchor;
+        self.anchor = Some(anchor);
         self
     }
 
@@ -2734,6 +2762,10 @@ pub enum MjcfActuatorType {
     Damper,
     /// Adhesion actuator (controllable adhesion force).
     Adhesion,
+    /// Integrated-velocity servo: a position servo whose reference is its
+    /// activation, the integral of its control (MuJoCo's
+    /// `mjs_setToIntVelocity`).
+    IntVelocity,
 }
 
 impl MjcfActuatorType {
@@ -2748,6 +2780,7 @@ impl MjcfActuatorType {
             "cylinder" => Some(Self::Cylinder),
             "damper" => Some(Self::Damper),
             "adhesion" => Some(Self::Adhesion),
+            "intvelocity" => Some(Self::IntVelocity),
             _ => None,
         }
     }
@@ -2764,6 +2797,7 @@ impl MjcfActuatorType {
             Self::Cylinder => "cylinder",
             Self::Damper => "damper",
             Self::Adhesion => "adhesion",
+            Self::IntVelocity => "intvelocity",
         }
     }
 }
@@ -2823,6 +2857,11 @@ pub struct MjcfActuator {
     /// `kv = dampratio * 2 * sqrt(kp * reflected_mass)`.
     /// Mutually exclusive with explicit kv. `None` means not specified.
     pub dampratio: Option<f64>,
+    /// A position or intvelocity servo's range, as this fraction of its
+    /// joint's or tendon's range about the middle of that range: its
+    /// `ctrlrange` (position) or `actrange` (intvelocity) when positive.
+    /// `None` means not specified (MuJoCo's 0: no range taken).
+    pub inheritrange: Option<f64>,
     /// Visualization group (0–5).
     pub group: Option<i32>,
     /// Whether activation is clamped to actrange.
@@ -2936,6 +2975,7 @@ impl Default for MjcfActuator {
             kp: 1.0,
             kv: None,
             dampratio: None,
+            inheritrange: None,
             group: None,
             actlimited: None,
             actrange: None,
@@ -3384,6 +3424,8 @@ pub enum MjcfSensorType {
     Clock,
     /// Joint actuator force sensor (1D). MJCF element: `<jointactuatorfrc>`.
     Jointactuatorfrc,
+    /// Tendon actuator force sensor (1D). MJCF element: `<tendonactuatorfrc>`.
+    Tendonactuatorfrc,
     /// Geom distance sensor (1D). MJCF element: `<distance>`.
     Distance,
     /// Surface normal between geoms (3D). MJCF element: `<normal>`.
@@ -3433,6 +3475,7 @@ impl MjcfSensorType {
             "frameangacc" => Some(Self::Frameangacc),
             "clock" => Some(Self::Clock),
             "jointactuatorfrc" => Some(Self::Jointactuatorfrc),
+            "tendonactuatorfrc" => Some(Self::Tendonactuatorfrc),
             "distance" => Some(Self::Distance),
             "normal" => Some(Self::Normal),
             "fromto" => Some(Self::Fromto),
@@ -3478,6 +3521,7 @@ impl MjcfSensorType {
             Self::Frameangacc => "frameangacc",
             Self::Clock => "clock",
             Self::Jointactuatorfrc => "jointactuatorfrc",
+            Self::Tendonactuatorfrc => "tendonactuatorfrc",
             Self::Distance => "distance",
             Self::Normal => "normal",
             Self::Fromto => "fromto",
@@ -3503,6 +3547,7 @@ impl MjcfSensorType {
             | Self::Rangefinder
             | Self::Clock
             | Self::Jointactuatorfrc
+            | Self::Tendonactuatorfrc
             | Self::Distance => 1,
 
             Self::Framepos
@@ -3529,8 +3574,9 @@ impl MjcfSensorType {
 
             Self::Fromto => 6,
 
-            // User sensors have configurable dimension, default to 1
-            Self::User => 1,
+            // A user sensor's is its own `dim` (`MjcfSensor::dim`), required:
+            // the type alone gives none.
+            Self::User => 0,
         }
     }
 }
@@ -3585,6 +3631,14 @@ pub struct MjcfSensor {
     pub interval: Option<f64>,
     /// Plugin reference (plugin-controlled sensor). §66.
     pub plugin: Option<MjcfPluginRef>,
+    /// A user sensor's number of values (required on `<user>`, 0 or more).
+    pub dim: Option<i32>,
+    /// A user sensor's stage keyword (MuJoCo's `needstage`: `pos`, `vel` or
+    /// `acc`, the default; `none` is not supported).
+    pub needstage: Option<String>,
+    /// A user sensor's data kind keyword (MuJoCo's `datatype`: only `real`,
+    /// the default, is supported).
+    pub datatype: Option<String>,
 }
 
 impl Default for MjcfSensor {
@@ -3609,6 +3663,9 @@ impl Default for MjcfSensor {
             delay: None,
             interval: None,
             plugin: None,
+            dim: None,
+            needstage: None,
+            datatype: None,
         }
     }
 }
@@ -3707,10 +3764,16 @@ impl MjcfSensor {
         self
     }
 
-    /// Get the output dimensionality of this sensor.
+    /// Get the output dimensionality of this sensor: a user sensor's own
+    /// `dim` (0 when it is unwritten or negative, which the build refuses),
+    /// else its type's.
     #[must_use]
     pub fn dim(&self) -> usize {
-        self.sensor_type.dim()
+        if self.sensor_type == MjcfSensorType::User {
+            self.dim.and_then(|d| usize::try_from(d).ok()).unwrap_or(0)
+        } else {
+            self.sensor_type.dim()
+        }
     }
 }
 

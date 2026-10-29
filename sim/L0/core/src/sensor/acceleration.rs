@@ -10,8 +10,8 @@
 
 use crate::types::flags::disabled;
 use crate::types::{
-    ConstraintType, Contact, DISABLE_SENSOR, Data, ENABLE_SLEEP, MjObjectType, MjSensorDataType,
-    MjSensorType, Model, SensorStage,
+    ActuatorTransmission, ConstraintType, Contact, DISABLE_SENSOR, Data, ENABLE_SLEEP,
+    MjObjectType, MjSensorDataType, MjSensorType, Model, SensorStage,
 };
 use nalgebra::Vector3;
 
@@ -281,6 +281,8 @@ pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usiz
         MjSensorType::User
             if model.sensor_datatype[sensor_id] == MjSensorDataType::Acceleration =>
         {
+            // As at the position stage (`engine_sensor.c:1597-1598`).
+            super::position::clear_user_sensor(model, data, sensor_id);
             if let Some(ref cb) = model.cb_sensor {
                 (cb.0)(model, data, sensor_id, SensorStage::Acc);
             }
@@ -293,6 +295,23 @@ pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usiz
             let adr = model.sensor_adr[sensor_id];
             let dof_adr = model.jnt_dof_adr[objid];
             sensor_write(&mut data.sensordata, adr, 0, data.qfrc_actuator[dof_adr]);
+        }
+
+        // TendonActuatorFrc: the forces of the actuators on the tendon, summed
+        // in actuator order. MuJoCo: mjSENS_TENDONACTFRC in
+        // mj_computeSensorAcc (`engine_sensor.c:1273-1281`).
+        MjSensorType::TendonActuatorFrc => {
+            let objid = model.sensor_objid[sensor_id];
+            let adr = model.sensor_adr[sensor_id];
+            let mut frc = 0.0;
+            for j in 0..model.nu {
+                if model.actuator_trntype[j] == ActuatorTransmission::Tendon
+                    && model.actuator_trnid[j][0] == objid
+                {
+                    frc += data.actuator_force[j];
+                }
+            }
+            sensor_write(&mut data.sensordata, adr, 0, frc);
         }
 
         // Skip position/velocity-dependent sensors

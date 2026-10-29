@@ -96,6 +96,11 @@ impl ModelBuilder {
         } else {
             range
         });
+        self.jnt_range_compiled.push(match joint.range {
+            Some((lo, hi)) if convert && limited => (lo * deg2rad, hi * deg2rad),
+            Some(range) => range,
+            None => (0.0, 0.0),
+        });
         self.jnt_stiffness.push(joint.stiffness.unwrap_or(0.0));
 
         // ref_pos and spring_ref: angle-valued for hinge joints only.

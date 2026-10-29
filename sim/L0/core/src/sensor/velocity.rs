@@ -313,6 +313,8 @@ pub fn compute_vel_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
             if !data.flg_subtreevel {
                 mj_subtree_vel(model, data);
             }
+            // As at the position stage (`engine_sensor.c:1543-1544`).
+            super::position::clear_user_sensor(model, data, sensor_id);
             if let Some(ref cb) = model.cb_sensor {
                 (cb.0)(model, data, sensor_id, SensorStage::Vel);
             }

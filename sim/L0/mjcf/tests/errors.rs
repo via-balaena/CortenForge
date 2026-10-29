@@ -483,3 +483,52 @@ fn a_syntax_error_in_a_document_with_includes_names_its_line() {
     assert!(matches!(err, MjcfError::Xml { .. }), "{err}");
     assert!(err.to_string().ends_with("(line 4: worldbody)"), "{err}");
 }
+
+/// A rangefinder's `data` read as MuJoCo 3.5.0 reads it: words of its map,
+/// none twice, in the map's order (MuJoCo's messages, but the word, which
+/// MuJoCo prints as `(null)`). Any word but `dist` is not supported: sim-core
+/// computes a distance only (D-RANGEFINDER-DATA, ledger L270), where the
+/// parent loaded `data="dist normal"` with one value and MuJoCo's has four.
+#[test]
+fn a_rangefinders_data_is_read_as_mujoco_reads_it() {
+    let doc = |data: &str| {
+        format!(
+            r#"<mujoco><worldbody><body><joint name="j" type="hinge"/><geom size="0.1"/><site name="s"/></body></worldbody>
+<sensor><rangefinder site="s" data="{data}"/><jointpos joint="j"/></sensor></mujoco>"#
+        )
+    };
+    for data in ["dist normal", "dir", "depth", "origin point"] {
+        let err = load_model(&doc(data)).expect_err(data);
+        assert!(
+            matches!(err, MjcfError::Unsupported { .. }),
+            "{data}: {err}"
+        );
+        assert!(err.to_string().contains(data), "{data}: {err}");
+    }
+    for (data, message) in [
+        (
+            "normal dist",
+            "data attributes must be in order: dist, dir, origin, point, normal, depth",
+        ),
+        ("dist dist", "duplicate keyword: 'dist'"),
+        ("bogus", "invalid keyword \"bogus\""),
+    ] {
+        let err = load_model(&doc(data)).expect_err(data).to_string();
+        assert!(err.contains(message), "{data}: {err}");
+    }
+    for data in ["dist", ""] {
+        let model = load_model(&doc(data)).expect(data);
+        assert_eq!(model.sensor_dim, [1, 1], "{data}");
+    }
+    // MuJoCo checks the attachment before the data.
+    let err = load_model(
+        r#"<mujoco><worldbody><body><geom size="0.1"/></body></worldbody>
+<sensor><rangefinder data="bogus"/></sensor></mujoco>"#,
+    )
+    .expect_err("no site")
+    .to_string();
+    assert!(
+        err.contains("rangefinder requires exactly one of 'site' or 'camera'"),
+        "{err}"
+    );
+}

@@ -1,0 +1,2 @@
+<mujoco><worldbody><body><joint name="j" type="hinge"/><geom size="0.1"/></body></worldbody>
+<actuator><position joint="j"/></actuator></mujoco>

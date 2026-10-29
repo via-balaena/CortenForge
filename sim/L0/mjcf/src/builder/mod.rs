@@ -230,6 +230,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
 
     // Apply compiler pre-processing passes on a mutable clone
     let mut mjcf = mjcf.clone();
+    mesh::name_assets(&mut mjcf)?;
 
     // Active ingress validation (Phase 0): full validate() promoted from
     // defense-in-depth dead code. Fail-closed on any finding. Runs against
@@ -305,14 +306,23 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
 
     // Process actuators
     for (i, actuator) in mjcf.actuators.iter().enumerate() {
+        // A servo's own gains, before its class gives any (the parser checked
+        // a parsed one; this holds an actuator built in code to it).
+        let own = actuator::check_servo_gains(
+            actuator.actuator_type.as_str(),
+            actuator.kv,
+            actuator.dampratio,
+            actuator.timeconst,
+        );
         let actuator = builder.resolver.apply_to_actuator(actuator);
-        builder.process_actuator(&actuator).map_err(|e| {
-            e.with_location_if_unknown(Location::nth(
-                ElementKind::Actuator,
-                Some(&actuator.name),
-                i,
-            ))
-        })?;
+        own.and_then(|()| builder.process_actuator(&actuator))
+            .map_err(|e| {
+                e.with_location_if_unknown(Location::nth(
+                    ElementKind::Actuator,
+                    Some(&actuator.name),
+                    i,
+                ))
+            })?;
     }
 
     // Process equality constraints (must be after bodies and joints)
@@ -462,6 +472,11 @@ pub struct ModelBuilder {
     pub(crate) jnt_axis: Vec<Vector3<f64>>,
     pub(crate) jnt_limited: Vec<bool>,
     pub(crate) jnt_range: Vec<(f64, f64)>,
+    /// Each joint's range as MuJoCo compiles it, which `jnt_range` does not
+    /// hold for every joint: `0 0` when unwritten, and in radians only for a
+    /// limited hinge or ball in degrees (`user_objects.cc:2906-2924`). Read
+    /// by `inheritrange`.
+    pub(crate) jnt_range_compiled: Vec<(f64, f64)>,
     pub(crate) jnt_stiffness: Vec<f64>,
     pub(crate) jnt_springref: Vec<f64>,
     pub(crate) jnt_damping: Vec<f64>,
@@ -642,11 +657,17 @@ pub struct ModelBuilder {
     // Sensor/equality name lookup (§59)
     pub(crate) sensor_name_to_id: HashMap<String, usize>,
     pub(crate) eq_name_to_id: HashMap<String, usize>,
+    /// Each site-form connect's equality id and its two sites, whose points
+    /// `build` sets once the sites' frames are known.
+    pub(crate) site_connects: Vec<(usize, usize, usize)>,
 
     // Tendon arrays (populated by process_tendons)
     pub(crate) tendon_name_to_id: HashMap<String, usize>,
     pub(crate) tendon_type: Vec<TendonType>,
     pub(crate) tendon_range: Vec<(f64, f64)>,
+    /// Each tendon's range as MuJoCo compiles it: `0 0` when unwritten (read
+    /// by `inheritrange`).
+    pub(crate) tendon_range_compiled: Vec<(f64, f64)>,
     pub(crate) tendon_limited: Vec<bool>,
     pub(crate) tendon_stiffness: Vec<f64>,
     pub(crate) tendon_damping: Vec<f64>,

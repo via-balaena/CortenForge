@@ -101,12 +101,10 @@ const KINDS: &[Kind] = &[
         forced_range: Some("0 1"),
         act_range: None,
     },
-    // `<intvelocity kp="5" actrange="-1 1">` as MuJoCo expands it; sim-mjcf
-    // does not read the element yet.
     Kind {
         name: "intvelocity",
-        element: "general",
-        attrs: r#"dyntype="integrator" gainprm="5" biastype="affine" biasprm="0 -5 0" actlimited="true" actrange="-1 1""#,
+        element: "intvelocity",
+        attrs: r#"kp="5" actrange="-1 1""#,
         forced_range: None,
         act_range: Some(""),
     },
