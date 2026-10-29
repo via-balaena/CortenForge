@@ -39,45 +39,14 @@ pub(super) fn parse_default<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
-                match e.name().as_ref() {
-                    b"default" => {
-                        // Nested default class; it reads its own children.
-                        let nested = parse_default(reader, e, Some(class.clone()), empty)?;
-                        nested_defaults.extend(nested);
-                    }
-                    b"joint" => {
-                        default.joint = Some(parse_joint_defaults(e)?);
-                    }
-                    b"geom" => {
-                        default.geom = Some(parse_geom_defaults(e)?);
-                    }
-                    b"actuator" | b"motor" | b"position" | b"velocity" | b"general"
-                    | b"cylinder" | b"muscle" | b"adhesion" | b"damper" | b"intvelocity" => {
-                        default.actuator = Some(parse_actuator_defaults(e)?);
-                    }
-                    b"tendon" => {
-                        default.tendon = Some(parse_tendon_defaults(e)?);
-                    }
-                    b"sensor" => {
-                        default.sensor = Some(parse_sensor_defaults(e)?);
-                    }
-                    b"mesh" => {
-                        default.mesh = Some(parse_mesh_defaults(e)?);
-                    }
-                    b"site" => {
-                        default.site = Some(parse_site_defaults(e)?);
-                    }
-                    b"pair" => {
-                        default.pair = Some(parse_pair_defaults(e)?);
-                    }
-                    b"equality" => {
-                        default.equality = Some(parse_equality_defaults(e)?);
-                    }
-                    _ => {}
-                }
-                if e.name().as_ref() != b"default" {
-                    skip_element(reader, e.name().as_ref(), empty)?;
+                let child_empty = matches!(event, Event::Empty(_));
+                if e.name().as_ref() == b"default" {
+                    // Nested default class; it reads its own children.
+                    let nested = parse_default(reader, e, Some(class.clone()), child_empty)?;
+                    nested_defaults.extend(nested);
+                } else {
+                    read_class_element(&mut default, e)?;
+                    skip_element(reader, e.name().as_ref(), child_empty)?;
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"default" => break,
@@ -91,6 +60,43 @@ pub(super) fn parse_default<R: BufRead>(
     let mut result = vec![default];
     result.extend(nested_defaults);
     Ok(result)
+}
+
+/// One element of a default class, other than a nested class, read onto
+/// `default`; an element a class does not take is ignored.
+fn read_class_element(default: &mut MjcfDefault, e: &BytesStart) -> Result<()> {
+    match e.name().as_ref() {
+        b"joint" => {
+            default.joint = Some(parse_joint_defaults(e)?);
+        }
+        b"geom" => {
+            default.geom = Some(parse_geom_defaults(e)?);
+        }
+        b"actuator" | b"motor" | b"position" | b"velocity" | b"general" | b"cylinder"
+        | b"muscle" | b"adhesion" | b"damper" | b"intvelocity" => {
+            default.actuator = Some(parse_actuator_defaults(e)?);
+        }
+        b"tendon" => {
+            default.tendon = Some(parse_tendon_defaults(e)?);
+        }
+        b"sensor" => {
+            default.sensor = Some(parse_sensor_defaults(e)?);
+        }
+        b"mesh" => {
+            default.mesh = Some(parse_mesh_defaults(e)?);
+        }
+        b"site" => {
+            default.site = Some(parse_site_defaults(e)?);
+        }
+        b"pair" => {
+            default.pair = Some(parse_pair_defaults(e)?);
+        }
+        b"equality" => {
+            default.equality = Some(parse_equality_defaults(e)?);
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Parse joint defaults.

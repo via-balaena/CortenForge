@@ -62,12 +62,12 @@ pub(super) fn parse_option<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 // Handle flag element
                 if e.name().as_ref() == b"flag" {
                     parse_flag_attrs(e, &mut option.flag)?;
                 }
-                skip_element(reader, e.name().as_ref(), empty)?;
+                skip_element(reader, e.name().as_ref(), child_empty)?;
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"option" => break,
             Ok(Event::Eof) => return Err(MjcfError::eof_in("option")),
@@ -81,7 +81,7 @@ pub(super) fn parse_option<R: BufRead>(
 }
 
 /// An `<option>`'s attributes, read onto `option`.
-pub(super) fn parse_option_attrs(e: &BytesStart, option: &mut MjcfOption) -> Result<()> {
+fn parse_option_attrs(e: &BytesStart, option: &mut MjcfOption) -> Result<()> {
     let a = Attrs::new(e)?;
 
     // Core simulation

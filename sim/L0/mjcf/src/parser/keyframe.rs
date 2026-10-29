@@ -29,11 +29,11 @@ pub(super) fn parse_keyframes<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 if e.name().as_ref() == b"key" {
                     keyframes.push(parse_key_attrs(e)?);
                 }
-                skip_element(reader, e.name().as_ref(), empty)?;
+                skip_element(reader, e.name().as_ref(), child_empty)?;
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"keyframe" => break,
             Ok(Event::Eof) => {

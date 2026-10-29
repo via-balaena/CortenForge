@@ -28,13 +28,13 @@ pub(super) fn parse_tendons<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 if let Some(tendon_type) = MjcfTendonType::from_str(&elem_name) {
-                    tendons.push(parse_tendon(reader, e, tendon_type, empty)?);
+                    tendons.push(parse_tendon(reader, e, tendon_type, child_empty)?);
                 } else {
                     // Unknown tendon type, skip it
-                    skip_element(reader, e.name().as_ref(), empty)?;
+                    skip_element(reader, e.name().as_ref(), child_empty)?;
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"tendon" => break,
@@ -65,7 +65,7 @@ pub(super) fn parse_tendon<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 let name_bytes = e.name().as_ref().to_vec();
                 let a = Attrs::new(e)?;
                 match name_bytes.as_slice() {
@@ -113,7 +113,7 @@ pub(super) fn parse_tendon<R: BufRead>(
                     }
                     _ => {}
                 }
-                skip_element(reader, &name_bytes, empty)?;
+                skip_element(reader, &name_bytes, child_empty)?;
             }
             Ok(Event::End(ref e)) => {
                 let name_bytes = e.name().as_ref().to_vec();

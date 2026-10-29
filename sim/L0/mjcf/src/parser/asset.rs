@@ -27,7 +27,7 @@ pub(super) fn parse_asset<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
                     b"mesh" => meshes.push(parse_mesh_attrs(e)?),
                     b"hfield" => hfields.push(parse_hfield_attrs(e)?),
@@ -35,7 +35,7 @@ pub(super) fn parse_asset<R: BufRead>(
                     _ => {}
                 }
                 // A mesh's or hfield's children are not read either.
-                skip_element(reader, e.name().as_ref(), empty)?;
+                skip_element(reader, e.name().as_ref(), child_empty)?;
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"asset" => break,
             Ok(Event::Eof) => return Err(MjcfError::eof_in("asset")),

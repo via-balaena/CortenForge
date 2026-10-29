@@ -28,7 +28,7 @@ pub(super) fn parse_equality<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
                     b"connect" => {
                         let connect = parse_connect_attrs(e)?;
@@ -63,7 +63,7 @@ pub(super) fn parse_equality<R: BufRead>(
                     // Skip other equality constraint types (flex)
                     _ => {}
                 }
-                skip_element(reader, e.name().as_ref(), empty)?;
+                skip_element(reader, e.name().as_ref(), child_empty)?;
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"equality" => break,
             Ok(Event::Eof) => return Err(MjcfError::eof_in("equality")),

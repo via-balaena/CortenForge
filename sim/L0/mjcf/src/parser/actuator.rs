@@ -26,15 +26,20 @@ pub(super) fn parse_actuators<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 if let Some(actuator_type) = MjcfActuatorType::from_str(&elem_name) {
                     let mut actuator = parse_actuator_attrs(e, actuator_type)?;
                     // Parse children (may contain <plugin> sub-element)
-                    parse_actuator_children(reader, elem_name.as_bytes(), &mut actuator, empty)?;
+                    parse_actuator_children(
+                        reader,
+                        elem_name.as_bytes(),
+                        &mut actuator,
+                        child_empty,
+                    )?;
                     actuators.push(actuator);
                 } else {
-                    skip_element(reader, e.name().as_ref(), empty)?;
+                    skip_element(reader, e.name().as_ref(), child_empty)?;
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"actuator" => break,
@@ -252,7 +257,8 @@ pub(super) fn parse_actuator_attrs(
     Ok(actuator)
 }
 
-/// Parse children of an actuator element (may contain `<plugin>` sub-element).
+/// Parse children of an actuator element (may contain `<plugin>` sub-element;
+/// `empty`: the actuator closed itself, so it has none).
 pub(super) fn parse_actuator_children<R: BufRead>(
     reader: &mut Reader<R>,
     parent_tag: &[u8],
@@ -266,12 +272,12 @@ pub(super) fn parse_actuator_children<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 if e.name().as_ref() == b"plugin" {
-                    actuator.plugin = Some(parse_plugin_ref(reader, e, empty)?);
+                    actuator.plugin = Some(parse_plugin_ref(reader, e, child_empty)?);
                 } else {
                     // Unknown child — skip
-                    skip_element(reader, e.name().as_ref(), empty)?;
+                    skip_element(reader, e.name().as_ref(), child_empty)?;
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == parent_tag => break,

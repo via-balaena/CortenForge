@@ -32,12 +32,12 @@ pub(super) fn parse_deformable<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
-                    b"skin" => skins.push(parse_skin(reader, e, empty)?),
-                    b"flex" => flex_bodies.push(parse_flex(reader, e, empty)?),
-                    b"flexcomp" => flex_bodies.push(parse_flexcomp(reader, e, empty)?),
-                    name => skip_element(reader, name, empty)?,
+                    b"skin" => skins.push(parse_skin(reader, e, child_empty)?),
+                    b"flex" => flex_bodies.push(parse_flex(reader, e, child_empty)?),
+                    b"flexcomp" => flex_bodies.push(parse_flexcomp(reader, e, child_empty)?),
+                    name => skip_element(reader, name, child_empty)?,
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"deformable" => break,
@@ -59,7 +59,8 @@ pub(super) fn parse_deformable<R: BufRead>(
 /// `<vertex>`, `<element>` and `<pin>` children and the `mass` sim-mjcf once
 /// read, before a missing `body` or `element`, as here; a bad attribute value
 /// read here before a refused child is refused first here, the child first
-/// by MuJoCo's schema (Rigid-loading L47).
+/// by MuJoCo's schema (Rigid-loading L47). `empty`: it closed itself, so it
+/// has no children.
 pub(super) fn parse_flex<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
@@ -102,7 +103,7 @@ fn read_flex_children<R: BufRead>(reader: &mut Reader<R>, flex: &mut MjcfFlex) -
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
                     b"contact" => parse_flex_contact_attrs(e, flex)?,
                     b"elasticity" => parse_flex_elasticity_attrs(e, flex)?,
@@ -115,7 +116,7 @@ fn read_flex_children<R: BufRead>(reader: &mut Reader<R>, flex: &mut MjcfFlex) -
                     }
                     _ => {}
                 }
-                skip_element(reader, e.name().as_ref(), empty)?;
+                skip_element(reader, e.name().as_ref(), child_empty)?;
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"flex" => break,
             Ok(Event::Eof) => {
@@ -295,6 +296,7 @@ pub(super) fn parse_flex_edge_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> Resu
 /// Parse a `<flexcomp>` element (procedural mesh generation).
 ///
 /// Generates vertices and elements based on the `type` attribute (grid, box, cylinder).
+/// `empty`: it closed itself, so it has no children.
 pub(super) fn parse_flexcomp<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
@@ -310,7 +312,7 @@ pub(super) fn parse_flexcomp<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
                     b"contact" => parse_flex_contact_attrs(e, &mut flex)?,
                     b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex)?,
@@ -322,7 +324,7 @@ pub(super) fn parse_flexcomp<R: BufRead>(
                     }
                     _ => {}
                 }
-                skip_element(reader, e.name().as_ref(), empty)?;
+                skip_element(reader, e.name().as_ref(), child_empty)?;
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"flexcomp" => break,
             Ok(Event::Eof) => {
@@ -518,7 +520,8 @@ pub(super) fn generate_box_mesh(flex: &mut MjcfFlex, count: [usize; 3], spacing:
     }
 }
 
-/// Parse a skin element and its children.
+/// Parse a skin element and its children (`empty`: it closed itself, so it
+/// has none).
 pub(super) fn parse_skin<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
@@ -533,13 +536,13 @@ pub(super) fn parse_skin<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
                     b"bone" => skin.bones.push(parse_skin_bone_attrs(e)?),
                     b"vertex" => skin.vertices.push(parse_skin_vertex_attrs(e)?),
                     _ => {}
                 }
-                skip_element(reader, e.name().as_ref(), empty)?;
+                skip_element(reader, e.name().as_ref(), child_empty)?;
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"skin" => break,
             Ok(Event::Eof) => return Err(MjcfError::eof_in("skin")),

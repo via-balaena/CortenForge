@@ -25,13 +25,13 @@ pub(super) fn parse_contact<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
                     b"pair" => contact.pairs.push(parse_contact_pair_attrs(e)?),
                     b"exclude" => contact.excludes.push(parse_contact_exclude_attrs(e)?),
                     _ => {}
                 }
-                skip_element(reader, e.name().as_ref(), empty)?;
+                skip_element(reader, e.name().as_ref(), child_empty)?;
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"contact" => break,
             Ok(Event::Eof) => {

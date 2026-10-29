@@ -28,25 +28,25 @@ pub(super) fn parse_worldbody<R: BufRead>(reader: &mut Reader<R>, empty: bool) -
             // A self-closing element is the same element with no children, so
             // one arm reads both forms (MuJoCo's reader does not tell them apart).
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
-                    b"body" => worldbody.children.push(parse_body(reader, e, empty)?),
+                    b"body" => worldbody.children.push(parse_body(reader, e, child_empty)?),
                     b"geom" => {
                         // Static geom attached to world
-                        let geom = parse_leaf(reader, e, empty, parse_geom_attrs)?;
+                        let geom = parse_leaf(reader, e, child_empty, parse_geom_attrs)?;
                         worldbody.geoms.push(geom);
                     }
                     b"site" => {
-                        let site = parse_leaf(reader, e, empty, parse_site_attrs)?;
+                        let site = parse_leaf(reader, e, child_empty, parse_site_attrs)?;
                         worldbody.sites.push(site);
                     }
-                    b"frame" => worldbody.frames.push(parse_frame(reader, e, empty)?),
+                    b"frame" => worldbody.frames.push(parse_frame(reader, e, child_empty)?),
                     b"composite" => {
-                        let composite = parse_composite(reader, e, empty)?;
+                        let composite = parse_composite(reader, e, child_empty)?;
                         worldbody.composites.push(composite);
                     }
-                    tag @ (b"replicate" | b"attach") => return Err(not_attached(tag)),
-                    name => skip_element(reader, name, empty)?,
+                    tag @ (b"replicate" | b"attach") => return Err(attach_refusal(tag)),
+                    name => skip_element(reader, name, child_empty)?,
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"worldbody" => break,
@@ -78,9 +78,9 @@ pub(super) fn parse_body<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
-                    b"body" => body.children.push(parse_body(reader, e, empty)?),
+                    b"body" => body.children.push(parse_body(reader, e, child_empty)?),
                     tag @ (b"joint" | b"freejoint") => {
                         // <freejoint/> is MuJoCo shorthand for <joint type="free"/>
                         let read = if tag == b"joint" {
@@ -88,12 +88,12 @@ pub(super) fn parse_body<R: BufRead>(
                         } else {
                             parse_freejoint_attrs
                         };
-                        let mut joint = parse_leaf(reader, e, empty, read)?;
+                        let mut joint = parse_leaf(reader, e, child_empty, read)?;
                         // Auto-generate name only when the parent body has a
                         // name. Anonymous joints in anonymous bodies stay
-                        // empty — mirrors the parser's anonymous-body fix
+                        // child_empty — mirrors the parser's anonymous-body fix
                         // (commit `c7fa0c25`); validation.rs:211 exempts
-                        // empty joint names from the dedup check.
+                        // child_empty joint names from the dedup check.
                         if joint.name.is_empty() && !body.name.is_empty() {
                             joint.name = format!("{}_joint{}", body.name, joint_counter);
                             joint_counter += 1;
@@ -101,20 +101,26 @@ pub(super) fn parse_body<R: BufRead>(
                         joint.body = Some(body.name.clone());
                         body.joints.push(joint);
                     }
-                    b"geom" => body
-                        .geoms
-                        .push(parse_leaf(reader, e, empty, parse_geom_attrs)?),
-                    b"inertial" => {
-                        body.inertial = Some(parse_leaf(reader, e, empty, parse_inertial_attrs)?);
+                    b"geom" => {
+                        let geom = parse_leaf(reader, e, child_empty, parse_geom_attrs)?;
+                        body.geoms.push(geom);
                     }
-                    b"site" => body
-                        .sites
-                        .push(parse_leaf(reader, e, empty, parse_site_attrs)?),
-                    b"frame" => body.frames.push(parse_frame(reader, e, empty)?),
-                    b"composite" => body.composites.push(parse_composite(reader, e, empty)?),
-                    b"plugin" => body.plugin = Some(parse_plugin_ref(reader, e, empty)?),
-                    tag @ (b"replicate" | b"attach") => return Err(not_attached(tag)),
-                    name => skip_element(reader, name, empty)?,
+                    b"inertial" => {
+                        body.inertial =
+                            Some(parse_leaf(reader, e, child_empty, parse_inertial_attrs)?);
+                    }
+                    b"site" => {
+                        let site = parse_leaf(reader, e, child_empty, parse_site_attrs)?;
+                        body.sites.push(site);
+                    }
+                    b"frame" => body.frames.push(parse_frame(reader, e, child_empty)?),
+                    b"composite" => {
+                        let composite = parse_composite(reader, e, child_empty)?;
+                        body.composites.push(composite);
+                    }
+                    b"plugin" => body.plugin = Some(parse_plugin_ref(reader, e, child_empty)?),
+                    tag @ (b"replicate" | b"attach") => return Err(attach_refusal(tag)),
+                    name => skip_element(reader, name, child_empty)?,
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"body" => break,
@@ -350,22 +356,24 @@ pub(super) fn parse_frame<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
-                    b"body" => frame.bodies.push(parse_body(reader, e, empty)?),
-                    b"geom" => frame
-                        .geoms
-                        .push(parse_leaf(reader, e, empty, parse_geom_attrs)?),
-                    b"site" => frame
-                        .sites
-                        .push(parse_leaf(reader, e, empty, parse_site_attrs)?),
-                    b"frame" => frame.frames.push(parse_frame(reader, e, empty)?),
+                    b"body" => frame.bodies.push(parse_body(reader, e, child_empty)?),
+                    b"geom" => {
+                        let geom = parse_leaf(reader, e, child_empty, parse_geom_attrs)?;
+                        frame.geoms.push(geom);
+                    }
+                    b"site" => {
+                        let site = parse_leaf(reader, e, child_empty, parse_site_attrs)?;
+                        frame.sites.push(site);
+                    }
+                    b"frame" => frame.frames.push(parse_frame(reader, e, child_empty)?),
                     tag @ (b"camera" | b"light") => {
                         tracing::warn!(
                             "skipping <{}> inside <frame>: camera/light not yet supported",
                             String::from_utf8_lossy(tag)
                         );
-                        skip_element(reader, tag, empty)?;
+                        skip_element(reader, tag, child_empty)?;
                     }
                     tag @ (b"joint" | b"freejoint" | b"inertial") => {
                         return Err(MjcfError::unsupported(format!(
@@ -373,8 +381,8 @@ pub(super) fn parse_frame<R: BufRead>(
                             String::from_utf8_lossy(tag)
                         )));
                     }
-                    tag @ (b"replicate" | b"attach") => return Err(not_attached(tag)),
-                    name => skip_element(reader, name, empty)?,
+                    tag @ (b"replicate" | b"attach") => return Err(attach_refusal(tag)),
+                    name => skip_element(reader, name, child_empty)?,
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"frame" => break,
@@ -388,10 +396,11 @@ pub(super) fn parse_frame<R: BufRead>(
     Ok(frame)
 }
 
-/// A `<replicate>` or an `<attach>`: MuJoCo 3.5.0 makes each with
-/// `mjs_attach`, which sim-mjcf does not have, so it is refused rather than
-/// skipped (registry D-REPLICATE, D-ATTACH).
-fn not_attached(tag: &[u8]) -> MjcfError {
+/// The refusal of a `<replicate>` or an `<attach>`, which sim-mjcf does not
+/// make (registry D-REPLICATE, D-ATTACH): MuJoCo 3.5.0 makes a `<replicate>`
+/// and an `<attach>` of another model with `mjs_attach`, and an `<attach>`
+/// naming a body the document already has moves it into the attach's frame.
+fn attach_refusal(tag: &[u8]) -> MjcfError {
     MjcfError::unsupported(format!("<{}>", String::from_utf8_lossy(tag)))
 }
 

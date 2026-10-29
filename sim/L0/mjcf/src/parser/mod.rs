@@ -239,26 +239,26 @@ fn parse_mujoco<R: BufRead>(
             // A self-closing section is the same section with no children, so
             // one arm reads both forms (MuJoCo's reader does not tell them apart).
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
                     b"option" => {
-                        parse_option(reader, e, &mut model.option, empty)?;
+                        parse_option(reader, e, &mut model.option, child_empty)?;
                     }
                     b"compiler" => {
                         parse_compiler_attrs(e, &mut model.compiler)?;
-                        skip_element(reader, b"compiler", empty)?;
+                        skip_element(reader, b"compiler", child_empty)?;
                     }
                     b"default" => {
-                        let defaults = parse_default(reader, e, None, empty)?;
+                        let defaults = parse_default(reader, e, None, child_empty)?;
                         model.defaults.extend(defaults);
                     }
                     b"asset" => {
-                        let (meshes, hfields) = parse_asset(reader, empty)?;
+                        let (meshes, hfields) = parse_asset(reader, child_empty)?;
                         model.meshes.extend(meshes);
                         model.hfields.extend(hfields);
                     }
                     b"worldbody" => {
-                        let wb = parse_worldbody(reader, empty)?;
+                        let wb = parse_worldbody(reader, child_empty)?;
                         // Merge: append children, geoms, sites, frames, composites into existing worldbody
                         model.worldbody.children.extend(wb.children);
                         model.worldbody.geoms.extend(wb.geoms);
@@ -268,11 +268,11 @@ fn parse_mujoco<R: BufRead>(
                         model.worldbody.composites.extend(wb.composites);
                     }
                     b"actuator" => {
-                        let actuators = parse_actuators(reader, empty)?;
+                        let actuators = parse_actuators(reader, child_empty)?;
                         model.actuators.extend(actuators);
                     }
                     b"equality" => {
-                        let eq = parse_equality(reader, empty)?;
+                        let eq = parse_equality(reader, child_empty)?;
                         // Offset order indices before merging (indices are relative
                         // to the parsed block's vecs, but must reference positions
                         // in the merged vecs).
@@ -298,37 +298,37 @@ fn parse_mujoco<R: BufRead>(
                         model.equality.tendons.extend(eq.tendons);
                     }
                     b"deformable" => {
-                        let (skins, flex) = parse_deformable(reader, empty)?;
+                        let (skins, flex) = parse_deformable(reader, child_empty)?;
                         model.skins.extend(skins);
                         model.flex.extend(flex);
                     }
                     b"tendon" => {
-                        let tendons = parse_tendons(reader, empty)?;
+                        let tendons = parse_tendons(reader, child_empty)?;
                         model.tendons.extend(tendons);
                     }
                     b"sensor" => {
-                        let sensors = parse_sensors(reader, empty)?;
+                        let sensors = parse_sensors(reader, child_empty)?;
                         model.sensors.extend(sensors);
                     }
                     b"contact" => {
-                        let ct = parse_contact(reader, empty)?;
+                        let ct = parse_contact(reader, child_empty)?;
                         model.contact.pairs.extend(ct.pairs);
                         model.contact.excludes.extend(ct.excludes);
                     }
                     b"keyframe" => {
-                        let kfs = parse_keyframes(reader, empty)?;
+                        let kfs = parse_keyframes(reader, child_empty)?;
                         model.keyframes.extend(kfs);
                     }
                     b"size" => {
                         parse_size_attrs(e, &mut model)?;
-                        skip_element(reader, b"size", empty)?;
+                        skip_element(reader, b"size", child_empty)?;
                     }
                     b"extension" => {
-                        let ext = parse_extension(reader, empty)?;
+                        let ext = parse_extension(reader, child_empty)?;
                         model.extensions.push(ext);
                     }
                     // Skip other elements
-                    name => skip_element(reader, name, empty)?,
+                    name => skip_element(reader, name, child_empty)?,
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"mujoco" => break,

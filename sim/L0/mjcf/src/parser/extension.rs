@@ -30,7 +30,7 @@ pub(super) fn parse_extension<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 if e.name().as_ref() == b"plugin" {
                     let plugin_name = Attrs::new(e)?
                         .string("plugin")
@@ -39,10 +39,10 @@ pub(super) fn parse_extension<R: BufRead>(
                         plugin: plugin_name,
                         instances: Vec::new(),
                     };
-                    parse_extension_plugin(reader, &mut ep, empty)?;
+                    parse_extension_plugin(reader, &mut ep, child_empty)?;
                     ext.plugins.push(ep);
                 } else {
-                    skip_element(reader, e.name().as_ref(), empty)?;
+                    skip_element(reader, e.name().as_ref(), child_empty)?;
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"extension" => break,
@@ -71,15 +71,15 @@ pub(super) fn parse_extension_plugin<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 if e.name().as_ref() == b"instance" {
                     let name = Attrs::new(e)?
                         .string("name")
                         .ok_or_else(|| MjcfError::missing_attribute("instance", "name"))?;
-                    let config = parse_plugin_config(reader, b"instance", empty)?;
+                    let config = parse_plugin_config(reader, b"instance", child_empty)?;
                     ep.instances.push(MjcfPluginInstance { name, config });
                 } else {
-                    skip_element(reader, e.name().as_ref(), empty)?;
+                    skip_element(reader, e.name().as_ref(), child_empty)?;
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"plugin" => break,
@@ -110,7 +110,7 @@ pub(super) fn parse_plugin_config<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let empty = matches!(event, Event::Empty(_));
+                let child_empty = matches!(event, Event::Empty(_));
                 if e.name().as_ref() == b"config" {
                     let key = Attrs::new(e)?
                         .string("key")
@@ -127,7 +127,7 @@ pub(super) fn parse_plugin_config<R: BufRead>(
                         .ok_or_else(|| MjcfError::missing_attribute("config", "value"))?;
                     configs.push(MjcfPluginConfig { key, value });
                 }
-                skip_element(reader, e.name().as_ref(), empty)?;
+                skip_element(reader, e.name().as_ref(), child_empty)?;
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == parent_tag => break,
             Ok(Event::Eof) => {

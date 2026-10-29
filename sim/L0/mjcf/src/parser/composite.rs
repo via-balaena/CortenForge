@@ -15,7 +15,8 @@ use super::attrs::{Attrs, is_c_space, skip_element};
 // Composite parsing
 // ============================================================================
 
-/// Parse a `<composite>` element with all its attributes and child elements.
+/// Parse a `<composite>` element with all its attributes and child elements
+/// (`empty`: it closed itself, so it has none).
 pub(super) fn parse_composite<R: BufRead>(
     reader: &mut Reader<R>,
     e: &BytesStart,
