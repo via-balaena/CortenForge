@@ -44,7 +44,7 @@ result against them. The test's callbacks are the GAIN_*, BIAS_* and DYN_*
 functions below, in the same operations, and its plugin is a port of `mujoco.pid` (`pid.cc`) built
 from `pid`. The models' joint axes are unit, their bodies' inertias written
 out and their geoms boxes, so what sim-mjcf compiles is MuJoCo's bit for bit
-(ledgers L146, L198 hold where it is not).
+(ledger L198 holds where it is not).
 """
 import json
 import os
