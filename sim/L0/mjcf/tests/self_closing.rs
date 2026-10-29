@@ -1,7 +1,9 @@
 //! A self-closing element (`<body/>`) is the same element with no children,
 //! as MuJoCo 3.5.0's reader takes it: each parser dispatcher reads both forms
-//! in one arm (book L15). The counts and values below were measured on
-//! MuJoCo 3.5.0 for the same documents.
+//! in one arm (book L15). Where a test compares a built model's counts or
+//! values, they are MuJoCo 3.5.0's for the same document (measured). The
+//! extension, config and skin tests read sim-mjcf's parse tree, which MuJoCo
+//! does not expose; MuJoCo refuses the skin document.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

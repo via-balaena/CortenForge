@@ -469,6 +469,7 @@
 3a13c90a262a82ab	agree
 3a1e78e0e6a31111	agree
 3a282add3ebb7ed3	agree
+3a2b70da5051b0f7	ours-refused	divergence=D-REPLICATE
 3a2fb4d1b2d991a2	ours-refused	divergence=D-NONFINITE
 3a36709226ba29e0	agree
 3a5b4d1f92139f8c	agree
@@ -1046,6 +1047,7 @@
 7ef5994720913321	agree
 7efdbc2b8c130c03	agree
 7f0378c95284f4a7	mj-refuses
+7f649f5880acbbe1	ours-refused	divergence=D-REPLICATE
 7f69344f29005a00	agree
 7f76ba4f038c2733	agree
 7f7a2822765b6328	agree
@@ -2113,5 +2115,6 @@ fec64b4636a305db	agree
 fed767d7dd8f4488	agree
 ff60001c783e0f4d	agree
 ff94c82fc48f8ddf	both-refuse
+ffa4b15085f1d1cc	ours-refused	divergence=D-ATTACH
 ffdc191d5d00f71a	agree
 ffe246517dc498d6	agree
