@@ -1508,12 +1508,23 @@ impl MjcfGeom {
         }
     }
 
-    /// Get quaternion as `UnitQuaternion`.
-    #[must_use]
-    pub fn rotation(&self) -> UnitQuaternion<f64> {
-        let qv = self.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0));
-        let q = nalgebra::Quaternion::new(qv[0], qv[1], qv[2], qv[3]);
-        UnitQuaternion::from_quaternion(q)
+    /// The geom's orientation from its quaternion or alternative, as the
+    /// builder resolves it with `compiler` (MuJoCo 3.5.0's
+    /// `ResolveOrientation`); a `fromto`, which replaces it, is not read.
+    ///
+    /// # Errors
+    ///
+    /// An alternative MuJoCo refuses as too small to make unit.
+    pub fn rotation(&self, compiler: &MjcfCompiler) -> crate::error::Result<UnitQuaternion<f64>> {
+        crate::builder::orientation::resolve_orientation(
+            self.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
+            self.euler,
+            self.axisangle,
+            self.xyaxes,
+            self.zaxis,
+            compiler,
+        )
+        .map_err(|e| e.on("geom"))
     }
 
     /// Compute mass from density and volume.
@@ -2719,22 +2730,23 @@ impl MjcfBody {
         self
     }
 
-    /// Get rotation as `UnitQuaternion`.
-    #[must_use]
-    pub fn rotation(&self) -> UnitQuaternion<f64> {
-        if let Some(euler) = self.euler {
-            // XYZ Euler angles
-            UnitQuaternion::from_euler_angles(euler.x, euler.y, euler.z)
-        } else if let Some(aa) = self.axisangle {
-            // Axis-angle: [x, y, z, angle]
-            let axis = nalgebra::Unit::new_normalize(Vector3::new(aa.x, aa.y, aa.z));
-            UnitQuaternion::from_axis_angle(&axis, aa.w)
-        } else {
-            // Quaternion (w, x, y, z)
-            let q =
-                nalgebra::Quaternion::new(self.quat[0], self.quat[1], self.quat[2], self.quat[3]);
-            UnitQuaternion::from_quaternion(q)
-        }
+    /// The body's orientation from its quaternion or alternative, as the
+    /// builder resolves it with `compiler` (MuJoCo 3.5.0's
+    /// `ResolveOrientation`), before any frame or fusion composes it.
+    ///
+    /// # Errors
+    ///
+    /// An alternative MuJoCo refuses as too small to make unit.
+    pub fn rotation(&self, compiler: &MjcfCompiler) -> crate::error::Result<UnitQuaternion<f64>> {
+        crate::builder::orientation::resolve_orientation(
+            self.quat,
+            self.euler,
+            self.axisangle,
+            self.xyaxes,
+            self.zaxis,
+            compiler,
+        )
+        .map_err(|e| e.on("body"))
     }
 
     /// Get position as Point3.
@@ -4657,17 +4669,39 @@ mod tests {
         assert_relative_eq!(sphere.computed_mass(), 5.0, epsilon = 1e-10);
     }
 
+    /// A body's and a geom's `rotation` is the orientation the builder loads,
+    /// bit for bit, for each alternative and in degrees and radians.
     #[test]
-    fn test_body_rotation() {
-        let body = MjcfBody {
-            euler: Some(Vector3::new(0.0, 0.0, std::f64::consts::FRAC_PI_2)),
-            ..Default::default()
-        };
-
-        let rot = body.rotation();
-        let rotated = rot * Vector3::x();
-        assert_relative_eq!(rotated.x, 0.0, epsilon = 1e-10);
-        assert_relative_eq!(rotated.y, 1.0, epsilon = 1e-10);
+    fn rotation_is_the_orientation_the_builder_loads() {
+        for (compiler, attr) in [
+            ("", r#"euler="0 0 90""#),
+            (
+                r#"<compiler angle="radian" eulerseq="ZYX"/>"#,
+                r#"euler="0.3 0.2 0.1""#,
+            ),
+            ("", r#"axisangle="1 2 3 45""#),
+            ("", r#"xyaxes="1 2 3 -1 0.5 0.2""#),
+            ("", r#"zaxis="1 0 0""#),
+            ("", r#"quat="0.98 0.05 0.1 0.15""#),
+        ] {
+            let xml = format!(
+                r#"<mujoco>{compiler}<worldbody><body name="b" {attr}><joint type="hinge"/><geom type="box" size="0.1 0.2 0.3" {attr}/></body></worldbody></mujoco>"#
+            );
+            let mjcf = crate::parse_mjcf_str(&xml).expect("parses");
+            let model = crate::load_model(&xml).expect("loads");
+            let body = &mjcf.worldbody.children[0];
+            let bits = |q: UnitQuaternion<f64>| q.into_inner().coords.map(f64::to_bits);
+            assert_eq!(
+                bits(body.rotation(&mjcf.compiler).expect("resolves")),
+                bits(model.body_quat[1]),
+                "body {attr}"
+            );
+            assert_eq!(
+                bits(body.geoms[0].rotation(&mjcf.compiler).expect("resolves")),
+                bits(model.geom_quat[0]),
+                "geom {attr}"
+            );
+        }
     }
 
     #[test]
