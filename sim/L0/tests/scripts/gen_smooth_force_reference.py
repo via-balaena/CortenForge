@@ -16,7 +16,7 @@ force are all nonzero; for each of 8 states (qpos, qvel, ctrl and
 qfrc_applied drawn from a seeded generator) after mj_forward those four,
 qfrc_smooth (`mj_fwdAcceleration`, `engine_forward.c`) and qacc_smooth. The
 model's joint axes are unit and its bodies' inertias written out, so what
-sim-mjcf compiles is MuJoCo's bit for bit (ledgers L146, L198 hold where it
+sim-mjcf compiles is MuJoCo's bit for bit (ledger L198 holds where it
 is not).
 """
 import json

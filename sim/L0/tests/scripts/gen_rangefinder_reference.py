@@ -55,10 +55,8 @@ def vec(rng, lo, hi, n=3):
 def random_model():
     """Five primitives on one free body, unturned in it, and an unbounded plane;
     one rangefinder on an unturned site of a second free body. Every turn comes
-    from the states' qpos, so none goes through the compiler's orientations
-    (its Euler angles and written quaternions; ledgers L255 and L264); the
-    plane's size is 0 in x and y, which MuJoCo reads unbounded, as sim-core
-    reads every plane until Rigid-loading's L14."""
+    from the states' qpos; none is written. The plane's size is 0 in x and y,
+    which MuJoCo reads unbounded."""
     rng = np.random.default_rng(236)
     geoms = [
         f'<geom type="sphere" size="{num(rng, 0.1, 0.3)}" pos="{vec(rng, -1.5, 1.5)}"/>',

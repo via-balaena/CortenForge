@@ -1,0 +1,1 @@
+<mujoco><worldbody><frame euler="0 0 30"><body name="b" zaxis="0 0 0"><joint type="hinge"/><geom type="sphere" size="0.1"/></body></frame></worldbody></mujoco>

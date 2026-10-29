@@ -5,7 +5,7 @@
 //! plain arithmetic: each product and sum in the C source's order, with no
 //! fused multiply-add, as the build the census's oracle compiles.
 
-use super::orientation::{MJ_EPS, normvec};
+use super::orientation::{MJ_EPS, mulquat, normvec};
 
 /// `kEigEPS` (`user_util.cc:660`): the Jacobi iteration's stop thresholds and
 /// the sort's tie margin.
@@ -153,18 +153,6 @@ fn mulmat(a: &[f64; 9], b: &[f64; 9]) -> [f64; 9] {
     r
 }
 
-/// `mjuu_mulquat`: `qa · qb`, made unit by `normvec` as MuJoCo's is.
-fn mulquat(qa: &[f64; 4], qb: &[f64; 4]) -> [f64; 4] {
-    let mut r = [
-        qa[0] * qb[0] - qa[1] * qb[1] - qa[2] * qb[2] - qa[3] * qb[3],
-        qa[0] * qb[1] + qa[1] * qb[0] + qa[2] * qb[3] - qa[3] * qb[2],
-        qa[0] * qb[2] - qa[1] * qb[3] + qa[2] * qb[0] + qa[3] * qb[1],
-        qa[0] * qb[3] + qa[1] * qb[2] - qa[2] * qb[1] + qa[3] * qb[0],
-    ];
-    normvec(&mut r);
-    r
-}
-
 #[cfg(test)]
 // The values compared are exact: a diagonal matrix's own entries, untouched.
 #[allow(clippy::float_cmp)]
@@ -189,16 +177,6 @@ mod tests {
     fn a_non_finite_matrix_returns_non_finite_values_in_bounded_time() {
         let (val, quat) = eig3(&[1.0, f64::NAN, 0.0, f64::NAN, 1.0, 0.0, 0.0, 0.0, 1.0]);
         assert!(val.iter().chain(quat.iter()).any(|x| !x.is_finite()));
-    }
-
-    #[test]
-    fn mulquat_makes_its_product_unit_as_mujocos_does() {
-        // eig3 multiplies only unit quaternions; MuJoCo's mjuu_mulquat
-        // normalises any product.
-        assert_eq!(
-            mulquat(&[2.0, 0.0, 0.0, 0.0], &[1.0, 0.0, 0.0, 0.0]),
-            [1.0, 0.0, 0.0, 0.0]
-        );
     }
 
     #[test]

@@ -32,7 +32,7 @@ test's callbacks are GAIN, BIAS and DYN below, in the same operations; the
 forces compared pin GAIN's and BIAS's values at every state, act_dot
 DYN's. The models' joint axes are
 unit, their bodies' inertias written out and their geoms boxes, so what
-sim-mjcf compiles is MuJoCo's bit for bit (ledgers L146, L198 hold where it
+sim-mjcf compiles is MuJoCo's bit for bit (ledger L198 holds where it
 is not).
 """
 import json

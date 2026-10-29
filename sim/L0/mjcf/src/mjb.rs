@@ -58,6 +58,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
 ///
+/// 9 since Rigid-loading PR RL-4b: `MjcfBody` took `xyaxes` and `zaxis`.
 /// 8 since Rigid-loading PR RL-4a: `MjcfActuator` and `MjcfActuatorDefaults`
 /// took `inheritrange`, `MjcfActuatorType` `IntVelocity`, `MjcfSensor` `dim`,
 /// `needstage` and `datatype`, `MjcfSensorType` `Tendonactuatorfrc`, and
@@ -66,7 +67,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// one below mjMINVAL is refused (Rigid-loading PR RL-3b): a version-6 file
 /// holds 0.0 there for a flexcomp that did not write it. 6 since `MjcfFlex`
 /// took `vertex_bodies` (Rigid-loading L10).
-pub const MJB_VERSION: u32 = 8;
+pub const MJB_VERSION: u32 = 9;
 
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;
@@ -649,6 +650,18 @@ mod tests {
         assert!(matches!(
             load_mjb_bytes(&bytes),
             Err(MjcfError::MjbVersion { found: 7, .. })
+        ));
+    }
+
+    /// A version-8 file is refused for its version: its bodies hold no
+    /// `xyaxes` or `zaxis`.
+    #[test]
+    fn a_version_8_file_is_refused_for_its_version() {
+        let mut bytes = save_mjb_bytes(&simple_model()).expect("should serialize");
+        bytes[4..8].copy_from_slice(&8u32.to_le_bytes());
+        assert!(matches!(
+            load_mjb_bytes(&bytes),
+            Err(MjcfError::MjbVersion { found: 8, .. })
         ));
     }
 

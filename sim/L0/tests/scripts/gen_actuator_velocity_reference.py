@@ -25,7 +25,7 @@ after a forward pass, then a forward pass from the velocity stage
 actuator is empty. Each case names the actuators whose moment rows sim-core
 fills (`moment_rows`). The models' joint axes are unit, their bodies'
 inertias written out and their geoms boxes, so what sim-mjcf compiles is
-MuJoCo's bit for bit (ledgers L146, L198 and L195 hold where it is not).
+MuJoCo's bit for bit (ledgers L198 and L195 hold where it is not).
 """
 import json
 import os

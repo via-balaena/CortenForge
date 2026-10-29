@@ -493,6 +493,12 @@ fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> MjcfG
         MjcfGeomType::Capsule | MjcfGeomType::Cylinder => {
             // fromto along local x-axis: [0,0,0] → [length,0,0]
             geom.fromto = Some([0.0, 0.0, 0.0, length, 0.0, 0.0]);
+            // MuJoCo makes a cable's geom from the composite's own default
+            // (`mjs_addGeom(body, &def[0].spec)`, `user_composite.cc:392`), not
+            // from the user's classes, so no class's `pos` or `mesh` reaches it
+            // beside its `fromto` (an empty mesh name names none).
+            geom.pos = Some(Vector3::zeros());
+            geom.mesh = Some(String::new());
         }
         MjcfGeomType::Box => {
             // Centered at midpoint, half-length along x

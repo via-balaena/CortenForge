@@ -32,6 +32,8 @@
 
 use std::collections::HashMap;
 
+use nalgebra::{Vector3, Vector4};
+
 use crate::types::{
     MjcfActuator, MjcfActuatorDefaults, MjcfContactPair, MjcfDefault, MjcfEqualityDefaults,
     MjcfGeom, MjcfGeomDefaults, MjcfJoint, MjcfJointDefaults, MjcfMesh, MjcfMeshDefaults,
@@ -269,18 +271,15 @@ impl DefaultResolver {
             if result.quat.is_none() {
                 result.quat = defaults.quat;
             }
-            if result.euler.is_none() {
-                result.euler = defaults.euler;
-            }
-            if result.axisangle.is_none() {
-                result.axisangle = defaults.axisangle;
-            }
-            if result.xyaxes.is_none() {
-                result.xyaxes = defaults.xyaxes;
-            }
-            if result.zaxis.is_none() {
-                result.zaxis = defaults.zaxis;
-            }
+            (result.euler, result.axisangle, result.xyaxes, result.zaxis) = alternative_over(
+                (result.euler, result.axisangle, result.xyaxes, result.zaxis),
+                (
+                    defaults.euler,
+                    defaults.axisangle,
+                    defaults.xyaxes,
+                    defaults.zaxis,
+                ),
+            );
 
             // Exotic geom defaults
             if result.fromto.is_none() {
@@ -526,18 +525,15 @@ impl DefaultResolver {
             if result.quat.is_none() {
                 result.quat = defaults.quat;
             }
-            if result.euler.is_none() {
-                result.euler = defaults.euler;
-            }
-            if result.axisangle.is_none() {
-                result.axisangle = defaults.axisangle;
-            }
-            if result.xyaxes.is_none() {
-                result.xyaxes = defaults.xyaxes;
-            }
-            if result.zaxis.is_none() {
-                result.zaxis = defaults.zaxis;
-            }
+            (result.euler, result.axisangle, result.xyaxes, result.zaxis) = alternative_over(
+                (result.euler, result.axisangle, result.xyaxes, result.zaxis),
+                (
+                    defaults.euler,
+                    defaults.axisangle,
+                    defaults.xyaxes,
+                    defaults.zaxis,
+                ),
+            );
             if result.fromto.is_none() {
                 result.fromto = defaults.fromto;
             }
@@ -817,37 +813,43 @@ impl DefaultResolver {
             (None, None) => None,
             (Some(p), None) => Some(p.clone()),
             (None, Some(c)) => Some(c.clone()),
-            (Some(p), Some(c)) => Some(MjcfGeomDefaults {
-                geom_type: c.geom_type.or(p.geom_type),
-                friction: over(c.friction, p.friction),
-                density: c.density.or(p.density),
-                mass: c.mass.or(p.mass),
-                rgba: c.rgba.or(p.rgba),
-                contype: c.contype.or(p.contype),
-                conaffinity: c.conaffinity.or(p.conaffinity),
-                condim: c.condim.or(p.condim),
-                priority: c.priority.or(p.priority),
-                solmix: c.solmix.or(p.solmix),
-                margin: c.margin.or(p.margin),
-                gap: c.gap.or(p.gap),
-                solref: over(c.solref, p.solref),
-                solimp: over(c.solimp, p.solimp),
-                group: c.group.or(p.group),
-                pos: c.pos.or(p.pos),
-                quat: c.quat.or(p.quat),
-                euler: c.euler.or(p.euler),
-                axisangle: c.axisangle.or(p.axisangle),
-                xyaxes: c.xyaxes.or(p.xyaxes),
-                zaxis: c.zaxis.or(p.zaxis),
-                fromto: c.fromto.or(p.fromto),
-                mesh: c.mesh.clone().or_else(|| p.mesh.clone()),
-                hfield: c.hfield.clone().or_else(|| p.hfield.clone()),
-                material: c.material.clone().or_else(|| p.material.clone()),
-                fluidshape: c.fluidshape.or(p.fluidshape),
-                fluidcoef: over(c.fluidcoef, p.fluidcoef),
-                user: c.user.clone().or_else(|| p.user.clone()),
-                shellinertia: c.shellinertia.or(p.shellinertia),
-            }),
+            (Some(p), Some(c)) => {
+                let (euler, axisangle, xyaxes, zaxis) = alternative_over(
+                    (c.euler, c.axisangle, c.xyaxes, c.zaxis),
+                    (p.euler, p.axisangle, p.xyaxes, p.zaxis),
+                );
+                Some(MjcfGeomDefaults {
+                    geom_type: c.geom_type.or(p.geom_type),
+                    friction: over(c.friction, p.friction),
+                    density: c.density.or(p.density),
+                    mass: c.mass.or(p.mass),
+                    rgba: c.rgba.or(p.rgba),
+                    contype: c.contype.or(p.contype),
+                    conaffinity: c.conaffinity.or(p.conaffinity),
+                    condim: c.condim.or(p.condim),
+                    priority: c.priority.or(p.priority),
+                    solmix: c.solmix.or(p.solmix),
+                    margin: c.margin.or(p.margin),
+                    gap: c.gap.or(p.gap),
+                    solref: over(c.solref, p.solref),
+                    solimp: over(c.solimp, p.solimp),
+                    group: c.group.or(p.group),
+                    pos: c.pos.or(p.pos),
+                    quat: c.quat.or(p.quat),
+                    euler,
+                    axisangle,
+                    xyaxes,
+                    zaxis,
+                    fromto: c.fromto.or(p.fromto),
+                    mesh: c.mesh.clone().or_else(|| p.mesh.clone()),
+                    hfield: c.hfield.clone().or_else(|| p.hfield.clone()),
+                    material: c.material.clone().or_else(|| p.material.clone()),
+                    fluidshape: c.fluidshape.or(p.fluidshape),
+                    fluidcoef: over(c.fluidcoef, p.fluidcoef),
+                    user: c.user.clone().or_else(|| p.user.clone()),
+                    shellinertia: c.shellinertia.or(p.shellinertia),
+                })
+            }
         }
     }
 
@@ -974,21 +976,27 @@ impl DefaultResolver {
             (None, None) => None,
             (Some(p), None) => Some(p.clone()),
             (None, Some(c)) => Some(c.clone()),
-            (Some(p), Some(c)) => Some(MjcfSiteDefaults {
-                site_type: c.site_type.clone().or_else(|| p.site_type.clone()),
-                size: over(c.size, p.size),
-                rgba: c.rgba.or(p.rgba),
-                group: c.group.or(p.group),
-                pos: c.pos.or(p.pos),
-                quat: c.quat.or(p.quat),
-                euler: c.euler.or(p.euler),
-                axisangle: c.axisangle.or(p.axisangle),
-                xyaxes: c.xyaxes.or(p.xyaxes),
-                zaxis: c.zaxis.or(p.zaxis),
-                fromto: c.fromto.or(p.fromto),
-                material: c.material.clone().or_else(|| p.material.clone()),
-                user: c.user.clone().or_else(|| p.user.clone()),
-            }),
+            (Some(p), Some(c)) => {
+                let (euler, axisangle, xyaxes, zaxis) = alternative_over(
+                    (c.euler, c.axisangle, c.xyaxes, c.zaxis),
+                    (p.euler, p.axisangle, p.xyaxes, p.zaxis),
+                );
+                Some(MjcfSiteDefaults {
+                    site_type: c.site_type.clone().or_else(|| p.site_type.clone()),
+                    size: over(c.size, p.size),
+                    rgba: c.rgba.or(p.rgba),
+                    group: c.group.or(p.group),
+                    pos: c.pos.or(p.pos),
+                    quat: c.quat.or(p.quat),
+                    euler,
+                    axisangle,
+                    xyaxes,
+                    zaxis,
+                    fromto: c.fromto.or(p.fromto),
+                    material: c.material.clone().or_else(|| p.material.clone()),
+                    user: c.user.clone().or_else(|| p.user.clone()),
+                })
+            }
         }
     }
 
@@ -1026,6 +1034,30 @@ impl DefaultResolver {
                 solimp: over(c.solimp, p.solimp),
             }),
         }
+    }
+}
+
+/// A layer's four alternative orientations: euler, axisangle, xyaxes, zaxis.
+pub type Alternatives = (
+    Option<Vector3<f64>>,
+    Option<Vector4<f64>>,
+    Option<[f64; 6]>,
+    Option<Vector3<f64>>,
+);
+
+/// A layer's alternative orientation over the one it inherits, as MuJoCo
+/// 3.5.0's reader keeps it: one per element, the last read
+/// (`ReadAlternative`, `xml_base.cc:54-77`, sets the element's `alt.type` at
+/// each one it reads, and an element starts from its class's values). So a
+/// layer — an element over its class, a class over its parent — that writes
+/// any of the four takes none it inherits; its `quat` does not count
+/// (`ReadQuat` leaves `alt.type` alone, so an inherited alternative replaces
+/// a written `quat`).
+pub fn alternative_over(written: Alternatives, inherited: Alternatives) -> Alternatives {
+    if written.0.is_some() || written.1.is_some() || written.2.is_some() || written.3.is_some() {
+        written
+    } else {
+        inherited
     }
 }
 

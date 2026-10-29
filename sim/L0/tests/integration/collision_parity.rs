@@ -804,11 +804,9 @@ fn geom_distance_sensors_of_overlapping_boxes_as_mujoco() {
 /// cylinder each turned, 4 mm apart, in both argument orders, and two poses
 /// of a random search (an ellipsoid and a box whose distance subalgorithm
 /// meets a minor of exactly 0; an ellipsoid and a cylinder whose GJK runs
-/// out of its 35 iterations): MuJoCo's bit for bit, but on the second pose
-/// of the search the distance within 1e-15 and the normal and fromto within
-/// 1e-10. Measured there: 6.8e-17, 6.0e-12 (the normal) and 8.0e-16; that
-/// pose's second geom, turned by an MJCF quaternion, has a frame up to
-/// 4.4e-16 off MuJoCo's (ledger L166).
+/// out of its 35 iterations): MuJoCo's bit for bit. The second pose's second
+/// geom is turned by an MJCF quaternion, made unit as MuJoCo makes it (ledger
+/// L166).
 #[test]
 fn geom_distance_sensors_of_separated_pairs_as_mujoco() {
     let cases = golden()["geom_distance_apart"].clone();
@@ -818,12 +816,7 @@ fn geom_distance_sensors_of_separated_pairs_as_mujoco() {
         data.forward(&model).expect("forward");
         let want = floats(&case["sensordata"]);
         let ours: Vec<f64> = data.sensordata.iter().copied().collect();
-        let (bound, rest) = if name == "ellipsoid_cylinder_iterations_run_out" {
-            (1e-15, 1e-10)
-        } else {
-            (0.0, 0.0)
-        };
-        sensors_as_mujoco(name, &ours, &want, bound, rest);
+        sensors_as_mujoco(name, &ours, &want, 0.0, 0.0);
     }
 }
 

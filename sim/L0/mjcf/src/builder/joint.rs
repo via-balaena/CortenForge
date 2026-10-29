@@ -7,6 +7,7 @@ use nalgebra::{UnitQuaternion, Vector3};
 use sim_core::MjJointType;
 use tracing::warn;
 
+use super::orientation::{MJ_EPS, normvec};
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
 use crate::error::Result;
 use crate::types::{AngleUnit, MjcfJoint, MjcfJointType};
@@ -64,11 +65,15 @@ impl ModelBuilder {
         self.jnt_qpos_adr.push(qpos_adr);
         self.jnt_dof_adr.push(dof_adr);
         self.jnt_pos.push(joint.pos.unwrap_or_else(Vector3::zeros));
-        // Normalize joint axis, handling zero vector edge case
-        // MuJoCo defaults to Z-axis for unspecified/zero axes
+        // The written axis made unit once, as MuJoCo's `normvec`
+        // (`mjCJoint::Compile`, `user_objects.cc:2957-2960`). One too small to
+        // make unit falls back to z; MuJoCo refuses a hinge's or a slide's
+        // ("axis too small in joint") and sets a ball's or a free joint's to z
+        // before it looks (the Rigid-loading book's L20).
         let raw_axis = joint.axis.unwrap_or_else(Vector3::z);
-        let axis = if raw_axis.norm() > 1e-10 {
-            raw_axis.normalize()
+        let mut unit = [raw_axis.x, raw_axis.y, raw_axis.z];
+        let axis = if normvec(&mut unit) >= MJ_EPS {
+            Vector3::from(unit)
         } else {
             warn!(
                 joint_name = ?joint.name,

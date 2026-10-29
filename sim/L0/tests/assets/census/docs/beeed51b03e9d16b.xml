@@ -1,0 +1,1 @@
+<mujoco><default><default class="s"><geom type="sphere"/></default></default><worldbody><body name="b"><freejoint/><geom class="s" size="0.05" fromto="0 0 0 0 0 1"/></body></worldbody></mujoco>

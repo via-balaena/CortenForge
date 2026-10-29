@@ -8,6 +8,7 @@
 use std::collections::HashSet;
 
 use super::orientation::{quat_to_wxyz, resolve_orientation, site_orientation};
+use crate::error::{ElementKind, Location, Result};
 use crate::types::{MjcfBody, MjcfCompiler, MjcfModel};
 
 /// Apply `discardvisual` pre-processing: remove visual-only geoms (contype=0, conaffinity=0)
@@ -60,7 +61,13 @@ pub fn apply_discardvisual(mjcf: &mut MjcfModel) {
 /// transfers their geoms, sites, and children to the parent, reducing the body
 /// count. Bodies referenced by equality constraints, sensors, or actuators are
 /// not fused (their names must remain valid).
-pub fn apply_fusestatic(mjcf: &mut MjcfModel) {
+///
+/// # Errors
+///
+/// An orientation alternative `ResolveOrientation` refuses on a fused body,
+/// or on a geom, site or child body whose turn the fusion composes: MuJoCo
+/// compiles each before it fuses (`user_model.cc:4931-4938`).
+pub fn apply_fusestatic(mjcf: &mut MjcfModel) -> Result<()> {
     // Collect names of bodies referenced by constraints, sensors, actuators, skins
     let mut protected: HashSet<String> = HashSet::new();
 
@@ -136,17 +143,21 @@ pub fn apply_fusestatic(mjcf: &mut MjcfModel) {
     }
 
     // Recursively fuse static children in the worldbody tree.
-    fuse_static_body(&mut mjcf.worldbody, &protected, &mjcf.compiler);
+    fuse_static_body(&mut mjcf.worldbody, &protected, &mjcf.compiler)
 }
 
 /// Recursively fuse jointless, unprotected children into their parent body.
 /// Operates on a parent body: scans its children, and for any that are static
 /// (no joints, not protected), transfers their geoms, sites, and grandchildren
 /// to the parent, adjusting positions and orientations by the fused body's frame.
-fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler: &MjcfCompiler) {
+fn fuse_static_body(
+    parent: &mut MjcfBody,
+    protected: &HashSet<String>,
+    compiler: &MjcfCompiler,
+) -> Result<()> {
     // Depth-first: fuse within each child first
     for child in &mut parent.children {
-        fuse_static_body(child, protected, compiler);
+        fuse_static_body(child, protected, compiler)?;
     }
 
     // Now fuse static children into this parent
@@ -162,35 +173,53 @@ fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler
                 removed.quat,
                 removed.euler,
                 removed.axisangle,
-                None,
-                None,
+                removed.xyaxes,
+                removed.zaxis,
                 compiler,
-            );
+            )
+            .map_err(|e| {
+                e.on("body")
+                    .at(Location::named(ElementKind::Body, &removed.name))
+            })?;
+            let in_removed = |kind, name: &str| Location::named(kind, name).in_body(&removed.name);
             let has_rotation = body_quat.angle() > 1e-10;
 
             // Transform geoms into parent frame
             for g in &mut removed.geoms {
-                let gpos = g.pos.unwrap_or_else(nalgebra::Vector3::zeros);
-                if has_rotation {
-                    g.pos = Some(body_quat * gpos + body_pos);
-                    let geom_quat = resolve_orientation(
-                        g.quat.unwrap_or(nalgebra::Vector4::new(1.0, 0.0, 0.0, 0.0)),
-                        g.euler,
-                        g.axisangle,
-                        g.xyaxes,
-                        g.zaxis,
-                        compiler,
-                    );
-                    let composed = body_quat * geom_quat;
-                    g.quat = Some(quat_to_wxyz(&composed));
-                    // Normalize to quat-only after composition
-                    g.euler = None;
-                    g.axisangle = None;
-                    g.xyaxes = None;
-                    g.zaxis = None;
-                } else {
-                    g.pos = Some(gpos + body_pos);
+                // A fromto geom's pose is its segment's, which fusion does not
+                // move yet (the book's L42): it gets no `pos`, which beside a
+                // `fromto` is refused, and its alternative is never resolved,
+                // as MuJoCo never resolves it (`user_objects.cc:3677-3724`).
+                if g.fromto.is_some() {
+                    continue;
                 }
+                let gpos = g.pos.unwrap_or_else(nalgebra::Vector3::zeros);
+                if !has_rotation {
+                    g.pos = Some(gpos + body_pos);
+                    continue;
+                }
+                g.pos = Some(body_quat * gpos + body_pos);
+                let geom_quat = resolve_orientation(
+                    g.quat.unwrap_or(nalgebra::Vector4::new(1.0, 0.0, 0.0, 0.0)),
+                    g.euler,
+                    g.axisangle,
+                    g.xyaxes,
+                    g.zaxis,
+                    compiler,
+                )
+                .map_err(|e| {
+                    e.on("geom").at(in_removed(
+                        ElementKind::Geom,
+                        g.name.as_deref().unwrap_or(""),
+                    ))
+                })?;
+                let composed = body_quat * geom_quat;
+                g.quat = Some(quat_to_wxyz(&composed));
+                // Normalize to quat-only after composition
+                g.euler = None;
+                g.axisangle = None;
+                g.xyaxes = None;
+                g.zaxis = None;
             }
 
             // Transform sites into parent frame (resolved already: `resolve_sites`)
@@ -198,7 +227,9 @@ fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler
                 let s_pos = s.pos.unwrap_or_else(nalgebra::Vector3::zeros);
                 if has_rotation {
                     s.pos = Some(body_quat * s_pos + body_pos);
-                    let composed = body_quat * site_orientation(s, compiler);
+                    let site_quat = site_orientation(s, compiler)
+                        .map_err(|e| e.on("site").at(in_removed(ElementKind::Site, &s.name)))?;
+                    let composed = body_quat * site_quat;
                     s.quat = Some(quat_to_wxyz(&composed));
                     // Normalize to quat-only after composition
                     s.euler = None;
@@ -214,12 +245,21 @@ fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler
             for c in &mut removed.children {
                 if has_rotation {
                     c.pos = body_quat * c.pos + body_pos;
-                    let child_quat =
-                        resolve_orientation(c.quat, c.euler, c.axisangle, None, None, compiler);
+                    let child_quat = resolve_orientation(
+                        c.quat,
+                        c.euler,
+                        c.axisangle,
+                        c.xyaxes,
+                        c.zaxis,
+                        compiler,
+                    )
+                    .map_err(|e| e.on("body").at(Location::named(ElementKind::Body, &c.name)))?;
                     let composed = body_quat * child_quat;
                     c.quat = quat_to_wxyz(&composed);
                     c.euler = None;
                     c.axisangle = None;
+                    c.xyaxes = None;
+                    c.zaxis = None;
                 } else {
                     c.pos += body_pos;
                 }
@@ -238,6 +278,7 @@ fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler
             i += 1;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -537,7 +578,7 @@ mod tests {
         )
         .expect("should parse");
 
-        apply_fusestatic(&mut mjcf);
+        apply_fusestatic(&mut mjcf).expect("fuses");
 
         // actuator_target should still exist, unprotected should be fused
         let parent = &mjcf.worldbody.children[0];

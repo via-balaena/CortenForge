@@ -20,7 +20,7 @@ made it at the state, and qpos and qvel after it; and one undamped slide
 whose velocity actuator's kv is 1e-31, whose qDeriv MuJoCo adds however small
 it is, under implicitfast. The chain's joint axes
 are unit, its bodies' inertias written out and its geoms boxes, so what
-sim-mjcf compiles is MuJoCo's bit for bit (ledgers L146, L198 hold where it
+sim-mjcf compiles is MuJoCo's bit for bit (ledger L198 holds where it
 is not).
 """
 import json

@@ -40,25 +40,19 @@ impl ModelBuilder {
             .resolve_geom_asset_links(geom, geom_type)
             .map_err(|e| e.with_location_if_unknown(at()))?;
 
-        // Handle fromto for capsules/cylinders
-        let (pos, quat, size) = if let Some(fromto) = geom.fromto {
-            compute_fromto_pose(fromto, &geom.size)
-        } else {
-            // Orientation resolution: euler > axisangle > xyaxes > zaxis > quat.
-            let orientation = resolve_orientation(
-                geom.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
-                geom.euler,
-                geom.axisangle,
-                geom.xyaxes,
-                geom.zaxis,
-                &self.compiler,
-            );
-            (
-                geom.pos.unwrap_or_else(Vector3::zeros),
-                orientation,
-                geom_size_to_vec3(&geom.size, geom_type),
-            )
-        };
+        // A geom's `fromto` is already its `pos`, `quat` and `size`
+        // (`resolve_geom_fromto`, where its class is applied).
+        let quat = resolve_orientation(
+            geom.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
+            geom.euler,
+            geom.axisangle,
+            geom.xyaxes,
+            geom.zaxis,
+            &self.compiler,
+        )
+        .map_err(|e| e.on("geom").at(at()))?;
+        let pos = geom.pos.unwrap_or_else(Vector3::zeros);
+        let size = geom_size_to_vec3(&geom.size, geom_type);
 
         // Override geom_size for hfield geoms with asset dimensions.
         // geom_size_to_vec3() has no access to hfield asset data (only gets the MJCF
@@ -138,19 +132,22 @@ impl ModelBuilder {
             self.site_name_to_id.insert(site.name.clone(), site_id);
         }
 
-        self.site_body.push(body_id);
-        self.site_type.push(site_geom_type(site).map_err(|e| {
-            e.with_location_if_unknown(Location::named(ElementKind::Site, &site.name).within_nth(
+        let at = || {
+            Location::named(ElementKind::Site, &site.name).within_nth(
                 ElementKind::Body,
                 self.body_name.get(body_id).and_then(Option::as_deref),
                 body_id,
-            ))
-        })?);
+            )
+        };
+        self.site_body.push(body_id);
+        self.site_type
+            .push(site_geom_type(site).map_err(|e| e.with_location_if_unknown(at()))?);
 
         // The site's class values and its `fromto` are already in it
         // (`resolve_sites`).
         self.site_pos.push(site.pos.unwrap_or_else(Vector3::zeros));
-        self.site_quat.push(site_orientation(site, &self.compiler));
+        self.site_quat
+            .push(site_orientation(site, &self.compiler).map_err(|e| e.on("site").at(at()))?);
         self.site_size.push(site_size(site));
 
         self.site_name.push(if site.name.is_empty() {
@@ -317,32 +314,29 @@ fn site_size(site: &MjcfSite) -> Vector3<f64> {
     Vector3::from(written_over(site.size, [0.005; 3]))
 }
 
-/// A site's `fromto` made into its `pos`, `quat` and `size` in the frame it is
-/// written in, as MuJoCo's `mjCSite::Compile` reads it before composing that
-/// frame (`user_objects.cc:3937-3971`): on a capsule, cylinder, ellipsoid or
-/// box only, and not beside a `pos` other than 0; half the segment's length
-/// in `size[1]` (in `size[2]` for an ellipsoid or a box, whose `size[1]` takes
+/// A `fromto` made into a position, an orientation (w, x, y, z) and a size as
+/// MuJoCo 3.5.0's compiler makes them for a geom (`mjCGeom::Compile`,
+/// `user_objects.cc:3677-3715`) and a site (`mjCSite::Compile`, `:3937-3971`), in
+/// the frame the element is written in: on a capsule, cylinder, ellipsoid or box
+/// only, and not beside a `pos` other than 0; half the segment's length in
+/// `size[1]` (in `size[2]` for an ellipsoid or a box, whose `size[1]` takes
 /// `size[0]`), its middle the position, and the turn of z onto `from − to` the
-/// orientation, in place of any other the site or its class gives.
-pub fn resolve_site_fromto(site: &mut MjcfSite) -> Result<()> {
-    let Some(fromto) = site.fromto.take() else {
-        return Ok(());
-    };
-    let geom_type = site_geom_type(site)?;
-    let refuse = |what: &str| MjcfError::invalid_value("site", "fromto", what);
+/// orientation. Points less than 1e-7 apart are refused: `normvec` gives their
+/// segment a norm of 0. `Err` holds the refusal's reason.
+fn fromto_pose(
+    fromto: [f64; 6],
+    geom_type: GeomType,
+    pos: Option<Vector3<f64>>,
+    mut size: Vector3<f64>,
+) -> std::result::Result<(Vector3<f64>, [f64; 4], Vector3<f64>), &'static str> {
     if !matches!(
         geom_type,
         GeomType::Capsule | GeomType::Cylinder | GeomType::Ellipsoid | GeomType::Box
     ) {
-        return Err(refuse(
-            "fromto requires a capsule, cylinder, ellipsoid or box",
-        ));
+        return Err("fromto requires a capsule, cylinder, ellipsoid or box");
     }
-    if site
-        .pos
-        .is_some_and(|p| p.x != 0.0 || p.y != 0.0 || p.z != 0.0)
-    {
-        return Err(refuse("both pos and fromto defined"));
+    if pos.is_some_and(|p| p.x != 0.0 || p.y != 0.0 || p.z != 0.0) {
+        return Err("both pos and fromto defined");
     }
     let mut vec = [
         fromto[0] - fromto[3],
@@ -351,9 +345,8 @@ pub fn resolve_site_fromto(site: &mut MjcfSite) -> Result<()> {
     ];
     let half = normvec(&mut vec) / 2.0;
     if half < MJ_EPS {
-        return Err(refuse("fromto points too close"));
+        return Err("fromto points too close");
     }
-    let mut size = site_size(site);
     size[1] = half;
     if matches!(geom_type, GeomType::Ellipsoid | GeomType::Box) {
         size[2] = size[1];
@@ -362,12 +355,22 @@ pub fn resolve_site_fromto(site: &mut MjcfSite) -> Result<()> {
     // MuJoCo's arithmetic (`(a + b) / 2`), which `f64::midpoint` is not near
     // overflow.
     #[allow(clippy::manual_midpoint)]
-    let pos = Vector3::new(
+    let middle = Vector3::new(
         (fromto[0] + fromto[3]) / 2.0,
         (fromto[1] + fromto[4]) / 2.0,
         (fromto[2] + fromto[5]) / 2.0,
     );
-    let quat = z2quat(&vec);
+    Ok((middle, z2quat(&vec), size))
+}
+
+/// A site's `fromto` made into its `pos`, `quat` and `size` (`fromto_pose`), in
+/// place of any other orientation the site or its class gives.
+pub fn resolve_site_fromto(site: &mut MjcfSite) -> Result<()> {
+    let Some(fromto) = site.fromto.take() else {
+        return Ok(());
+    };
+    let (pos, quat, size) = fromto_pose(fromto, site_geom_type(site)?, site.pos, site_size(site))
+        .map_err(|what| MjcfError::invalid_value("site", "fromto", what))?;
     site.pos = Some(pos);
     site.quat = Some(Vector4::new(quat[0], quat[1], quat[2], quat[3]));
     site.size = Some(Prefix::full([size.x, size.y, size.z]));
@@ -378,29 +381,44 @@ pub fn resolve_site_fromto(site: &mut MjcfSite) -> Result<()> {
     Ok(())
 }
 
-/// Resolve `fromto` into `pos`/`quat`/`size` for a geom.
+/// A geom's `fromto` made into its `pos`, `quat` and `size` (`fromto_pose`),
+/// once its class is applied and before its mass or its arrays are taken (its
+/// class's `pos` counts: an element starts from its class's values), in place
+/// of any other orientation the geom or its class gives (MuJoCo never resolves
+/// an alternative beside a `fromto`). A geom that also names a mesh (a name
+/// that is not empty) is refused after, as MuJoCo refuses it
+/// (`user_objects.cc:3727-3730`). Its radius is
+/// `size[0]`: a parsed geom's default size is 0.1 (`MjcfGeom::default`), where
+/// MuJoCo's is 0 and refused (the book's L18).
 ///
-/// MuJoCo compiles `fromto` early (mjCGeom::Compile), converting it to
-/// pos/quat/size before any downstream computation. Our `process_geom` does
-/// this for the model arrays, but the raw `MjcfGeom` structs passed to
-/// `compute_inertia_from_geoms` still carry the un-resolved `fromto`.
+/// # Errors
 ///
-/// This function produces a resolved copy (consumed `fromto` → populated
-/// `pos`/`quat`/`size`). Returns the geom unchanged (cloned) if no `fromto`.
-pub fn resolve_geom_fromto(geom: &MjcfGeom) -> MjcfGeom {
-    if let Some(fromto) = geom.fromto {
-        let (pos, quat, size) = compute_fromto_pose(fromto, &geom.size);
-        let q = quat.quaternion();
-        MjcfGeom {
-            pos: Some(pos),
-            quat: Some(Vector4::new(q.w, q.i, q.j, q.k)),
-            size: vec![size[0], size[1], size[2]],
-            fromto: None,
-            ..geom.clone()
-        }
-    } else {
-        geom.clone()
+/// [`MjcfError::InvalidValue`] on `fromto` for each refusal above.
+pub fn resolve_geom_fromto(geom: &mut MjcfGeom) -> Result<()> {
+    let Some(fromto) = geom.fromto.take() else {
+        return Ok(());
+    };
+    let radius = geom.size.first().copied().unwrap_or(0.1);
+    let refuse = |what: &str| MjcfError::invalid_value("geom", "fromto", what);
+    let (pos, quat, size) = fromto_pose(
+        fromto,
+        convert_geom_type(geom.geom_type),
+        geom.pos,
+        Vector3::new(radius, 0.0, 0.0),
+    )
+    .map_err(refuse)?;
+    // An empty name names no mesh (MuJoCo resolves a non-empty one only).
+    if geom.mesh.as_deref().is_some_and(|m| !m.is_empty()) {
+        return Err(refuse("fromto cannot be used with mesh geom"));
     }
+    geom.pos = Some(pos);
+    geom.quat = Some(Vector4::new(quat[0], quat[1], quat[2], quat[3]));
+    geom.size = vec![size.x, size.y, size.z];
+    geom.euler = None;
+    geom.axisangle = None;
+    geom.xyaxes = None;
+    geom.zaxis = None;
+    Ok(())
 }
 
 /// Compute mass of a single geom.
@@ -864,46 +882,6 @@ fn legendre_pd(n: usize, x: f64) -> (f64, f64) {
     (p1, dp)
 }
 
-/// Compute pose from fromto specification.
-pub fn compute_fromto_pose(
-    fromto: [f64; 6],
-    size: &[f64],
-) -> (Vector3<f64>, UnitQuaternion<f64>, Vector3<f64>) {
-    let from = Vector3::new(fromto[0], fromto[1], fromto[2]);
-    let to = Vector3::new(fromto[3], fromto[4], fromto[5]);
-
-    let center = (from + to) / 2.0;
-    let axis = to - from;
-    let half_length = axis.norm() / 2.0;
-    let radius = size.first().copied().unwrap_or(0.05);
-
-    // Compute rotation to align Z with axis
-    let quat = if axis.norm() > 1e-10 {
-        let axis_normalized = axis.normalize();
-        let z_axis = Vector3::z();
-
-        if (axis_normalized - z_axis).norm() < 1e-10 {
-            UnitQuaternion::identity()
-        } else if (axis_normalized + z_axis).norm() < 1e-10 {
-            UnitQuaternion::from_axis_angle(
-                &nalgebra::Unit::new_normalize(Vector3::x()),
-                std::f64::consts::PI,
-            )
-        } else {
-            let rot_axis = z_axis.cross(&axis_normalized);
-            // Clamp to avoid NaN from floating-point precision issues
-            let angle = z_axis.dot(&axis_normalized).clamp(-1.0, 1.0).acos();
-            UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(rot_axis), angle)
-        }
-    } else {
-        UnitQuaternion::identity()
-    };
-
-    // Convention: size.x = radius, size.y = half_length, size.z = 0.0
-    // This matches geom_size_to_vec3 for Capsule/Cylinder.
-    (center, quat, Vector3::new(radius, half_length, 0.0))
-}
-
 /// Convert geom size array to `Vector3`.
 pub fn geom_size_to_vec3(size: &[f64], geom_type: GeomType) -> Vector3<f64> {
     match geom_type {
@@ -931,6 +909,14 @@ pub fn geom_size_to_vec3(size: &[f64], geom_type: GeomType) -> Vector3<f64> {
             let rz = size.get(2).copied().unwrap_or(ry);
             Vector3::new(rx, ry, rz)
         }
+        // As written, as MuJoCo keeps it; a missing value 0 here, where MuJoCo
+        // takes its class's and refuses a `size[2]` of 0 or below (the book's
+        // L18).
+        GeomType::Plane => Vector3::new(
+            size.first().copied().unwrap_or(0.0),
+            size.get(1).copied().unwrap_or(0.0),
+            size.get(2).copied().unwrap_or(0.0),
+        ),
         _ => Vector3::new(0.1, 0.1, 0.1),
     }
 }
@@ -941,6 +927,24 @@ mod tests {
     use super::compute_geom_inertia;
     use crate::types::{MjcfGeom, MjcfGeomType, Prefix};
     use nalgebra::Vector3;
+
+    /// A plane's size as written, as MuJoCo 3.5.0 keeps it (`geom_size`,
+    /// measured on the S21 oracle; book Rigid-loading L14).
+    #[test]
+    fn a_planes_size_is_kept_as_written() {
+        for (size, mujoco) in [("2 3 0.5", [2.0, 3.0, 0.5]), ("0 0 1", [0.0, 0.0, 1.0])] {
+            let model = crate::builder::load_model(&format!(
+                r#"<mujoco><worldbody><geom type="plane" size="{size}"/></worldbody></mujoco>"#
+            ))
+            .expect("loads");
+            let got = model.geom_size[0];
+            assert_eq!(
+                [got.x, got.y, got.z].map(f64::to_bits),
+                mujoco.map(f64::to_bits),
+                "plane size=\"{size}\": {got:?}"
+            );
+        }
+    }
 
     /// Test capsule inertia computation is physically reasonable.
     #[test]

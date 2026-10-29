@@ -1894,8 +1894,8 @@ def sensor_trios():
 
 
 # A plane's turn whose quaternion is of unit norm in floating point, (2, 4, 5,
-# 6)/9: MuJoCo keeps a written quaternion within 1e-14 of unit norm, sim-mjcf
-# normalises every one (ledger L264), and this one both hold alike.
+# 6)/9: MuJoCo and sim-mjcf keep a written quaternion within 1e-14 of unit
+# norm as written (ledger L264).
 PLANE_TURN = "0.2222222222222222 0.4444444444444444 0.5555555555555556 0.6666666666666666"
 # A plane's position off the origin: a distance taken from the centres'
 # difference (MuJoCo's `pos2 - pos1`) and one taken from each centre alone

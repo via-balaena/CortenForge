@@ -233,15 +233,14 @@ fn assert_wrap(name: &str, case: &Value, tol: Tol) {
 /// the plane held the axis least aligned with that direction: the sphere-wrap
 /// example's tendon velocity read 0 at the start, against MuJoCo's
 /// 0.007071067811865478 (A20 §1A.3.9, U11). As MuJoCo's ([`Tol::Golden`]),
-/// but the tie case within TOL: its hinge's axis "1 -1 0" loads 1 ulp off
-/// MuJoCo's (ledger L146), which puts one `ten_J` entry 1 ulp off; with
-/// MuJoCo's axis written in, it is bit for bit too (measured).
+/// the tie case too: its hinge's axis "1 -1 0" is made unit once, as MuJoCo
+/// makes it (ledger L146).
 #[test]
 fn collinear_sphere_wrap_takes_mujocos_plane() {
     let g = golden();
     for (name, tol) in [
         ("sphere_wrap", Tol::Golden),
-        ("sphere_wrap_tie", Tol::Abs(TOL)),
+        ("sphere_wrap_tie", Tol::Golden),
         ("sphere_wrap_ties", Tol::Golden),
         ("collinear_slides", Tol::Golden),
     ] {

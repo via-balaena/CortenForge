@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="b"><freejoint/><geom type="capsule" size="0.05" fromto="0.1 0.2 0.3 0.1 0.2 0.3"/></body></worldbody></mujoco>

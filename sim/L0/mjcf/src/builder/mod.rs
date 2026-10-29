@@ -51,7 +51,9 @@ use crate::types::{
 };
 
 use self::compiler::{apply_discardvisual, apply_fusestatic};
-use self::frame::{expand_frames, resolve_sites, validate_childclass_references};
+use self::frame::{
+    expand_frames, resolve_class_fromto, resolve_sites, validate_childclass_references,
+};
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
 ///
@@ -244,15 +246,17 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
 
     // Each site's class values and its `fromto`, before frames and static bodies move it.
     resolve_sites(&mut mjcf.worldbody, &pre_resolver, None)?;
+    // Each geom's class's `fromto`, for the same passes to see it.
+    resolve_class_fromto(&mut mjcf.worldbody, &pre_resolver, None);
 
     // Expand <frame> elements first: compose transforms into children, lift onto parent bodies.
     // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
     // visible to those passes (matches MuJoCo, which expands frames during XML parsing).
-    expand_frames(&mut mjcf.worldbody, &mjcf.compiler, None);
+    expand_frames(&mut mjcf.worldbody, &mjcf.compiler, None)?;
 
     // Expand <composite> elements: generates body chains from composite definitions.
-    // Runs AFTER frame expansion (composites inside frames work) and BEFORE
-    // discardvisual/fusestatic (which need to see the expanded bodies).
+    // Runs AFTER frame expansion and BEFORE discardvisual/fusestatic (which need
+    // to see the expanded bodies).
     let composite_excludes = composite::expand_composites(&mut mjcf.worldbody)?;
     crate::validation::check_tree_depth(&mjcf.worldbody)?;
     mjcf.contact.excludes.extend(composite_excludes);
@@ -261,7 +265,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         apply_discardvisual(&mut mjcf);
     }
     if mjcf.compiler.fusestatic {
-        apply_fusestatic(&mut mjcf);
+        apply_fusestatic(&mut mjcf)?;
     }
 
     let mut builder = ModelBuilder::new();

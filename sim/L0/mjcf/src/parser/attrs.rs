@@ -31,13 +31,6 @@ use std::num::IntErrorKind;
 use crate::error::{MjcfError, Result, ValueCount};
 use crate::types::{Prefix, TfAuto};
 
-/// Safe axis normalization with Z fallback for zero-length vectors.
-#[inline]
-pub(super) fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
-    let n = v.norm();
-    if n > 1e-10 { v / n } else { Vector3::z() }
-}
-
 /// C's `isspace` in the "C" locale: Rust's ASCII whitespace and the vertical tab.
 pub(super) fn is_c_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\u{b}' | '\u{c}' | '\r')
