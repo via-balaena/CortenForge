@@ -933,6 +933,13 @@ pub fn geom_size_to_vec3(size: &[f64], geom_type: GeomType) -> Vector3<f64> {
             let rz = size.get(2).copied().unwrap_or(ry);
             Vector3::new(rx, ry, rz)
         }
+        // As written, a missing value 0, as MuJoCo keeps it (its overlay on a
+        // class's size, value by value, is the book's L18).
+        GeomType::Plane => Vector3::new(
+            size.first().copied().unwrap_or(0.0),
+            size.get(1).copied().unwrap_or(0.0),
+            size.get(2).copied().unwrap_or(0.0),
+        ),
         _ => Vector3::new(0.1, 0.1, 0.1),
     }
 }
@@ -943,6 +950,24 @@ mod tests {
     use super::compute_geom_inertia;
     use crate::types::{MjcfGeom, MjcfGeomType, Prefix};
     use nalgebra::Vector3;
+
+    /// A plane's size as written, a missing value 0, as MuJoCo 3.5.0 keeps it
+    /// (`geom_size`, measured on the S21 oracle; book Rigid-loading L14).
+    #[test]
+    fn a_planes_size_is_kept_as_written() {
+        for (size, mujoco) in [("2 3 0.5", [2.0, 3.0, 0.5]), ("0 0 1", [0.0, 0.0, 1.0])] {
+            let model = crate::builder::load_model(&format!(
+                r#"<mujoco><worldbody><geom type="plane" size="{size}"/></worldbody></mujoco>"#
+            ))
+            .expect("loads");
+            let got = model.geom_size[0];
+            assert_eq!(
+                [got.x, got.y, got.z].map(f64::to_bits),
+                mujoco.map(f64::to_bits),
+                "plane size=\"{size}\": {got:?}"
+            );
+        }
+    }
 
     /// Test capsule inertia computation is physically reasonable.
     #[test]

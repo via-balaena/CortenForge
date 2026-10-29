@@ -161,3 +161,31 @@ fn a_rangefinder_casts_a_signed_distance_field_through_its_shape() {
         "outside the grid: {outside}"
     );
 }
+
+/// A plane bounds a ray by its size where the size is positive, as MuJoCo
+/// 3.5.0's `ray_plane` does (`engine_ray.c:204-230`): a rangefinder 1 above a
+/// plane of size 1 × 1, looking down, reads 1 inside it and −1 past its x
+/// edge, and 1 past it where that half-size is 0 (measured on the S21 oracle).
+/// Arithmetic only, so bit for bit everywhere.
+#[test]
+fn a_rangefinder_misses_past_a_bounded_planes_edge_as_mujoco() {
+    for (x, size, mujoco) in [
+        ("0.5", "1 1 0.1", 1.0),
+        ("1.5", "1 1 0.1", -1.0),
+        ("1.5", "0 0 0.1", 1.0),
+        ("1.5", "0 1 0.1", 1.0),
+    ] {
+        let model = sim_mjcf::load_model(&format!(
+            r#"<mujoco><worldbody><geom type="plane" size="{size}"/><body name="b" pos="{x} 0 1"><joint type="slide" axis="0 0 1"/><geom type="sphere" size="0.01" contype="0" conaffinity="0"/><site name="s" zaxis="0 0 -1"/></body></worldbody><sensor><rangefinder site="s"/></sensor></mujoco>"#
+        ))
+        .expect("load");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        assert_eq!(
+            data.sensordata[0].to_bits(),
+            f64::to_bits(mujoco),
+            "x {x}, plane size {size}: {}",
+            data.sensordata[0]
+        );
+    }
+}
