@@ -45,6 +45,7 @@ pub(super) fn parse_worldbody<R: BufRead>(reader: &mut Reader<R>, empty: bool) -
                         let composite = parse_composite(reader, e, empty)?;
                         worldbody.composites.push(composite);
                     }
+                    tag @ (b"replicate" | b"attach") => return Err(not_attached(tag)),
                     name => skip_element(reader, name, empty)?,
                 }
             }
@@ -112,6 +113,7 @@ pub(super) fn parse_body<R: BufRead>(
                     b"frame" => body.frames.push(parse_frame(reader, e, empty)?),
                     b"composite" => body.composites.push(parse_composite(reader, e, empty)?),
                     b"plugin" => body.plugin = Some(parse_plugin_ref(reader, e, empty)?),
+                    tag @ (b"replicate" | b"attach") => return Err(not_attached(tag)),
                     name => skip_element(reader, name, empty)?,
                 }
             }
@@ -371,6 +373,7 @@ pub(super) fn parse_frame<R: BufRead>(
                             String::from_utf8_lossy(tag)
                         )));
                     }
+                    tag @ (b"replicate" | b"attach") => return Err(not_attached(tag)),
                     name => skip_element(reader, name, empty)?,
                 }
             }
@@ -383,6 +386,13 @@ pub(super) fn parse_frame<R: BufRead>(
     }
 
     Ok(frame)
+}
+
+/// A `<replicate>` or an `<attach>`: MuJoCo 3.5.0 makes each with
+/// `mjs_attach`, which sim-mjcf does not have, so it is refused rather than
+/// skipped (registry D-REPLICATE, D-ATTACH).
+fn not_attached(tag: &[u8]) -> MjcfError {
+    MjcfError::unsupported(format!("<{}>", String::from_utf8_lossy(tag)))
 }
 
 /// An element whose children this parser does not read: its attributes, by

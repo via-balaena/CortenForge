@@ -2204,3 +2204,9 @@ cde6bfec3384a434	sim/L0/mjcf/tests/self_closing.rs:116
 ce59bfa47e5b4459	sim/L0/mjcf/tests/self_closing.rs:14
 b6cf674e352a380a	sim/L0/mjcf/tests/self_closing.rs:106
 860f108082b197fa	sim/L0/mjcf/tests/self_closing.rs:100
+23648b5c459d0caa	sim/L0/mjcf/tests/attach_and_replicate.rs:30
+578c8e4a47f32a58	sim/L0/mjcf/tests/attach_and_replicate.rs:41
+58098ba1d9df1b0a	sim/L0/mjcf/tests/attach_and_replicate.rs:40
+5d3159e8beb6b6bf	sim/L0/mjcf/tests/attach_and_replicate.rs:42
+9d1ae9d74b6e8f7a	sim/L0/mjcf/tests/attach_and_replicate.rs:31
+b5d72df1ed1d4360	sim/L0/mjcf/tests/attach_and_replicate.rs:29
