@@ -13,57 +13,22 @@ use crate::types::{
 
 use super::attrs::{Attrs, skip_element};
 
-/// Parse equality constraints element.
-pub(super) fn parse_equality<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfEquality> {
+/// Parse equality constraints element (`empty`: it closed itself, so it has
+/// none).
+pub(super) fn parse_equality<R: BufRead>(
+    reader: &mut Reader<R>,
+    empty: bool,
+) -> Result<MjcfEquality> {
     let mut equality = MjcfEquality::new();
+    if empty {
+        return Ok(equality);
+    }
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
-                    b"connect" => {
-                        let connect = parse_connect_attrs(e)?;
-                        let idx = equality.connects.len();
-                        equality.connects.push(connect);
-                        equality.order.push((EqualityKind::Connect, idx));
-                        // Skip to closing tag
-                        skip_element(reader, &elem_name)?;
-                    }
-                    b"weld" => {
-                        let weld = parse_weld_attrs(e)?;
-                        let idx = equality.welds.len();
-                        equality.welds.push(weld);
-                        equality.order.push((EqualityKind::Weld, idx));
-                        skip_element(reader, &elem_name)?;
-                    }
-                    b"joint" => {
-                        let joint_eq = parse_joint_equality_attrs(e)?;
-                        let idx = equality.joints.len();
-                        equality.joints.push(joint_eq);
-                        equality.order.push((EqualityKind::Joint, idx));
-                        skip_element(reader, &elem_name)?;
-                    }
-                    b"distance" => {
-                        let distance = parse_distance_attrs(e)?;
-                        let idx = equality.distances.len();
-                        equality.distances.push(distance);
-                        equality.order.push((EqualityKind::Distance, idx));
-                        skip_element(reader, &elem_name)?;
-                    }
-                    b"tendon" => {
-                        let ten_eq = parse_tendon_equality_attrs(e)?;
-                        let idx = equality.tendons.len();
-                        equality.tendons.push(ten_eq);
-                        equality.order.push((EqualityKind::Tendon, idx));
-                        skip_element(reader, &elem_name)?;
-                    }
-                    // Skip other equality constraint types (flex)
-                    _ => skip_element(reader, &elem_name)?,
-                }
-            }
-            Ok(Event::Empty(ref e)) => {
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
                     b"connect" => {
                         let connect = parse_connect_attrs(e)?;
@@ -95,8 +60,10 @@ pub(super) fn parse_equality<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfE
                         equality.tendons.push(ten_eq);
                         equality.order.push((EqualityKind::Tendon, idx));
                     }
-                    _ => {} // Ignore other self-closing equality constraint types
+                    // Skip other equality constraint types (flex)
+                    _ => {}
                 }
+                skip_element(reader, e.name().as_ref(), empty)?;
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"equality" => break,
             Ok(Event::Eof) => return Err(MjcfError::eof_in("equality")),

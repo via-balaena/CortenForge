@@ -13,57 +13,41 @@ use crate::types::{
 
 use super::attrs::{Attrs, skip_element};
 use super::composite::parse_composite;
-use super::extension::{parse_plugin_ref, parse_plugin_ref_empty};
+use super::extension::parse_plugin_ref;
 
-/// Parse worldbody element.
-pub(super) fn parse_worldbody<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfBody> {
+/// Parse worldbody element (`empty`: it closed itself, so it has no children).
+pub(super) fn parse_worldbody<R: BufRead>(reader: &mut Reader<R>, empty: bool) -> Result<MjcfBody> {
     let mut worldbody = MjcfBody::new("world");
+    if empty {
+        return Ok(worldbody);
+    }
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
-                    b"body" => {
-                        let body = parse_body(reader, e)?;
-                        worldbody.children.push(body);
-                    }
+            // A self-closing element is the same element with no children, so
+            // one arm reads both forms (MuJoCo's reader does not tell them apart).
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let empty = matches!(event, Event::Empty(_));
+                match e.name().as_ref() {
+                    b"body" => worldbody.children.push(parse_body(reader, e, empty)?),
                     b"geom" => {
                         // Static geom attached to world
-                        let geom = parse_geom(reader, e)?;
+                        let geom = parse_leaf(reader, e, empty, parse_geom_attrs)?;
                         worldbody.geoms.push(geom);
                     }
                     b"site" => {
-                        let site = parse_site(reader, e)?;
+                        let site = parse_leaf(reader, e, empty, parse_site_attrs)?;
                         worldbody.sites.push(site);
                     }
-                    b"frame" => {
-                        let frame = parse_frame(reader, e)?;
-                        worldbody.frames.push(frame);
-                    }
+                    b"frame" => worldbody.frames.push(parse_frame(reader, e, empty)?),
                     b"composite" => {
-                        let composite = parse_composite(reader, e)?;
+                        let composite = parse_composite(reader, e, empty)?;
                         worldbody.composites.push(composite);
                     }
-                    _ => skip_element(reader, &elem_name)?,
+                    name => skip_element(reader, name, empty)?,
                 }
             }
-            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
-                b"geom" => {
-                    let geom = parse_geom_attrs(e)?;
-                    worldbody.geoms.push(geom);
-                }
-                b"site" => {
-                    let site = parse_site_attrs(e)?;
-                    worldbody.sites.push(site);
-                }
-                b"frame" => {
-                    let frame = parse_frame_attrs(e)?;
-                    worldbody.frames.push(frame);
-                }
-                _ => {}
-            },
             Ok(Event::End(ref e)) if e.name().as_ref() == b"worldbody" => break,
             Ok(Event::Eof) => {
                 return Err(MjcfError::eof_in("worldbody"));
@@ -77,26 +61,33 @@ pub(super) fn parse_worldbody<R: BufRead>(reader: &mut Reader<R>) -> Result<Mjcf
     Ok(worldbody)
 }
 
-/// Parse body element.
+/// Parse body element (`empty`: it closed itself, so it has no children).
 pub(super) fn parse_body<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
+    empty: bool,
 ) -> Result<MjcfBody> {
     let mut body = parse_body_attrs(start)?;
+    if empty {
+        return Ok(body);
+    }
     let mut buf = Vec::new();
     let mut joint_counter = 0;
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
-                    b"body" => {
-                        let child = parse_body(reader, e)?;
-                        body.children.push(child);
-                    }
-                    b"joint" => {
-                        let mut joint = parse_joint(reader, e)?;
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let empty = matches!(event, Event::Empty(_));
+                match e.name().as_ref() {
+                    b"body" => body.children.push(parse_body(reader, e, empty)?),
+                    tag @ (b"joint" | b"freejoint") => {
+                        // <freejoint/> is MuJoCo shorthand for <joint type="free"/>
+                        let read = if tag == b"joint" {
+                            parse_joint_attrs
+                        } else {
+                            parse_freejoint_attrs
+                        };
+                        let mut joint = parse_leaf(reader, e, empty, read)?;
                         // Auto-generate name only when the parent body has a
                         // name. Anonymous joints in anonymous bodies stay
                         // empty — mirrors the parser's anonymous-body fix
@@ -109,85 +100,21 @@ pub(super) fn parse_body<R: BufRead>(
                         joint.body = Some(body.name.clone());
                         body.joints.push(joint);
                     }
-                    b"geom" => {
-                        let geom = parse_geom(reader, e)?;
-                        body.geoms.push(geom);
-                    }
+                    b"geom" => body
+                        .geoms
+                        .push(parse_leaf(reader, e, empty, parse_geom_attrs)?),
                     b"inertial" => {
-                        body.inertial = Some(parse_inertial(reader, e)?);
+                        body.inertial = Some(parse_leaf(reader, e, empty, parse_inertial_attrs)?);
                     }
-                    b"site" => {
-                        let site = parse_site(reader, e)?;
-                        body.sites.push(site);
-                    }
-                    b"freejoint" => {
-                        // <freejoint>...</freejoint> form (rare but valid)
-                        let mut joint = parse_freejoint_attrs(e)?;
-                        if joint.name.is_empty() && !body.name.is_empty() {
-                            joint.name = format!("{}_joint{}", body.name, joint_counter);
-                            joint_counter += 1;
-                        }
-                        joint.body = Some(body.name.clone());
-                        body.joints.push(joint);
-                        // Skip to end tag (freejoint has no children)
-                        skip_element(reader, &elem_name)?;
-                    }
-                    b"frame" => {
-                        let frame = parse_frame(reader, e)?;
-                        body.frames.push(frame);
-                    }
-                    b"composite" => {
-                        let composite = parse_composite(reader, e)?;
-                        body.composites.push(composite);
-                    }
-                    b"plugin" => {
-                        let plugin_ref = parse_plugin_ref(reader, e)?;
-                        body.plugin = Some(plugin_ref);
-                    }
-                    _ => skip_element(reader, &elem_name)?,
+                    b"site" => body
+                        .sites
+                        .push(parse_leaf(reader, e, empty, parse_site_attrs)?),
+                    b"frame" => body.frames.push(parse_frame(reader, e, empty)?),
+                    b"composite" => body.composites.push(parse_composite(reader, e, empty)?),
+                    b"plugin" => body.plugin = Some(parse_plugin_ref(reader, e, empty)?),
+                    name => skip_element(reader, name, empty)?,
                 }
             }
-            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
-                b"joint" => {
-                    let mut joint = parse_joint_attrs(e)?;
-                    if joint.name.is_empty() && !body.name.is_empty() {
-                        joint.name = format!("{}_joint{}", body.name, joint_counter);
-                        joint_counter += 1;
-                    }
-                    joint.body = Some(body.name.clone());
-                    body.joints.push(joint);
-                }
-                b"freejoint" => {
-                    // <freejoint/> is MuJoCo shorthand for <joint type="free"/>
-                    let mut joint = parse_freejoint_attrs(e)?;
-                    if joint.name.is_empty() && !body.name.is_empty() {
-                        joint.name = format!("{}_joint{}", body.name, joint_counter);
-                        joint_counter += 1;
-                    }
-                    joint.body = Some(body.name.clone());
-                    body.joints.push(joint);
-                }
-                b"geom" => {
-                    let geom = parse_geom_attrs(e)?;
-                    body.geoms.push(geom);
-                }
-                b"inertial" => {
-                    body.inertial = Some(parse_inertial_attrs(e)?);
-                }
-                b"site" => {
-                    let site = parse_site_attrs(e)?;
-                    body.sites.push(site);
-                }
-                b"frame" => {
-                    let frame = parse_frame_attrs(e)?;
-                    body.frames.push(frame);
-                }
-                b"plugin" => {
-                    let plugin_ref = parse_plugin_ref_empty(e)?;
-                    body.plugin = Some(plugin_ref);
-                }
-                _ => {}
-            },
             Ok(Event::End(ref e)) if e.name().as_ref() == b"body" => break,
             Ok(Event::Eof) => return Err(MjcfError::eof_in("body")),
             Ok(_) => {}
@@ -233,28 +160,6 @@ pub(super) fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
     }
 
     Ok(body)
-}
-
-/// Parse joint element.
-pub(super) fn parse_joint<R: BufRead>(
-    reader: &mut Reader<R>,
-    start: &BytesStart,
-) -> Result<MjcfJoint> {
-    let joint = parse_joint_attrs(start)?;
-    let mut buf = Vec::new();
-
-    // Joints typically don't have children, but we still need to read to the end
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"joint" => break,
-            Ok(Event::Eof) => return Err(MjcfError::eof_in("joint")),
-            Ok(_) => {}
-            Err(e) => return Err(MjcfError::xml(e)),
-        }
-        buf.clear();
-    }
-
-    Ok(joint)
 }
 
 /// Parse joint attributes only.
@@ -313,27 +218,6 @@ pub(super) fn parse_freejoint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     joint.name = a.string("name").unwrap_or_default();
     // Note: MuJoCo's freejoint also supports 'group' attribute, but we don't use it
     Ok(joint)
-}
-
-/// Parse geom element.
-pub(super) fn parse_geom<R: BufRead>(
-    reader: &mut Reader<R>,
-    start: &BytesStart,
-) -> Result<MjcfGeom> {
-    let geom = parse_geom_attrs(start)?;
-    let mut buf = Vec::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"geom" => break,
-            Ok(Event::Eof) => return Err(MjcfError::eof_in("geom")),
-            Ok(_) => {}
-            Err(e) => return Err(MjcfError::xml(e)),
-        }
-        buf.clear();
-    }
-
-    Ok(geom)
 }
 
 /// Parse geom attributes only.
@@ -398,27 +282,6 @@ pub(super) fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
     Ok(geom)
 }
 
-/// Parse inertial element.
-pub(super) fn parse_inertial<R: BufRead>(
-    reader: &mut Reader<R>,
-    start: &BytesStart,
-) -> Result<MjcfInertial> {
-    let inertial = parse_inertial_attrs(start)?;
-    let mut buf = Vec::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"inertial" => break,
-            Ok(Event::Eof) => return Err(MjcfError::eof_in("inertial")),
-            Ok(_) => {}
-            Err(e) => return Err(MjcfError::xml(e)),
-        }
-        buf.clear();
-    }
-
-    Ok(inertial)
-}
-
 /// Parse inertial attributes only.
 pub(super) fn parse_inertial_attrs(e: &BytesStart) -> Result<MjcfInertial> {
     let a = Attrs::new(e)?;
@@ -440,27 +303,6 @@ pub(super) fn parse_inertial_attrs(e: &BytesStart) -> Result<MjcfInertial> {
     inertial.fullinertia = a.array("fullinertia")?;
 
     Ok(inertial)
-}
-
-/// Parse site element.
-pub(super) fn parse_site<R: BufRead>(
-    reader: &mut Reader<R>,
-    start: &BytesStart,
-) -> Result<MjcfSite> {
-    let site = parse_site_attrs(start)?;
-    let mut buf = Vec::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"site" => break,
-            Ok(Event::Eof) => return Err(MjcfError::eof_in("site")),
-            Ok(_) => {}
-            Err(e) => return Err(MjcfError::xml(e)),
-        }
-        buf.clear();
-    }
-
-    Ok(site)
 }
 
 /// Parse site attributes only.
@@ -491,78 +333,47 @@ pub(super) fn parse_site_attrs(e: &BytesStart) -> Result<MjcfSite> {
     Ok(site)
 }
 
-/// Parse frame element (non-self-closing).
+/// Parse frame element (`empty`: it closed itself, so it has no children).
 pub(super) fn parse_frame<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
+    empty: bool,
 ) -> Result<MjcfFrame> {
     let mut frame = parse_frame_attrs(start)?;
+    if empty {
+        return Ok(frame);
+    }
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
-                    b"body" => {
-                        let body = parse_body(reader, e)?;
-                        frame.bodies.push(body);
-                    }
-                    b"geom" => {
-                        let geom = parse_geom(reader, e)?;
-                        frame.geoms.push(geom);
-                    }
-                    b"site" => {
-                        let site = parse_site(reader, e)?;
-                        frame.sites.push(site);
-                    }
-                    b"frame" => {
-                        let child_frame = parse_frame(reader, e)?;
-                        frame.frames.push(child_frame);
-                    }
-                    b"camera" | b"light" => {
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let empty = matches!(event, Event::Empty(_));
+                match e.name().as_ref() {
+                    b"body" => frame.bodies.push(parse_body(reader, e, empty)?),
+                    b"geom" => frame
+                        .geoms
+                        .push(parse_leaf(reader, e, empty, parse_geom_attrs)?),
+                    b"site" => frame
+                        .sites
+                        .push(parse_leaf(reader, e, empty, parse_site_attrs)?),
+                    b"frame" => frame.frames.push(parse_frame(reader, e, empty)?),
+                    tag @ (b"camera" | b"light") => {
                         tracing::warn!(
                             "skipping <{}> inside <frame>: camera/light not yet supported",
-                            String::from_utf8_lossy(&elem_name)
+                            String::from_utf8_lossy(tag)
                         );
-                        skip_element(reader, &elem_name)?;
+                        skip_element(reader, tag, empty)?;
                     }
-                    b"joint" | b"freejoint" | b"inertial" => {
+                    tag @ (b"joint" | b"freejoint" | b"inertial") => {
                         return Err(MjcfError::unsupported(format!(
                             "<{}> inside <frame>",
-                            String::from_utf8_lossy(&elem_name)
+                            String::from_utf8_lossy(tag)
                         )));
                     }
-                    _ => skip_element(reader, &elem_name)?,
+                    name => skip_element(reader, name, empty)?,
                 }
             }
-            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
-                b"geom" => {
-                    let geom = parse_geom_attrs(e)?;
-                    frame.geoms.push(geom);
-                }
-                b"site" => {
-                    let site = parse_site_attrs(e)?;
-                    frame.sites.push(site);
-                }
-                b"frame" => {
-                    let child_frame = parse_frame_attrs(e)?;
-                    frame.frames.push(child_frame);
-                }
-                b"camera" | b"light" => {
-                    tracing::warn!(
-                        "skipping <{}/> inside <frame>: camera/light not yet supported",
-                        String::from_utf8_lossy(e.name().as_ref())
-                    );
-                }
-                b"joint" | b"freejoint" | b"inertial" => {
-                    return Err(MjcfError::unsupported(format!(
-                        "<{}/> inside <frame>",
-                        String::from_utf8_lossy(e.name().as_ref())
-                    )));
-                }
-                _ => {}
-            },
             Ok(Event::End(ref e)) if e.name().as_ref() == b"frame" => break,
             Ok(Event::Eof) => return Err(MjcfError::eof_in("frame")),
             Ok(_) => {}
@@ -574,7 +385,20 @@ pub(super) fn parse_frame<R: BufRead>(
     Ok(frame)
 }
 
-/// Parse frame attributes only (for self-closing `<frame ... />`).
+/// An element whose children this parser does not read: its attributes, by
+/// `read`, then past its end tag (nothing more when it closed itself).
+fn parse_leaf<R: BufRead, T>(
+    reader: &mut Reader<R>,
+    e: &BytesStart,
+    empty: bool,
+    read: fn(&BytesStart) -> Result<T>,
+) -> Result<T> {
+    let value = read(e)?;
+    skip_element(reader, e.name().as_ref(), empty)?;
+    Ok(value)
+}
+
+/// Parse frame attributes only.
 pub(super) fn parse_frame_attrs(e: &BytesStart) -> Result<MjcfFrame> {
     let a = Attrs::new(e)?;
     let mut frame = MjcfFrame::default();

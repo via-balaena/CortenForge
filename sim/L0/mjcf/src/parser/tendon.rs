@@ -14,28 +14,27 @@ use super::attrs::{Attrs, skip_element};
 // Tendon parsing
 // ============================================================================
 
-/// Parse the tendon section.
-pub(super) fn parse_tendons<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfTendon>> {
+/// Parse the tendon section (`empty`: it closed itself, so it has none).
+pub(super) fn parse_tendons<R: BufRead>(
+    reader: &mut Reader<R>,
+    empty: bool,
+) -> Result<Vec<MjcfTendon>> {
     let mut tendons = Vec::new();
+    if empty {
+        return Ok(tendons);
+    }
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let empty = matches!(event, Event::Empty(_));
                 let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 if let Some(tendon_type) = MjcfTendonType::from_str(&elem_name) {
-                    let tendon = parse_tendon(reader, e, tendon_type)?;
-                    tendons.push(tendon);
+                    tendons.push(parse_tendon(reader, e, tendon_type, empty)?);
                 } else {
                     // Unknown tendon type, skip it
-                    skip_element(reader, elem_name.as_bytes())?;
-                }
-            }
-            Ok(Event::Empty(ref e)) => {
-                let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                if let Some(tendon_type) = MjcfTendonType::from_str(&elem_name) {
-                    let tendon = parse_tendon_attrs(e, tendon_type)?;
-                    tendons.push(tendon);
+                    skip_element(reader, e.name().as_ref(), empty)?;
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"tendon" => break,
@@ -49,18 +48,24 @@ pub(super) fn parse_tendons<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<Mj
     Ok(tendons)
 }
 
-/// Parse a tendon element and its children (sites for spatial, joints for fixed).
+/// Parse a tendon element and its children (sites for spatial, joints for fixed;
+/// `empty`: it closed itself, so it has none).
 pub(super) fn parse_tendon<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
     tendon_type: MjcfTendonType,
+    empty: bool,
 ) -> Result<MjcfTendon> {
     let mut tendon = parse_tendon_attrs(start, tendon_type)?;
+    if empty {
+        return Ok(tendon);
+    }
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let empty = matches!(event, Event::Empty(_));
                 let name_bytes = e.name().as_ref().to_vec();
                 let a = Attrs::new(e)?;
                 match name_bytes.as_slice() {
@@ -108,6 +113,7 @@ pub(super) fn parse_tendon<R: BufRead>(
                     }
                     _ => {}
                 }
+                skip_element(reader, &name_bytes, empty)?;
             }
             Ok(Event::End(ref e)) => {
                 let name_bytes = e.name().as_ref().to_vec();

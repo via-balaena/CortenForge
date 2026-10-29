@@ -10,40 +10,29 @@ use crate::types::{MjcfContact, MjcfContactExclude, MjcfContactPair};
 
 use super::attrs::{Attrs, skip_element};
 
-/// Parse `<contact>` element containing `<pair>` and `<exclude>` children.
-pub(super) fn parse_contact<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfContact> {
+/// Parse `<contact>` element containing `<pair>` and `<exclude>` children
+/// (`empty`: it closed itself, so it has none).
+pub(super) fn parse_contact<R: BufRead>(
+    reader: &mut Reader<R>,
+    empty: bool,
+) -> Result<MjcfContact> {
     let mut contact = MjcfContact::default();
+    if empty {
+        return Ok(contact);
+    }
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
-                    b"pair" => {
-                        let pair = parse_contact_pair_attrs(e)?;
-                        contact.pairs.push(pair);
-                        skip_element(reader, &elem_name)?;
-                    }
-                    b"exclude" => {
-                        let exclude = parse_contact_exclude_attrs(e)?;
-                        contact.excludes.push(exclude);
-                        skip_element(reader, &elem_name)?;
-                    }
-                    _ => skip_element(reader, &elem_name)?,
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let empty = matches!(event, Event::Empty(_));
+                match e.name().as_ref() {
+                    b"pair" => contact.pairs.push(parse_contact_pair_attrs(e)?),
+                    b"exclude" => contact.excludes.push(parse_contact_exclude_attrs(e)?),
+                    _ => {}
                 }
+                skip_element(reader, e.name().as_ref(), empty)?;
             }
-            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
-                b"pair" => {
-                    let pair = parse_contact_pair_attrs(e)?;
-                    contact.pairs.push(pair);
-                }
-                b"exclude" => {
-                    let exclude = parse_contact_exclude_attrs(e)?;
-                    contact.excludes.push(exclude);
-                }
-                _ => {}
-            },
             Ok(Event::End(ref e)) if e.name().as_ref() == b"contact" => break,
             Ok(Event::Eof) => {
                 return Err(MjcfError::eof_in("contact"));

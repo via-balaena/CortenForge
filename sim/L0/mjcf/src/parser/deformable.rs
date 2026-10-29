@@ -16,48 +16,28 @@ use super::attrs::{Attrs, skip_element};
 // Deformable / Skin parsing
 // ============================================================================
 
-/// Parse deformable section (contains skin and flex elements).
+/// Parse deformable section (contains skin and flex elements; `empty`: it
+/// closed itself, so it has none).
 pub(super) fn parse_deformable<R: BufRead>(
     reader: &mut Reader<R>,
+    empty: bool,
 ) -> Result<(Vec<MjcfSkin>, Vec<MjcfFlex>)> {
     let mut skins = Vec::new();
     let mut flex_bodies = Vec::new();
+    if empty {
+        return Ok((skins, flex_bodies));
+    }
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
-                    b"skin" => {
-                        let skin = parse_skin(reader, e)?;
-                        skins.push(skin);
-                    }
-                    b"flex" => {
-                        let flex = parse_flex(reader, e)?;
-                        flex_bodies.push(flex);
-                    }
-                    b"flexcomp" => {
-                        let flex = parse_flexcomp(reader, e)?;
-                        flex_bodies.push(flex);
-                    }
-                    _ => {
-                        skip_element(reader, &elem_name)?;
-                    }
-                }
-            }
-            Ok(Event::Empty(ref e)) => {
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
-                    b"skin" => {
-                        let skin = parse_skin_attrs(e)?;
-                        skins.push(skin);
-                    }
-                    b"flexcomp" => {
-                        // Self-closing <flexcomp .../> — parse attrs and generate mesh
-                        let flex = parse_flexcomp_empty(e)?;
-                        flex_bodies.push(flex);
-                    }
-                    _ => {}
+                    b"skin" => skins.push(parse_skin(reader, e, empty)?),
+                    b"flex" => flex_bodies.push(parse_flex(reader, e, empty)?),
+                    b"flexcomp" => flex_bodies.push(parse_flexcomp(reader, e, empty)?),
+                    name => skip_element(reader, name, empty)?,
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"deformable" => break,
@@ -83,6 +63,7 @@ pub(super) fn parse_deformable<R: BufRead>(
 pub(super) fn parse_flex<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
+    empty: bool,
 ) -> Result<MjcfFlex> {
     let a = Attrs::new(start)?;
     if a.has("mass") {
@@ -98,46 +79,8 @@ pub(super) fn parse_flex<R: BufRead>(
     if let Some(s) = a.text("node") {
         flex.node = s.split_whitespace().map(str::to_string).collect();
     }
-    let mut buf = Vec::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
-                    b"contact" => parse_flex_contact_attrs(e, &mut flex)?,
-                    b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex)?,
-                    b"edge" => parse_flex_edge_attrs(e, &mut flex)?,
-                    b"vertex" | b"element" | b"pin" => {
-                        return Err(MjcfError::unknown_element(
-                            String::from_utf8_lossy(&elem_name),
-                            "flex",
-                        ));
-                    }
-                    _ => {}
-                }
-                skip_element(reader, &elem_name)?;
-            }
-            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
-                b"contact" => parse_flex_contact_attrs(e, &mut flex)?,
-                b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex)?,
-                b"edge" => parse_flex_edge_attrs(e, &mut flex)?,
-                name @ (b"vertex" | b"element" | b"pin") => {
-                    return Err(MjcfError::unknown_element(
-                        String::from_utf8_lossy(name),
-                        "flex",
-                    ));
-                }
-                _ => {}
-            },
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"flex" => break,
-            Ok(Event::Eof) => {
-                return Err(MjcfError::eof_in("flex"));
-            }
-            Ok(_) => {}
-            Err(e) => return Err(MjcfError::xml(e)),
-        }
-        buf.clear();
+    if !empty {
+        read_flex_children(reader, &mut flex)?;
     }
 
     // MuJoCo 3.5.0 requires both (`xml_native_reader.cc`, `OneFlex`); it
@@ -149,6 +92,41 @@ pub(super) fn parse_flex<R: BufRead>(
         return Err(MjcfError::missing_attribute("flex", "element"));
     }
     Ok(flex)
+}
+
+/// A `<flex>`'s children, up to its end tag: its `<contact>`, `<elasticity>`
+/// and `<edge>` attributes onto `flex`, and MuJoCo's refused children refused.
+fn read_flex_children<R: BufRead>(reader: &mut Reader<R>, flex: &mut MjcfFlex) -> Result<()> {
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let empty = matches!(event, Event::Empty(_));
+                match e.name().as_ref() {
+                    b"contact" => parse_flex_contact_attrs(e, flex)?,
+                    b"elasticity" => parse_flex_elasticity_attrs(e, flex)?,
+                    b"edge" => parse_flex_edge_attrs(e, flex)?,
+                    name @ (b"vertex" | b"element" | b"pin") => {
+                        return Err(MjcfError::unknown_element(
+                            String::from_utf8_lossy(name),
+                            "flex",
+                        ));
+                    }
+                    _ => {}
+                }
+                skip_element(reader, e.name().as_ref(), empty)?;
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"flex" => break,
+            Ok(Event::Eof) => {
+                return Err(MjcfError::eof_in("flex"));
+            }
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::xml(e)),
+        }
+        buf.clear();
+    }
+    Ok(())
 }
 
 /// A `<flex>`'s `vertex` and `element` attributes, read as MuJoCo 3.5.0
@@ -320,42 +298,20 @@ pub(super) fn parse_flex_edge_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> Resu
 pub(super) fn parse_flexcomp<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
+    empty: bool,
 ) -> Result<MjcfFlex> {
     let mut flex = flexcomp_mesh(start)?;
+    if empty {
+        return Ok(flex);
+    }
 
     // Parse child elements (<contact>, <elasticity>, <edge>, <pin>)
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
-                    b"contact" => {
-                        parse_flex_contact_attrs(e, &mut flex)?;
-                        skip_element(reader, &elem_name)?;
-                    }
-                    b"elasticity" => {
-                        parse_flex_elasticity_attrs(e, &mut flex)?;
-                        skip_element(reader, &elem_name)?;
-                    }
-                    b"edge" => {
-                        parse_flex_edge_attrs(e, &mut flex)?;
-                        skip_element(reader, &elem_name)?;
-                    }
-                    b"pin" => {
-                        if let Some(ids) = indices(&Attrs::new(e)?, "id")? {
-                            flex.pinned.extend(ids);
-                        }
-                        skip_element(reader, &elem_name)?;
-                    }
-                    _ => {
-                        skip_element(reader, &elem_name)?;
-                    }
-                }
-            }
-            Ok(Event::Empty(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let empty = matches!(event, Event::Empty(_));
+                match e.name().as_ref() {
                     b"contact" => parse_flex_contact_attrs(e, &mut flex)?,
                     b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex)?,
                     b"edge" => parse_flex_edge_attrs(e, &mut flex)?,
@@ -366,6 +322,7 @@ pub(super) fn parse_flexcomp<R: BufRead>(
                     }
                     _ => {}
                 }
+                skip_element(reader, e.name().as_ref(), empty)?;
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"flexcomp" => break,
             Ok(Event::Eof) => {
@@ -378,14 +335,6 @@ pub(super) fn parse_flexcomp<R: BufRead>(
     }
 
     Ok(flex)
-}
-
-/// Parse a self-closing `<flexcomp ... />` (Event::Empty).
-///
-/// Does the same attribute parsing and mesh generation as `parse_flexcomp`
-/// but without consuming reader events (since there's no End event to find).
-pub(super) fn parse_flexcomp_empty(e: &BytesStart) -> Result<MjcfFlex> {
-    flexcomp_mesh(e)
 }
 
 /// A `<flexcomp>`'s attributes and the mesh they generate. MuJoCo reads
@@ -573,41 +522,25 @@ pub(super) fn generate_box_mesh(flex: &mut MjcfFlex, count: [usize; 3], spacing:
 pub(super) fn parse_skin<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
+    empty: bool,
 ) -> Result<MjcfSkin> {
     let mut skin = parse_skin_attrs(start)?;
+    if empty {
+        return Ok(skin);
+    }
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
-                    b"bone" => {
-                        let bone = parse_skin_bone_attrs(e)?;
-                        skin.bones.push(bone);
-                        // Skip to closing tag if not self-closing
-                        skip_element(reader, &elem_name)?;
-                    }
-                    b"vertex" => {
-                        let vertex = parse_skin_vertex_attrs(e)?;
-                        skin.vertices.push(vertex);
-                        // Skip to closing tag if not self-closing
-                        skip_element(reader, &elem_name)?;
-                    }
-                    _ => skip_element(reader, &elem_name)?,
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let empty = matches!(event, Event::Empty(_));
+                match e.name().as_ref() {
+                    b"bone" => skin.bones.push(parse_skin_bone_attrs(e)?),
+                    b"vertex" => skin.vertices.push(parse_skin_vertex_attrs(e)?),
+                    _ => {}
                 }
+                skip_element(reader, e.name().as_ref(), empty)?;
             }
-            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
-                b"bone" => {
-                    let bone = parse_skin_bone_attrs(e)?;
-                    skin.bones.push(bone);
-                }
-                b"vertex" => {
-                    let vertex = parse_skin_vertex_attrs(e)?;
-                    skin.vertices.push(vertex);
-                }
-                _ => {}
-            },
             Ok(Event::End(ref e)) if e.name().as_ref() == b"skin" => break,
             Ok(Event::Eof) => return Err(MjcfError::eof_in("skin")),
             Ok(_) => {}

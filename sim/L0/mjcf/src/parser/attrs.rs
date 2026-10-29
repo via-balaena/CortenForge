@@ -504,8 +504,17 @@ pub(super) fn parse_maxhullvert(n: i32) -> Result<Option<usize>> {
     }
 }
 
-/// Skip an element and all its children.
-pub(super) fn skip_element<R: BufRead>(reader: &mut Reader<R>, name: &[u8]) -> Result<()> {
+/// Read past an element just opened, children and all, to its end tag. A
+/// self-closing element (`empty`: its event was [`Event::Empty`]) was the
+/// whole element, so nothing is read.
+pub(super) fn skip_element<R: BufRead>(
+    reader: &mut Reader<R>,
+    name: &[u8],
+    empty: bool,
+) -> Result<()> {
+    if empty {
+        return Ok(());
+    }
     let mut buf = Vec::new();
     let mut depth = 1;
 
@@ -520,7 +529,7 @@ pub(super) fn skip_element<R: BufRead>(reader: &mut Reader<R>, name: &[u8]) -> R
                     break;
                 }
             }
-            Ok(Event::Eof) => break,
+            Ok(Event::Eof) => return Err(MjcfError::eof_in(String::from_utf8_lossy(name))),
             Ok(_) => {}
             Err(e) => return Err(MjcfError::xml(e)),
         }
