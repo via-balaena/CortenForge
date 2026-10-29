@@ -2210,3 +2210,7 @@ b6cf674e352a380a	sim/L0/mjcf/tests/self_closing.rs:106
 5d3159e8beb6b6bf	sim/L0/mjcf/tests/attach_and_replicate.rs:42
 9d1ae9d74b6e8f7a	sim/L0/mjcf/tests/attach_and_replicate.rs:31
 b5d72df1ed1d4360	sim/L0/mjcf/tests/attach_and_replicate.rs:29
+6ec286a39c213a19	sim/L0/mjcf/tests/repeated_sections.rs:163
+a19a55c780431d02	sim/L0/mjcf/tests/repeated_sections.rs:173
+c9fbd67b252728f7	sim/L0/mjcf/tests/repeated_sections.rs:168
+eee6660c9094068e	sim/L0/mjcf/tests/repeated_sections.rs:162

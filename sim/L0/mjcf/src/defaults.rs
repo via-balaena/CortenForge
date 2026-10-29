@@ -700,8 +700,23 @@ impl DefaultResolver {
     /// Resolve all defaults by building inheritance chains.
     fn resolve_all(defaults: &[MjcfDefault]) -> HashMap<String, MjcfDefault> {
         // First, build a map of raw defaults
-        let raw_map: HashMap<&str, &MjcfDefault> =
+        let mut raw_map: HashMap<&str, &MjcfDefault> =
             defaults.iter().map(|d| (d.class.as_str(), d)).collect();
+
+        // Every top-level `<default>` is MuJoCo 3.5.0's one main class
+        // (`mjXReader::Default` takes `mjs_getSpecDefault` for each), so they
+        // merge in document order, the later over the earlier, rather than the
+        // last replacing the rest (ledger L247). A class of an earlier block
+        // still sees a later block's values here, where MuJoCo's copies the
+        // main class as it stood when the class was made (book L16).
+        let main = defaults
+            .iter()
+            .filter(|d| d.class.is_empty() && d.parent_class.is_none())
+            .cloned()
+            .reduce(|earlier, later| Self::merge_defaults(&earlier, &later));
+        if let Some(main) = &main {
+            raw_map.insert("", main);
+        }
 
         // Resolve each default class
         let mut resolved = HashMap::new();

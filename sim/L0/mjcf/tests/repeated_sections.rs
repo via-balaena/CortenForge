@@ -152,3 +152,26 @@ fn a_later_compilers_assetdir_lies_over_an_earlier_meshdir() {
     assert!(tetrahedron_found_in_b(r#"<compiler assetdir="b"/><compiler meshdir="a"/>"#).is_err());
     assert!(tetrahedron_found_in_b(r#"<compiler assetdir="b" meshdir="a"/>"#).is_err());
 }
+
+/// Every top-level `<default>` is MuJoCo 3.5.0's one main class
+/// (`mjXReader::Default` takes `mjs_getSpecDefault` for each): each reads onto
+/// it, the later over the earlier, and an empty one changes nothing.
+#[test]
+fn every_top_level_default_reads_onto_the_main_class() {
+    for empty in [
+        r#"<mujoco><default><geom contype="2"/></default><default/><worldbody><geom size=".1"/></worldbody></mujoco>"#,
+        r#"<mujoco><default><geom contype="2"/></default><default></default><worldbody><geom size=".1"/></worldbody></mujoco>"#,
+    ] {
+        assert_eq!(load(empty).geom_contype[0], 2);
+    }
+    let m = load(
+        r#"<mujoco><default><geom contype="2"/></default><default><joint damping="3"/></default><worldbody><body><joint/><geom size=".1"/></body></worldbody></mujoco>"#,
+    );
+    assert_eq!(m.geom_contype[0], 2);
+    assert_eq!(m.dof_damping[0], 3.0);
+    let m = load(
+        r#"<mujoco><default><geom contype="2" conaffinity="5"/></default><default><geom contype="4"/></default><worldbody><geom size=".1"/></worldbody></mujoco>"#,
+    );
+    assert_eq!(m.geom_contype[0], 4);
+    assert_eq!(m.geom_conaffinity[0], 5);
+}

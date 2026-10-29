@@ -1,0 +1,1 @@
+<mujoco><default><geom contype="2"/></default><default><joint damping="3"/></default><worldbody><body><joint/><geom size=".1"/></body></worldbody></mujoco>

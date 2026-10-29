@@ -1,0 +1,1 @@
+<mujoco><default><geom contype="2" conaffinity="5"/></default><default><geom contype="4"/></default><worldbody><geom size=".1"/></worldbody></mujoco>
