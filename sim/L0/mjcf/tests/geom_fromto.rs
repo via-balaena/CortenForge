@@ -880,3 +880,37 @@ fn a_fused_fromto_geom_away_from_the_origin_loads() {
 }
 
 const FUSED_AT_AN_OFFSET: &str = r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p"><joint type="hinge"/><geom type="sphere" size="0.1"/><body name="b" pos="0.1 0 0"><geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.3"/></body></body></worldbody></mujoco>"#;
+
+/// A `framequat` and a `framezaxis` on a `fromto` capsule in a turned body read
+/// MuJoCo 3.5.0's values after `mj_forward` (A14 §2.6's sensor case: before
+/// `8f6322ca` z pointed the other way). The orientation passes through `sin`,
+/// `cos` and `atan2`: bit for bit on macOS arm64, within 1e-14 elsewhere.
+#[test]
+fn a_fromto_capsules_frame_sensors_read_as_mujocos() {
+    let model = load_model(FRAME_SENSORS).unwrap();
+    let mut data = model.make_data();
+    data.forward(&model).unwrap();
+    let mujoco = [
+        0x3fe47e5eb666f075_u64,
+        0x3fe125440a4b81fc,
+        0x3fe0e5ef7a77fab0,
+        0x3fc3cbb15bc5abd7,
+        0x3feaf2840902c59c,
+        0xbfe0bbf4c2fbe374,
+        0xbfc0e13aeecd9cb3,
+    ]
+    .map(f64::from_bits);
+    let here = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let got: Vec<f64> = data.sensordata.iter().copied().collect();
+    assert_eq!(got.len(), mujoco.len());
+    for (k, (a, b)) in got.iter().zip(&mujoco).enumerate() {
+        let ok = if here {
+            a.to_bits() == b.to_bits()
+        } else {
+            (a - b).abs() <= 1e-14
+        };
+        assert!(ok, "sensordata[{k}]: {a}, MuJoCo {b}");
+    }
+}
+
+const FRAME_SENSORS: &str = r#"<mujoco><worldbody><geom type="plane" size="0 0 1"/><body name="b" pos="0 0 0.5" euler="30 20 10"><freejoint/><geom name="c" type="capsule" size="0.05" fromto="0.1 0.2 0.3 -0.2 0.5 0.1"/></body></worldbody><sensor><framequat objtype="geom" objname="c"/><framezaxis objtype="geom" objname="c"/></sensor></mujoco>"#;

@@ -44,8 +44,6 @@ The cases:
   inside wrap); each tendon's length, velocity, Jacobian and wrap points
   after mj_forward at configurations drawn from a seeded generator, the
   first four where each tendon wraps and the first four where it does not.
-  The joints' axes are ones whose normalisation sim-mjcf rounds as MuJoCo
-  does (ledger L146).
 - wraps_sparse: wraps with `jacobian="sparse"`, so the tendons' velocity
   is MuJoCo's sparse product over each tendon's chain
   (`mju_mulMatVecSparse`, `engine_forward.c:232-235`), at the same

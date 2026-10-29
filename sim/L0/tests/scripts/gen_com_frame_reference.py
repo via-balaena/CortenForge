@@ -34,9 +34,9 @@ write, so a test can check that its inputs are MuJoCo's before it compares
 the outputs, the compiled masses and inertias among them. Contacts are
 disabled throughout: the bodies' forces here are the dynamics' own. Each
 body's mass and inertia are given (`<inertial>`), not computed from geoms,
-and the joint axes are axis-aligned: sim-mjcf computes a geom's moments and
-a rotated geom's inertial frame otherwise than MuJoCo (ledger L198, L195).
-The cases:
+because sim-mjcf computes a geom's moments and a rotated geom's inertial
+frame otherwise than MuJoCo (ledger L198, L195). The joint axes are
+axis-aligned. The cases:
 
 - compos: two trees. One hangs a hinge with an offset anchor, a ball with an
   offset anchor under it (the two with armature), then a body with a slide

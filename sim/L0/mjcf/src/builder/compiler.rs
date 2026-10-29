@@ -66,7 +66,7 @@ pub fn apply_discardvisual(mjcf: &mut MjcfModel) {
 ///
 /// An orientation alternative `ResolveOrientation` refuses on a fused body,
 /// or on a geom, site or child body whose turn the fusion composes: MuJoCo
-/// compiles each before it fuses (`user_model.cc:4194-4202`).
+/// compiles each before it fuses (`user_model.cc:4931-4938`).
 pub fn apply_fusestatic(mjcf: &mut MjcfModel) -> Result<()> {
     // Collect names of bodies referenced by constraints, sensors, actuators, skins
     let mut protected: HashSet<String> = HashSet::new();

@@ -144,7 +144,8 @@ impl ModelBuilder {
         };
 
         // Body position/orientation relative to parent.
-        // Priority: euler > axisangle > xyaxes > zaxis > quat (MuJoCo convention).
+        // Its alternative where it has one, else its quaternion made unit
+        // (`resolve_orientation`).
         let body_pos = body.pos;
         let body_quat = resolve_orientation(
             body.quat,

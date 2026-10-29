@@ -180,16 +180,6 @@ mod tests {
     }
 
     #[test]
-    fn mulquat_makes_its_product_unit_as_mujocos_does() {
-        // eig3 multiplies only unit quaternions; MuJoCo's mjuu_mulquat
-        // normalises any product.
-        assert_eq!(
-            mulquat(&[2.0, 0.0, 0.0, 0.0], &[1.0, 0.0, 0.0, 0.0]),
-            [1.0, 0.0, 0.0, 0.0]
-        );
-    }
-
-    #[test]
     fn a_full_inertia_with_a_moment_below_mj_eps_is_refused() {
         assert_eq!(
             full_inertia(&[1.0, 1.0, 1e-15, 0.0, 0.0, 0.0]),

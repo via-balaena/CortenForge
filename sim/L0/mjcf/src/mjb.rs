@@ -653,6 +653,18 @@ mod tests {
         ));
     }
 
+    /// A version-8 file is refused for its version: its bodies hold no
+    /// `xyaxes` or `zaxis`.
+    #[test]
+    fn a_version_8_file_is_refused_for_its_version() {
+        let mut bytes = save_mjb_bytes(&simple_model()).expect("should serialize");
+        bytes[4..8].copy_from_slice(&8u32.to_le_bytes());
+        assert!(matches!(
+            load_mjb_bytes(&bytes),
+            Err(MjcfError::MjbVersion { found: 8, .. })
+        ));
+    }
+
     #[test]
     fn test_truncated_data() {
         let model = simple_model();

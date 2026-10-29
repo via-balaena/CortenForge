@@ -6,7 +6,7 @@
 //! same quaternion for each. Its compiler makes a written quaternion unit with
 //! `mjuu_normvec`, which keeps one within mjEPS of unit length as written
 //! (`user_util.cc:149-170`; `mjCBody::Compile`, `user_objects.cc:2388`;
-//! `mjCGeom::Compile`, `:3674`; a site after its frame, `:3988`), and resolves an
+//! `mjCGeom::Compile`, `:3675`; a site after its frame, `:3988`), and resolves an
 //! alternative with `ResolveOrientation` (`:239-346`), which refuses an axis too
 //! small to make unit. `quat` and `xyaxes` take only arithmetic and square roots,
 //! so they are compared bit for bit everywhere; `euler`, `axisangle` and `zaxis`

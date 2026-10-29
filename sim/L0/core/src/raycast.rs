@@ -7,7 +7,8 @@
 //! height field's rays are ports of MuJoCo's `mj_rayMesh` and `mj_rayHfield`
 //! (`sensor::ray_mesh`). [`raycast_scene`]
 //! reads a height field's grid from the geom's origin, where MuJoCo's is
-//! centred on it (ledger L280).
+//! centred on it (ledger L280), and a plane as unbounded and hit from either
+//! side, where `mj_ray` bounds it by its size and hits its front only.
 //!
 //! Shape-level intersection is delegated to [`cf_geometry::ray_cast`], which
 //! supports all 10 shape types in local space. This module adds world-space

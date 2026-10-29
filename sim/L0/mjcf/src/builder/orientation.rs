@@ -122,7 +122,10 @@ impl OrientationError {
     }
 }
 
-/// `q` (w, x, y, z), already unit by MuJoCo's arithmetic, as a `UnitQuaternion`.
+/// `q` (w, x, y, z) as a `UnitQuaternion`, as MuJoCo's arithmetic left it: unit,
+/// or not where `normvec` kept a quaternion whose squared norm is below mjEPS
+/// (frames and fusion then turn by it with nalgebra's unit-only arithmetic,
+/// where MuJoCo's does not normalise: ledger L255).
 fn unit(q: [f64; 4]) -> UnitQuaternion<f64> {
     UnitQuaternion::new_unchecked(Quaternion::new(q[0], q[1], q[2], q[3]))
 }
@@ -456,11 +459,21 @@ mod tests {
     }
 
     // -- A body's xyaxes and zaxis (ledger L249). Expected values are MuJoCo
-    // 3.5.0's `body_quat`, `body_pos` and `site_pos`/`site_quat`; within 1e-12,
-    // as they pass through sin, cos and sqrt (MuJoCo's arithmetic is not yet
-    // ours here). MuJoCo's 0.7071067811865476 is `FRAC_1_SQRT_2`.
+    // 3.5.0's `body_quat`, `body_pos` and `site_pos`/`site_quat`, within 1e-12:
+    // a fused body's positions are composed otherwise (the book's L42, ledger
+    // L255); `tests/written_orientation.rs` holds a body's xyaxes and zaxis as
+    // bits. MuJoCo's 0.7071067811865476 is `FRAC_1_SQRT_2`.
 
     use std::f64::consts::FRAC_1_SQRT_2;
+
+    #[test]
+    fn mulquat_makes_its_product_unit_as_mujocos_does() {
+        // MuJoCo's mjuu_mulquat normalises any product.
+        assert_eq!(
+            mulquat(&[2.0, 0.0, 0.0, 0.0], &[1.0, 0.0, 0.0, 0.0]).map(f64::to_bits),
+            [1.0_f64, 0.0, 0.0, 0.0].map(f64::to_bits)
+        );
+    }
 
     fn assert_quat(got: &UnitQuaternion<f64>, mujoco: [f64; 4], what: &str) {
         let g = got.into_inner();
