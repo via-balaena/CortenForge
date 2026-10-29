@@ -1692,6 +1692,171 @@ fn seeded_orientations_are_mujocos() {
     );
 }
 
+/// A class's alternative orientation and the element's or child class's own,
+/// as MuJoCo 3.5.0's reader layers them: it keeps one alternative per element,
+/// the last it reads (`ReadAlternative`, `xml_base.cc:54-77`), and an element
+/// starts from its class's values, so a layer that writes any alternative
+/// takes none it inherits, while a written `quat` does not displace an
+/// inherited alternative (the last two). `(element, defaults, attributes,
+/// what, MuJoCo's quaternion as bits)`.
+const LAYERED: &[(&str, &str, &str, &str, [u64; 4])] = &[
+    (
+        "geom",
+        r#"<default class="c"><geom euler="0 90 0"/></default>"#,
+        r#"class="c" axisangle="1 0 0 90""#,
+        "an element's axisangle over its class's euler",
+        [
+            0x3fe6a09e667f3bcd,
+            0x3fe6a09e667f3bcc,
+            0x0000000000000000,
+            0x0000000000000000,
+        ],
+    ),
+    (
+        "geom",
+        r#"<default class="p"><geom euler="0 90 0"/><default class="c"><geom axisangle="1 0 0 90"/></default></default>"#,
+        r#"class="c""#,
+        "a child class's axisangle over its parent's euler",
+        [
+            0x3fe6a09e667f3bcd,
+            0x3fe6a09e667f3bcc,
+            0x0000000000000000,
+            0x0000000000000000,
+        ],
+    ),
+    (
+        "site",
+        r#"<default class="c"><site euler="0 90 0"/></default>"#,
+        r#"class="c" zaxis="0 1 0""#,
+        "an element's zaxis over its class's euler",
+        [
+            0x3fe6a09e667f3bcd,
+            0xbfe6a09e667f3bcc,
+            0x0000000000000000,
+            0x0000000000000000,
+        ],
+    ),
+    (
+        "site",
+        r#"<default class="p"><site xyaxes="0 1 0 -1 0 0"/><default class="c"><site zaxis="1 0 0"/></default></default>"#,
+        r#"class="c""#,
+        "a child class's zaxis over its parent's xyaxes",
+        [
+            0x3fe6a09e667f3bcd,
+            0x0000000000000000,
+            0x3fe6a09e667f3bcc,
+            0x0000000000000000,
+        ],
+    ),
+    (
+        "geom",
+        r#"<default class="c"><geom axisangle="0 0 1 30"/></default>"#,
+        r#"class="c" xyaxes="0 1 0 -1 0 0""#,
+        "an element's xyaxes over its class's axisangle",
+        [
+            0x3fe6a09e667f3bcd,
+            0x0000000000000000,
+            0x0000000000000000,
+            0x3fe6a09e667f3bcc,
+        ],
+    ),
+    (
+        "geom",
+        r#"<default class="p"><geom axisangle="0 0 1 30"/><default class="c"><geom zaxis="0 1 0"/></default></default>"#,
+        r#"class="c""#,
+        "a child class's zaxis over its parent's axisangle",
+        [
+            0x3fe6a09e667f3bcd,
+            0xbfe6a09e667f3bcc,
+            0x0000000000000000,
+            0x0000000000000000,
+        ],
+    ),
+    (
+        "site",
+        r#"<default class="c"><site xyaxes="0 1 0 -1 0 0"/></default>"#,
+        r#"class="c" axisangle="1 0 0 90""#,
+        "an element's axisangle over its class's xyaxes",
+        [
+            0x3fe6a09e667f3bcd,
+            0x3fe6a09e667f3bcc,
+            0x0000000000000000,
+            0x0000000000000000,
+        ],
+    ),
+    (
+        "geom",
+        r#"<default class="c"><geom zaxis="1 0 0"/></default>"#,
+        r#"class="c" euler="90 0 0""#,
+        "an element's euler over its class's zaxis",
+        [
+            0x3fe6a09e667f3bcd,
+            0x3fe6a09e667f3bcc,
+            0x0000000000000000,
+            0x0000000000000000,
+        ],
+    ),
+    (
+        "geom",
+        r#"<default class="c"><geom euler="0 90 0"/></default>"#,
+        r#"class="c" quat="0 1 0 0""#,
+        "a class's euler over an element's quat",
+        [
+            0x3fe6a09e667f3bcd,
+            0x0000000000000000,
+            0x3fe6a09e667f3bcc,
+            0x0000000000000000,
+        ],
+    ),
+    (
+        "geom",
+        r#"<default class="p"><geom euler="0 90 0"/><default class="c"><geom quat="0 1 0 0"/></default></default>"#,
+        r#"class="c""#,
+        "a parent class's euler over a child class's quat",
+        [
+            0x3fe6a09e667f3bcd,
+            0x0000000000000000,
+            0x3fe6a09e667f3bcc,
+            0x0000000000000000,
+        ],
+    ),
+];
+
+#[test]
+fn a_class_alternative_is_layered_as_mujocos_reader_layers_it() {
+    let here = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let mut differ = Vec::new();
+    for &(element, defaults, attrs, what, bits) in LAYERED {
+        let inner = if element == "geom" {
+            format!(r#"<geom type="sphere" size="0.1" {attrs}/>"#)
+        } else {
+            format!(r#"<geom type="sphere" size="0.1"/><site name="s" {attrs}/>"#)
+        };
+        let model = load_model(&format!(
+            r#"<mujoco><default>{defaults}</default><worldbody><body name="b"><joint type="hinge"/>{inner}</body></worldbody></mujoco>"#
+        ))
+        .unwrap_or_else(|e| panic!("{what}: {e}"));
+        let q = if element == "geom" {
+            model.geom_quat[0]
+        } else {
+            model.site_quat[0]
+        }
+        .into_inner();
+        let got = [q.w, q.i, q.j, q.k];
+        let mujoco = bits.map(f64::from_bits);
+        if !is_mujocos(got, mujoco, (!here).then_some(1e-14)) {
+            differ.push(format!("{what}: {got:?}, MuJoCo {mujoco:?}"));
+        }
+    }
+    assert!(
+        differ.is_empty(),
+        "{} of {} differ:\n  {}",
+        differ.len(),
+        LAYERED.len(),
+        differ.join("\n  ")
+    );
+}
+
 /// A frame's turn and its geom's: MuJoCo 3.5.0's `geom_quat`, within 1e-14 (the
 /// composition is not MuJoCo's arithmetic: ledger L255).
 const FRAME_CASES: &[(&str, &str, [u64; 4])] = &[

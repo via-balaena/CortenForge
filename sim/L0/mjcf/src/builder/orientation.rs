@@ -208,8 +208,11 @@ pub fn euler_seq_to_quat(euler_rad: Vector3<f64>, seq: &str) -> UnitQuaternion<f
 }
 
 /// An element's alternative orientation as MuJoCo 3.5.0's `ResolveOrientation`
-/// makes it (`user_objects.cc:239-346`), or `None` where it has none. Where a
-/// class has given it more than one, euler > axisangle > xyaxes > zaxis.
+/// makes it (`user_objects.cc:239-346`), or `None` where it has none. A
+/// document gives an element at most one (the reader refuses two, and an
+/// element's or class's own replace the ones it inherits:
+/// `defaults::alternative_over`); where code sets several, euler > axisangle >
+/// xyaxes > zaxis.
 fn alternative(
     euler: Option<Vector3<f64>>,
     axisangle: Option<Vector4<f64>>,
