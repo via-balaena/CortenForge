@@ -740,6 +740,100 @@ fn a_fromto_replaces_an_alternative_as_mujocos_does() {
     }
 }
 
+/// A `fromto` a geom takes from its class or childclass, on the paths that
+/// move a geom before its class is applied: a frame (with a `pos`, on a body or
+/// the worldbody), a body fusestatic folds away (at an offset, into a parent or
+/// the world), beside the geom's own too-small alternative, and a cable's
+/// capsules under a default `pos` (MuJoCo makes a cable's geoms from the
+/// composite's own default, not the user's classes). MuJoCo 3.5.0 loads each (S21 oracle). Where the pose here is
+/// MuJoCo's, its `geom_pos` bits are given; a fused body's is not moved yet
+/// (the book's L42). `(what, document, capsule's geom index, MuJoCo's geom_pos)`.
+#[allow(clippy::type_complexity)]
+const CLASS_FROMTO: &[(&str, &str, usize, Option<[u64; 3]>)] = &[
+    (
+        "a class's fromto in a frame with a pos",
+        r#"<mujoco><default><default class="c"><geom type="capsule" size="0.05" fromto="0 0 0.1 0 0 0.3"/></default></default><worldbody><body name="b"><freejoint/><frame pos="0.5 0 0"><geom class="c"/></frame></body></worldbody></mujoco>"#,
+        0,
+        Some([0x3fe0000000000000, 0x0000000000000000, 0x3fc999999999999a]),
+    ),
+    (
+        "a childclass's fromto in a frame with a pos",
+        r#"<mujoco><default><default class="c"><geom type="capsule" size="0.05" fromto="0 0 0.1 0 0 0.3"/></default></default><worldbody><body name="b"><freejoint/><frame childclass="c" pos="0.5 0 0"><geom/></frame></body></worldbody></mujoco>"#,
+        0,
+        Some([0x3fe0000000000000, 0x0000000000000000, 0x3fc999999999999a]),
+    ),
+    (
+        "a class's fromto in a worldbody frame with a pos",
+        r#"<mujoco><default><default class="c"><geom type="capsule" size="0.05" fromto="0 0 0.1 0 0 0.3"/></default></default><worldbody><frame pos="0.5 0 0"><geom class="c"/></frame></worldbody></mujoco>"#,
+        0,
+        Some([0x3fe0000000000000, 0x0000000000000000, 0x3fc999999999999a]),
+    ),
+    (
+        "a class's fromto in a body fused at an offset",
+        r#"<mujoco><default><default class="c"><geom type="capsule" size="0.05" fromto="0 0 0.1 0 0 0.3"/></default></default><compiler fusestatic="true"/><worldbody><body name="p"><joint type="hinge"/><geom type="sphere" size="0.1"/><body name="b" pos="0.1 0 0"><geom class="c"/></body></body></worldbody></mujoco>"#,
+        1,
+        None,
+    ),
+    (
+        "a class's fromto in a body fused into the world",
+        r#"<mujoco><default><default class="c"><geom type="capsule" size="0.05" fromto="0 0 0.1 0 0 0.3"/></default></default><compiler fusestatic="true"/><worldbody><body name="b" pos="0.1 0 0"><geom class="c"/></body></worldbody></mujoco>"#,
+        0,
+        None,
+    ),
+    (
+        "a class's fromto beside its own too-small zaxis in a frame",
+        r#"<mujoco><default><default class="c"><geom type="capsule" size="0.05" fromto="0 0 0.1 0 0 0.3"/></default></default><worldbody><body name="b"><freejoint/><frame euler="0 0 30"><geom class="c" zaxis="0 0 0"/></frame></body></worldbody></mujoco>"#,
+        0,
+        Some([0x0000000000000000, 0x0000000000000000, 0x3fc999999999999a]),
+    ),
+    (
+        "a class's fromto beside its own too-small zaxis in a turned fused body",
+        r#"<mujoco><default><default class="c"><geom type="capsule" size="0.05" fromto="0 0 0.1 0 0 0.3"/></default></default><compiler fusestatic="true"/><worldbody><body name="p"><joint type="hinge"/><geom type="sphere" size="0.1"/><body name="b" euler="0 0 30"><geom class="c" zaxis="0 0 0"/></body></body></worldbody></mujoco>"#,
+        1,
+        None,
+    ),
+    (
+        "a cable under a default pos",
+        r#"<mujoco><extension><plugin plugin="mujoco.elasticity.cable"/></extension><default><geom pos="0 0 0.01"/></default><worldbody><composite type="cable" curve="s 0 0" count="4 1 1" size="1"><geom type="capsule" size="0.01"/></composite></worldbody></mujoco>"#,
+        2,
+        Some([0x3fc5555540000000, 0x0000000000000000, 0x0000000000000000]),
+    ),
+    (
+        "a cable under a childclass pos",
+        r#"<mujoco><extension><plugin plugin="mujoco.elasticity.cable"/></extension><default><default class="p"><geom pos="0 0 0.01"/></default></default><worldbody><body name="w" childclass="p"><composite type="cable" curve="s 0 0" count="4 1 1" size="1"><geom type="capsule" size="0.01"/></composite></body></worldbody></mujoco>"#,
+        2,
+        Some([0x3fc5555540000000, 0x0000000000000000, 0x0000000000000000]),
+    ),
+];
+
+#[test]
+fn a_class_fromto_on_every_path_that_moves_a_geom_loads_as_mujocos() {
+    let mut missed = Vec::new();
+    for &(what, xml, geom, mujoco) in CLASS_FROMTO {
+        match load_model(xml) {
+            Err(e) => missed.push(format!("{what}: {e}")),
+            Ok(model) => {
+                if let Some(mujoco) = mujoco {
+                    let got = model.geom_pos[geom];
+                    if (0..3).any(|k| got[k].to_bits() != mujoco[k]) {
+                        missed.push(format!(
+                            "{what}: geom_pos {got:?}, MuJoCo {:?}",
+                            mujoco.map(f64::from_bits)
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        missed.is_empty(),
+        "{} of {} not as MuJoCo:\n  {}",
+        missed.len(),
+        CLASS_FROMTO.len(),
+        missed.join("\n  ")
+    );
+}
+
 /// A `fromto` geom in a body fusestatic folds into its parent at an offset:
 /// MuJoCo 3.5.0 loads it, its `geom_pos` (0.1, 0, 0.15) (measured). Its pose
 /// here is still the segment read in the parent's frame (moving the segment

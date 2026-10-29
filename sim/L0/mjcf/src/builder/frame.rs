@@ -14,7 +14,7 @@ use super::geom::resolve_site_fromto;
 use super::orientation::{quat_to_wxyz, resolve_orientation, site_quat_as_written};
 use crate::defaults::DefaultResolver;
 use crate::error::{ElementKind, Location, MjcfError, Result};
-use crate::types::{MjcfBody, MjcfCompiler, MjcfFrame, MjcfSite};
+use crate::types::{MjcfBody, MjcfCompiler, MjcfFrame, MjcfGeom, MjcfSite};
 
 /// Core SE(3) composition — direct translation of MuJoCo's `mjuu_frameaccumChild`.
 ///
@@ -148,6 +148,68 @@ pub fn resolve_sites(
         resolve_sites(child, resolver, effective.as_deref())?;
     }
     Ok(())
+}
+
+/// Each geom that writes no `fromto` and whose class (its own, else
+/// `childclass`) gives one takes it, before frames and static bodies move the
+/// geom: they then treat it as a `fromto` geom, as MuJoCo, which sees a class's
+/// `fromto` when it compiles the geom and composes the frame after
+/// (`mjCGeom::Compile`, `user_objects.cc:3677-3833`), never resolves an
+/// alternative beside it, and refuses only the `pos` the geom or its class
+/// writes. The geom's other class values wait for the builder (the book's L16
+/// applies them all here). The class is the one the builder applies: a geom
+/// in a frame takes the frame's childclass, as `expand_frames` gives it.
+pub fn resolve_class_fromto(
+    body: &mut MjcfBody,
+    resolver: &DefaultResolver,
+    inherited: Option<&str>,
+) {
+    let effective = body
+        .childclass
+        .clone()
+        .or_else(|| inherited.map(str::to_string));
+    for geom in &mut body.geoms {
+        take_class_fromto(geom, resolver, effective.as_deref());
+    }
+    for frame in &mut body.frames {
+        resolve_class_fromto_in_frame(frame, resolver, effective.as_deref());
+    }
+    for child in &mut body.children {
+        resolve_class_fromto(child, resolver, effective.as_deref());
+    }
+}
+
+/// `resolve_class_fromto` within a frame, whose childclass its contents take.
+fn resolve_class_fromto_in_frame(
+    frame: &mut MjcfFrame,
+    resolver: &DefaultResolver,
+    inherited: Option<&str>,
+) {
+    let effective = frame
+        .childclass
+        .clone()
+        .or_else(|| inherited.map(str::to_string));
+    for geom in &mut frame.geoms {
+        take_class_fromto(geom, resolver, effective.as_deref());
+    }
+    for sub in &mut frame.frames {
+        resolve_class_fromto_in_frame(sub, resolver, effective.as_deref());
+    }
+    for child in &mut frame.bodies {
+        resolve_class_fromto(child, resolver, effective.as_deref());
+    }
+}
+
+/// `geom`'s class's `fromto`, where the geom writes none.
+fn take_class_fromto(geom: &mut MjcfGeom, resolver: &DefaultResolver, childclass: Option<&str>) {
+    if geom.fromto.is_some() {
+        return;
+    }
+    let mut classed = geom.clone();
+    if classed.class.is_none() {
+        classed.class = childclass.map(str::to_string);
+    }
+    geom.fromto = resolver.apply_to_geom(&classed).fromto;
 }
 
 /// `resolve_sites` within a frame in `body`, whose childclass its contents

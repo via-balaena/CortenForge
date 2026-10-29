@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1323
+# agree_floor 1325
 001bc4149d608b24	agree
 00308b83da9d8bab	agree
 0032a4ca7e233aec	agree
@@ -99,6 +99,7 @@
 0ae6d732de1d4ece	agree
 0aebb87d09701f46	mj-refuses
 0af65a5777666f9a	agree
+0b55e2f3472bbe39	agree
 0b5cac5f41563f25	agree
 0b6bc543ad3ce1ab	agree
 0b7d77d5e334cee7	both-refuse
@@ -502,6 +503,7 @@
 3e2816c5fef90b61	mj-refuses
 3e29ffcd368a2888	model:neq
 3e49fd5e5305a6c7	both-refuse
+3e5bdab78e3a9b7e	model:meaninertia;dyn:e1:t0:qM
 3e78dd893afd9d63	agree
 3edb0151bf9a023d	both-refuse
 3f09f3c7146768e5	agree
@@ -757,6 +759,7 @@
 5a7341e54083808f	agree
 5aa55def31566e0c	agree
 5b09b5261dae0bab	agree
+5b1a6dc4ffa842f0	agree
 5b1f2365892f28a7	agree
 5b5760f678cb1b26	agree
 5b6c3f9f1c002e27	agree
@@ -850,6 +853,7 @@
 673c7951b16fd3ee	agree
 67799f341b674067	agree
 6783fed9248e6649	model:neq
+67b4a04b3776929d	model:meaninertia;dyn:e1:t0:qM
 67bba3a77c16482d	agree
 67c452938dcc2a0c	agree
 67ed261056e8c19d	both-refuse
@@ -992,6 +996,7 @@
 7ad5a27cd99555d3	agree
 7ae121d9f93cf4e8	both-refuse
 7af60f487a3ec00a	both-refuse
+7b25ced0969d4e3f	model:geom_pos;dyn:agree
 7b53469f81b43d81	agree
 7b5928434fff25b7	agree
 7b64e1017e70e9ab	both-refuse
@@ -1075,6 +1080,7 @@
 864ac03f0d4f1a63	both-refuse
 86642bfe157069ed	agree
 867dfcc15229ba8b	agree
+868940bc0bd2b31b	model:geom_size;dyn:agree
 86ea1e197ab564cb	agree
 86f0d0a688316188	agree
 87042f94463a826e	both-refuse
@@ -1115,6 +1121,7 @@
 8af53a643ada5d6f	agree
 8aff10705a609ec9	mj-refuses
 8b1d741ee222c1cc	agree
+8b43156eea691599	model:meaninertia;dyn:e1:t0:qM
 8b6e8933d5016641	agree
 8b802de5bc4da52c	mj-refuses
 8b84e591ce56de4e	agree
@@ -1494,6 +1501,7 @@ b6d3dd4ad0664fb7	e1:t0:ncon
 b6dac25a7cc1452e	agree
 b6e14b6469126088	agree
 b74e8abfa13f6391	agree
+b7988ede9c4a5ad3	model:meaninertia;dyn:e1:t0:qM
 b7b1d868a3f151e4	mj-refuses
 b7e503a93e51344a	both-refuse
 b7e92714b56cfddb	both-refuse
@@ -1512,6 +1520,7 @@ b92a1343aee5a8a5	agree
 b936240a2677c8de	agree
 b9473c3886b661b4	mj-refuses
 b989dc7a956654f6	mj-refuses
+ba09d4926399b21f	model:meaninertia;dyn:e1:t0:qM
 ba54b8132b9a565f	agree
 ba62543002737d31	agree
 baa0e121fae6b603	agree

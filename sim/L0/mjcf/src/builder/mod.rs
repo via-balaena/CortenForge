@@ -51,7 +51,9 @@ use crate::types::{
 };
 
 use self::compiler::{apply_discardvisual, apply_fusestatic};
-use self::frame::{expand_frames, resolve_sites, validate_childclass_references};
+use self::frame::{
+    expand_frames, resolve_class_fromto, resolve_sites, validate_childclass_references,
+};
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
 ///
@@ -244,6 +246,8 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
 
     // Each site's class values and its `fromto`, before frames and static bodies move it.
     resolve_sites(&mut mjcf.worldbody, &pre_resolver, None)?;
+    // Each geom's class's `fromto`, for the same passes to see it.
+    resolve_class_fromto(&mut mjcf.worldbody, &pre_resolver, None);
 
     // Expand <frame> elements first: compose transforms into children, lift onto parent bodies.
     // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
