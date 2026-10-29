@@ -1,0 +1,7 @@
+<mujoco><compiler fusestatic="true"/><worldbody>
+                <body name="p"><joint type="hinge"/><geom type="sphere" size="0.1"/>
+                    <body name="b" pos="0.1 0 0" xyaxes="0 1 0 -1 0 0">
+                        <body name="c" pos="0 0.2 0" zaxis="0 1 0"><joint type="hinge"/><geom type="sphere" size="0.1"/></body>
+                    </body>
+                </body>
+            </worldbody></mujoco>

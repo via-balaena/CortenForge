@@ -137,8 +137,8 @@ impl ModelBuilder {
             body.quat,
             body.euler,
             body.axisangle,
-            None,
-            None,
+            body.xyaxes,
+            body.zaxis,
             &self.compiler,
         );
 

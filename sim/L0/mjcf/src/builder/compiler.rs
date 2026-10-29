@@ -162,8 +162,8 @@ fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler
                 removed.quat,
                 removed.euler,
                 removed.axisangle,
-                None,
-                None,
+                removed.xyaxes,
+                removed.zaxis,
                 compiler,
             );
             let has_rotation = body_quat.angle() > 1e-10;
@@ -214,12 +214,20 @@ fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler
             for c in &mut removed.children {
                 if has_rotation {
                     c.pos = body_quat * c.pos + body_pos;
-                    let child_quat =
-                        resolve_orientation(c.quat, c.euler, c.axisangle, None, None, compiler);
+                    let child_quat = resolve_orientation(
+                        c.quat,
+                        c.euler,
+                        c.axisangle,
+                        c.xyaxes,
+                        c.zaxis,
+                        compiler,
+                    );
                     let composed = body_quat * child_quat;
                     c.quat = quat_to_wxyz(&composed);
                     c.euler = None;
                     c.axisangle = None;
+                    c.xyaxes = None;
+                    c.zaxis = None;
                 } else {
                     c.pos += body_pos;
                 }

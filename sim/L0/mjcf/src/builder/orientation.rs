@@ -381,4 +381,145 @@ mod tests {
             "ZYX euler: got {got:?}, expected {expected:?}"
         );
     }
+
+    // -- A body's xyaxes and zaxis (ledger L249). Expected values are MuJoCo
+    // 3.5.0's `body_quat`, `body_pos` and `site_pos`/`site_quat`; within 1e-12,
+    // as they pass through sin, cos and sqrt (MuJoCo's arithmetic is not yet
+    // ours here). MuJoCo's 0.7071067811865476 is `FRAC_1_SQRT_2`.
+
+    use std::f64::consts::FRAC_1_SQRT_2;
+
+    fn assert_quat(got: &UnitQuaternion<f64>, mujoco: [f64; 4], what: &str) {
+        let g = got.into_inner();
+        let g = [g.w, g.i, g.j, g.k];
+        for k in 0..4 {
+            assert!(
+                (g[k] - mujoco[k]).abs() < 1e-12,
+                "{what}: got {g:?}, MuJoCo {mujoco:?}"
+            );
+        }
+    }
+
+    fn assert_vec(got: &Vector3<f64>, mujoco: [f64; 3], what: &str) {
+        for k in 0..3 {
+            assert!(
+                (got[k] - mujoco[k]).abs() < 1e-12,
+                "{what}: got {got:?}, MuJoCo {mujoco:?}"
+            );
+        }
+    }
+
+    fn body_quat_of(xml: &str) -> Vec<UnitQuaternion<f64>> {
+        crate::builder::load_model(xml)
+            .expect("should load")
+            .body_quat
+    }
+
+    #[test]
+    fn a_bodys_xyaxes_and_zaxis_turn_it_as_mujocos_do() {
+        let one = |attr: &str| {
+            body_quat_of(&format!(
+                r#"<mujoco><worldbody><body name="b" {attr}><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#
+            ))[1]
+        };
+        assert_quat(
+            &one(r#"xyaxes="0 1 0 -1 0 0""#),
+            [FRAC_1_SQRT_2, 0.0, 0.0, 0.707_106_781_186_547_5],
+            "xyaxes 0 1 0 -1 0 0",
+        );
+        assert_quat(
+            &one(r#"zaxis="1 0 0""#),
+            [FRAC_1_SQRT_2, 0.0, 0.707_106_781_186_547_5, 0.0],
+            "zaxis 1 0 0",
+        );
+        assert_quat(
+            &one(r#"xyaxes="1 2 3 -1 0.5 0.2""#),
+            [
+                0.746_648_941_770_3,
+                0.275_945_608_244_638_2,
+                -0.356_005_394_554_691_43,
+                0.489_519_701_433_707_8,
+            ],
+            "xyaxes 1 2 3 -1 0.5 0.2",
+        );
+        assert_quat(
+            &one(r#"zaxis="0.3 -0.7 1.1""#),
+            [
+                0.954_509_979_525_392_3,
+                0.274_069_719_620_169,
+                0.117_458_451_265_786_7,
+                0.0,
+            ],
+            "zaxis 0.3 -0.7 1.1",
+        );
+    }
+
+    #[test]
+    fn a_bodys_xyaxes_and_zaxis_in_a_turned_frame_are_composed_with_it() {
+        let in_frame = |attr: &str| {
+            body_quat_of(&format!(
+                r#"<mujoco><worldbody><frame euler="30 40 50"><body name="b" {attr}><joint type="hinge"/><geom type="sphere" size="0.1"/></body></frame></worldbody></mujoco>"#
+            ))[1]
+        };
+        assert_quat(
+            &in_frame(r#"zaxis="0.3 -0.7 1.1""#),
+            [
+                0.627_728_704_244_400_1,
+                0.504_388_678_536_701_7,
+                0.407_035_323_864_856_97,
+                0.431_127_568_079_190_95,
+            ],
+            "zaxis in a frame",
+        );
+        assert_quat(
+            &in_frame(r#"xyaxes="1 2 3 -1 0.5 0.2""#),
+            [
+                0.329_880_457_753_313_87,
+                0.746_881_588_259_864,
+                -0.180_987_292_478_980_27,
+                0.548_261_230_320_014,
+            ],
+            "xyaxes in a frame",
+        );
+    }
+
+    #[test]
+    fn a_fused_bodys_zaxis_turns_its_site() {
+        let model = crate::builder::load_model(
+            r#"<mujoco><compiler fusestatic="true"/><worldbody>
+                <body name="p"><joint type="hinge"/><geom type="sphere" size="0.1"/>
+                    <body name="b" pos="0.1 0 0" zaxis="1 0 0"><site name="s" pos="0 0 0.1"/></body>
+                </body>
+            </worldbody></mujoco>"#,
+        )
+        .expect("should load");
+        assert_eq!(model.nbody, 2, "b is fused into p");
+        assert_vec(&model.site_pos[0], [0.2, 0.0, 0.0], "site_pos");
+        assert_quat(
+            &model.site_quat[0],
+            [FRAC_1_SQRT_2, 0.0, 0.707_106_781_186_547_5, 0.0],
+            "site_quat",
+        );
+    }
+
+    #[test]
+    fn a_fused_bodys_xyaxes_moves_its_child_whose_own_zaxis_is_kept() {
+        let model = crate::builder::load_model(
+            r#"<mujoco><compiler fusestatic="true"/><worldbody>
+                <body name="p"><joint type="hinge"/><geom type="sphere" size="0.1"/>
+                    <body name="b" pos="0.1 0 0" xyaxes="0 1 0 -1 0 0">
+                        <body name="c" pos="0 0.2 0" zaxis="0 1 0"><joint type="hinge"/><geom type="sphere" size="0.1"/></body>
+                    </body>
+                </body>
+            </worldbody></mujoco>"#,
+        )
+        .expect("should load");
+        assert_eq!(model.nbody, 3, "b is fused into p");
+        assert_vec(&model.body_pos[2], [-0.1, 0.0, 0.0], "c's body_pos");
+        assert_quat(
+            &model.body_quat[2],
+            [0.500_000_000_000_000_1, -0.5, -0.499_999_999_999_999_9, 0.5],
+            "c's body_quat",
+        );
+    }
 }

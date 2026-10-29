@@ -2618,6 +2618,10 @@ pub struct MjcfBody {
     pub axisangle: Option<Vector4<f64>>,
     /// Alternative orientation as euler angles (xyz).
     pub euler: Option<Vector3<f64>>,
+    /// Alternative orientation as x and y axes.
+    pub xyaxes: Option<[f64; 6]>,
+    /// Alternative orientation as the z axis.
+    pub zaxis: Option<Vector3<f64>>,
     /// Explicit inertial properties.
     pub inertial: Option<MjcfInertial>,
     /// Joints attached to this body.
@@ -2657,6 +2661,8 @@ impl Default for MjcfBody {
             quat: Vector4::new(1.0, 0.0, 0.0, 0.0),
             axisangle: None,
             euler: None,
+            xyaxes: None,
+            zaxis: None,
             inertial: None,
             joints: Vec::new(),
             geoms: Vec::new(),

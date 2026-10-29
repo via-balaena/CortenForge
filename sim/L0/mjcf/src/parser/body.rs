@@ -218,6 +218,8 @@ pub(super) fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
     a.one_orientation()?;
     body.euler = a.vec3("euler")?;
     body.axisangle = a.vec4("axisangle")?;
+    body.xyaxes = a.array("xyaxes")?;
+    body.zaxis = a.vec3("zaxis")?;
     body.childclass = a.string("childclass");
     if let Some(mocap) = a.boolean("mocap")? {
         body.mocap = mocap;

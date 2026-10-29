@@ -289,7 +289,8 @@ fn expand_single_frame(
             b.childclass = effective.map(|s| s.to_string());
         }
 
-        let body_quat = resolve_orientation(b.quat, b.euler, b.axisangle, None, None, compiler);
+        let body_quat =
+            resolve_orientation(b.quat, b.euler, b.axisangle, b.xyaxes, b.zaxis, compiler);
         let mut pos = b.pos;
         let mut quat = body_quat;
         frame_accum_child(&composed_pos, &composed_quat, &mut pos, &mut quat);
@@ -297,6 +298,8 @@ fn expand_single_frame(
         b.quat = quat_to_wxyz(&quat);
         b.euler = None;
         b.axisangle = None;
+        b.xyaxes = None;
+        b.zaxis = None;
 
         body.children.push(b);
     }

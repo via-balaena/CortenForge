@@ -2151,3 +2151,5 @@ da35e3e8a6be9f97	sim/L0/mjcf/tests/user_sensors.rs:224
 8db9458398658199	sim/L0/mjcf/tests/connect_forms.rs:224
 8ee3855ff707f302	sim/L0/mjcf/tests/connect_forms.rs:162
 91560c0b93b5f3d7	sim/L0/mjcf/tests/connect_forms.rs:230
+8ccd1666ebae3822	sim/L0/mjcf/src/builder/orientation.rs:487
+db22f3d74562cddf	sim/L0/mjcf/src/builder/orientation.rs:506
