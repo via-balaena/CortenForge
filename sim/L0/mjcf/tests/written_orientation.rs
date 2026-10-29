@@ -248,6 +248,23 @@ const REFUSED: &[(&str, &str, &str)] = &[
     (r#"xyaxes="1 0 0 2 0 0""#, "xyaxes", "yaxis too small"),
     (r#"zaxis="0 0 0""#, "zaxis", "zaxis too small"),
     (r#"zaxis="1e-8 0 0""#, "zaxis", "zaxis too small"),
+    // An axis whose sum of squares overflows: `normvec` makes it 0 (its norm
+    // infinite), so the cross product is 0.
+    (
+        r#"xyaxes="1e200 0 0 0 1e200 0""#,
+        "xyaxes",
+        "cross(xaxis, yaxis) too small",
+    ),
+    (
+        r#"xyaxes="1 0 0 0 1e160 0""#,
+        "xyaxes",
+        "cross(xaxis, yaxis) too small",
+    ),
+    (
+        r#"xyaxes="1e160 0 0 0 1 0""#,
+        "xyaxes",
+        "cross(xaxis, yaxis) too small",
+    ),
 ];
 
 #[derive(Clone, Copy, Debug)]

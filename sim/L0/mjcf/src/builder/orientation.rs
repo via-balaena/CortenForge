@@ -257,10 +257,11 @@ fn alternative(
             x[2] * y[0] - x[0] * y[2],
             x[0] * y[1] - x[1] * y[0],
         ];
-        // MuJoCo refuses a norm below mjEPS here too ("cross(xaxis, yaxis) too
-        // small"); x and y are unit and orthogonal by now, so it is 1 to
-        // rounding and that refusal cannot fire.
-        normvec(&mut z);
+        // 0 where an axis's sum of squares overflowed: `normvec` then divided it
+        // by an infinite norm, to 0.
+        if normvec(&mut z) < MJ_EPS {
+            return refuse("xyaxes", "cross(xaxis, yaxis) too small");
+        }
         return Ok(Some(frame2quat(&x, &y, &z)));
     }
     if let Some(zaxis) = zaxis {
