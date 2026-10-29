@@ -2214,3 +2214,5 @@ b5d72df1ed1d4360	sim/L0/mjcf/tests/attach_and_replicate.rs:29
 a19a55c780431d02	sim/L0/mjcf/tests/repeated_sections.rs:173
 c9fbd67b252728f7	sim/L0/mjcf/tests/repeated_sections.rs:168
 eee6660c9094068e	sim/L0/mjcf/tests/repeated_sections.rs:162
+034ecce40a7ddaf7	sim/L0/mjcf/tests/self_closing.rs:192
+9ea0facb35a5f41b	sim/L0/mjcf/tests/self_closing.rs:181

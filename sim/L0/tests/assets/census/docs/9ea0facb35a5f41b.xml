@@ -1,0 +1,1 @@
+<mujoco><worldbody><frame><body name="p"><composite type="cable" count="5 1 1" curve="s" size="1"><geom type="capsule" size=".01"/><joint kind="main" damping="0.1"><geom type="capsule" size=".05"/></joint></composite></body></frame></worldbody></mujoco>

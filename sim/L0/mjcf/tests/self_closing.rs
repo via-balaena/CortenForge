@@ -169,3 +169,30 @@ fn only_the_first_root_is_read() {
     ))
     .unwrap_err();
 }
+
+/// Inside a `<frame>`, MuJoCo 3.5.0 does not check its schema, so an element
+/// it gives no children may have some there and still load. Such a child,
+/// written with an end tag, keeps its children to itself: a cable `<joint>`'s
+/// `<geom>` is not the cable's geom (MuJoCo: the cable's capsules are 0.01).
+/// Outside a frame MuJoCo refuses the document ("unrecognized element").
+#[test]
+fn inside_a_frame_a_cable_joints_children_stay_its_own() {
+    let model = load_model(
+        r#"<mujoco><worldbody><frame><body name="p"><composite type="cable" count="5 1 1" curve="s" size="1"><geom type="capsule" size=".01"/><joint kind="main" damping="0.1"><geom type="capsule" size=".05"/></joint></composite></body></frame></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    assert_relative_eq!(model.geom_size[0].x, 0.01);
+}
+
+/// The same for a body `<plugin>`'s `<config>` holding another: MuJoCo 3.5.0
+/// reads the outer one only (its `plugin_attr` holds `twist` alone).
+#[test]
+fn inside_a_frame_a_configs_children_stay_its_own() {
+    let mjcf = parse_mjcf_str(
+        r#"<mujoco><extension><plugin plugin="mujoco.elasticity.cable"/></extension><worldbody><frame><body name="b"><plugin plugin="mujoco.elasticity.cable"><config key="twist" value="1"><config key="bend" value="2"/></config></plugin><geom size=".1"/></body></frame></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    let plugin = mjcf.worldbody.frames[0].bodies[0].plugin.as_ref().unwrap();
+    assert_eq!(plugin.config.len(), 1);
+    assert_eq!(plugin.config[0].key, "twist");
+}
