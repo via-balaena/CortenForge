@@ -186,37 +186,40 @@ fn fuse_static_body(
 
             // Transform geoms into parent frame
             for g in &mut removed.geoms {
+                // A fromto geom's pose is its segment's, which fusion does not
+                // move yet (the book's L42): it gets no `pos`, which beside a
+                // `fromto` is refused, and its alternative is never resolved,
+                // as MuJoCo never resolves it (`user_objects.cc:3677-3724`).
+                if g.fromto.is_some() {
+                    continue;
+                }
                 let gpos = g.pos.unwrap_or_else(nalgebra::Vector3::zeros);
                 if !has_rotation {
                     g.pos = Some(gpos + body_pos);
                     continue;
                 }
                 g.pos = Some(body_quat * gpos + body_pos);
-                // MuJoCo turns a fromto geom by its fromto and never resolves
-                // its alternative (`mjCGeom::Compile`, `user_objects.cc:3677-3724`).
-                if g.fromto.is_none() {
-                    let geom_quat = resolve_orientation(
-                        g.quat.unwrap_or(nalgebra::Vector4::new(1.0, 0.0, 0.0, 0.0)),
-                        g.euler,
-                        g.axisangle,
-                        g.xyaxes,
-                        g.zaxis,
-                        compiler,
-                    )
-                    .map_err(|e| {
-                        e.on("geom").at(in_removed(
-                            ElementKind::Geom,
-                            g.name.as_deref().unwrap_or(""),
-                        ))
-                    })?;
-                    let composed = body_quat * geom_quat;
-                    g.quat = Some(quat_to_wxyz(&composed));
-                    // Normalize to quat-only after composition
-                    g.euler = None;
-                    g.axisangle = None;
-                    g.xyaxes = None;
-                    g.zaxis = None;
-                }
+                let geom_quat = resolve_orientation(
+                    g.quat.unwrap_or(nalgebra::Vector4::new(1.0, 0.0, 0.0, 0.0)),
+                    g.euler,
+                    g.axisangle,
+                    g.xyaxes,
+                    g.zaxis,
+                    compiler,
+                )
+                .map_err(|e| {
+                    e.on("geom").at(in_removed(
+                        ElementKind::Geom,
+                        g.name.as_deref().unwrap_or(""),
+                    ))
+                })?;
+                let composed = body_quat * geom_quat;
+                g.quat = Some(quat_to_wxyz(&composed));
+                // Normalize to quat-only after composition
+                g.euler = None;
+                g.axisangle = None;
+                g.xyaxes = None;
+                g.zaxis = None;
             }
 
             // Transform sites into parent frame (resolved already: `resolve_sites`)

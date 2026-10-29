@@ -739,3 +739,15 @@ fn a_fromto_replaces_an_alternative_as_mujocos_does() {
         assert!(ok, "beside {what}: {got:?}, MuJoCo {mujoco:?}");
     }
 }
+
+/// A `fromto` geom in a body fusestatic folds into its parent at an offset:
+/// MuJoCo 3.5.0 loads it, its `geom_pos` (0.1, 0, 0.15) (measured). Its pose
+/// here is still the segment read in the parent's frame (moving the segment
+/// is the book's L42); fusion sets it no `pos`, which beside a `fromto` is
+/// refused.
+#[test]
+fn a_fused_fromto_geom_away_from_the_origin_loads() {
+    load_model(FUSED_AT_AN_OFFSET).unwrap();
+}
+
+const FUSED_AT_AN_OFFSET: &str = r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p"><joint type="hinge"/><geom type="sphere" size="0.1"/><body name="b" pos="0.1 0 0"><geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.3"/></body></body></worldbody></mujoco>"#;
