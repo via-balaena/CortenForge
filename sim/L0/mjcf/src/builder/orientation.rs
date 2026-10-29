@@ -459,10 +459,9 @@ mod tests {
     }
 
     // -- A body's xyaxes and zaxis (ledger L249). Expected values are MuJoCo
-    // 3.5.0's `body_quat`, `body_pos` and `site_pos`/`site_quat`, within 1e-12:
-    // a fused body's positions are composed otherwise (the book's L42, ledger
-    // L255); `tests/written_orientation.rs` holds a body's xyaxes and zaxis as
-    // bits. MuJoCo's 0.7071067811865476 is `FRAC_1_SQRT_2`.
+    // 3.5.0's `body_quat`, `body_pos` and `site_pos`/`site_quat`, within 1e-12;
+    // `tests/written_orientation.rs` holds a body's xyaxes and zaxis as bits.
+    // MuJoCo's 0.7071067811865476 is `FRAC_1_SQRT_2`.
 
     use std::f64::consts::FRAC_1_SQRT_2;
 

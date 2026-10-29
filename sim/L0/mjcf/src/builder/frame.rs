@@ -157,8 +157,8 @@ pub fn resolve_sites(
 /// (`mjCGeom::Compile`, `user_objects.cc:3677-3833`), never resolves an
 /// alternative beside it, and refuses only the `pos` the geom or its class
 /// writes. The geom's other class values wait for the builder (the book's L16
-/// applies them all here). The class is the one the builder applies: a geom
-/// in a frame takes the frame's childclass, as `expand_frames` gives it.
+/// applies them all here). The class is its own, else the childclass of its
+/// frame or body, and it is pinned on the geom with the `fromto`.
 pub fn resolve_class_fromto(
     body: &mut MjcfBody,
     resolver: &DefaultResolver,
@@ -200,16 +200,23 @@ fn resolve_class_fromto_in_frame(
     }
 }
 
-/// `geom`'s class's `fromto`, where the geom writes none.
+/// `geom`'s class's `fromto`, where the geom writes none, with the class that
+/// gives it pinned on the geom: fusion moves a geom into another body, whose
+/// childclass the builder would apply otherwise.
 fn take_class_fromto(geom: &mut MjcfGeom, resolver: &DefaultResolver, childclass: Option<&str>) {
     if geom.fromto.is_some() {
         return;
     }
+    let class = geom
+        .class
+        .clone()
+        .or_else(|| childclass.map(str::to_string));
     let mut classed = geom.clone();
-    if classed.class.is_none() {
-        classed.class = childclass.map(str::to_string);
+    classed.class.clone_from(&class);
+    if let Some(fromto) = resolver.apply_to_geom(&classed).fromto {
+        geom.fromto = Some(fromto);
+        geom.class = class;
     }
-    geom.fromto = resolver.apply_to_geom(&classed).fromto;
 }
 
 /// `resolve_sites` within a frame in `body`, whose childclass its contents

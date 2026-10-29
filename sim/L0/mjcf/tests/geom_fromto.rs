@@ -780,8 +780,9 @@ fn a_fromto_replaces_an_alternative_as_mujocos_does() {
 /// the worldbody), a body fusestatic folds away (at an offset, into a parent or
 /// the world), beside the geom's own too-small alternative, and a cable's
 /// capsules under a default `pos` (MuJoCo makes a cable's geoms from the
-/// composite's own default, not the user's classes). MuJoCo 3.5.0 loads each (S21 oracle). Where the pose here is
-/// MuJoCo's, its `geom_pos` bits are given; a fused body's is not moved yet
+/// composite's own default, not the user's classes). MuJoCo 3.5.0 loads each
+/// (S21 oracle). Where the pose here is MuJoCo's, its `geom_pos` bits are
+/// given; a fused body's is not moved yet
 /// (the book's L42). `(what, document, capsule's geom index, MuJoCo's geom_pos)`.
 #[allow(clippy::type_complexity)]
 const CLASS_FROMTO: &[(&str, &str, usize, Option<[u64; 3]>)] = &[
@@ -867,6 +868,65 @@ fn a_class_fromto_on_every_path_that_moves_a_geom_loads_as_mujocos() {
         CLASS_FROMTO.len(),
         missed.join("\n  ")
     );
+}
+
+/// A `fromto` a geom takes from its body's, a frame's or an ancestor's
+/// childclass, in a body fusestatic folds away: MuJoCo 3.5.0 loads each (S21
+/// oracle) with the geom a capsule, its class's type. The class that gives the
+/// `fromto` is the one applied to the geom, whichever body fusion moves it
+/// into. `(what, document)`.
+const CHILDCLASS_FUSED: &[(&str, &str)] = &[
+    (
+        "a fused body's childclass fromto",
+        r#"<mujoco><default><default class="c"><geom type="capsule" size="0.05" fromto="0 0 0.1 0 0 0.3"/></default></default><compiler fusestatic="true"/><worldbody><body name="p"><joint type="hinge"/><geom type="sphere" size="0.1"/><body name="b" childclass="c"><geom/></body></body></worldbody></mujoco>"#,
+    ),
+    (
+        "a fused body's childclass fromto, fused into the world",
+        r#"<mujoco><default><default class="c"><geom type="capsule" size="0.05" fromto="0 0 0.1 0 0 0.3"/></default></default><compiler fusestatic="true"/><worldbody><body name="b" childclass="c"><geom/></body></worldbody></mujoco>"#,
+    ),
+    (
+        "an ancestor static body's childclass fromto",
+        r#"<mujoco><default><default class="c"><geom type="capsule" size="0.05" fromto="0 0 0.1 0 0 0.3"/></default></default><compiler fusestatic="true"/><worldbody><body name="p"><joint type="hinge"/><geom type="sphere" size="0.1"/><body name="a" childclass="c"><body name="b"><geom/></body></body></body></worldbody></mujoco>"#,
+    ),
+];
+
+#[test]
+fn a_childclass_fromto_in_a_fused_body_keeps_its_class() {
+    let mut missed = Vec::new();
+    for &(what, xml) in CHILDCLASS_FUSED {
+        match load_model(xml) {
+            Err(e) => missed.push(format!("{what}: {e}")),
+            Ok(model) => {
+                if !model.geom_type.contains(&sim_core::GeomType::Capsule) {
+                    missed.push(format!("{what}: no capsule, {:?}", model.geom_type));
+                }
+            }
+        }
+    }
+    assert!(missed.is_empty(), "{}", missed.join("\n"));
+}
+
+/// MuJoCo 3.5.0 loads each: an empty mesh name names no mesh, and a cable's
+/// geom is made from the composite's own default, so a class's `mesh` does not
+/// reach it (S21 oracle). `(what, document)`.
+const MESH_LOADS: &[(&str, &str)] = &[
+    (
+        "an empty mesh name beside a fromto",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 2 1 0 1 3 0 3 2 1 2 3"/></asset><worldbody><body name="b"><freejoint/><geom type="capsule" mesh="" size="0.05" fromto="0 0 0 0 0 1"/></body></worldbody></mujoco>"#,
+    ),
+    (
+        "a cable under a childclass mesh",
+        r#"<mujoco><extension><plugin plugin="mujoco.elasticity.cable"/></extension><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 2 1 0 1 3 0 3 2 1 2 3"/></asset><default><default class="p"><geom mesh="m"/></default></default><worldbody><body name="w" childclass="p"><composite type="cable" curve="s 0 0" count="4 1 1" size="1"><geom type="capsule" size="0.01"/></composite></body></worldbody></mujoco>"#,
+    ),
+];
+
+#[test]
+fn a_mesh_beside_a_fromto_that_mujoco_does_not_see_loads() {
+    let missed: Vec<String> = MESH_LOADS
+        .iter()
+        .filter_map(|&(what, xml)| load_model(xml).err().map(|e| format!("{what}: {e}")))
+        .collect();
+    assert!(missed.is_empty(), "{}", missed.join("\n"));
 }
 
 /// A `fromto` geom in a body fusestatic folds into its parent at an offset:

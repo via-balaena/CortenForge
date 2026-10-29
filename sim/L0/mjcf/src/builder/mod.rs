@@ -255,8 +255,8 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     expand_frames(&mut mjcf.worldbody, &mjcf.compiler, None)?;
 
     // Expand <composite> elements: generates body chains from composite definitions.
-    // Runs AFTER frame expansion (composites inside frames work) and BEFORE
-    // discardvisual/fusestatic (which need to see the expanded bodies).
+    // Runs AFTER frame expansion and BEFORE discardvisual/fusestatic (which need
+    // to see the expanded bodies).
     let composite_excludes = composite::expand_composites(&mut mjcf.worldbody)?;
     crate::validation::check_tree_depth(&mjcf.worldbody)?;
     mjcf.contact.excludes.extend(composite_excludes);

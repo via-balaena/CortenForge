@@ -1,0 +1,1 @@
+<mujoco><default><default class="c"><geom type="capsule" size="0.05" fromto="0 0 0.1 0 0 0.3"/></default></default><compiler fusestatic="true"/><worldbody><body name="p"><joint type="hinge"/><geom type="sphere" size="0.1"/><body name="a" childclass="c"><body name="b"><geom/></body></body></body></worldbody></mujoco>

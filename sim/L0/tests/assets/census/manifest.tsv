@@ -2187,3 +2187,8 @@ b7988ede9c4a5ad3	sim/L0/mjcf/tests/geom_fromto.rs:791
 ba09d4926399b21f	sim/L0/mjcf/tests/geom_fromto.rs:773
 d62eb4a175d851b2	sim/L0/mjcf/tests/geom_fromto.rs:655
 e6df7a7a5d9916d5	sim/L0/mjcf/tests/geom_fromto.rs:916
+0524a1bd66323f4c	sim/L0/mjcf/tests/geom_fromto.rs:885
+5956b628a8608a01	sim/L0/mjcf/tests/geom_fromto.rs:915
+61753ef78ae111ba	sim/L0/mjcf/tests/geom_fromto.rs:919
+7e309c79f686e676	sim/L0/mjcf/tests/geom_fromto.rs:889
+a86697c4d0e059da	sim/L0/mjcf/tests/geom_fromto.rs:881

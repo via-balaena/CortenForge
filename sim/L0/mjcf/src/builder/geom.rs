@@ -321,8 +321,8 @@ fn site_size(site: &MjcfSite) -> Vector3<f64> {
 /// only, and not beside a `pos` other than 0; half the segment's length in
 /// `size[1]` (in `size[2]` for an ellipsoid or a box, whose `size[1]` takes
 /// `size[0]`), its middle the position, and the turn of z onto `from − to` the
-/// orientation. Points closer than mjEPS are refused, as `normvec` gives 0
-/// below a norm of 1e-7. `Err` holds the refusal's reason.
+/// orientation. Points less than 1e-7 apart are refused: `normvec` gives their
+/// segment a norm of 0. `Err` holds the refusal's reason.
 fn fromto_pose(
     fromto: [f64; 6],
     geom_type: GeomType,
@@ -385,8 +385,9 @@ pub fn resolve_site_fromto(site: &mut MjcfSite) -> Result<()> {
 /// once its class is applied and before its mass or its arrays are taken (its
 /// class's `pos` counts: an element starts from its class's values), in place
 /// of any other orientation the geom or its class gives (MuJoCo never resolves
-/// an alternative beside a `fromto`). A geom that also names a mesh is refused
-/// after, as MuJoCo refuses it (`user_objects.cc:3727-3730`). Its radius is
+/// an alternative beside a `fromto`). A geom that also names a mesh (a name
+/// that is not empty) is refused after, as MuJoCo refuses it
+/// (`user_objects.cc:3727-3730`). Its radius is
 /// `size[0]`: a parsed geom's default size is 0.1 (`MjcfGeom::default`), where
 /// MuJoCo's is 0 and refused (the book's L18).
 ///
@@ -406,7 +407,8 @@ pub fn resolve_geom_fromto(geom: &mut MjcfGeom) -> Result<()> {
         Vector3::new(radius, 0.0, 0.0),
     )
     .map_err(refuse)?;
-    if geom.mesh.is_some() {
+    // An empty name names no mesh (MuJoCo resolves a non-empty one only).
+    if geom.mesh.as_deref().is_some_and(|m| !m.is_empty()) {
         return Err(refuse("fromto cannot be used with mesh geom"));
     }
     geom.pos = Some(pos);
