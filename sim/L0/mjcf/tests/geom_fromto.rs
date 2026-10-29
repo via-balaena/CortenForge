@@ -650,6 +650,11 @@ const REFUSED: &[(&str, &str, &str)] = &[
         r#"<mujoco><extension><plugin plugin="mujoco.elasticity.cable"/></extension><worldbody><composite type="cable" curve="cos(s) 0 0" count="5 1 1" size="1"><geom type="capsule" size="0.01"/></composite></worldbody></mujoco>"#,
         "fromto points too close",
     ),
+    (
+        "a mesh beside it",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 2 1 0 1 3 0 3 2 1 2 3"/></asset><worldbody><body name="b"><freejoint/><geom type="capsule" mesh="m" size="0.05" fromto="0 0 0 0 0 1"/></body></worldbody></mujoco>"#,
+        "fromto cannot be used with mesh geom",
+    ),
 ];
 
 #[test]
@@ -674,6 +679,36 @@ fn a_fromto_mujoco_refuses_is_refused() {
         REFUSED.len(),
         missed.join("\n  ")
     );
+}
+
+/// A site's `fromto` takes the same rule (`fromto_pose`): MuJoCo 3.5.0 refuses
+/// each of these (S21 oracle), and the refusal names the site.
+#[test]
+fn a_sites_fromto_refusals_name_the_site() {
+    for (site, reason) in [
+        (
+            r#"type="sphere" fromto="0 0 0 0 0 1""#,
+            "fromto requires a capsule, cylinder, ellipsoid or box",
+        ),
+        (
+            r#"type="capsule" pos="0 0 0.1" fromto="0 0 0 0 0 1""#,
+            "both pos and fromto defined",
+        ),
+        (
+            r#"type="capsule" fromto="0.1 0.2 0.3 0.1 0.2 0.3""#,
+            "fromto points too close",
+        ),
+    ] {
+        let err = load_model(&format!(
+            r#"<mujoco><worldbody><body name="b"><freejoint/><geom type="sphere" size="0.1"/><site name="s" size="0.05" {site}/></body></worldbody></mujoco>"#
+        ))
+        .unwrap_err();
+        assert!(
+            matches!(&err, MjcfError::InvalidValue { element, attribute, reason: r, .. }
+                if element == "site" && attribute == "fromto" && r == reason),
+            "{site}: {err}"
+        );
+    }
 }
 
 /// MuJoCo 3.5.0 loads each: a `pos` of 0 beside a fromto, and a box whose one

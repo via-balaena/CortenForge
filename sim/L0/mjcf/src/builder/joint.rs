@@ -67,8 +67,9 @@ impl ModelBuilder {
         self.jnt_pos.push(joint.pos.unwrap_or_else(Vector3::zeros));
         // The written axis made unit once, as MuJoCo's `normvec`
         // (`mjCJoint::Compile`, `user_objects.cc:2957-2960`). One too small to
-        // make unit falls back to z; MuJoCo refuses it ("axis too small in
-        // joint": the Rigid-loading book's L20).
+        // make unit falls back to z; MuJoCo refuses a hinge's or a slide's
+        // ("axis too small in joint") and sets a ball's or a free joint's to z
+        // before it looks (the Rigid-loading book's L20).
         let raw_axis = joint.axis.unwrap_or_else(Vector3::z);
         let mut unit = [raw_axis.x, raw_axis.y, raw_axis.z];
         let axis = if normvec(&mut unit) >= MJ_EPS {
