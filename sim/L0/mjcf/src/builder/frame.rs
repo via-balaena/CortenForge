@@ -84,11 +84,16 @@ fn validate_frame_childclass_refs(
 ///
 /// A site reaches it resolved (`resolve_sites`): its class's values applied and its
 /// `fromto` made into its `pos`, `quat` and `size`.
+///
+/// # Errors
+///
+/// An orientation alternative `ResolveOrientation` refuses, on a frame or on
+/// an element in one.
 pub fn expand_frames(
     body: &mut MjcfBody,
     compiler: &MjcfCompiler,
     parent_childclass: Option<&str>,
-) {
+) -> Result<()> {
     // Resolve effective childclass early and own it to avoid borrow conflicts
     let effective_owned: Option<String> = body
         .childclass
@@ -107,13 +112,14 @@ pub fn expand_frames(
             &UnitQuaternion::identity(),
             compiler,
             effective,
-        );
+        )?;
     }
 
     // Recursively expand frames in child bodies
     for child in &mut body.children {
-        expand_frames(child, compiler, effective);
+        expand_frames(child, compiler, effective)?;
     }
+    Ok(())
 }
 
 /// Each site resolved before frames and static bodies move it, the one place a
@@ -194,7 +200,9 @@ fn expand_single_frame(
     accumulated_quat: &UnitQuaternion<f64>,
     compiler: &MjcfCompiler,
     parent_childclass: Option<&str>,
-) {
+) -> Result<()> {
+    let in_body =
+        |kind, name: Option<&str>| Location::named(kind, name.unwrap_or("")).in_body(&body.name);
     // 1. Resolve the frame's own orientation
     let frame_quat = resolve_orientation(
         frame.quat,
@@ -203,7 +211,11 @@ fn expand_single_frame(
         frame.xyaxes,
         frame.zaxis,
         compiler,
-    );
+    )
+    .map_err(|e| {
+        e.on("frame")
+            .at(in_body(ElementKind::Frame, frame.name.as_deref()))
+    })?;
 
     // 2. Compose with accumulated parent-frame transform
     let mut composed_pos = frame.pos;
@@ -246,7 +258,11 @@ fn expand_single_frame(
                 g.xyaxes,
                 g.zaxis,
                 compiler,
-            );
+            )
+            .map_err(|e| {
+                e.on("geom")
+                    .at(in_body(ElementKind::Geom, g.name.as_deref()))
+            })?;
             let mut pos = g.pos.unwrap_or_else(Vector3::zeros);
             let mut quat = geom_quat;
             frame_accum_child(&composed_pos, &composed_quat, &mut pos, &mut quat);
@@ -268,7 +284,8 @@ fn expand_single_frame(
     for site in &frame.sites {
         let mut s = site.clone();
         let mut pos = s.pos.unwrap_or_else(Vector3::zeros);
-        let mut quat = site_quat_as_written(&s, compiler);
+        let mut quat = site_quat_as_written(&s, compiler)
+            .map_err(|e| e.on("site").at(in_body(ElementKind::Site, Some(&s.name))))?;
         frame_accum_child(&composed_pos, &composed_quat, &mut pos, &mut quat);
         s.pos = Some(pos);
         s.quat = Some(quat_to_wxyz(&quat));
@@ -290,7 +307,8 @@ fn expand_single_frame(
         }
 
         let body_quat =
-            resolve_orientation(b.quat, b.euler, b.axisangle, b.xyaxes, b.zaxis, compiler);
+            resolve_orientation(b.quat, b.euler, b.axisangle, b.xyaxes, b.zaxis, compiler)
+                .map_err(|e| e.on("body").at(Location::named(ElementKind::Body, &b.name)))?;
         let mut pos = b.pos;
         let mut quat = body_quat;
         frame_accum_child(&composed_pos, &composed_quat, &mut pos, &mut quat);
@@ -313,8 +331,9 @@ fn expand_single_frame(
             &composed_quat,
             compiler,
             effective,
-        );
+        )?;
     }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -52,7 +52,8 @@ impl ModelBuilder {
                 geom.xyaxes,
                 geom.zaxis,
                 &self.compiler,
-            );
+            )
+            .map_err(|e| e.on("geom").at(at()))?;
             (
                 geom.pos.unwrap_or_else(Vector3::zeros),
                 orientation,
@@ -138,19 +139,22 @@ impl ModelBuilder {
             self.site_name_to_id.insert(site.name.clone(), site_id);
         }
 
-        self.site_body.push(body_id);
-        self.site_type.push(site_geom_type(site).map_err(|e| {
-            e.with_location_if_unknown(Location::named(ElementKind::Site, &site.name).within_nth(
+        let at = || {
+            Location::named(ElementKind::Site, &site.name).within_nth(
                 ElementKind::Body,
                 self.body_name.get(body_id).and_then(Option::as_deref),
                 body_id,
-            ))
-        })?);
+            )
+        };
+        self.site_body.push(body_id);
+        self.site_type
+            .push(site_geom_type(site).map_err(|e| e.with_location_if_unknown(at()))?);
 
         // The site's class values and its `fromto` are already in it
         // (`resolve_sites`).
         self.site_pos.push(site.pos.unwrap_or_else(Vector3::zeros));
-        self.site_quat.push(site_orientation(site, &self.compiler));
+        self.site_quat
+            .push(site_orientation(site, &self.compiler).map_err(|e| e.on("site").at(at()))?);
         self.site_size.push(site_size(site));
 
         self.site_name.push(if site.name.is_empty() {

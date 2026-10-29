@@ -50,6 +50,7 @@
 04b534bcb221418c	model:geom_quat;dyn:agree
 04dfeb0465e92e0e	mj-refuses
 05073909766a879f	agree
+052e1185fd136f1a	both-refuse
 05312619d3462d24	agree
 0545de3998e2c41f	mj-refuses
 054600e688bc1a42	model:geom_quat;dyn:agree
@@ -249,6 +250,7 @@
 206b053fae8e1f0e	agree
 2084726d71be95bf	agree
 20883ec72736dcf2	model:geom_quat;dyn:agree
+208cf64b2790668d	both-refuse
 20b95213ed0f993a	agree
 20c754f771d9ddb9	agree
 2145e415ae76c5ed	agree
@@ -847,6 +849,7 @@
 67bba3a77c16482d	agree
 67c452938dcc2a0c	agree
 67ed261056e8c19d	both-refuse
+67f32550234c815b	model:geom_quat;dyn:agree
 67f4c35f3ec89578	agree
 681acac6292f9e95	model:geom_quat;dyn:agree
 682b755b1fa36f9d	model:geom_quat;dyn:agree
@@ -982,6 +985,7 @@
 7ab34229ac72d329	both-refuse
 7ad5a27cd99555d3	agree
 7ae121d9f93cf4e8	both-refuse
+7af60f487a3ec00a	both-refuse
 7b53469f81b43d81	agree
 7b5928434fff25b7	model:geom_quat;dyn:agree
 7b64e1017e70e9ab	both-refuse
@@ -1090,6 +1094,7 @@
 88df115039e3d8fd	agree
 890dee7740613285	model:geom_quat;dyn:agree
 8911fdab9393973e	mj-refuses
+89463ef98ed617da	model:geom_quat;dyn:agree
 897a2981f00d0da8	agree
 897fa76174527055	agree
 8993990c1976bf9f	model:neq
@@ -1143,6 +1148,7 @@
 907b816f9cca3e6d	both-refuse
 90a3f33bd2829dad	both-refuse
 90ec93d8a45c12bd	both-refuse
+90fbfcce2e6b212a	both-refuse
 90fe1274af761012	agree
 91072568fd158c07	agree
 912cf5702fb3db07	agree
@@ -1278,6 +1284,7 @@ a07d50c23f9e274b	mj-refuses
 a0942a286c10b1f0	agree
 a0bb604c983d040b	mj-refuses
 a0bde53d8e20751a	model:neq
+a0fc6cf32effc0b4	both-refuse
 a0ff89f48fc8fcc9	agree
 a100e6bb8383fd89	both-refuse
 a12872cf7beb39c4	agree
@@ -1568,6 +1575,7 @@ c2fff38383aa1746	agree
 c31a6ac0c655bf6e	agree
 c31b75e357222093	agree
 c3905834aaf8a5d8	model:geom_quat;dyn:agree
+c3a571f6d8159d54	both-refuse
 c3c74340311b2ad3	agree
 c3c75e7eba4c4e86	both-refuse
 c3ca80ca6f093477	both-refuse
@@ -1979,6 +1987,7 @@ f5c9ff3ea509a80a	agree
 f5df7643b057dc0d	mj-refuses
 f5e362d2178a7d93	model:geom_quat;dyn:agree
 f5f3c05e62882a2b	agree
+f60abd53f94d04c9	both-refuse
 f6881ce2578560ae	mj-refuses	divergence=D-CABLE-TWO-BODY
 f6882954f2a1ffda	both-refuse
 f6b297e7a0e2575e	agree

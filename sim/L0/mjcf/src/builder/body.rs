@@ -140,7 +140,11 @@ impl ModelBuilder {
             body.xyaxes,
             body.zaxis,
             &self.compiler,
-        );
+        )
+        .map_err(|e| {
+            e.on("body")
+                .at(Location::nth(ElementKind::Body, Some(&body.name), body_id))
+        })?;
 
         // Compute world frame position for this body (used for free joint qpos0)
         let world_pos = parent_world_pos + parent_world_quat * body_pos;

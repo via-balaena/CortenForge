@@ -248,7 +248,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Expand <frame> elements first: compose transforms into children, lift onto parent bodies.
     // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
     // visible to those passes (matches MuJoCo, which expands frames during XML parsing).
-    expand_frames(&mut mjcf.worldbody, &mjcf.compiler, None);
+    expand_frames(&mut mjcf.worldbody, &mjcf.compiler, None)?;
 
     // Expand <composite> elements: generates body chains from composite definitions.
     // Runs AFTER frame expansion (composites inside frames work) and BEFORE
@@ -261,7 +261,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         apply_discardvisual(&mut mjcf);
     }
     if mjcf.compiler.fusestatic {
-        apply_fusestatic(&mut mjcf);
+        apply_fusestatic(&mut mjcf)?;
     }
 
     let mut builder = ModelBuilder::new();

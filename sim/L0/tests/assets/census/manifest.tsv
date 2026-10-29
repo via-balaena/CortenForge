@@ -2153,3 +2153,12 @@ da35e3e8a6be9f97	sim/L0/mjcf/tests/user_sensors.rs:224
 91560c0b93b5f3d7	sim/L0/mjcf/tests/connect_forms.rs:230
 8ccd1666ebae3822	sim/L0/mjcf/src/builder/orientation.rs:487
 db22f3d74562cddf	sim/L0/mjcf/src/builder/orientation.rs:506
+052e1185fd136f1a	sim/L0/mjcf/tests/written_orientation.rs:1787
+208cf64b2790668d	sim/L0/mjcf/tests/written_orientation.rs:1794
+67f32550234c815b	sim/L0/mjcf/tests/written_orientation.rs:1829
+7af60f487a3ec00a	sim/L0/mjcf/tests/written_orientation.rs:1766
+89463ef98ed617da	sim/L0/mjcf/tests/written_orientation.rs:1828
+90fbfcce2e6b212a	sim/L0/mjcf/tests/written_orientation.rs:1801
+a0fc6cf32effc0b4	sim/L0/mjcf/tests/written_orientation.rs:1780
+c3a571f6d8159d54	sim/L0/mjcf/tests/written_orientation.rs:1759
+f60abd53f94d04c9	sim/L0/mjcf/tests/written_orientation.rs:1773
