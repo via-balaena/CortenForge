@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1351
+# agree_floor 1352
 001bc4149d608b24	agree
 00308b83da9d8bab	agree
 0032a4ca7e233aec	agree
@@ -61,6 +61,7 @@
 058dc5822ba73cab	agree
 05b1f2d2e5c199e1	agree
 0612f863bec54980	mj-refuses
+063a41bc810f31b8	agree
 066364a957f30c4b	agree
 067b3f71b113c874	agree
 070dd1f796abe863	agree

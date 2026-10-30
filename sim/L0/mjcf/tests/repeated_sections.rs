@@ -153,9 +153,10 @@ fn a_later_compilers_assetdir_lies_over_an_earlier_meshdir() {
     assert!(tetrahedron_found_in_b(r#"<compiler assetdir="b" meshdir="a"/>"#).is_err());
 }
 
-/// Every top-level `<default>` is MuJoCo 3.5.0's one main class
+/// Every unnamed top-level `<default>` is MuJoCo 3.5.0's one main class
 /// (`mjXReader::Default` takes `mjs_getSpecDefault` for each): each reads onto
-/// it, the later over the earlier, and an empty one changes nothing.
+/// it, the later over the earlier, and an empty one changes nothing. (A block
+/// named `main` is not read onto it here: ledger L239.)
 #[test]
 fn every_top_level_default_reads_onto_the_main_class() {
     for empty in [
@@ -174,4 +175,19 @@ fn every_top_level_default_reads_onto_the_main_class() {
     );
     assert_eq!(m.geom_contype[0], 4);
     assert_eq!(m.geom_conaffinity[0], 5);
+}
+
+/// MuJoCo 3.5.0 keeps one actuator default per class, which each shortcut
+/// element (`<position>`, `<motor>`, …) rewrites, so a later top-level
+/// block's `<motor>` leaves a `<position>` its own gain 1 (measured: gain 1,
+/// bias −1, not 10 and −10). Here a later block's actuator default replaces
+/// an earlier one, as the last actuator element does within one block; a
+/// class written by two shortcut kinds is book L17's (A3-O1).
+#[test]
+fn a_later_top_level_blocks_actuator_default_replaces_an_earlier_ones() {
+    let m = load(
+        r#"<mujoco><default><position kp="10"/></default><default><motor gear="5"/></default><worldbody><body><joint name="j"/><geom size=".1"/></body></worldbody><actuator><position joint="j"/><motor joint="j"/></actuator></mujoco>"#,
+    );
+    assert_eq!(m.actuator_gainprm[0][0], 1.0);
+    assert_eq!(m.actuator_biasprm[0][1], -1.0);
 }
