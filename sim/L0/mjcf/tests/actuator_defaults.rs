@@ -648,7 +648,7 @@ fn an_actuator_element_in_a_class_is_refused() {
         r#"<mujoco><default><actuator ctrlrange="-1 1"/></default><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/></actuator></mujoco>"#,
     )
     .unwrap_err();
-    assert!(matches!(err, MjcfError::Unsupported { .. }), "{err}");
+    assert!(matches!(err, MjcfError::UnknownElement { .. }), "{err}");
 }
 
 /// A muscle's own `tausmooth` is its `dynprm[2]`, the smooth switching time
@@ -803,5 +803,94 @@ fn a_kinds_own_write_clears_what_was_asked() {
     ] {
         let (gain, _, dynamics) = params(xml);
         assert_eq!((gain[0], dynamics[0]), (0.75, 0.01), "{xml}");
+    }
+}
+
+/// A kind-specific attribute its kind does not read, on an element, a
+/// class's element or an actuator built in code, is refused, as MuJoCo's
+/// schema refuses it ("unrecognized attribute", measured): sim-mjcf would
+/// otherwise drop it unread.
+#[test]
+fn an_attribute_its_kind_does_not_read_is_refused() {
+    let unknown = |result: Result<sim_core::Model, MjcfError>, what: &str| match result {
+        Err(MjcfError::UnknownAttribute { attribute, .. }) => attribute,
+        Err(err) => panic!("{what}: not an unknown attribute: {err}"),
+        Ok(_) => panic!("{what}: loaded"),
+    };
+    for (xml, attribute) in [
+        (
+            r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h" kp="5"/></actuator></mujoco>"#,
+            "kp",
+        ),
+        (
+            r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><position joint="h" area="5"/></actuator></mujoco>"#,
+            "area",
+        ),
+        (
+            r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><velocity joint="h" gain="2"/></actuator></mujoco>"#,
+            "gain",
+        ),
+        (
+            r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h" gaintype="affine"/></actuator></mujoco>"#,
+            "gaintype",
+        ),
+        (
+            r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><damper joint="h" kv="1" ctrlrange="0 1" tausmooth="0.1"/></actuator></mujoco>"#,
+            "tausmooth",
+        ),
+        (
+            r#"<mujoco><default><motor kp="5"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><position joint="h"/></actuator></mujoco>"#,
+            "kp",
+        ),
+        (
+            r#"<mujoco><default><motor area="3"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><cylinder joint="h"/></actuator></mujoco>"#,
+            "area",
+        ),
+        (
+            r#"<mujoco><default><position gain="4"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><adhesion body="world" ctrlrange="0 1"/></actuator></mujoco>"#,
+            "gain",
+        ),
+        (
+            r#"<mujoco><default><motor range="0.5 2"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+            "range",
+        ),
+    ] {
+        assert_eq!(unknown(load_model(xml), xml), attribute, "{xml}");
+    }
+    let mut mjcf = parse_mjcf_str(
+        r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><position joint="h" kp="3" timeconst="0.1"/></actuator></mujoco>"#,
+    )
+    .unwrap();
+    mjcf.actuators[0].actearly = Some(true);
+    assert_eq!(
+        unknown(
+            model_from_mjcf(&mjcf, None),
+            "a code-built position's actearly"
+        ),
+        "actearly"
+    );
+    let mut mjcf = parse_mjcf_str(
+        r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><intvelocity joint="h" kp="3" actrange="-1 1"/></actuator></mujoco>"#,
+    )
+    .unwrap();
+    mjcf.actuators[0].dynprm = sim_mjcf::Prefix::new(&[0.5]);
+    assert_eq!(
+        unknown(
+            model_from_mjcf(&mjcf, None),
+            "a code-built intvelocity's dynprm"
+        ),
+        "dynprm"
+    );
+}
+
+/// `actearly` on a `<muscle>`, element or class: sim-mjcf's allowlisted
+/// extension (the book's settled call A4-Q2), which MuJoCo's schema refuses.
+#[test]
+fn a_muscles_actearly_is_allowlisted() {
+    for xml in [
+        r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h" actearly="true"/></actuator></mujoco>"#,
+        r#"<mujoco><default><muscle actearly="true"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+    ] {
+        assert!(load_model(xml).unwrap().actuator_actearly[0], "{xml}");
     }
 }

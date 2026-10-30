@@ -85,12 +85,9 @@ fn read_class_element(default: &mut MjcfDefault, e: &BytesStart) -> Result<()> {
         | b"adhesion" | b"damper" | b"intvelocity" => {
             default.actuators.push(parse_actuator_defaults(e)?);
         }
-        b"actuator" => {
-            return Err(MjcfError::unsupported(
-                "an <actuator> in a default class (MuJoCo 3.5.0 has none): write its kind, \
-                 <general>, <motor> or another",
-            ));
-        }
+        // MuJoCo 3.5.0's default schema has no <actuator>; it has no kind
+        // to write.
+        b"actuator" => return Err(MjcfError::unknown_element("actuator", "default")),
         b"tendon" => {
             default.tendon = Some(parse_tendon_defaults(e)?);
         }
@@ -191,15 +188,11 @@ pub(super) fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
 }
 
 /// A default class's actuator element: its values, as an actuator's
-/// ([`super::actuator::actuator_values`]), and no `tausmooth`.
+/// ([`super::actuator::actuator_values`]).
 pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuator> {
     let a = Attrs::new(e)?;
     let kind = MjcfActuatorType::from_str(a.element())
         .ok_or_else(|| MjcfError::unsupported(format!("a default <{}>", a.element())))?;
-    // MuJoCo 3.5.0's default schema gives no kind a `tausmooth`.
-    if a.has("tausmooth") {
-        return Err(MjcfError::unknown_attribute(a.element(), "tausmooth"));
-    }
     super::actuator::actuator_values(&a, kind)
 }
 

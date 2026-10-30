@@ -1,0 +1,1 @@
+<mujoco><default><position gain="4"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><adhesion body="world" ctrlrange="0 1"/></actuator></mujoco>

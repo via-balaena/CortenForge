@@ -160,11 +160,13 @@ impl ActuatorSpec {
     ///
     /// # Errors
     ///
-    /// [`MjcfError::InvalidValue`] for a value MuJoCo refuses, with its
+    /// [`MjcfError::UnknownAttribute`] for an attribute its kind does not
+    /// read; [`MjcfError::InvalidValue`] for a value MuJoCo refuses, with its
     /// message, or one it would silently replace (each refusal names its
     /// divergence); [`MjcfError::InvalidKeyword`] for a `<general>`'s type
     /// no keyword names (an actuator built in code).
     pub fn write(&mut self, actuator: &MjcfActuator, writer: Writer) -> Result<()> {
+        refuse_unread(actuator, writer)?;
         self.write_common(actuator);
         match actuator.actuator_type {
             MjcfActuatorType::General => self.write_general(actuator)?,
@@ -576,6 +578,9 @@ impl ActuatorSpec {
                 self.ask_gain(k, value);
             }
         }
+        // sim-mjcf's allowlist (the book's settled call A4-Q2): MuJoCo's
+        // schema gives a <muscle> no `actearly`.
+        set(&mut self.actearly, actuator.actearly);
         self.biasprm = self.gainprm;
         self.dyntype = Some(ActuatorDynamics::Muscle);
         self.gaintype = Some(GainType::Muscle);
@@ -608,6 +613,65 @@ impl ActuatorSpec {
         }
         Ok(())
     }
+}
+
+/// A kind-specific attribute `actuator`'s kind does not read, refused as
+/// MuJoCo 3.5.0's schema refuses it ("unrecognized attribute", measured):
+/// each kind's are those `OneActuator` reads for it
+/// (`xml_native_reader.cc:2366-2470`), and `actearly` on a `<muscle>`
+/// (sim-mjcf's allowlist, the book's settled call A4-Q2). A class's element
+/// takes no `tausmooth`, which MuJoCo's default schema gives no kind.
+fn refuse_unread(actuator: &MjcfActuator, writer: Writer) -> Result<()> {
+    use MjcfActuatorType::{
+        Adhesion, Cylinder, Damper, General, IntVelocity, Muscle, Position, Velocity,
+    };
+    let a = actuator;
+    let servo: &[MjcfActuatorType] = &[Position, IntVelocity];
+    let muscle: &[MjcfActuatorType] = &[Muscle];
+    let general: &[MjcfActuatorType] = &[General];
+    let read: [(&str, bool, &[MjcfActuatorType]); 26] = [
+        ("kp", a.kp.is_some(), servo),
+        (
+            "kv",
+            a.kv.is_some(),
+            &[Position, IntVelocity, Velocity, Damper],
+        ),
+        ("dampratio", a.dampratio.is_some(), servo),
+        ("inheritrange", a.inheritrange.is_some(), servo),
+        ("timeconst", a.timeconst.is_some(), &[Position, Cylinder]),
+        ("timeconst", a.muscle_timeconst.is_some(), muscle),
+        ("area", a.area.is_some(), &[Cylinder]),
+        ("diameter", a.diameter.is_some(), &[Cylinder]),
+        ("bias", a.bias.is_some(), &[Cylinder]),
+        ("range", a.range.is_some(), muscle),
+        ("force", a.force.is_some(), muscle),
+        ("scale", a.scale.is_some(), muscle),
+        ("lmin", a.lmin.is_some(), muscle),
+        ("lmax", a.lmax.is_some(), muscle),
+        ("vmax", a.vmax.is_some(), muscle),
+        ("fpmax", a.fpmax.is_some(), muscle),
+        ("fvmax", a.fvmax.is_some(), muscle),
+        ("tausmooth", a.tausmooth.is_some(), muscle),
+        ("gain", a.gain.is_some(), &[Adhesion]),
+        ("gaintype", a.gaintype.is_some(), general),
+        ("biastype", a.biastype.is_some(), general),
+        ("dyntype", a.dyntype.is_some(), general),
+        ("gainprm", a.gainprm.is_some(), general),
+        ("biasprm", a.biasprm.is_some(), general),
+        ("dynprm", a.dynprm.is_some(), general),
+        ("actearly", a.actearly.is_some(), &[General, Muscle]),
+    ];
+    let element = a.actuator_type.as_str();
+    if let Some((attribute, ..)) = read
+        .iter()
+        .find(|(_, written, kinds)| *written && !kinds.contains(&a.actuator_type))
+    {
+        return Err(MjcfError::unknown_attribute(element, *attribute));
+    }
+    if writer == Writer::Class && a.tausmooth.is_some() {
+        return Err(MjcfError::unknown_attribute(element, "tausmooth"));
+    }
+    Ok(())
 }
 
 /// A refusal of `mjs_setToPosition`'s, by its kind: `mjs_setToIntVelocity`

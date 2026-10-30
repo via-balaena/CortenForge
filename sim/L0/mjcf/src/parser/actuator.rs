@@ -63,27 +63,15 @@ pub(super) fn refuse_actdim(a: &Attrs) -> Result<()> {
     Ok(())
 }
 
-/// A servo's `inheritrange`, read only where MuJoCo 3.5.0's schema has it:
-/// on a `<position>` or `<intvelocity>`, as an element or a default class's
-/// (`xml_native_reader.cc:189-196`, `:402-416`); elsewhere refused, as its
-/// schema refuses it. An intvelocity's schema has no `timeconst` and no
-/// `actlimited` (its activation is always limited); both are refused.
-pub(super) fn servo_attributes(a: &Attrs) -> Result<Option<f64>> {
-    let element = a.element();
-    if element == "intvelocity" {
-        for attribute in ["timeconst", "actlimited"] {
-            if a.has(attribute) {
-                return Err(MjcfError::unknown_attribute(element, attribute));
-            }
-        }
+/// An `<intvelocity>`'s `actlimited`, refused as MuJoCo 3.5.0's schema refuses
+/// it (`xml_native_reader.cc:189-196`, `:402-416`): its activation is always
+/// limited. The kind-specific attributes a kind does not read are refused
+/// when it is written (`ActuatorSpec::write`).
+pub(super) fn refuse_intvelocity_actlimited(a: &Attrs) -> Result<()> {
+    if a.element() == "intvelocity" && a.has("actlimited") {
+        return Err(MjcfError::unknown_attribute("intvelocity", "actlimited"));
     }
-    if matches!(element, "position" | "intvelocity") {
-        a.real("inheritrange")
-    } else if a.has("inheritrange") {
-        Err(MjcfError::unknown_attribute(element, "inheritrange"))
-    } else {
-        Ok(None)
-    }
+    Ok(())
 }
 
 /// `gainprm` or `biasprm`: MuJoCo 3.5.0 reads up to ten (`mjNGAIN`,
@@ -108,8 +96,8 @@ pub(super) fn gain_or_bias(a: &Attrs, name: &str) -> Result<Option<Prefix<9>>> {
     Ok(Prefix::new(given))
 }
 
-/// Parse actuator attributes: its name, class and target, a muscle's
-/// `tausmooth`, then its values ([`actuator_values`]).
+/// Parse actuator attributes: its name, class and target, then its values
+/// ([`actuator_values`]).
 pub(super) fn parse_actuator_attrs(
     e: &BytesStart,
     actuator_type: MjcfActuatorType,
@@ -126,19 +114,15 @@ pub(super) fn parse_actuator_attrs(
     actuator.jointinparent = a.string("jointinparent");
     actuator.cranksite = a.string("cranksite");
     actuator.slidersite = a.string("slidersite");
-    if actuator_type == MjcfActuatorType::Muscle {
-        actuator.tausmooth = a.real("tausmooth")?;
-    }
     Ok(actuator)
 }
 
 /// The values an actuator element writes, in a default class or not (MuJoCo
 /// 3.5.0's default schema gives a class's element each of them, but no name,
 /// class or target: `xml_native_reader.cc:184-207`), each `None` where not
-/// written. Their rules are its kind's when its class is applied
-/// (`ActuatorSpec::write`); refused here are the attributes the schema does
-/// not give the kind: `actdim`, a servo's (`servo_attributes`), and
-/// `actearly` on any kind but `<general>`.
+/// written, every kind's read whatever the kind: `ActuatorSpec::write`
+/// refuses one its kind does not read, and holds every value's rule. Refused
+/// here are `actdim` and an intvelocity's `actlimited`.
 pub(super) fn actuator_values(a: &Attrs, actuator_type: MjcfActuatorType) -> Result<MjcfActuator> {
     refuse_actdim(a)?;
     let mut actuator = MjcfActuator {
@@ -158,24 +142,30 @@ pub(super) fn actuator_values(a: &Attrs, actuator_type: MjcfActuatorType) -> Res
     actuator.kp = a.real("kp")?;
     actuator.kv = a.real("kv")?;
     actuator.dampratio = a.real("dampratio")?;
-    actuator.inheritrange = servo_attributes(a)?;
+    refuse_intvelocity_actlimited(a)?;
+    actuator.inheritrange = a.real("inheritrange")?;
     actuator.nsample = a.int("nsample")?;
     actuator.interp = a.keyword_text("interp", keywords::interp)?;
     actuator.delay = a.real("delay")?;
 
-    // A <general>'s own: its types, parameters and actearly
+    // A <general>'s own: its types (their keywords checked on a <general>
+    // alone: another kind writing one is refused when it is written,
+    // `ActuatorSpec::write`), parameters and actearly
     // (`xml_native_reader.cc:2373-2391`).
     if actuator_type == MjcfActuatorType::General {
         actuator.gaintype = a.keyword_text("gaintype", keywords::gain_type)?;
         actuator.biastype = a.keyword_text("biastype", keywords::bias_type)?;
         actuator.dyntype = a.keyword_text("dyntype", keywords::dyn_type)?;
-        actuator.gainprm = gain_or_bias(a, "gainprm")?;
-        actuator.biasprm = gain_or_bias(a, "biasprm")?;
-        actuator.dynprm = a.prefix("dynprm")?;
-        actuator.actearly = a.boolean("actearly")?;
-    } else if a.has("actearly") {
-        return Err(MjcfError::unknown_attribute(a.element(), "actearly"));
+    } else {
+        actuator.gaintype = a.string("gaintype");
+        actuator.biastype = a.string("biastype");
+        actuator.dyntype = a.string("dyntype");
     }
+    actuator.gainprm = gain_or_bias(a, "gainprm")?;
+    actuator.biasprm = gain_or_bias(a, "biasprm")?;
+    actuator.dynprm = a.prefix("dynprm")?;
+    actuator.actearly = a.boolean("actearly")?;
+    actuator.tausmooth = a.real("tausmooth")?;
 
     // A cylinder's.
     actuator.area = a.real("area")?;

@@ -2402,3 +2402,17 @@ d2c8a95f04a554b4	sim/L0/mjcf/tests/actuator_defaults.rs:733
 e37ed170307f7722	sim/L0/mjcf/tests/actuator_defaults.rs:800
 f167a2de87206ede	sim/L0/mjcf/tests/actuator_defaults.rs:781
 f5c77e0dacbc4245	sim/L0/mjcf/tests/actuator_defaults.rs:763
+08ff4c483bcd64b6	sim/L0/mjcf/tests/actuator_defaults.rs:830
+0e7c956875a98f04	sim/L0/mjcf/tests/actuator_defaults.rs:854
+13d3db7fe448f056	sim/L0/mjcf/tests/actuator_defaults.rs:892
+17cc81702265135d	sim/L0/mjcf/tests/actuator_defaults.rs:842
+568f49f59fa0a71b	sim/L0/mjcf/src/parser/tests.rs:804
+5acdee5e5d512ec8	sim/L0/mjcf/tests/actuator_defaults.rs:834
+5f546b79f61c53c6	sim/L0/mjcf/tests/actuator_defaults.rs:891
+676ab85edfd8eb79	sim/L0/mjcf/tests/actuator_defaults.rs:846
+724af57307ff942a	sim/L0/mjcf/tests/actuator_defaults.rs:850
+7bfc13532ae2f980	sim/L0/mjcf/tests/actuator_defaults.rs:861
+7dc520b04e1680c8	sim/L0/mjcf/tests/actuator_defaults.rs:822
+9dd7cc40fc5be10f	sim/L0/mjcf/tests/actuator_defaults.rs:838
+e030b89a47e7b7d3	sim/L0/mjcf/tests/actuator_defaults.rs:826
+f85879ea1574f290	sim/L0/mjcf/tests/actuator_defaults.rs:873

@@ -804,7 +804,7 @@ fn test_parse_default_actuator() {
     let xml = r#"
             <mujoco model="test">
                 <default>
-                    <motor gear="100" ctrlrange="-1 1" kp="50" kv="5" ctrllimited="true"/>
+                    <position gear="100" ctrlrange="-1 1" kp="50" kv="5" ctrllimited="true"/>
                 </default>
                 <worldbody/>
             </mujoco>
@@ -815,7 +815,7 @@ fn test_parse_default_actuator() {
 
     let default = &model.defaults[0];
     let actuator_defaults = &default.actuators[0];
-    assert_eq!(actuator_defaults.actuator_type, MjcfActuatorType::Motor);
+    assert_eq!(actuator_defaults.actuator_type, MjcfActuatorType::Position);
     assert_relative_eq!(
         actuator_defaults.gear.unwrap().given()[0],
         100.0,
