@@ -969,3 +969,144 @@ fn a_cylinder_under_a_servo_class_inheritrange() {
         "{err}"
     );
 }
+
+/// A class's value a muscle replaced, or a damping a damper dropped, is no
+/// longer lost once a later write in the class sets the slot again: a
+/// position's `kp` or `timeconst` in the same class, a nested class's
+/// `<general>` gain. Each muscle and damper then loads as MuJoCo 3.5.0
+/// builds it (measured).
+#[test]
+fn a_later_write_clears_what_a_class_lost() {
+    let built = |xml: &str| {
+        let m = load_model(xml).unwrap_or_else(|err| panic!("{xml}: {err}"));
+        (m.actuator_gainprm[0], m.actuator_dynprm[0])
+    };
+    let (gain, dynamics) = built(
+        r#"<mujoco><default><general gainprm="1"/><muscle/><position kp="0.5"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+    );
+    assert_eq!(
+        (&gain[..3], &dynamics[..3]),
+        (&[0.5, 1.05, -1.0][..], &[0.01, 0.04, 0.0][..])
+    );
+    let (gain, dynamics) = built(
+        r#"<mujoco><default><general dynprm="1"/><muscle/><position timeconst="0.2"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+    );
+    assert_eq!(
+        (&gain[..3], &dynamics[..3]),
+        (&[0.75, 1.05, -1.0][..], &[0.2, 0.04, 0.0][..])
+    );
+    let (gain, _) = built(
+        r#"<mujoco><default><general gaintype="affine" gainprm="0 0 -3"/><damper ctrlrange="0 1"/><default class="c"><general gainprm="0 0 0"/></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><damper class="c" joint="h" ctrlrange="0 1"/></actuator></mujoco>"#,
+    );
+    assert_eq!(gain[..3], [0.0, 0.0, 0.0]);
+}
+
+/// Each kind-specific attribute on each kind, as an element and as a
+/// class's element, refused as an unknown attribute exactly where MuJoCo
+/// 3.5.0's schema refuses it: the attributes each kind reads are MuJoCo's
+/// (all 450 pairs measured), but a `<muscle>`'s `actearly`, sim-mjcf's
+/// allowlist (the book's settled call A4-Q2).
+#[test]
+fn each_kind_reads_the_attributes_mujocos_schema_gives_it() {
+    const READS: [(&str, &str, &[&str]); 9] = [
+        ("motor", r#"joint="h""#, &[]),
+        (
+            "position",
+            r#"joint="h""#,
+            &["kp", "kv", "dampratio", "inheritrange", "timeconst"],
+        ),
+        ("velocity", r#"joint="h""#, &["kv"]),
+        (
+            "intvelocity",
+            r#"joint="h" actrange="-1 1""#,
+            &["kp", "kv", "dampratio", "inheritrange"],
+        ),
+        ("damper", r#"joint="h" ctrlrange="0 1""#, &["kv"]),
+        (
+            "cylinder",
+            r#"joint="h""#,
+            &["timeconst", "area", "diameter", "bias"],
+        ),
+        (
+            "muscle",
+            r#"joint="h""#,
+            &[
+                "timeconst",
+                "range",
+                "force",
+                "scale",
+                "lmin",
+                "lmax",
+                "vmax",
+                "fpmax",
+                "fvmax",
+                "tausmooth",
+                "actearly",
+            ],
+        ),
+        ("adhesion", r#"body="b" ctrlrange="0 1""#, &["gain"]),
+        (
+            "general",
+            r#"joint="h""#,
+            &[
+                "gaintype", "biastype", "dyntype", "gainprm", "biasprm", "dynprm", "actearly",
+            ],
+        ),
+    ];
+    const VALUES: [(&str, &str); 25] = [
+        ("kp", "5"),
+        ("kv", "2"),
+        ("dampratio", "1"),
+        ("inheritrange", "1"),
+        ("timeconst", "0.2"),
+        ("area", "3"),
+        ("diameter", "1"),
+        ("bias", "1 0 0"),
+        ("range", "0.5 1.2"),
+        ("force", "10"),
+        ("scale", "100"),
+        ("lmin", "0.5"),
+        ("lmax", "1.6"),
+        ("vmax", "1.5"),
+        ("fpmax", "1.3"),
+        ("fvmax", "1.2"),
+        ("tausmooth", "0.1"),
+        ("gain", "2"),
+        ("gaintype", "fixed"),
+        ("biastype", "none"),
+        ("dyntype", "none"),
+        ("gainprm", "1"),
+        ("biasprm", "0"),
+        ("dynprm", "1"),
+        ("actearly", "true"),
+    ];
+    let body = r#"<worldbody><body name="b"><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody>"#;
+    let mut pairs = 0;
+    for (kind, target, reads) in READS {
+        for (attribute, value) in VALUES {
+            let value = if kind == "muscle" && attribute == "timeconst" {
+                "0.01 0.04"
+            } else {
+                value
+            };
+            let element = format!(
+                r#"<mujoco>{body}<actuator><{kind} {target} {attribute}="{value}"/></actuator></mujoco>"#
+            );
+            let class = format!(
+                r#"<mujoco><default><{kind} {attribute}="{value}"/></default>{body}<actuator><{kind} {target}/></actuator></mujoco>"#
+            );
+            // A class's element takes no `tausmooth` (MuJoCo's default schema).
+            let class_reads = reads.contains(&attribute) && attribute != "tausmooth";
+            for (xml, read) in [(element, reads.contains(&attribute)), (class, class_reads)] {
+                match load_model(&xml) {
+                    Err(MjcfError::UnknownAttribute {
+                        attribute: refused, ..
+                    }) => assert!(!read && refused == attribute, "{xml}: refused {refused}"),
+                    _ => assert!(read, "{xml}: not refused"),
+                }
+                pairs += 1;
+            }
+        }
+    }
+    assert_eq!(pairs, 450);
+}

@@ -2423,3 +2423,6 @@ f85879ea1574f290	sim/L0/mjcf/tests/actuator_defaults.rs:873
 a9c07fd63d8d879b	sim/L0/mjcf/tests/actuator_defaults.rs:928
 c053f03974b8a60a	sim/L0/mjcf/tests/actuator_defaults.rs:959
 ed81a3e98e945a56	sim/L0/mjcf/tests/actuator_defaults.rs:906
+1b2240d2a0e817c1	sim/L0/mjcf/tests/actuator_defaults.rs:999
+66b5ca2c48912e6f	sim/L0/mjcf/tests/actuator_defaults.rs:992
+df76154879bdedff	sim/L0/mjcf/tests/actuator_defaults.rs:985
