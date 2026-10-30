@@ -283,3 +283,55 @@ fn values_written_by_none_are_mujocos_defaults() {
     );
     assert_eq!((model.sensor_noise[0], model.sensor_cutoff[0]), (0.0, 0.0));
 }
+
+/// The attribute a document's refusal names, which must be a cylinder's.
+fn refused_cylinder_attribute(xml: &str) -> String {
+    match load_model(xml) {
+        Err(MjcfError::InvalidValue {
+            element, attribute, ..
+        }) if element == "cylinder" => attribute,
+        Err(err) => panic!("{xml}: not a cylinder's invalid value: {err}"),
+        Ok(_) => panic!("{xml}: loaded"),
+    }
+}
+
+/// MuJoCo reads a cylinder's three `bias` values into one number and keeps
+/// the first (`bias="1 2 3"` builds biasprm 1 0 0, `"0 0 -0.5"` 0 0 0:
+/// measured), so a second or third that is not 0 is refused
+/// (D-CYLINDER-BIAS), on an element or a class's, used or not.
+#[test]
+fn a_cylinders_bias_beyond_its_first_value_is_refused() {
+    for xml in [
+        r#"<mujoco><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><actuator><cylinder joint="h" bias="1 2 3"/></actuator></mujoco>"#,
+        r#"<mujoco><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><actuator><cylinder joint="h" bias="0 0 -0.5"/></actuator></mujoco>"#,
+        r#"<mujoco><default><default class="c"><cylinder bias="1 2 3"/></default></default><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><actuator><cylinder class="c" joint="h"/></actuator></mujoco>"#,
+        r#"<mujoco><default><default class="c"><cylinder bias="1 2 3"/></default></default><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/></actuator></mujoco>"#,
+    ] {
+        assert_eq!(refused_cylinder_attribute(xml), "bias", "{xml}");
+    }
+}
+
+#[test]
+fn a_cylinders_bias_of_its_first_value_loads() {
+    let (_, bias, _) = params(
+        r#"<mujoco><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><actuator><cylinder joint="h" bias="1 0 0"/></actuator></mujoco>"#,
+    );
+    assert_eq!(bias[..3], [1.0, 0.0, 0.0]);
+}
+
+/// A cylinder built in code is held to the same refusal.
+#[test]
+fn a_code_built_cylinders_bias_beyond_its_first_value_is_refused() {
+    let mut mjcf = parse_mjcf_str(
+        r#"<mujoco><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><actuator><cylinder joint="h" bias="1 0 0"/></actuator></mujoco>"#,
+    )
+    .unwrap();
+    mjcf.actuators[0].bias = Some([1.0, 2.0, 3.0]);
+    match model_from_mjcf(&mjcf, None) {
+        Err(MjcfError::InvalidValue {
+            element, attribute, ..
+        }) => assert_eq!((element.as_str(), attribute.as_str()), ("cylinder", "bias")),
+        Err(err) => panic!("not a cylinder's invalid value: {err}"),
+        Ok(_) => panic!("a code-built cylinder's bias 1 2 3 loaded"),
+    }
+}

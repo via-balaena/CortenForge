@@ -8,7 +8,7 @@
 //! user's classes (`mjCComposite` builds them from its own default). The
 //! builder reads each element as this pass leaves it and applies no class.
 
-use super::actuator::{check_muscle_values, check_servo_gains};
+use super::actuator::{check_cylinder_bias, check_muscle_values, check_servo_gains};
 use super::geom::{resolve_geom_fromto, resolve_site_fromto};
 use crate::defaults::DefaultResolver;
 use crate::error::{ElementKind, Location, MjcfError, Result};
@@ -26,14 +26,15 @@ enum Pending<'a> {
 
 /// Every element given its class: the body tree's (`apply_to_body_tree`),
 /// then each mesh, actuator, tendon, sensor, contact pair and equality. An
-/// actuator's own servo gains and muscle values are checked before its class
-/// gives any.
+/// actuator's own servo gains, cylinder bias and muscle values are checked
+/// before its class gives any.
 ///
 /// # Errors
 ///
 /// [`MjcfError::UnknownClass`](crate::MjcfError::UnknownClass) for a `class`
-/// or `childclass` no `<default>` makes; an actuator's own servo gains or
-/// muscle values that `check_servo_gains` or `check_muscle_values` refuses,
+/// or `childclass` no `<default>` makes; an actuator's own servo gains,
+/// cylinder bias or muscle values that `check_servo_gains`,
+/// `check_cylinder_bias` or `check_muscle_values` refuses,
 /// or a muscle force `apply_to_actuator` refuses; a `fromto` the body tree's
 /// pass refuses;
 /// [`MjcfError::InvalidModel`](crate::MjcfError::InvalidModel) for an
@@ -46,11 +47,12 @@ pub fn apply_defaults(mjcf: &mut MjcfModel, resolver: &DefaultResolver) -> Resul
     }
     for (i, actuator) in mjcf.actuators.iter_mut().enumerate() {
         let at = Location::nth(ElementKind::Actuator, Some(&actuator.name), i);
-        // A servo's own gains and a muscle's own values, before its class
-        // gives any (the parser checked a parsed one; this holds an actuator
-        // built in code to it).
+        // A servo's own gains, a cylinder's own bias and a muscle's own
+        // values, before its class gives any (the parser checked a parsed
+        // one; this holds an actuator built in code to it).
         let element = actuator.actuator_type.as_str();
         let own = check_servo_gains(element, actuator.kv, actuator.dampratio, actuator.timeconst)
+            .and_then(|()| check_cylinder_bias(element, actuator.bias))
             .and_then(|()| {
                 check_muscle_values(
                     element,

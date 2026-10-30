@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1407
+# agree_floor 1410
 001bc4149d608b24	agree
 00308b83da9d8bab	agree
 0032a4ca7e233aec	agree
@@ -351,6 +351,7 @@
 29e214226c829089	agree
 2a3c0d549621bdf3	both-refuse
 2a414eeba557e9b8	agree
+2a56ee9b1acc11aa	agree
 2a7ecba1a43088a7	agree
 2aa09854c688221f	both-refuse
 2ab3020a865ab0b2	agree
@@ -712,6 +713,7 @@
 508d86673bdbbd8a	agree
 50a3c621075052c9	mj-refuses
 50a73ec074eca82a	agree
+50c88def0c4fa154	ours-refused	divergence=D-CYLINDER-BIAS
 50f5067f7a478c93	mj-refuses
 5105b899a187b919	agree
 5150d646a763178e	both-refuse
@@ -1231,7 +1233,8 @@
 8dd503a51aabe25f	both-refuse
 8e1037abcfd94699	mj-refuses
 8e39ddd83b5a5364	mj-refuses
-8e77cf7bacf0cc98	model:actuator_biasprm;dyn:e1:t0:qfrc_actuator
+8e45945f5a537bce	ours-refused	divergence=D-CYLINDER-BIAS
+8e77cf7bacf0cc98	ours-refused	divergence=D-CYLINDER-BIAS
 8e7c4e334f85e89d	agree
 8e8dd149d63b48ac	both-refuse
 8e905b5934dfec0b	agree
@@ -1276,6 +1279,7 @@
 92349b4d911c39d0	agree
 924ccd8af8ae71c4	agree
 9260eabcbff2454e	agree
+92aa254b623127a5	agree
 92c2f550f9e26dba	both-refuse
 93079b94e5e87d73	both-refuse
 931ae6c72b49a537	agree
@@ -1300,6 +1304,7 @@
 95b9b26551550c69	agree
 95dddb7196249575	both-refuse
 95ebc6f5d4e67bf9	agree
+9608aa2be9843127	ours-refused	divergence=D-CYLINDER-BIAS
 960eb951f20adf6e	agree
 96379c6cf602090f	mj-refuses
 9664e72eaf8500ef	mj-refuses
@@ -2077,12 +2082,14 @@ ed2ac1fee980ce8c	model:meaninertia;dyn:e1:t0:qM
 ed4fa97aa1931207	model:neq
 ed65d8197d4282ec	agree
 ed8d322a842a1358	both-refuse
+ed913b2009a8d1a0	ours-refused	divergence=D-CYLINDER-BIAS
 ed994df10cc5e1bc	agree
 edb1146b0365719b	both-refuse
 edd12fc57abf0a25	both-refuse
 ede96f46d03af648	ours-refused	divergence=D-ACTDIM
 ee00cbb9cb41686a	both-refuse
 ee13f2c107f13807	agree
+ee4e9e6b5ed067ea	agree
 ee61e84548cacee3	both-refuse
 ee74e6fdb1b5d9bf	agree
 eee6660c9094068e	agree
@@ -2168,7 +2175,7 @@ f6b297e7a0e2575e	agree
 f6d9bfb450ea5a7f	agree
 f708d8f9192934d7	agree
 f736afb45271ef32	both-refuse
-f755f97997aaced0	model:actuator_biasprm;dyn:e1:t0:qfrc_actuator
+f755f97997aaced0	ours-refused	divergence=D-CYLINDER-BIAS
 f7beea3bc2acf9e4	both-refuse
 f7c3d6dc4c715237	agree
 f7c5383f596395e5	agree

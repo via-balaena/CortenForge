@@ -267,6 +267,7 @@ pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefa
         defaults.dampratio,
         defaults.timeconst,
     )?;
+    crate::builder::actuator::check_cylinder_bias(a.element(), defaults.bias)?;
     crate::builder::actuator::check_muscle_values(
         a.element(),
         defaults.muscle_timeconst,

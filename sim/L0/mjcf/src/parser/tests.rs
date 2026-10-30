@@ -1427,7 +1427,7 @@ fn test_parse_cylinder_actuator() {
                     </body>
                 </worldbody>
                 <actuator>
-                    <cylinder name="cyl1" joint="joint1" area="0.002" timeconst="0.5" bias="1 2 3"/>
+                    <cylinder name="cyl1" joint="joint1" area="0.002" timeconst="0.5" bias="1 0 0"/>
                 </actuator>
             </mujoco>
         "#;
@@ -1441,7 +1441,7 @@ fn test_parse_cylinder_actuator() {
     assert_eq!(cyl.joint, Some("joint1".to_string()));
     assert_eq!(cyl.area, Some(0.002));
     assert_eq!(cyl.timeconst, Some(0.5));
-    assert_eq!(cyl.bias, Some([1.0, 2.0, 3.0]));
+    assert_eq!(cyl.bias, Some([1.0, 0.0, 0.0]));
 }
 
 #[test]

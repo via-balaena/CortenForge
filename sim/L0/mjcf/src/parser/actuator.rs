@@ -227,6 +227,7 @@ pub(super) fn parse_actuator_attrs(
         actuator.dampratio,
         actuator.timeconst,
     )?;
+    crate::builder::actuator::check_cylinder_bias(a.element(), actuator.bias)?;
     crate::builder::actuator::check_muscle_values(
         a.element(),
         actuator.muscle_timeconst,

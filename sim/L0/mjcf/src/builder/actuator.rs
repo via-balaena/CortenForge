@@ -551,6 +551,23 @@ pub fn check_muscle_values(
     }
 }
 
+/// A `<cylinder>`'s `bias` beyond its first value refused, as written on an
+/// element or a default class's element: MuJoCo 3.5.0 reads the three values
+/// into one number (`OneActuator`, `xml_native_reader.cc`) and builds
+/// `biasprm` from the first alone (`mjs_setToCylinder`; measured:
+/// `bias="1 2 3"` builds 1 0 0), so a second or third that is not 0 is
+/// refused here (D-CYLINDER-BIAS).
+pub fn check_cylinder_bias(element: &str, bias: Option<[f64; 3]>) -> Result<()> {
+    if element == "cylinder" && bias.is_some_and(|[_, b1, b2]| b1 != 0.0 || b2 != 0.0) {
+        return Err(MjcfError::invalid_value(
+            element,
+            "bias",
+            "a cylinder's bias takes its first value only: the others must be 0",
+        ));
+    }
+    Ok(())
+}
+
 /// A position or intvelocity servo's `inheritrange` beside a range it would
 /// replace, refused as MuJoCo 3.5.0's `mjs_setToPosition` and
 /// `mjs_setToIntVelocity` refuse it (`user_api.cc:926-952`), a written range

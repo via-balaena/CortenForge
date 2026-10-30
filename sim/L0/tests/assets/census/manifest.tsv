@@ -2340,3 +2340,11 @@ c2bb87cb6de8a8d2	sim/L0/mjcf/tests/actuator_defaults.rs:169
 c58ce843b6a45c6b	sim/L0/mjcf/tests/actuator_defaults.rs:165
 c8551611d847397e	sim/L0/mjcf/tests/actuator_defaults.rs:161
 f5732311c7c1d07c	sim/L0/mjcf/tests/actuator_defaults.rs:185
+2a56ee9b1acc11aa	examples/fundamentals/sim-cpu/actuators/cylinder/src/main.rs:47
+50c88def0c4fa154	sim/L0/mjcf/tests/actuator_defaults.rs:306
+8e45945f5a537bce	sim/L0/mjcf/tests/actuator_defaults.rs:307
+92aa254b623127a5	sim/L0/mjcf/src/parser/tests.rs:1421
+9608aa2be9843127	sim/L0/mjcf/tests/actuator_defaults.rs:308
+ed913b2009a8d1a0	sim/L0/mjcf/tests/actuator_defaults.rs:305
+ee4e9e6b5ed067ea	sim/L0/mjcf/tests/actuator_defaults.rs:317
+ee4e9e6b5ed067ea	sim/L0/mjcf/tests/actuator_defaults.rs:326
