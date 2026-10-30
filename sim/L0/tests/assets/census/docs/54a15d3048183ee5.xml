@@ -1,0 +1,1 @@
+<mujoco><default><motor cranklength="2"/></default><worldbody><body><joint name="h" type="slide"/><geom size="0.1"/><site name="c"/><site name="s" pos="0 0 1"/></body></worldbody><actuator><motor cranksite="c" slidersite="s"/><motor joint="h"/></actuator></mujoco>

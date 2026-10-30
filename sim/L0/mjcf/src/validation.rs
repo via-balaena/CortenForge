@@ -136,7 +136,7 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
     crate::stack::on_large_stack(|| {
         check_tree_depth(&model.worldbody)?;
-        crate::builder::front_end(model).map(|(_, _, checked)| checked)
+        crate::builder::front_end(model).map(|front| front.checked)
     })
 }
 

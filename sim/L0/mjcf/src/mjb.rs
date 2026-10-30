@@ -59,7 +59,8 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// Current MJB format version.
 ///
 /// 11 since Rigid-loading PR RL-5b: `MjcfActuator`'s `kp`, `area`, `bias`,
-/// muscle values and `gain`, and `MjcfSensor`'s `noise` and `cutoff`, optional.
+/// muscle values and `gain`, and `MjcfSensor`'s `noise` and `cutoff`, optional;
+/// `MjcfDefault`'s actuator elements a list of `MjcfActuator`.
 /// 10 since Rigid-loading PR RL-5a: `MjcfMesh` took `class`, `MjcfComposite`
 /// `site`, `MjcfJoint` `freejoint`.
 /// 9 since Rigid-loading PR RL-4b: `MjcfBody` took `xyaxes` and `zaxis`.

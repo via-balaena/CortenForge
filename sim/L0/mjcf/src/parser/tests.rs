@@ -814,10 +814,8 @@ fn test_parse_default_actuator() {
     assert_eq!(model.defaults.len(), 1);
 
     let default = &model.defaults[0];
-    let actuator_defaults = default
-        .actuator
-        .as_ref()
-        .expect("should have actuator defaults");
+    let actuator_defaults = &default.actuators[0];
+    assert_eq!(actuator_defaults.actuator_type, MjcfActuatorType::Motor);
     assert_relative_eq!(
         actuator_defaults.gear.unwrap().given()[0],
         100.0,

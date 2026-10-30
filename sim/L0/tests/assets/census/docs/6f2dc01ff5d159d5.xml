@@ -1,0 +1,1 @@
+<mujoco><default><intvelocity kp="3" actrange="-1 1"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><position joint="h"/></actuator></mujoco>

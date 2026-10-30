@@ -10,9 +10,9 @@ use crate::error::{MjcfError, Result};
 use crate::keywords;
 
 use crate::types::{
-    MjcfActuatorDefaults, MjcfDefault, MjcfEqualityDefaults, MjcfGeomDefaults, MjcfGeomType,
-    MjcfJointDefaults, MjcfJointType, MjcfMeshDefaults, MjcfPairDefaults, MjcfSensorDefaults,
-    MjcfSiteDefaults, MjcfTendonDefaults,
+    MjcfActuator, MjcfActuatorType, MjcfDefault, MjcfEqualityDefaults, MjcfGeomDefaults,
+    MjcfGeomType, MjcfJointDefaults, MjcfJointType, MjcfMeshDefaults, MjcfPairDefaults,
+    MjcfSensorDefaults, MjcfSiteDefaults, MjcfTendonDefaults,
 };
 
 use super::attrs::{Attrs, parse_maxhullvert, skip_element};
@@ -81,9 +81,15 @@ fn read_class_element(default: &mut MjcfDefault, e: &BytesStart) -> Result<()> {
         b"geom" => {
             default.geom = Some(parse_geom_defaults(e)?);
         }
-        b"actuator" | b"motor" | b"position" | b"velocity" | b"general" | b"cylinder"
-        | b"muscle" | b"adhesion" | b"damper" | b"intvelocity" => {
-            default.actuator = Some(parse_actuator_defaults(e)?);
+        b"motor" | b"position" | b"velocity" | b"general" | b"cylinder" | b"muscle"
+        | b"adhesion" | b"damper" | b"intvelocity" => {
+            default.actuators.push(parse_actuator_defaults(e)?);
+        }
+        b"actuator" => {
+            return Err(MjcfError::unsupported(
+                "an <actuator> in a default class (MuJoCo 3.5.0 has none): write its kind, \
+                 <general>, <motor> or another",
+            ));
         }
         b"tendon" => {
             default.tendon = Some(parse_tendon_defaults(e)?);
@@ -184,117 +190,13 @@ pub(super) fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
     Ok(defaults)
 }
 
-/// Parse actuator defaults.
-pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefaults> {
+/// A default class's actuator element: its values, as an actuator's
+/// ([`super::actuator::actuator_values`]).
+pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuator> {
     let a = Attrs::new(e)?;
-    super::actuator::refuse_actdim(&a)?;
-    let mut defaults = MjcfActuatorDefaults::default();
-
-    if let Some(pair) = a.array::<2>("ctrlrange")? {
-        defaults.ctrlrange = Some(pair.into());
-    }
-    if let Some(pair) = a.array::<2>("forcerange")? {
-        defaults.forcerange = Some(pair.into());
-    }
-    defaults.gear = a.prefix("gear")?;
-    defaults.kp = a.real("kp")?;
-    defaults.kv = a.real("kv")?;
-    defaults.dampratio = a.real("dampratio")?;
-    defaults.inheritrange = super::actuator::servo_attributes(&a)?;
-
-    defaults.ctrllimited = a.tf_auto("ctrllimited")?;
-    defaults.forcelimited = a.tf_auto("forcelimited")?;
-
-    // <general>-specific attributes — parsed unconditionally because
-    // parse_actuator_defaults() is called for all actuator element names
-    // (actuator|motor|position|velocity|general). The model builder
-    // ignores these for shortcut types.
-    defaults.gaintype = a.keyword_text("gaintype", keywords::gain_type)?;
-    defaults.biastype = a.keyword_text("biastype", keywords::bias_type)?;
-    defaults.dyntype = a.keyword_text("dyntype", keywords::dyn_type)?;
-    defaults.gainprm = super::actuator::gain_or_bias(&a, "gainprm")?;
-    defaults.biasprm = super::actuator::gain_or_bias(&a, "biasprm")?;
-    defaults.dynprm = a.prefix("dynprm")?;
-
-    // Activation parameters
-    defaults.group = a.int("group")?;
-    defaults.actlimited = a.tf_auto("actlimited")?;
-    if let Some(pair) = a.array::<2>("actrange")? {
-        defaults.actrange = Some(pair.into());
-    }
-    defaults.actearly = a.boolean("actearly")?;
-    if let Some(pair) = a.array::<2>("lengthrange")? {
-        defaults.lengthrange = Some(pair.into());
-    }
-
-    // Interpolation attributes (common to all actuator types)
-    defaults.nsample = a.int("nsample")?;
-    defaults.interp = a.keyword_text("interp", keywords::interp)?;
-    defaults.delay = a.real("delay")?;
-
-    // Cylinder-specific attributes
-    defaults.area = a.real("area")?;
-    defaults.diameter = a.real("diameter")?;
-    // A muscle's `timeconst` is a pair [activation, deactivation]; every other
-    // type's is one number (`xml_native_reader.cc` reads 2 and 1, exactly).
-    if a.element() == "muscle" {
-        if let Some(pair) = a.array::<2>("timeconst")? {
-            defaults.muscle_timeconst = Some(pair.into());
-        }
-    } else {
-        defaults.timeconst = a.real("timeconst")?;
-    }
-    defaults.bias = a.array("bias")?;
-
-    // Muscle-specific attributes
-    if let Some(pair) = a.array::<2>("range")? {
-        defaults.range = Some(pair.into());
-    }
-    defaults.force = a.real("force")?;
-    defaults.scale = a.real("scale")?;
-    defaults.lmin = a.real("lmin")?;
-    defaults.lmax = a.real("lmax")?;
-    defaults.vmax = a.real("vmax")?;
-    defaults.fpmax = a.real("fpmax")?;
-    defaults.fvmax = a.real("fvmax")?;
-
-    // Adhesion-specific attributes
-    defaults.gain = a.real("gain")?;
-    defaults.user = a.vector("user")?;
-    crate::builder::actuator::check_servo_gains(
-        a.element(),
-        defaults.kv,
-        defaults.dampratio,
-        defaults.timeconst,
-    )?;
-    crate::builder::actuator::check_cylinder_bias(a.element(), defaults.bias)?;
-    crate::builder::actuator::check_muscle_values(
-        a.element(),
-        defaults.muscle_timeconst,
-        defaults.range,
-        [
-            defaults.scale,
-            defaults.lmin,
-            defaults.lmax,
-            defaults.vmax,
-            defaults.fpmax,
-            defaults.fvmax,
-        ],
-    )?;
-    // MuJoCo's `mjs_setToIntVelocity` drops an intvelocity class's
-    // `ctrlrange` refusal (measured: such a class loads); an element using it
-    // is refused at the build (D-INTVELOCITY-SERVO), as MuJoCo refuses it.
-    let ctrlrange = (a.element() != "intvelocity")
-        .then_some(defaults.ctrlrange)
-        .flatten();
-    crate::builder::actuator::check_servo_ranges(
-        a.element(),
-        defaults.inheritrange,
-        ctrlrange,
-        defaults.actrange,
-    )?;
-
-    Ok(defaults)
+    let kind = MjcfActuatorType::from_str(a.element())
+        .ok_or_else(|| MjcfError::unsupported(format!("a default <{}>", a.element())))?;
+    super::actuator::actuator_values(&a, kind)
 }
 
 /// Parse tendon defaults.

@@ -44,6 +44,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::actuator_spec::ActuatorSpec;
 use crate::defaults::DefaultResolver;
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
@@ -229,7 +230,12 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Before anything walks or clones the tree, whoever built it.
     crate::validation::check_tree_depth(&mjcf.worldbody)?;
 
-    let (mut mjcf, resolver, _) = front_end(mjcf)?;
+    let FrontEnd {
+        mut mjcf,
+        resolver,
+        actuators,
+        ..
+    } = front_end(mjcf)?;
 
     if mjcf.compiler.discardvisual {
         apply_discardvisual(&mut mjcf);
@@ -272,8 +278,8 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     builder.process_tendons(&mjcf.tendons)?;
 
     // Process actuators
-    for (i, actuator) in mjcf.actuators.iter().enumerate() {
-        builder.process_actuator(actuator).map_err(|e| {
+    for (i, (actuator, spec)) in mjcf.actuators.iter().zip(&actuators).enumerate() {
+        builder.process_actuator(actuator, spec).map_err(|e| {
             e.with_location_if_unknown(Location::nth(
                 ElementKind::Actuator,
                 Some(&actuator.name),
@@ -329,24 +335,31 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     Ok(model)
 }
 
+/// The model as the loader checks it ([`front_end`]).
+pub struct FrontEnd {
+    /// A clone of the model with its assets named, every element but its
+    /// actuators given its class, its frames and composites expanded.
+    pub mjcf: MjcfModel,
+    /// Its classes.
+    pub resolver: DefaultResolver,
+    /// Each actuator's class written by the actuator, in order.
+    pub actuators: Vec<ActuatorSpec>,
+    /// What validation found.
+    pub checked: crate::validation::ValidationResult,
+}
+
 /// The model as the loader checks it: a clone of `mjcf` with its assets
 /// named, every element given its class, its frames and composites expanded,
 /// then validated (`validate_resolved`), before the compiler passes remove any
 /// element. The caller has checked the tree's depth.
-pub fn front_end(
-    mjcf: &MjcfModel,
-) -> Result<(
-    MjcfModel,
-    DefaultResolver,
-    crate::validation::ValidationResult,
-)> {
+pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
     let mut mjcf = mjcf.clone();
     mesh::name_assets(&mut mjcf)?;
 
     // Each element's class, before frames, composites and the compiler
     // passes move or make elements, as MuJoCo applies it when it reads one.
     let resolver = DefaultResolver::from_model(&mjcf)?;
-    resolve::apply_defaults(&mut mjcf, &resolver)?;
+    let actuators = resolve::apply_defaults(&mut mjcf, &resolver)?;
 
     // Expand <frame> elements: compose transforms into children, lift onto parent bodies.
     // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
@@ -364,7 +377,12 @@ pub fn front_end(
     // expanded, before fusion or discarding hides an element (MuJoCo 3.5.0
     // checks names before either, measured).
     let checked = crate::validation::validate_resolved(&mjcf)?;
-    Ok((mjcf, resolver, checked))
+    Ok(FrontEnd {
+        mjcf,
+        resolver,
+        actuators,
+        checked,
+    })
 }
 
 /// Parse MJCF XML and convert directly to Model.

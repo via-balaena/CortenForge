@@ -1,9 +1,10 @@
 //! Actuator processing.
 //!
-//! Converts MJCF `<actuator>` elements into Model actuator arrays.
-//! Handles all shortcut types (motor, position, velocity, damper, cylinder,
-//! adhesion, muscle) and the fully general `<general>` actuator, expanding
-//! each into the canonical gain/bias/dynamics representation.
+//! Converts MJCF `<actuator>` elements into Model actuator arrays: each
+//! actuator's name and transmission from its element, every other value from
+//! its [`ActuatorSpec`], its class's actuator default as the element wrote it
+//! (`DefaultResolver::apply_to_actuator`), MuJoCo's default where no writer
+//! set one.
 
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, GainType, InterpolationType, MjJointType,
@@ -11,6 +12,7 @@ use sim_core::{
 use tracing::warn;
 
 use super::ModelBuilder;
+use crate::actuator_spec::{ActuatorSpec, DEFAULT_DYNPRM, DEFAULT_GAINPRM};
 use crate::error::{ElementKind, MjcfError, Result};
 use crate::keywords;
 use crate::types::{MjcfActuator, MjcfActuatorType};
@@ -18,17 +20,21 @@ use crate::types::{MjcfActuator, MjcfActuatorType};
 /// MuJoCo's default `gear` (`user_init.c` `mjs_defaultActuator`).
 const DEFAULT_GEAR: [f64; 6] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
 
-/// A muscle's parameters a `<muscle>` writes none of, as MuJoCo's
-/// `mjs_setToMuscle` sets them (`user_api.cc:1009-1050`): range, force (-1,
-/// computed when the model is made), scale, lmin, lmax, vmax, fpmax, fvmax.
-const DEFAULT_MUSCLE: [f64; 9] = [0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2];
+/// A Hill or Millard muscle's `gainprm` where no writer set one (CortenForge
+/// extensions): [range lo, range hi, F0 (-1: computed), scale, optimal fiber
+/// length, tendon slack length, vmax, pennation, tendon stiffness].
+const MUSCLE_MODEL_GAINPRM: [f64; 9] = [0.75, 1.05, -1.0, 200.0, 0.10, 0.20, 10.0, 0.0, 35.0];
 
-/// A muscle's activation and deactivation time constants written by none
-/// (`mjs_setToMuscle`).
-const DEFAULT_MUSCLE_TIMECONST: (f64, f64) = (0.01, 0.04);
+/// A Hill or Millard muscle's `dynprm` where no writer set one: its
+/// activation and deactivation time constants.
+const MUSCLE_MODEL_DYNPRM: [f64; 10] = [0.01, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
 
 impl ModelBuilder {
-    pub(crate) fn process_actuator(&mut self, actuator: &MjcfActuator) -> Result<usize> {
+    pub(crate) fn process_actuator(
+        &mut self,
+        actuator: &MjcfActuator,
+        spec: &ActuatorSpec,
+    ) -> Result<usize> {
         let act_id = self.actuator_trntype.len();
 
         // Register actuator name for sensor wiring
@@ -37,59 +43,10 @@ impl ModelBuilder {
                 .insert(actuator.name.clone(), act_id);
         }
 
-        check_servo_ranges(
-            actuator.actuator_type.as_str(),
-            actuator.inheritrange,
-            actuator.ctrlrange,
-            actuator.actrange,
-        )?;
-        let (trntype, trnid) = self.resolve_transmission(actuator)?;
-
-        // Resolve per-type defaults for Option fields.
-        // These must be resolved before dyntype/gain/bias decisions that depend on them.
-        let timeconst = actuator.timeconst.unwrap_or(match actuator.actuator_type {
-            MjcfActuatorType::Cylinder => 1.0,
-            _ => 0.0,
-        });
-        let kv = actuator.kv.unwrap_or(match actuator.actuator_type {
-            MjcfActuatorType::Velocity => 1.0,
-            _ => 0.0, // Damper defaults to 0.0 (MuJoCo: mjs_setToDamper uses kv=0)
-        });
-
-        // Determine dynamics type.
-        // MuJoCo semantics: dyntype is determined by the shortcut type AND timeconst.
-        // Position defaults to None; if timeconst > 0, uses FilterExact (exact discrete filter).
-        // IntVelocity always uses Integrator (MuJoCo: mjs_setToIntVelocity).
-        // Cylinder always uses Filter (Euler-approximated; timeconst defaults to 1.0).
-        // Motor/Damper/Adhesion/Velocity: no dynamics.
-        // General: explicit dyntype attribute; defaults to None.
-        // Muscle: muscle activation dynamics.
-        let dyntype = match actuator.actuator_type {
-            MjcfActuatorType::Motor
-            | MjcfActuatorType::Damper
-            | MjcfActuatorType::Adhesion
-            | MjcfActuatorType::Velocity => ActuatorDynamics::None,
-            MjcfActuatorType::General => {
-                // <general> uses explicit dyntype attribute; defaults to None
-                match &actuator.dyntype {
-                    Some(s) => parse_dyntype(s)?,
-                    None => ActuatorDynamics::None,
-                }
-            }
-            MjcfActuatorType::Position => {
-                if timeconst > 0.0 {
-                    ActuatorDynamics::FilterExact // MuJoCo: mjDYN_FILTEREXACT
-                } else {
-                    ActuatorDynamics::None
-                }
-            }
-            MjcfActuatorType::IntVelocity => ActuatorDynamics::Integrator,
-            MjcfActuatorType::Muscle => ActuatorDynamics::Muscle,
-            MjcfActuatorType::Cylinder => ActuatorDynamics::Filter,
-        };
-
-        let (gaintype, biastype, gainprm, biasprm, dynprm) =
-            compute_gain_bias_params(actuator, dyntype, timeconst, kv)?;
+        let cranklength = spec.cranklength.unwrap_or(0.0);
+        let (trntype, trnid) = self.resolve_transmission(actuator, cranklength)?;
+        let dyntype = spec.dyntype.unwrap_or(ActuatorDynamics::None);
+        let (gaintype, biastype, gainprm, biasprm, dynprm) = parameters(spec, dyntype);
         // MuJoCo takes `inheritrange` on an actuator whose gain and bias are a
         // position servo's (`user_objects.cc:6824-6826`), whatever its element;
         // the exact test is MuJoCo's: both values come from one kp.
@@ -97,31 +54,26 @@ impl ModelBuilder {
         let servo = gaintype == GainType::Fixed
             && biastype == BiasType::Affine
             && gainprm[0] == -biasprm[1];
-        let inherited = if servo && actuator.inheritrange.is_some_and(|r| r > 0.0) {
-            Some(self.inherited_range(actuator, trntype, trnid[0], dyntype)?)
+        let fraction = spec.inheritrange.unwrap_or(0.0);
+        let inherited = if servo && fraction > 0.0 {
+            Some(self.inherited_range(actuator, fraction, trntype, trnid[0], dyntype)?)
         } else {
             None
         };
         let (ctrlrange, actrange) = match inherited {
-            Some(Inherited::Ctrl(range)) => (Some(range), actuator.actrange),
-            Some(Inherited::Act(range)) => (actuator.ctrlrange, Some(range)),
-            None => (actuator.ctrlrange, actuator.actrange),
+            Some(Inherited::Ctrl(range)) => (Some(range), spec.actrange),
+            Some(Inherited::Act(range)) => (spec.ctrlrange, Some(range)),
+            None => (spec.ctrlrange, spec.actrange),
         };
-
-        // Damper and Adhesion actuators force ctrllimited
-        // (MuJoCo: mjs_setToDamper and mjs_setToAdhesion both set ctrllimited=1).
-        let ctrllimited = match actuator.actuator_type {
-            MjcfActuatorType::Damper | MjcfActuatorType::Adhesion => true,
-            _ => super::is_limited(actuator.ctrllimited, self.compiler.autolimits, ctrlrange),
-        };
+        let autolimits = self.compiler.autolimits;
+        let ctrllimited = super::is_limited(spec.ctrllimited, autolimits, ctrlrange);
 
         self.actuator_trntype.push(trntype);
         self.actuator_dyntype.push(dyntype);
         self.actuator_trnid.push(trnid);
         // MuJoCo's default gear, `1 0 0 0 0 0`, under the values written.
         self.actuator_gear.push(
-            actuator
-                .gear
+            spec.gear
                 .map_or(DEFAULT_GEAR, |gear| gear.over(DEFAULT_GEAR)),
         );
 
@@ -132,45 +84,36 @@ impl ModelBuilder {
         } else {
             (f64::NEG_INFINITY, f64::INFINITY)
         });
-        let forcelimited = super::is_limited(
-            actuator.forcelimited,
-            self.compiler.autolimits,
-            actuator.forcerange,
-        );
+        let forcelimited = super::is_limited(spec.forcelimited, autolimits, spec.forcerange);
         self.actuator_forcerange.push(if forcelimited {
-            actuator
-                .forcerange
+            spec.forcerange
                 .unwrap_or((f64::NEG_INFINITY, f64::INFINITY))
         } else {
             (f64::NEG_INFINITY, f64::INFINITY)
         });
 
-        // §34: Activation clamping — actlimited / actrange / actearly.
-        // Same autolimits pattern as ctrllimited/forcelimited; an intvelocity's
-        // is always limited (MuJoCo: mjs_setToIntVelocity sets actlimited=1).
-        let actlimited = actuator.actuator_type == MjcfActuatorType::IntVelocity
-            || super::is_limited(actuator.actlimited, self.compiler.autolimits, actrange);
+        // §34: Activation clamping — actlimited / actrange / actearly, the same
+        // autolimits pattern as ctrllimited/forcelimited.
+        let actlimited = super::is_limited(spec.actlimited, autolimits, actrange);
         self.actuator_actlimited.push(actlimited);
         self.actuator_actrange.push(if actlimited {
             actrange.unwrap_or((0.0, 0.0))
         } else {
             (0.0, 0.0) // Unused when actlimited=false
         });
-        self.actuator_actearly
-            .push(actuator.actearly.unwrap_or(false));
-        self.actuator_cranklength
-            .push(actuator.cranklength.unwrap_or(0.0));
+        self.actuator_actearly.push(spec.actearly.unwrap_or(false));
+        self.actuator_cranklength.push(cranklength);
 
         // Interpolation attributes: parse interp keyword → InterpolationType enum
-        let interp = match &actuator.interp {
+        let interp = match &spec.interp {
             Some(s) => keywords::interp(s)
                 .ok_or_else(|| MjcfError::invalid_keyword("actuator", "interp", s))?,
             None => InterpolationType::Zoh,
         };
 
         // MuJoCo compiler validation: delay > 0 requires nsample > 0
-        let nsample = actuator.nsample.unwrap_or(0);
-        let delay = actuator.delay.unwrap_or(0.0);
+        let nsample = spec.nsample.unwrap_or(0);
+        let delay = spec.delay.unwrap_or(0.0);
         if delay > 0.0 && nsample <= 0 {
             return Err(MjcfError::invalid_value(
                 "actuator",
@@ -182,7 +125,8 @@ impl ModelBuilder {
         self.actuator_nsample.push(nsample);
         self.actuator_interp.push(interp);
         self.actuator_delay.push(delay);
-        self.actuator_user_raw.push(actuator.user.clone());
+        self.actuator_user_raw
+            .push(spec.user.clone().unwrap_or_default());
 
         // §34 S5: Muscle default actrange [0, 1] when actlimited is not set. MuJoCo
         // leaves a <muscle> unlimited.
@@ -190,7 +134,7 @@ impl ModelBuilder {
         if (actuator.actuator_type == MjcfActuatorType::Muscle
             || dyntype == ActuatorDynamics::HillMuscle
             || dyntype == ActuatorDynamics::MillardMuscle)
-            && actuator.actlimited.is_none()
+            && spec.actlimited.is_none()
         {
             let idx = self.actuator_actlimited.len() - 1;
             self.actuator_actlimited[idx] = true;
@@ -303,7 +247,7 @@ impl ModelBuilder {
         self.actuator_dynprm.push(dynprm);
 
         // Per-actuator group assignment (§41 S7b)
-        self.actuator_group.push(actuator.group.unwrap_or(0));
+        self.actuator_group.push(spec.group.unwrap_or(0));
 
         // Lengthrange and acc0: initialized to zero, computed by compute_actuator_params()
         self.actuator_lengthrange.push((0.0, 0.0));
@@ -320,6 +264,7 @@ impl ModelBuilder {
     fn resolve_transmission(
         &self,
         actuator: &MjcfActuator,
+        cranklength: f64,
     ) -> Result<(ActuatorTransmission, [usize; 2])> {
         if let Some(ref joint_name) = actuator.joint {
             let jnt_id = self
@@ -385,7 +330,7 @@ impl ModelBuilder {
                 .site_name_to_id
                 .get(slider_name.as_str())
                 .ok_or_else(|| MjcfError::undefined(ElementKind::Site, slider_name))?;
-            let rod = actuator.cranklength.unwrap_or(0.0);
+            let rod = cranklength;
             if rod <= 0.0 {
                 return Err(MjcfError::invalid_value(
                     "actuator",
@@ -414,13 +359,13 @@ impl ModelBuilder {
     fn inherited_range(
         &self,
         actuator: &MjcfActuator,
+        fraction: f64,
         trntype: ActuatorTransmission,
         target: usize,
         dyntype: ActuatorDynamics,
     ) -> Result<Inherited> {
         let element = actuator.actuator_type.as_str();
         let refuse = |reason: &str| MjcfError::invalid_value(element, "inheritrange", reason);
-        let fraction = actuator.inheritrange.unwrap_or(0.0);
         let into: fn((f64, f64)) -> Inherited = match dyntype {
             ActuatorDynamics::None | ActuatorDynamics::FilterExact => Inherited::Ctrl,
             ActuatorDynamics::Integrator => Inherited::Act,
@@ -471,431 +416,51 @@ enum Inherited {
     Act((f64, f64)),
 }
 
-/// A `<position>` or `<intvelocity>`'s own `kv`, `dampratio` and
-/// `timeconst`, checked as MuJoCo 3.5.0's `mjs_setToPosition` checks them
-/// (`user_api.cc:903-937`), with its messages, on the values the element
-/// itself writes before any class's, as `xml_native_reader.cc:2399-2432`
-/// reads them: the parser checks an element and a default class's element,
-/// the build an actuator built in code. `mjs_setToIntVelocity` drops that
-/// function's refusal and builds the servo with no bias
-/// (`user_api.cc:942-954`, measured); it is refused here
-/// (D-INTVELOCITY-SERVO).
-pub fn check_servo_gains(
-    element: &str,
-    kv: Option<f64>,
-    dampratio: Option<f64>,
-    timeconst: Option<f64>,
-) -> Result<()> {
-    if !matches!(element, "position" | "intvelocity") {
-        return Ok(());
-    }
-    if kv.is_some() && dampratio.is_some() {
-        return Err(MjcfError::invalid_value(
-            element,
-            "dampratio",
-            "kv and dampratio cannot both be defined",
-        ));
-    }
-    for (attribute, value) in [
-        ("kv", kv),
-        ("dampratio", dampratio),
-        ("timeconst", timeconst),
-    ] {
-        if value.is_some_and(|v| v < 0.0) {
-            return Err(MjcfError::invalid_value(
-                element,
-                attribute,
-                format!("{attribute} cannot be negative"),
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// A `<muscle>`'s negative value, as written on an element or a default
-/// class's element, refused: MuJoCo 3.5.0's `mjs_setToMuscle` takes a
-/// negative one as unwritten (`user_api.cc:1036-1046`) and silently keeps
-/// the class's or the built-in value in its place (measured: `lmin="-0.5"`
-/// builds 0.5, `scale="-3"` 200, `timeconst="-1 0.05"` 0.01 0.05)
-/// (D-MUSCLE-NEGATIVE). `scalars` are `scale`, `lmin`, `lmax`, `vmax`,
-/// `fpmax` and `fvmax`, in that order. A negative `force` asks for one
-/// computed when the model is made, and is checked against its class's
-/// (`DefaultResolver::apply_to_actuator`).
-pub fn check_muscle_values(
-    element: &str,
-    timeconst: Option<(f64, f64)>,
-    range: Option<(f64, f64)>,
-    scalars: [Option<f64>; 6],
-) -> Result<()> {
-    if element != "muscle" {
-        return Ok(());
-    }
-    let pair = |pair: Option<(f64, f64)>| pair.is_some_and(|(a, b)| a < 0.0 || b < 0.0);
-    let negative = if pair(timeconst) {
-        Some("timeconst")
-    } else if pair(range) {
-        Some("range")
-    } else {
-        ["scale", "lmin", "lmax", "vmax", "fpmax", "fvmax"]
-            .into_iter()
-            .zip(scalars)
-            .find_map(|(name, value)| value.is_some_and(|v| v < 0.0).then_some(name))
-    };
-    match negative {
-        Some(attribute) => Err(MjcfError::invalid_value(
-            element,
-            attribute,
-            format!("muscle {attribute} cannot be negative"),
-        )),
-        None => Ok(()),
-    }
-}
-
-/// A `<cylinder>`'s `bias` beyond its first value refused, as written on an
-/// element or a default class's element: MuJoCo 3.5.0 reads the three values
-/// into one number (`OneActuator`, `xml_native_reader.cc`) and builds
-/// `biasprm` from the first alone (`mjs_setToCylinder`; measured:
-/// `bias="1 2 3"` builds 1 0 0), so a second or third that is not 0 is
-/// refused here (D-CYLINDER-BIAS).
-pub fn check_cylinder_bias(element: &str, bias: Option<[f64; 3]>) -> Result<()> {
-    if element == "cylinder" && bias.is_some_and(|[_, b1, b2]| b1 != 0.0 || b2 != 0.0) {
-        return Err(MjcfError::invalid_value(
-            element,
-            "bias",
-            "a cylinder's bias takes its first value only: the others must be 0",
-        ));
-    }
-    Ok(())
-}
-
-/// A position or intvelocity servo's `inheritrange` beside a range it would
-/// replace, refused as MuJoCo 3.5.0's `mjs_setToPosition` and
-/// `mjs_setToIntVelocity` refuse it (`user_api.cc:926-952`), a written range
-/// being any not `0 0`: on a default class's element, its own values (the
-/// parser; a class that takes the range from its parent is L17's), and on an
-/// actuator, the values it and its class give (the build). An intvelocity is
-/// checked for its `actrange` first, the refusal MuJoCo reports. One with a
-/// `ctrlrange` and no `actrange` MuJoCo refuses as an invalid activation
-/// range, unless a class gives it an affine bias, when MuJoCo loads it
-/// (measured): it is refused here (D-INTVELOCITY-SERVO).
-pub fn check_servo_ranges(
-    element: &str,
-    inheritrange: Option<f64>,
-    ctrlrange: Option<(f64, f64)>,
-    actrange: Option<(f64, f64)>,
-) -> Result<()> {
-    if !inheritrange.is_some_and(|r| r > 0.0) {
-        return Ok(());
-    }
-    let written = |range: Option<(f64, f64)>| range.is_some_and(|(lo, hi)| lo != 0.0 || hi != 0.0);
-    if element == "intvelocity" && written(actrange) {
-        return Err(MjcfError::invalid_value(
-            element,
-            "inheritrange",
-            "actrange and inheritrange cannot both be defined",
-        ));
-    }
-    if matches!(element, "position" | "intvelocity") && written(ctrlrange) {
-        return Err(MjcfError::invalid_value(
-            element,
-            "inheritrange",
-            "ctrlrange and inheritrange cannot both be defined",
-        ));
-    }
-    Ok(())
-}
-
-/// A position or intvelocity servo's `biasprm[2]`: a written `dampratio`
-/// (sim-core converts it to a damping), else `-kv` for a written `kv`, else
-/// MuJoCo's 0 (`mjs_setToPosition` sets it only from a written one).
-fn servo_bias2(actuator: &MjcfActuator) -> f64 {
-    actuator
-        .dampratio
-        .unwrap_or_else(|| actuator.kv.map_or(0.0, |kv| -kv))
-}
-
-/// Expand the actuator shortcut type into the canonical gain/bias/dynamics parameter
-/// representation.
-///
-/// Returns `(GainType, BiasType, gainprm[9], biasprm[9], dynprm[10])`.
-/// Reference: MuJoCo `src/user/user_api.cc` (`mjs_setToMotor`, `mjs_setToPosition`, etc.)
-fn compute_gain_bias_params(
-    actuator: &MjcfActuator,
+/// The gain, bias and dynamics types and parameters `spec` gives, each
+/// MuJoCo's default where no writer set it (`mjs_defaultActuator`: a fixed
+/// gain, no bias, no dynamics, `gainprm[0]` and `dynprm[0]` 1), but a Hill
+/// or Millard muscle's, a `<general dyntype="hillmuscle">` or
+/// `"millardmuscle"` (CortenForge extensions): its own types and defaults.
+fn parameters(
+    spec: &ActuatorSpec,
     dyntype: ActuatorDynamics,
-    timeconst: f64,
-    kv: f64,
-) -> Result<(GainType, BiasType, [f64; 9], [f64; 9], [f64; 10])> {
-    match actuator.actuator_type {
-        MjcfActuatorType::Motor => Ok((
+) -> (GainType, BiasType, [f64; 9], [f64; 9], [f64; 10]) {
+    let (gaintype, biastype, gain, dynamics) = match dyntype {
+        ActuatorDynamics::HillMuscle => (
+            GainType::HillMuscle,
+            BiasType::HillMuscle,
+            MUSCLE_MODEL_GAINPRM,
+            MUSCLE_MODEL_DYNPRM,
+        ),
+        ActuatorDynamics::MillardMuscle => (
+            GainType::MillardMuscle,
+            BiasType::MillardMuscle,
+            MUSCLE_MODEL_GAINPRM,
+            MUSCLE_MODEL_DYNPRM,
+        ),
+        _ => (
             GainType::Fixed,
             BiasType::None,
-            {
-                let mut p = [0.0; 9];
-                p[0] = 1.0; // unit gain
-                p
-            },
-            [0.0; 9],
-            [0.0; 10],
-        )),
-
-        MjcfActuatorType::Position => {
-            let kp = actuator.kp.unwrap_or(1.0);
-            let tc = timeconst;
-            let mut gp = [0.0; 9];
-            gp[0] = kp;
-            let mut bp = [0.0; 9];
-            bp[1] = -kp;
-            // dampratio vs explicit kv:
-            // If dampratio is specified, store as positive biasprm[2].
-            // compute_actuator_params() will convert it to -damping at compile time.
-            // If kv is specified (or default 0), store as -kv (explicit damping).
-            // MuJoCo sets it only from a written kv or dampratio, so it is
-            // +0 when neither is written (`mjs_setToPosition`).
-            bp[2] = servo_bias2(actuator);
-            Ok((GainType::Fixed, BiasType::Affine, gp, bp, {
-                let mut d = [0.0; 10];
-                d[0] = tc;
-                d
-            }))
+            DEFAULT_GAINPRM,
+            DEFAULT_DYNPRM,
+        ),
+    };
+    let fill = |slots: &[Option<f64>], defaults: &[f64], out: &mut [f64]| {
+        for ((out, slot), default) in out.iter_mut().zip(slots).zip(defaults) {
+            *out = slot.unwrap_or(*default);
         }
-
-        MjcfActuatorType::IntVelocity => {
-            // `mjs_setToIntVelocity` = `mjs_setToPosition`'s gain and bias
-            // (`user_api.cc:942-954`); its `dynprm` is the actuator's own:
-            // what a class writes, over MuJoCo's default [1, 0, ..., 0].
-            let kp = actuator.kp.unwrap_or(1.0);
-            let mut gp = [0.0; 9];
-            gp[0] = kp;
-            let mut bp = [0.0; 9];
-            bp[1] = -kp;
-            bp[2] = servo_bias2(actuator);
-            let mut dynprm_default = [0.0; 10];
-            dynprm_default[0] = 1.0;
-            let dp = actuator
-                .dynprm
-                .map_or(dynprm_default, |v| v.over(dynprm_default));
-            Ok((GainType::Fixed, BiasType::Affine, gp, bp, dp))
-        }
-
-        MjcfActuatorType::Velocity => {
-            let mut gp = [0.0; 9];
-            gp[0] = kv;
-            let mut bp = [0.0; 9];
-            bp[2] = -kv;
-            Ok((GainType::Fixed, BiasType::Affine, gp, bp, [0.0; 10]))
-        }
-
-        MjcfActuatorType::Damper => {
-            let mut gp = [0.0; 9];
-            gp[2] = -kv; // gain = -kv * velocity
-            Ok((GainType::Affine, BiasType::None, gp, [0.0; 9], [0.0; 10]))
-        }
-
-        MjcfActuatorType::Cylinder => {
-            let area = if let Some(d) = actuator.diameter {
-                std::f64::consts::PI / 4.0 * d * d
-            } else {
-                actuator.area.unwrap_or(1.0)
-            };
-            let tc = timeconst;
-            let mut gp = [0.0; 9];
-            gp[0] = area;
-            let mut bp = [0.0; 9];
-            let bias = actuator.bias.unwrap_or_default();
-            bp[..3].copy_from_slice(&bias);
-            Ok((GainType::Fixed, BiasType::Affine, gp, bp, {
-                let mut d = [0.0; 10];
-                d[0] = tc;
-                d
-            }))
-        }
-
-        MjcfActuatorType::Adhesion => {
-            let mut gp = [0.0; 9];
-            gp[0] = actuator.gain.unwrap_or(1.0);
-            Ok((GainType::Fixed, BiasType::None, gp, [0.0; 9], [0.0; 10]))
-        }
-
-        MjcfActuatorType::Muscle => {
-            let [range0, range1, force, scale, lmin, lmax, vmax, fpmax, fvmax] = DEFAULT_MUSCLE;
-            let range = actuator.range.unwrap_or((range0, range1));
-            let gp = [
-                range.0,
-                range.1,
-                actuator.force.unwrap_or(force),
-                actuator.scale.unwrap_or(scale),
-                actuator.lmin.unwrap_or(lmin),
-                actuator.lmax.unwrap_or(lmax),
-                actuator.vmax.unwrap_or(vmax),
-                actuator.fpmax.unwrap_or(fpmax),
-                actuator.fvmax.unwrap_or(fvmax).max(1.0), // fvmax < 1.0 is physically nonsensical
-            ];
-            let timeconst = actuator
-                .muscle_timeconst
-                .unwrap_or(DEFAULT_MUSCLE_TIMECONST);
-            Ok((
-                GainType::Muscle,
-                BiasType::Muscle,
-                gp,
-                gp, // biasprm = gainprm (shared layout, MuJoCo convention)
-                {
-                    let mut d = [0.0; 10];
-                    d[0] = timeconst.0;
-                    d[1] = timeconst.1;
-                    d
-                },
-            ))
-        }
-
-        MjcfActuatorType::General => {
-            // <general> uses explicit attributes; defaults match MuJoCo's
-            // mjs_defaultActuator: gaintype=fixed, biastype=none,
-            // gainprm=[1,0,...], biasprm=[0,...], dynprm=[1,0,0].
-            if dyntype == ActuatorDynamics::HillMuscle {
-                compute_general_hillmuscle(actuator)
-            } else if dyntype == ActuatorDynamics::MillardMuscle {
-                compute_general_millardmuscle(actuator)
-            } else {
-                compute_general_standard(actuator)
-            }
-        }
-    }
-}
-
-/// Gain/bias/dynprm for `<general dyntype="hillmuscle">`.
-fn compute_general_hillmuscle(
-    actuator: &MjcfActuator,
-) -> Result<(GainType, BiasType, [f64; 9], [f64; 9], [f64; 10])> {
-    // HillMuscle auto-sets: gaintype/biastype default to HillMuscle
-    // unless explicitly overridden by the user.
-    let gt = match &actuator.gaintype {
-        Some(s) => parse_gaintype(s)?,
-        None => GainType::HillMuscle,
     };
-    let bt = match &actuator.biastype {
-        Some(s) => parse_biastype(s)?,
-        None => BiasType::HillMuscle,
-    };
-    // HillMuscle gainprm defaults:
-    // [range_lo, range_hi, F0(-1=auto), scale, L_opt, L_slack, vmax, penn, stiff, 0]
-    let hill_gainprm_default = [0.75, 1.05, -1.0, 200.0, 0.10, 0.20, 10.0, 0.0, 35.0];
-    let gp = if let Some(v) = &actuator.gainprm {
-        v.over(hill_gainprm_default)
-    } else {
-        hill_gainprm_default
-    };
-    let bp = if let Some(v) = &actuator.biasprm {
-        v.over([0.0; 9])
-    } else {
-        [0.0; 9]
-    };
-    // HillMuscle dynprm defaults: same as Muscle [tau_act, tau_deact, tausmooth]
-    let hill_dynprm_default = {
-        let mut d = [0.0; 10];
-        d[0] = 0.01; // tau_act
-        d[1] = 0.04; // tau_deact
-        d
-    };
-    let dp = if let Some(v) = &actuator.dynprm {
-        v.over(hill_dynprm_default)
-    } else {
-        hill_dynprm_default
-    };
-    Ok((gt, bt, gp, bp, dp))
-}
-
-/// Gain/bias/dynprm for `<general dyntype="millardmuscle">` — the faithful
-/// OpenSim-Millard force model (`sim_core::forward::millard`). Mirrors
-/// [`compute_general_hillmuscle`]: gaintype/biastype default to MillardMuscle, the
-/// gainprm layout is shared (`[_, _, F0, _, L0, Lts, vmax, penn, _]`), and the
-/// activation dynamics are the standard `[tau_act, tau_deact]`.
-fn compute_general_millardmuscle(
-    actuator: &MjcfActuator,
-) -> Result<(GainType, BiasType, [f64; 9], [f64; 9], [f64; 10])> {
-    let gt = match &actuator.gaintype {
-        Some(s) => parse_gaintype(s)?,
-        None => GainType::MillardMuscle,
-    };
-    let bt = match &actuator.biastype {
-        Some(s) => parse_biastype(s)?,
-        None => BiasType::MillardMuscle,
-    };
-    // [range_lo, range_hi, F0(-1=auto), scale, L_opt, L_slack, vmax, penn, stiff].
-    let millard_gainprm_default = [0.75, 1.05, -1.0, 200.0, 0.10, 0.20, 10.0, 0.0, 35.0];
-    let gp = if let Some(v) = &actuator.gainprm {
-        v.over(millard_gainprm_default)
-    } else {
-        millard_gainprm_default
-    };
-    let bp = if let Some(v) = &actuator.biasprm {
-        v.over([0.0; 9])
-    } else {
-        [0.0; 9]
-    };
-    let dynprm_default = {
-        let mut d = [0.0; 10];
-        d[0] = 0.01; // tau_act
-        d[1] = 0.04; // tau_deact
-        d
-    };
-    let dp = if let Some(v) = &actuator.dynprm {
-        v.over(dynprm_default)
-    } else {
-        dynprm_default
-    };
-    Ok((gt, bt, gp, bp, dp))
-}
-
-/// Gain/bias/dynprm for standard `<general>` (non-HillMuscle).
-fn compute_general_standard(
-    actuator: &MjcfActuator,
-) -> Result<(GainType, BiasType, [f64; 9], [f64; 9], [f64; 10])> {
-    let gt = match &actuator.gaintype {
-        Some(s) => parse_gaintype(s)?,
-        None => GainType::Fixed,
-    };
-    let bt = match &actuator.biastype {
-        Some(s) => parse_biastype(s)?,
-        None => BiasType::None,
-    };
-    let gainprm_default = {
-        let mut d = [0.0; 9];
-        d[0] = 1.0; // MuJoCo default
-        d
-    };
-    let gp = if let Some(v) = &actuator.gainprm {
-        v.over(gainprm_default)
-    } else {
-        gainprm_default
-    };
-    let bp = if let Some(v) = &actuator.biasprm {
-        v.over([0.0; 9])
-    } else {
-        [0.0; 9]
-    };
-    let dynprm_default = {
-        let mut d = [0.0; 10];
-        d[0] = 1.0; // MuJoCo: dynprm[0]=1
-        d
-    };
-    let dp = if let Some(v) = &actuator.dynprm {
-        v.over(dynprm_default)
-    } else {
-        dynprm_default
-    };
-    Ok((gt, bt, gp, bp, dp))
-}
-
-fn parse_gaintype(s: &str) -> Result<GainType> {
-    keywords::gain_type(s).ok_or_else(|| MjcfError::invalid_keyword("general", "gaintype", s))
-}
-
-fn parse_biastype(s: &str) -> Result<BiasType> {
-    keywords::bias_type(s).ok_or_else(|| MjcfError::invalid_keyword("general", "biastype", s))
-}
-
-fn parse_dyntype(s: &str) -> Result<ActuatorDynamics> {
-    keywords::dyn_type(s).ok_or_else(|| MjcfError::invalid_keyword("general", "dyntype", s))
+    let (mut gainprm, mut biasprm, mut dynprm) = ([0.0; 9], [0.0; 9], [0.0; 10]);
+    fill(&spec.gainprm, &gain, &mut gainprm);
+    fill(&spec.biasprm, &[0.0; 9], &mut biasprm);
+    fill(&spec.dynprm, &dynamics, &mut dynprm);
+    (
+        spec.gaintype.unwrap_or(gaintype),
+        spec.biastype.unwrap_or(biastype),
+        gainprm,
+        biasprm,
+        dynprm,
+    )
 }
 
 #[cfg(test)]

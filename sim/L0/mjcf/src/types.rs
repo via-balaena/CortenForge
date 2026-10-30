@@ -727,8 +727,12 @@ pub struct MjcfDefault {
     pub joint: Option<MjcfJointDefaults>,
     /// Default geom parameters.
     pub geom: Option<MjcfGeomDefaults>,
-    /// Default actuator parameters.
-    pub actuator: Option<MjcfActuatorDefaults>,
+    /// The actuator elements this block writes, in order (`<motor>`,
+    /// `<position>`, ...; no name, class or target). MuJoCo keeps one
+    /// actuator default per class, which each writes in place
+    /// (`OneActuator`), so two kinds in one class, or a class used by
+    /// another kind, build what MuJoCo builds.
+    pub actuators: Vec<MjcfActuator>,
     /// Default tendon parameters.
     pub tendon: Option<MjcfTendonDefaults>,
     /// Default sensor parameters.
@@ -849,93 +853,6 @@ pub struct MjcfGeomDefaults {
     pub user: Option<Vec<f64>>,
     /// Default shell inertia for primitive geoms.
     pub shellinertia: Option<bool>,
-}
-
-/// Default actuator parameters.
-#[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct MjcfActuatorDefaults {
-    /// Control range.
-    pub ctrlrange: Option<(f64, f64)>,
-    /// Force range.
-    pub forcerange: Option<(f64, f64)>,
-    /// Gear ratio (6D: [tx ty tz rx ry rz]).
-    pub gear: Option<Prefix<6>>,
-    /// Position gain (kp) for position actuators.
-    pub kp: Option<f64>,
-    /// Velocity gain (kv) for velocity actuators.
-    pub kv: Option<f64>,
-    /// Damping ratio for position actuators.
-    pub dampratio: Option<f64>,
-    /// A position or intvelocity servo's `inheritrange`.
-    pub inheritrange: Option<f64>,
-    /// Control limited.
-    pub ctrllimited: Option<TfAuto>,
-    /// Force limited.
-    pub forcelimited: Option<TfAuto>,
-    /// Gain type default for `<general>` actuators.
-    pub gaintype: Option<String>,
-    /// Bias type default for `<general>` actuators.
-    pub biastype: Option<String>,
-    /// Dynamics type default for `<general>` actuators.
-    pub dyntype: Option<String>,
-    /// Gain parameters default for `<general>` actuators.
-    pub gainprm: Option<Prefix<9>>,
-    /// Bias parameters default for `<general>` actuators.
-    pub biasprm: Option<Prefix<9>>,
-    /// Dynamics parameters default for `<general>` actuators.
-    pub dynprm: Option<Prefix<10>>,
-    /// Visualization group (0–5).
-    pub group: Option<i32>,
-    /// Whether activation is clamped to actrange.
-    pub actlimited: Option<TfAuto>,
-    /// Activation clamping range [lower, upper].
-    pub actrange: Option<(f64, f64)>,
-    /// If true, activation dynamics are applied early (before constraint).
-    pub actearly: Option<bool>,
-    /// Length range for the actuator (requires tendon length range computation).
-    pub lengthrange: Option<(f64, f64)>,
-    /// History buffer sample count. MuJoCo: `nsample` (int, default 0).
-    pub nsample: Option<i32>,
-    /// Interpolation method keyword. MuJoCo: `interp` ("zoh"/"linear"/"cubic").
-    pub interp: Option<String>,
-    /// Time delay in seconds. MuJoCo: `delay` (double, default 0.0).
-    pub delay: Option<f64>,
-    // Cylinder-specific defaults
-    /// Cylinder cross-sectional area (m²).
-    pub area: Option<f64>,
-    /// Cylinder diameter (m). Alternative to area.
-    pub diameter: Option<f64>,
-    /// Activation dynamics time constant (s).
-    pub timeconst: Option<f64>,
-    /// Bias parameters [prm0, prm1, prm2] for cylinder.
-    pub bias: Option<[f64; 3]>,
-
-    // Muscle-specific defaults
-    /// Activation/deactivation time constants [act, deact] for muscle.
-    pub muscle_timeconst: Option<(f64, f64)>,
-    /// Operating length range [lower, upper] in L0 units for muscle.
-    pub range: Option<(f64, f64)>,
-    /// Peak active force (N). Negative triggers automatic computation.
-    pub force: Option<f64>,
-    /// Force scaling factor for muscle.
-    pub scale: Option<f64>,
-    /// Lower FLV curve position (L0 units).
-    pub lmin: Option<f64>,
-    /// Upper FLV curve position (L0 units).
-    pub lmax: Option<f64>,
-    /// Shortening velocity limit (L0/second).
-    pub vmax: Option<f64>,
-    /// Passive force at lmax (relative to peak force).
-    pub fpmax: Option<f64>,
-    /// Active force at lengthening (relative to peak force).
-    pub fvmax: Option<f64>,
-
-    // Adhesion-specific defaults
-    /// Gain in force units for adhesion.
-    pub gain: Option<f64>,
-    /// Per-element user data for default class inheritance.
-    pub user: Option<Vec<f64>>,
 }
 
 /// Default tendon parameters.
@@ -2969,9 +2886,9 @@ pub struct MjcfActuator {
     // ========================================================================
     // <general>-specific attributes
     // ========================================================================
-    // These are only meaningful for MjcfActuatorType::General.
-    // For shortcut types (Motor, Position, etc.), these are ignored —
-    // the model builder expands shortcuts using their own dedicated logic.
+    // Written by a <general>, in a class or not; a shortcut element does not
+    // read them (as MuJoCo's `OneActuator` does not), but a class's reach
+    // every kind the class serves.
     /// Gain type: "fixed", "affine", "muscle".
     /// None means use default (Fixed). Only parsed for `<general>`.
     pub gaintype: Option<String>,

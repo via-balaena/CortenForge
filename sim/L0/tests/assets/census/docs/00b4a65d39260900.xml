@@ -1,0 +1,1 @@
+<mujoco><default><motor ctrlrange="-1 1"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><damper joint="h" kv="1"/></actuator></mujoco>

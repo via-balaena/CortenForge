@@ -335,3 +335,318 @@ fn a_code_built_cylinders_bias_beyond_its_first_value_is_refused() {
         Ok(_) => panic!("a code-built cylinder's bias 1 2 3 loaded"),
     }
 }
+
+// ── A class's one actuator default (book L17, MuJoCo's `OneActuator`) ──────
+//
+// MuJoCo keeps one actuator default per class, which each actuator element
+// in the class writes in place, and an actuator starts from a copy of it:
+// a class written by two kinds, or used by another, builds what MuJoCo
+// builds. Each value is MuJoCo 3.5.0's for the same document (measured).
+
+/// The `i`th actuator's gain, bias and dynamics types, parameters and gear.
+fn actuator(
+    model: &sim_core::Model,
+    i: usize,
+) -> (
+    sim_core::GainType,
+    sim_core::BiasType,
+    sim_core::ActuatorDynamics,
+    [f64; 9],
+    [f64; 9],
+    [f64; 10],
+    f64,
+) {
+    (
+        model.actuator_gaintype[i],
+        model.actuator_biastype[i],
+        model.actuator_dyntype[i],
+        model.actuator_gainprm[i],
+        model.actuator_biasprm[i],
+        model.actuator_dynprm[i],
+        model.actuator_gear[i][0],
+    )
+}
+
+/// A `<motor>` then a `<position>` in one class: the motor's gear reaches
+/// both, the position's kp the position (ledger L310, book L16's d11).
+#[test]
+fn two_kinds_in_one_class_write_one_default() {
+    let model = load_model(
+        r#"<mujoco><default><default class="c"><motor gear="5"/><position kp="10"/></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor class="c" joint="h"/><position class="c" joint="h"/></actuator></mujoco>"#,
+    )
+    .unwrap();
+    let (gaintype, biastype, _, gain, _, _, gear) = actuator(&model, 0);
+    assert_eq!(
+        (gaintype, biastype, gain[0], gear),
+        (
+            sim_core::GainType::Fixed,
+            sim_core::BiasType::None,
+            1.0,
+            5.0
+        )
+    );
+    let (_, biastype, _, gain, bias, _, gear) = actuator(&model, 1);
+    assert_eq!(
+        (biastype, gain[0], bias[1], gear),
+        (sim_core::BiasType::Affine, 10.0, -10.0, 5.0)
+    );
+}
+
+/// The other order: the motor resets the gain, so the position's kp is 1.
+#[test]
+fn two_kinds_in_one_class_in_the_other_order() {
+    let model = load_model(
+        r#"<mujoco><default><default class="c"><position kp="10"/><motor gear="5"/></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor class="c" joint="h"/><position class="c" joint="h"/></actuator></mujoco>"#,
+    )
+    .unwrap();
+    let (_, _, _, gain, bias, _, gear) = actuator(&model, 1);
+    assert_eq!((gain[0], bias[1], gear), (1.0, -1.0, 5.0));
+}
+
+/// Two top-level blocks write the main class's one default in order.
+#[test]
+fn top_level_blocks_write_one_default_in_order() {
+    let model = load_model(
+        r#"<mujoco><default><motor gear="5"/></default><default><position kp="10"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/><position joint="h"/></actuator></mujoco>"#,
+    )
+    .unwrap();
+    assert_eq!(actuator(&model, 0).6, 5.0);
+    let (_, _, _, gain, _, _, gear) = actuator(&model, 1);
+    assert_eq!((gain[0], gear), (10.0, 5.0));
+}
+
+/// A class of one kind used by another (ledger L310, L330's N5): each
+/// value its kind reads from the class.
+#[test]
+fn a_class_used_by_another_kind() {
+    let load = |xml: &str| load_model(xml).unwrap();
+    // A <general>'s gainprm under a <motor>.
+    let m = load(
+        r#"<mujoco><default><general gainprm="1 2 3"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/></actuator></mujoco>"#,
+    );
+    assert_eq!(m.actuator_gainprm[0][..3], [1.0, 2.0, 3.0]);
+    // A <position>'s kp under a <general>: an affine bias -10.
+    let m = load(
+        r#"<mujoco><default><position kp="10"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><general joint="h" gainprm="5"/></actuator></mujoco>"#,
+    );
+    let (_, biastype, _, gain, bias, _, _) = actuator(&m, 0);
+    assert_eq!(
+        (biastype, gain[0], bias[1]),
+        (sim_core::BiasType::Affine, 5.0, -10.0)
+    );
+    // A <position>'s kp is a <velocity>'s kv.
+    let m = load(
+        r#"<mujoco><default><position kp="10"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><velocity joint="h"/></actuator></mujoco>"#,
+    );
+    assert_eq!(
+        (m.actuator_gainprm[0][0], m.actuator_biasprm[0][2]),
+        (10.0, -10.0)
+    );
+    // A <velocity>'s kv is a <position>'s kp and damping.
+    let m = load(
+        r#"<mujoco><default><velocity kv="4"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><position joint="h"/></actuator></mujoco>"#,
+    );
+    assert_eq!(m.actuator_biasprm[0][..3], [0.0, -4.0, -4.0]);
+    // A <muscle>'s dynamics stay under a <position>.
+    let m = load(
+        r#"<mujoco><default><muscle force="7"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><position joint="h"/></actuator></mujoco>"#,
+    );
+    assert_eq!(m.actuator_dyntype[0], sim_core::ActuatorDynamics::Muscle);
+    // A <damper>'s forced control limit reaches a <motor>.
+    let m = load(
+        r#"<mujoco><default><damper kv="4" ctrlrange="0 1"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/></actuator></mujoco>"#,
+    );
+    assert_eq!(m.actuator_ctrlrange[0], (0.0, 1.0));
+    // A <motor>'s gain 1 is no muscle range a muscle asked for.
+    let m = load(
+        r#"<mujoco><default><motor gear="2"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+    );
+    assert_eq!(
+        (m.actuator_gainprm[0][0], m.actuator_gear[0][0]),
+        (0.75, 2.0)
+    );
+    // An <intvelocity>'s integrator and activation limit under a <general>
+    // and a <position>; a <position>'s timeconst under an <intvelocity>.
+    for xml in [
+        r#"<mujoco><default><intvelocity kp="3" actrange="-1 1"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><general joint="h"/></actuator></mujoco>"#,
+        r#"<mujoco><default><intvelocity kp="3" actrange="-1 1"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><position joint="h"/></actuator></mujoco>"#,
+    ] {
+        let m = load(xml);
+        assert_eq!(
+            (
+                m.actuator_dyntype[0],
+                m.actuator_actlimited[0],
+                m.actuator_gainprm[0][0]
+            ),
+            (sim_core::ActuatorDynamics::Integrator, true, 3.0),
+            "{xml}"
+        );
+    }
+    let m = load(
+        r#"<mujoco><default><position timeconst="0.2"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><intvelocity joint="h" actrange="-1 1"/></actuator></mujoco>"#,
+    );
+    assert_eq!(
+        (m.actuator_dynprm[0][0], m.actuator_actrange[0]),
+        (0.2, (-1.0, 1.0))
+    );
+}
+
+/// An element's own kv over its class's dampratio: they share one value
+/// (ledger L328: MuJoCo's biasprm[2] -2).
+#[test]
+fn an_elements_kv_replaces_its_class_dampratio() {
+    let model = load_model(
+        r#"<mujoco><default><default class="c"><position dampratio="0.5"/></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><position class="c" joint="h" kp="3" kv="2"/></actuator></mujoco>"#,
+    )
+    .unwrap();
+    assert_eq!(model.actuator_biasprm[0][2], -2.0);
+}
+
+/// A servo class's `inheritrange` beside a range it copies from its parent
+/// (ledger L330), refused when the class is read, as MuJoCo refuses it.
+#[test]
+fn a_servo_class_inheritrange_beside_its_parents_range_is_refused() {
+    for (xml, message) in [
+        (
+            r#"<mujoco><default><default class="p"><motor ctrlrange="-1 1"/><default class="c"><position kp="3" inheritrange="1"/></default></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/></actuator></mujoco>"#,
+            "ctrlrange and inheritrange cannot both be defined",
+        ),
+        (
+            r#"<mujoco><default><default class="p"><general actrange="-1 1"/><default class="c"><intvelocity inheritrange="1"/></default></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/></actuator></mujoco>"#,
+            "actrange and inheritrange cannot both be defined",
+        ),
+    ] {
+        let err = load_model(xml).expect_err(xml).to_string();
+        assert!(err.contains(message), "{xml}: {err}");
+    }
+}
+
+/// A class's `cranklength` and `diameter` reach its actuators.
+#[test]
+fn a_class_cranklength_and_diameter_reach_its_actuators() {
+    let model = load_model(
+        r#"<mujoco><default><motor cranklength="2"/></default><worldbody><body><joint name="h" type="slide"/><geom size="0.1"/><site name="c"/><site name="s" pos="0 0 1"/></body></worldbody><actuator><motor cranksite="c" slidersite="s"/><motor joint="h"/></actuator></mujoco>"#,
+    )
+    .unwrap();
+    assert_eq!(model.actuator_cranklength, vec![2.0, 2.0]);
+    let (gain, _, _) = params(
+        r#"<mujoco><default><cylinder diameter="2"/></default><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><actuator><cylinder joint="h"/></actuator></mujoco>"#,
+    );
+    assert_eq!(gain[0], std::f64::consts::PI);
+}
+
+/// MuJoCo stores a muscle's fvmax as written, below 1 too.
+#[test]
+fn a_muscles_fvmax_below_one_is_kept() {
+    let (gain, _, _) = params(
+        r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h" fvmax="0.5"/></actuator></mujoco>"#,
+    );
+    assert_eq!(gain[8], 0.5);
+}
+
+/// Where MuJoCo builds a value other than the document asks, refused: a
+/// class's damping a damper does not take (D-DAMPER-CLASS-KV); a muscle
+/// value a class asked for that MuJoCo's muscle replaces
+/// (D-MUSCLE-SENTINEL); a class muscle's negative force under its parent's
+/// (D-MUSCLE-NEGATIVE); `actearly` off a `<general>` (MuJoCo's schema); a
+/// cylinder's second bias value (D-CYLINDER-BIAS).
+#[test]
+fn values_mujoco_would_replace_are_refused() {
+    for (xml, attribute) in [
+        (
+            r#"<mujoco><default><damper kv="4" ctrlrange="0 1"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><damper joint="h"/></actuator></mujoco>"#,
+            "kv",
+        ),
+        (
+            r#"<mujoco><default><general gaintype="affine" gainprm="0 0 -3"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><damper joint="h" ctrlrange="0 1"/></actuator></mujoco>"#,
+            "kv",
+        ),
+        (
+            r#"<mujoco><default><muscle range="1 2"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+            "range",
+        ),
+        (
+            r#"<mujoco><default><muscle force="0"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+            "force",
+        ),
+        (
+            r#"<mujoco><default><muscle timeconst="1 0"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+            "timeconst",
+        ),
+        (
+            r#"<mujoco><default><general gainprm="1 0 5"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+            "range",
+        ),
+        (
+            r#"<mujoco><default><default class="p"><muscle force="7"/><default class="c"><muscle force="-1"/></default></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/></actuator></mujoco>"#,
+            "force",
+        ),
+        (
+            r#"<mujoco><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><actuator><cylinder joint="h" bias="1 2 0"/></actuator></mujoco>"#,
+            "bias",
+        ),
+    ] {
+        match load_model(xml) {
+            Err(MjcfError::InvalidValue { attribute: a, .. }) => assert_eq!(a, attribute, "{xml}"),
+            Err(err) => panic!("{xml}: not an invalid value: {err}"),
+            Ok(_) => panic!("{xml}: loaded"),
+        }
+    }
+    for xml in [
+        r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><position joint="h" timeconst="0.1" actearly="true"/></actuator></mujoco>"#,
+        r#"<mujoco><default><position actearly="true" timeconst="0.1"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><general joint="h"/></actuator></mujoco>"#,
+    ] {
+        let err = load_model(xml).expect_err(xml).to_string();
+        assert!(err.contains("actearly"), "{xml}: {err}");
+    }
+}
+
+/// A damper's or adhesion's negative control range, its class's too, and a
+/// damper's negative kv and an adhesion's negative gain, are refused, as
+/// MuJoCo refuses them (its messages, measured).
+#[test]
+fn a_negative_control_range_from_a_class_is_refused() {
+    for (xml, message) in [
+        (
+            r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><damper joint="h" kv="-1" ctrlrange="0 1"/></actuator></mujoco>"#,
+            "damping coefficient cannot be negative",
+        ),
+        (
+            r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><adhesion body="world" gain="-1" ctrlrange="0 1"/></actuator></mujoco>"#,
+            "adhesion gain cannot be negative",
+        ),
+        (
+            r#"<mujoco><default><motor ctrlrange="-1 1"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><damper joint="h" kv="1"/></actuator></mujoco>"#,
+            "damper control range cannot be negative",
+        ),
+        (
+            r#"<mujoco><default><motor ctrlrange="-1 1"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><adhesion body="world" gain="1"/></actuator></mujoco>"#,
+            "adhesion control range cannot be negative",
+        ),
+    ] {
+        let err = load_model(xml).expect_err(xml).to_string();
+        assert!(err.contains(message), "{xml}: {err}");
+    }
+}
+
+/// A class's damper kv written, and a <general>'s fixed gain carrying a
+/// third value (no damping), load: MuJoCo's kv 0 is then what is asked.
+#[test]
+fn a_damper_under_a_class_with_no_damping_loads() {
+    for xml in [
+        r#"<mujoco><default><damper kv="4" ctrlrange="0 1"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><damper joint="h" kv="4"/></actuator></mujoco>"#,
+        r#"<mujoco><default><general gainprm="1 0 -3"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><damper joint="h" ctrlrange="0 1"/></actuator></mujoco>"#,
+    ] {
+        load_model(xml).expect(xml);
+    }
+}
+
+/// An <actuator> in a default class has no kind: refused.
+#[test]
+fn an_actuator_element_in_a_class_is_refused() {
+    let err = load_model(
+        r#"<mujoco><default><actuator ctrlrange="-1 1"/></default><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/></actuator></mujoco>"#,
+    )
+    .unwrap_err();
+    assert!(matches!(err, MjcfError::Unsupported { .. }), "{err}");
+}

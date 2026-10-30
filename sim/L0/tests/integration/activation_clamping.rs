@@ -512,11 +512,16 @@ fn test_actearly_integrator_prediction() {
 // AC13: actearly with muscle dynamics — quantitative verification (DT-6)
 // ============================================================================
 
-/// Build a muscle model with configurable actearly.
+/// Build a muscle model with configurable actearly. MuJoCo 3.5.0's schema
+/// gives `actearly` to `<general>` alone; a class's reaches a `<muscle>`
+/// (measured: actearly 1, muscle dynamics).
 fn build_muscle_model_actearly(actearly: bool) -> Model {
     let mjcf = format!(
         r#"<mujoco>
   <option timestep="0.001"/>
+  <default>
+    <general actearly="{}"/>
+  </default>
   <worldbody>
     <body>
       <joint name="hinge" type="hinge" limited="true" range="-1 1"/>
@@ -524,7 +529,7 @@ fn build_muscle_model_actearly(actearly: bool) -> Model {
     </body>
   </worldbody>
   <actuator>
-    <muscle name="muscle" joint="hinge" actearly="{}"/>
+    <muscle name="muscle" joint="hinge"/>
   </actuator>
 </mujoco>"#,
         if actearly { "true" } else { "false" }
