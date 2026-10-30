@@ -2366,8 +2366,7 @@ fn euler_eulerdamp_leaves_the_mass_matrix_as_computed() {
 /// A tendon's negative stiffness and damping apply as given, as MuJoCo's
 /// passive pass (`engine_passive.c:453-473`) and `mjd_passive_vel` take them
 /// with no sign test: a fixed tendon over a double pendulum with stiffness −2
-/// and damping −0.5, set in code (the loader refuses negative tendon
-/// parameters; MuJoCo loads them). Its passive force and potential energy at
+/// and damping −0.5. Its passive force and potential energy at
 /// the start, and the state after 20 steps of 0.01 s under Euler,
 /// implicitfast and implicit, against MuJoCo 3.5.0 (unfused build).
 #[test]
@@ -2403,7 +2402,7 @@ fn negative_tendon_stiffness_and_damping_as_mujoco_3_5_0() {
         ),
     ];
     for (integrator, mujoco) in want {
-        let mut model = load_model(&format!(
+        let model = load_model(&format!(
             r#"<mujoco>
               <option timestep="0.01" integrator="{integrator}">
                 <flag energy="enable"/>
@@ -2419,7 +2418,7 @@ fn negative_tendon_stiffness_and_damping_as_mujoco_3_5_0() {
                 </body>
               </worldbody>
               <tendon>
-                <fixed name="t" stiffness="2" damping="0.5" springlength="0.1">
+                <fixed name="t" stiffness="-2" damping="-0.5" springlength="0.1">
                   <joint joint="j0" coef="1"/>
                   <joint joint="j1" coef="-0.5"/>
                 </fixed>
@@ -2427,9 +2426,6 @@ fn negative_tendon_stiffness_and_damping_as_mujoco_3_5_0() {
             </mujoco>"#
         ))
         .expect("load");
-        model.tendon_stiffness[0] = -2.0;
-        model.tendon_damping[0] = -0.5;
-        model.compute_implicit_params();
         let mut data = model.make_data();
         data.qpos.copy_from_slice(&[0.3, -0.2]);
         data.qvel.copy_from_slice(&[0.7, -0.4]);
@@ -2462,18 +2458,20 @@ fn negative_tendon_stiffness_and_damping_as_mujoco_3_5_0() {
 /// hinge (its length the hinge's angle, in radians) and stiffness −20 about
 /// 0.1 and damping −0.8 steps exactly as the hinge with that stiffness about
 /// that reference and that damping, free, against an active joint limit (the
-/// Newton solve) and with 60 more hinges (its sparse Hessian). The values are
-/// set in code (the loader refuses a negative tendon stiffness or damping).
+/// Newton solve) and with 60 more hinges (its sparse Hessian).
 #[test]
 fn implicitspringdamper_takes_negative_stiffness_and_damping() {
-    let model_xml = |limit: &str, more: &str| {
+    // The stiffness and damping, on the hinge or on the tendon.
+    let prm = r#" stiffness="-20" damping="-0.8""#;
+    let model_xml = |limit: &str, more: &str, on_tendon: bool| {
+        let (joint_prm, tendon_prm) = if on_tendon { ("", prm) } else { (prm, "") };
         format!(
             r#"<mujoco>
               <compiler angle="radian"/>
               <option timestep="0.002" integrator="implicitspringdamper"/>
               <worldbody>
                 <body name="a" pos="0 0 1">
-                  <joint name="j1" type="hinge" axis="0 1 0" springref="0.1"{limit}/>
+                  <joint name="j1" type="hinge" axis="0 1 0" springref="0.1"{limit}{joint_prm}/>
                   <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
                   <body name="b" pos="0.3 0 0">
                     <joint name="j2" type="hinge" axis="0 1 0"/>
@@ -2483,7 +2481,7 @@ fn implicitspringdamper_takes_negative_stiffness_and_damping() {
                 </body>
               </worldbody>
               <tendon>
-                <fixed name="t" springlength="0.1"><joint joint="j1" coef="1"/></fixed>
+                <fixed name="t" springlength="0.1"{tendon_prm}><joint joint="j1" coef="1"/></fixed>
               </tendon>
             </mujoco>"#
         )
@@ -2491,16 +2489,8 @@ fn implicitspringdamper_takes_negative_stiffness_and_damping() {
     let more_hinges = r#"<body pos="0.05 0 0"><joint type="hinge" axis="0 1 0"/><geom type="sphere" size="0.01" mass="0.01" contype="0" conaffinity="0"/>"#
         .repeat(60)
         + &"</body>".repeat(60);
-    let run = |xml: &str, on_tendon: bool| {
-        let mut model = sim_mjcf::load_model(xml).expect("load");
-        if on_tendon {
-            model.tendon_stiffness[0] = -20.0;
-            model.tendon_damping[0] = -0.8;
-        } else {
-            model.jnt_stiffness[0] = -20.0;
-            model.jnt_damping[0] = -0.8;
-        }
-        model.compute_implicit_params();
+    let run = |xml: &str| {
+        let model = sim_mjcf::load_model(xml).expect("load");
         let mut data = model.make_data();
         data.qpos[0] = 0.4;
         data.qvel[0] = 0.7;
@@ -2516,9 +2506,8 @@ fn implicitspringdamper_takes_negative_stiffness_and_damping() {
     let mut failures = Vec::new();
     for (size, more) in [("", ""), (" with 60 more hinges", more_hinges.as_str())] {
         for limit in ["", r#" range="-0.3 0.3""#] {
-            let xml = model_xml(limit, more);
-            let joint = run(&xml, false);
-            let tendon = run(&xml, true);
+            let joint = run(&model_xml(limit, more, false));
+            let tendon = run(&model_xml(limit, more, true));
             assert_eq!(
                 joint.2 > 0,
                 !limit.is_empty(),

@@ -618,24 +618,11 @@ fn validate_spatial_tendon(
     Ok(())
 }
 
-/// Validate tendon physical parameters: stiffness, damping, frictionloss, range.
+/// Validate tendon physical parameters: frictionloss, range. A negative
+/// stiffness or damping loads, as MuJoCo 3.5.0 loads and applies it
+/// (`engine_passive.c:453-473`); a negative frictionloss does not, as
+/// MuJoCo makes no constraint row for one (`engine_core_constraint.c:737`).
 fn validate_tendon_params(tendon: &MjcfTendon) -> Result<()> {
-    let stiffness = tendon.stiffness.unwrap_or(0.0);
-    if stiffness < 0.0 {
-        return Err(MjcfError::invalid_value(
-            "tendon",
-            "stiffness",
-            format!("negative stiffness {stiffness}"),
-        ));
-    }
-    let damping = tendon.damping.unwrap_or(0.0);
-    if damping < 0.0 {
-        return Err(MjcfError::invalid_value(
-            "tendon",
-            "damping",
-            format!("negative damping {damping}"),
-        ));
-    }
     let frictionloss = tendon.frictionloss.unwrap_or(0.0);
     if frictionloss < 0.0 {
         return Err(MjcfError::invalid_value(

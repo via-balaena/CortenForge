@@ -3732,8 +3732,8 @@ fn smooth_pos_leaves_out_a_user_gain_or_bias() {
 /// under a velocity gain or bias, or held at its forcerange's bound, where
 /// the force itself has no derivative) carry terms through `∂J/∂q`; a fixed
 /// tendon's `J` is constant. With the spring or the damper disabled the
-/// step applies neither. The tendon's stiffness and damping positive and,
-/// set in code, negative. Hinge and ball roots, Euler and implicitfast
+/// step applies neither. The tendon's stiffness and damping positive and
+/// negative. Hinge and ball roots, Euler and implicitfast
 /// (implicitspringdamper applies tendon springs and dampers in its implicit
 /// solve, so `qfrc_passive` holds neither there).
 #[test]
@@ -3782,24 +3782,15 @@ fn smooth_pos_matches_finite_differences_through_tendons() {
                 r#"<flag damper="disable"/>"#,
             ] {
                 for (tendon, tendon_xml) in tendons {
-                    // "negated": the same parameters, negated in code after
-                    // loading (the loader refuses negative ones; MuJoCo
-                    // applies them, `engine_passive.c:453-473`).
+                    // Negative ones too, which MuJoCo applies as given
+                    // (`engine_passive.c:453-473`).
                     for prm in [
                         "",
                         r#" stiffness="3" springlength="0.3" damping="0.7""#,
-                        "negated",
+                        r#" stiffness="-3" springlength="0.3" damping="-0.7""#,
                     ] {
                         for (actuator, actuator_xml) in actuators {
-                            let negated = prm == "negated";
-                            let tendon_xml = tendon_xml.replace(
-                                "{prm}",
-                                if negated {
-                                    r#" stiffness="3" springlength="0.3" damping="0.7""#
-                                } else {
-                                    prm
-                                },
-                            );
+                            let tendon_xml = tendon_xml.replace("{prm}", prm);
                             let xml = format!(
                                 r#"<mujoco>
   <compiler angle="radian"/>
@@ -3825,12 +3816,7 @@ fn smooth_pos_matches_finite_differences_through_tendons() {
   <actuator>{actuator_xml}</actuator>
 </mujoco>"#
                             );
-                            let mut model = sim_mjcf::load_model(&xml).expect("load");
-                            if negated {
-                                model.tendon_stiffness[0] = -3.0;
-                                model.tendon_damping[0] = -0.7;
-                                model.compute_implicit_params();
-                            }
+                            let model = sim_mjcf::load_model(&xml).expect("load");
                             let mut data = model.make_data();
                             if root == "ball" {
                                 // 0.3 rad about (1, 1, 0)/√2.
@@ -4611,8 +4597,8 @@ fn hybrid_takes_damping_of_both_signs_under_euler() {
     assert_ne!(hybrid.A, fd.A, "the analytic columns ran");
 }
 
-/// The hybrid with a spatial tendon of negative stiffness and damping (set in
-/// code; the loader refuses them, MuJoCo applies them) agrees with pure
+/// The hybrid with a spatial tendon of negative stiffness and damping (MuJoCo
+/// applies them as given) agrees with pure
 /// finite differences under Euler (analytic columns, the tendon's force
 /// through its moving Jacobian), implicitfast (its damping moves with q, so
 /// the position columns are finite differences) and implicitspringdamper
@@ -4620,7 +4606,7 @@ fn hybrid_takes_damping_of_both_signs_under_euler() {
 #[test]
 fn hybrid_takes_negative_tendon_stiffness_and_damping() {
     for integrator in ["Euler", "implicitfast", "implicitspringdamper"] {
-        let mut model = sim_mjcf::load_model(&format!(
+        let model = sim_mjcf::load_model(&format!(
             r#"<mujoco>
   <compiler angle="radian"/>
   <option timestep="0.01" integrator="{integrator}"/>
@@ -4638,16 +4624,13 @@ fn hybrid_takes_negative_tendon_stiffness_and_damping() {
     </body>
   </worldbody>
   <tendon>
-    <spatial name="t" stiffness="3" springlength="0.3" damping="0.7">
+    <spatial name="t" stiffness="-3" springlength="0.3" damping="-0.7">
       <site site="w"/><site site="s2"/>
     </spatial>
   </tendon>
 </mujoco>"#
         ))
         .expect("load");
-        model.tendon_stiffness[0] = -3.0;
-        model.tendon_damping[0] = -0.7;
-        model.compute_implicit_params();
         let mut data = model.make_data();
         data.qpos.copy_from_slice(&[0.4, 0.5]);
         data.qvel.copy_from_slice(&[0.7, 1.0]);
