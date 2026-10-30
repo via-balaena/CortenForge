@@ -1,8 +1,11 @@
-//! An actuator's or sensor's own written value over its class's, whatever
-//! the value (book L17): one equal to the built-in default is the element's
-//! too. Each value is MuJoCo 3.5.0's for the same document (measured), but
-//! the sensor's: MuJoCo has no sensor default class. A muscle's negative
-//! value, which MuJoCo silently replaces, is refused (D-MUSCLE-NEGATIVE).
+//! An actuator's class as MuJoCo 3.5.0 keeps it (book L17): one actuator
+//! default per class, which each actuator element in the class writes in
+//! place, and which an actuator copies and writes (`OneActuator`); an
+//! actuator's or sensor's own value over its class's, whatever it equals;
+//! each kind's attributes alone; and, refused, the values MuJoCo silently
+//! replaces or drops (each a registered divergence). Each value is MuJoCo
+//! 3.5.0's for the same document (measured), but a sensor's: MuJoCo has no
+//! sensor default class.
 
 #![allow(
     clippy::unwrap_used,
@@ -549,8 +552,8 @@ fn a_muscles_fvmax_below_one_is_kept() {
 /// class's damping a damper does not take (D-DAMPER-CLASS-KV); a muscle
 /// value a class asked for that MuJoCo's muscle replaces
 /// (D-MUSCLE-SENTINEL); a class muscle's negative force under its parent's
-/// (D-MUSCLE-NEGATIVE); `actearly` off a `<general>` (MuJoCo's schema); a
-/// cylinder's second bias value (D-CYLINDER-BIAS).
+/// (D-MUSCLE-NEGATIVE); a cylinder's second bias value (D-CYLINDER-BIAS).
+/// And `actearly` on a `<position>`, which MuJoCo's schema refuses too.
 #[test]
 fn values_mujoco_would_replace_are_refused() {
     for (xml, attribute) in [
@@ -630,8 +633,9 @@ fn a_negative_control_range_from_a_class_is_refused() {
     }
 }
 
-/// A class's damper kv written, and a <general>'s fixed gain carrying a
-/// third value (no damping), load: MuJoCo's kv 0 is then what is asked.
+/// A damper writing its kv under a damper class, and a damper under a
+/// `<general>` class whose fixed gain carries a third value (no damping),
+/// load as MuJoCo builds them.
 #[test]
 fn a_damper_under_a_class_with_no_damping_loads() {
     for xml in [
@@ -677,7 +681,7 @@ fn a_muscles_tausmooth_is_its_dynprm2() {
     );
 }
 
-// ── What `e6efb4b3`'s mutants found untested ───────────────────────────────
+// ── Values each kind's own write clears or forces ──────────────────────────
 
 /// A `<velocity>` zeroes its class's bias before writing its own damping
 /// (`mjs_setToVelocity`: biasprm 0 0 -10 under a position class's kp 10,

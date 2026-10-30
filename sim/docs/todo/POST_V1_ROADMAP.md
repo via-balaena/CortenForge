@@ -169,7 +169,7 @@ DT-181 added during derivatives examples (sensor FD optimization).
 | DT-7 | T1 | `actdim` explicit override not supported (auto-detection only) | 10b |
 | DT-10 | T1 | Deferred `<compiler>` attributes: `fitaabb`, `usethread`, `alignfree`, `saveinertial`, `inertiagrouprange`, `<lengthrange>` child | 10b |
 | DT-12 | T1 | Programmatic API enforcement that `worldbody.childclass` must be `None` | 10b |
-| DT-15 | T1 | Sentinel-value detection for `gear`/`kp`/`noise`/`cutoff` should migrate to `Option<T>`. Phase 7 Spec A added 14 sentinel-detection fields -- primary migration candidates. | 10b |
+| DT-15 | T1 | ~~Sentinel-value detection for `gear`/`kp`/`noise`/`cutoff` should migrate to `Option<T>`. Phase 7 Spec A added 14 sentinel-detection fields -- primary migration candidates.~~ **Done** -- Rigid-loading PR RL-5b (book L17) | 10b |
 | DT-17 | T1 | Global `<option o_margin>` override -- per-geom margin is correct foundation; this covers the separate global option | 10b |
 | DT-22 | T1 | `efc_impP` -- impedance derivative field for external API introspection | 10c |
 | DT-65 | T1 | User sensor `dim` attribute not parsed -- `User.dim()` returns 0. Also requires `sensor_intprm` array. | 10h |

@@ -319,9 +319,9 @@ impl ActuatorSpec {
     /// always limited, and `actrange` beside `inheritrange` refused, the
     /// refusal MuJoCo reports. Dropping a refusal builds the servo with no
     /// bias; that is refused here (D-INTVELOCITY-SERVO): a gain's at once, a
-    /// `ctrlrange` beside `inheritrange` after MuJoCo's own, for an actuator
-    /// only: a class's loads, as in MuJoCo (measured), and refuses each
-    /// actuator that takes both.
+    /// class's too; a `ctrlrange` beside `inheritrange` after MuJoCo's own
+    /// refusal, an actuator's alone: a class's loads, as in MuJoCo (measured),
+    /// and refuses each actuator that takes both.
     fn set_to_int_velocity(&mut self, actuator: &MjcfActuator, writer: Writer) -> Result<()> {
         let dropped = match self.set_to_position(actuator) {
             Ok(()) => None,

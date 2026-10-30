@@ -82,7 +82,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `<size>` | ✓ | ⚠️ | Memory hints, may not apply |
 | `<visual>` | ✓ | ❌ | L1 concern (sim-bevy) |
 | `<statistic>` | ✓ | ❌ | Auto-computed |
-| `<default>` | ✓ | ✓ | Full Option<T> defaults system: `DefaultResolver` with four-stage pipeline (types → parser → merge → apply) for all 8 element types (geom, joint, site, tendon, actuator, sensor, mesh, pair); 91+ defaultable fields with `is_none()` guards; `childclass` propagation (body/frame), nested hierarchy resolution, undefined class validation |
+| `<default>` | ✓ | ✓ | Full Option<T> defaults system: `DefaultResolver` with four-stage pipeline (types → parser → merge → apply) for all 8 element types (geom, joint, site, tendon, actuator, sensor, mesh, pair); 91+ defaultable fields with `is_none()` guards; `childclass` propagation (body/frame), nested hierarchy resolution, undefined class validation; actuators since Rigid-loading PR RL-5b as MuJoCo keeps them, one actuator default per class that each actuator element writes in place (`actuator_spec.rs`) |
 | `<custom>` | ✓ | ❌ | User data, low priority |
 | `<extension>` | ✓ | ❌ | Plugin system, low priority |
 | `<asset>` | ✓ | ⚠️ | Mesh, texture refs |

@@ -349,8 +349,9 @@ pub struct FrontEnd {
 }
 
 /// The model as the loader checks it: a clone of `mjcf` with its assets
-/// named, every element given its class, its frames and composites expanded,
-/// then validated (`validate_resolved`), before the compiler passes remove any
+/// named, every element but its actuators given its class (each actuator's
+/// class, as the actuator writes it, returned beside it), its frames and
+/// composites expanded, then validated (`validate_resolved`), before the compiler passes remove any
 /// element. The caller has checked the tree's depth.
 pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
     let mut mjcf = mjcf.clone();

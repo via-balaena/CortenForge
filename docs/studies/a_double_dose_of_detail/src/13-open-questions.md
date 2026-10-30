@@ -148,7 +148,7 @@ Every open question the 21 research sections raise, deduplicated, with the secti
 
 | # | question | sections | options | recommendation | class | basis |
 |---|---|---|---|---|---|---|
-| Q75 | actuator default cross-talk | A3 O-1 | port MuJoCo's shared default / refuse / leave | refuse | (a) | stated limitation (11-settled A3-O1) |
+| Q75 | actuator default cross-talk | A3 O-1 | port MuJoCo's shared default / refuse / leave | refuse | (a) | stated limitation (11-settled A3-O1); replaced in Rigid-loading PR RL-5b: ported (11-settled A3-O1) |
 | Q76 | repeated top-level defaults | A3 O-2 | MuJoCo's snapshot / live inheritance | snapshot | (a) | parity |
 | Q77 | `DefaultResolver` public | A3 O-3 | public / crate-private | crate-private | (b) | adopted, 11-settled A3-O3 |
 | Q78 | negative muscle parameters | A3 O-4 | refuse / parity ("negative = None") | refuse except `force` | (a) | stricter: MuJoCo silently replaces them |

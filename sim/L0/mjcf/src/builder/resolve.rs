@@ -5,8 +5,11 @@
 //! (`mjXReader::GetClass`, then the element's own attributes over the
 //! class's), so a frame composes, and fusion moves, the element its class
 //! made, and the elements a `<composite>` makes later take none of the
-//! user's classes (`mjCComposite` builds them from its own default). The
-//! builder reads each element as this pass leaves it and applies no class.
+//! user's classes (`mjCComposite` builds them from its own default). An
+//! actuator stays as written: its class's actuator default, as the actuator
+//! writes it (`DefaultResolver::apply_to_actuator`), is returned for it. The
+//! builder reads each element as this pass leaves it, and each actuator with
+//! the default returned for it; it applies no class.
 
 use super::geom::{resolve_geom_fromto, resolve_site_fromto};
 use crate::actuator_spec::ActuatorSpec;
