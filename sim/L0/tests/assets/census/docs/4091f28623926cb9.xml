@@ -1,0 +1,1 @@
+<mujoco><default><default class="c"><damper kv="4" ctrlrange="0 1"/><default class="d"><damper ctrlrange="0 2"/></default></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><damper class="d" joint="h" kv="2"/></actuator></mujoco>

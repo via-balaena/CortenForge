@@ -54,12 +54,29 @@ pub struct ActuatorSpec {
     pub interp: Option<String>,
     pub delay: Option<f64>,
     pub user: Option<Vec<f64>>,
-    /// Each `gainprm` and `dynprm` slot's value as a muscle attribute or a
-    /// `<general>`'s parameter last wrote it: what `mjs_setToMuscle`'s
-    /// replacements may overwrite only if no writer asked for it.
-    asked_gainprm: [Option<f64>; 9],
-    asked_dynprm: [Option<f64>; 2],
+    /// What the stricter rules need of the spec's past ([`Provenance`]).
+    provenance: Provenance,
 }
+
+/// What the stricter rules (D-MUSCLE-SENTINEL, D-DAMPER-CLASS-KV) need to
+/// know of a spec's past: which muscle values a writer asked for, and which
+/// asked-for values MuJoCo replaced or dropped while a class was written. A
+/// class refuses none of them; an actuator that takes one is refused.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Provenance {
+    /// Each `gainprm` slot, then `dynprm`'s first two, whose value a muscle
+    /// attribute or a `<general>`'s parameter wrote; a kind's own write to
+    /// the slot (`mjs_setTo*`) clears it.
+    asked: [bool; MUSCLE_SLOTS],
+    /// The asked-for value a class's `<muscle>` replaced in each slot.
+    lost: [Option<f64>; MUSCLE_SLOTS],
+    /// The damping a class's `<damper>` that wrote no `kv` dropped.
+    lost_damping: Option<f64>,
+}
+
+/// The slots [`Provenance`] follows: `gainprm`'s nine, then `dynprm`'s
+/// first two (index 9 + k).
+const MUSCLE_SLOTS: usize = 11;
 
 /// MuJoCo's `gainprm` where no writer sets one (`mjs_defaultActuator`).
 pub const DEFAULT_GAINPRM: [f64; 9] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
@@ -104,6 +121,39 @@ impl ActuatorSpec {
         range.unwrap_or((0.0, 0.0))
     }
 
+    /// `gainprm[k]` set by a kind's own write: no writer asked for it.
+    fn set_gain(&mut self, k: usize, value: f64) {
+        self.gainprm[k] = Some(value);
+        self.provenance.asked[k] = false;
+        self.provenance.lost[k] = None;
+        if k == 2 {
+            self.provenance.lost_damping = None;
+        }
+    }
+
+    /// `gainprm[k]` as a muscle attribute or a `<general>`'s parameter asks.
+    fn ask_gain(&mut self, k: usize, value: f64) {
+        self.set_gain(k, value);
+        self.provenance.asked[k] = true;
+    }
+
+    /// `dynprm[k]` set by a kind's own write: no writer asked for it.
+    fn set_dynamics(&mut self, k: usize, value: f64) {
+        self.dynprm[k] = Some(value);
+        if k < 2 {
+            self.provenance.asked[9 + k] = false;
+            self.provenance.lost[9 + k] = None;
+        }
+    }
+
+    /// `dynprm[k]` as a muscle attribute or a `<general>`'s parameter asks.
+    fn ask_dynamics(&mut self, k: usize, value: f64) {
+        self.set_dynamics(k, value);
+        if k < 2 {
+            self.provenance.asked[9 + k] = true;
+        }
+    }
+
     /// `actuator`, of its kind, written onto this spec as `OneActuator`
     /// writes it: the attributes every kind reads, then its kind's
     /// `mjs_setTo*`, then `user`.
@@ -127,9 +177,9 @@ impl ActuatorSpec {
                 let kv = actuator.kv.unwrap_or_else(|| self.gain(0));
                 self.set_to_velocity(kv);
             }
-            MjcfActuatorType::Damper => self.set_to_damper(actuator)?,
+            MjcfActuatorType::Damper => self.set_to_damper(actuator, writer)?,
             MjcfActuatorType::Cylinder => self.set_to_cylinder(actuator)?,
-            MjcfActuatorType::Muscle => self.set_to_muscle(actuator)?,
+            MjcfActuatorType::Muscle => self.set_to_muscle(actuator, writer)?,
             MjcfActuatorType::Adhesion => self.set_to_adhesion(actuator)?,
         }
         if !actuator.user.is_empty() {
@@ -181,17 +231,23 @@ impl ActuatorSpec {
         if actuator.actearly.is_some() {
             self.actearly = actuator.actearly;
         }
-        write_prefix(&mut self.dynprm, actuator.dynprm);
-        write_prefix(&mut self.gainprm, actuator.gainprm);
+        if let Some(dynprm) = actuator.dynprm {
+            for (k, value) in dynprm.given().iter().enumerate() {
+                self.ask_dynamics(k, *value);
+            }
+        }
+        if let Some(gainprm) = actuator.gainprm {
+            for (k, value) in gainprm.given().iter().enumerate() {
+                self.ask_gain(k, *value);
+            }
+        }
         write_prefix(&mut self.biasprm, actuator.biasprm);
-        write_prefix(&mut self.asked_dynprm, actuator.dynprm);
-        write_prefix(&mut self.asked_gainprm, actuator.gainprm);
         Ok(())
     }
 
     /// `mjs_setToMotor` (`user_api.cc:889-898`).
     fn set_to_motor(&mut self) {
-        self.gainprm[0] = Some(1.0);
+        self.set_gain(0, 1.0);
         self.dyntype = Some(ActuatorDynamics::None);
         self.gaintype = Some(GainType::Fixed);
         self.biastype = Some(BiasType::None);
@@ -211,7 +267,7 @@ impl ActuatorSpec {
             ServoRefusal::Gains(MjcfError::invalid_value(element, attribute, reason))
         };
         let kp = actuator.kp.unwrap_or_else(|| self.gain(0));
-        self.gainprm[0] = Some(kp);
+        self.set_gain(0, kp);
         self.biasprm[1] = Some(-kp);
         if actuator.kv.is_some() && actuator.dampratio.is_some() {
             return Err(refuse(
@@ -235,7 +291,7 @@ impl ActuatorSpec {
             if timeconst < 0.0 {
                 return Err(refuse("timeconst", "timeconst cannot be negative"));
             }
-            self.dynprm[0] = Some(timeconst);
+            self.set_dynamics(0, timeconst);
             self.dyntype = Some(if timeconst == 0.0 {
                 ActuatorDynamics::None
             } else {
@@ -291,7 +347,7 @@ impl ActuatorSpec {
     /// else the spec's `gainprm[0]` (`xml_native_reader.cc:2432-2436`).
     fn set_to_velocity(&mut self, kv: f64) {
         self.biasprm = [Some(0.0); 9];
-        self.gainprm[0] = Some(kv);
+        self.set_gain(0, kv);
         self.biasprm[2] = Some(-kv);
         self.dyntype = Some(ActuatorDynamics::None);
         self.gaintype = Some(GainType::Fixed);
@@ -300,20 +356,31 @@ impl ActuatorSpec {
 
     /// `mjs_setToDamper` (`user_api.cc:972-988`), its `kv` the element's,
     /// else 0 (`xml_native_reader.cc:2440-2444`), not its class's: a damper
-    /// that writes no `kv` under a class whose affine gain has a velocity
-    /// term, a damping, is refused here (D-DAMPER-CLASS-KV; MuJoCo builds kv
-    /// 0, measured).
-    fn set_to_damper(&mut self, actuator: &MjcfActuator) -> Result<()> {
-        if actuator.kv.is_none() && self.gaintype == Some(GainType::Affine) && self.gain(2) != 0.0 {
+    /// that writes no `kv` drops a damping its class carries (an affine
+    /// gain's velocity term) or one a class's damper dropped before it. An
+    /// actuator that would be built so is refused here (D-DAMPER-CLASS-KV;
+    /// MuJoCo builds kv 0, measured); a class records the drop for its
+    /// actuators.
+    fn set_to_damper(&mut self, actuator: &MjcfActuator, writer: Writer) -> Result<()> {
+        let carried = self.gaintype == Some(GainType::Affine) && self.gain(2) != 0.0;
+        let dropped = match actuator.kv {
+            Some(_) => None,
+            None if carried => Some(self.gain(2)),
+            None => self.provenance.lost_damping,
+        };
+        if let (Some(damping), Writer::Actuator) = (dropped, writer) {
             return Err(MjcfError::invalid_value(
                 "damper",
                 "kv",
-                "a damper takes no kv from its class: write its own",
+                format!("a damper takes no kv from its class (damping {damping}): write its own"),
             ));
         }
         let kv = actuator.kv.unwrap_or(0.0);
-        self.gainprm = [Some(0.0); 9];
-        self.gainprm[2] = Some(-kv);
+        for k in 0..9 {
+            self.set_gain(k, 0.0);
+        }
+        self.set_gain(2, -kv);
+        self.provenance.lost_damping = dropped;
         self.ctrllimited = Some(TfAuto::True);
         self.dyntype = Some(ActuatorDynamics::None);
         self.gaintype = Some(GainType::Affine);
@@ -355,12 +422,17 @@ impl ActuatorSpec {
         let timeconst = actuator.timeconst.unwrap_or_else(|| self.dynamics(0));
         let bias = actuator.bias.map_or_else(|| self.bias(0), |[b0, _, _]| b0);
         let area = actuator.area.unwrap_or_else(|| self.gain(0));
-        self.dynprm[0] = Some(timeconst);
+        self.set_dynamics(0, timeconst);
         self.biasprm[0] = Some(bias);
-        self.gainprm[0] = Some(match actuator.diameter {
-            Some(diameter) if diameter >= 0.0 => std::f64::consts::PI / 4.0 * diameter * diameter,
-            _ => area,
-        });
+        self.set_gain(
+            0,
+            match actuator.diameter {
+                Some(diameter) if diameter >= 0.0 => {
+                    std::f64::consts::PI / 4.0 * diameter * diameter
+                }
+                _ => area,
+            },
+        );
         self.dyntype = Some(ActuatorDynamics::Filter);
         self.gaintype = Some(GainType::Fixed);
         self.biastype = Some(BiasType::Affine);
@@ -371,13 +443,15 @@ impl ActuatorSpec {
     /// `gainprm` slot still holding `mjs_defaultActuator`'s value set to the
     /// muscle's default, then each value the element writes, `biasprm` a copy
     /// of `gainprm`. Each value MuJoCo's reader passes as unwritten, a
-    /// negative one, is refused here (D-MUSCLE-NEGATIVE), as is a value a
-    /// muscle attribute or a `<general>`'s parameter asked for that the
-    /// replacements would overwrite, where the element does not write that
-    /// value itself (D-MUSCLE-SENTINEL; measured: a class's `range="1 2"`
-    /// builds 0.75 2). `tausmooth` is the element's, else the spec's
-    /// `dynprm[2]` (`xml_native_reader.cc:2462-2465`).
-    fn set_to_muscle(&mut self, actuator: &MjcfActuator) -> Result<()> {
+    /// negative one, is refused here (D-MUSCLE-NEGATIVE). A value a muscle
+    /// attribute or a `<general>`'s parameter asked for that the
+    /// replacements overwrite, where the element does not write that value
+    /// itself, refuses an actuator that would be built so, whether it is
+    /// replaced here or was in a class (D-MUSCLE-SENTINEL; measured: a
+    /// class's `range="1 2"` builds 0.75 2); a class records it for its
+    /// actuators. `tausmooth` is the element's, else the spec's `dynprm[2]`
+    /// (`xml_native_reader.cc:2462-2465`).
+    fn set_to_muscle(&mut self, actuator: &MjcfActuator, writer: Writer) -> Result<()> {
         let refuse = |attribute: &str, reason: String| {
             Err(MjcfError::invalid_value("muscle", attribute, reason))
         };
@@ -414,45 +488,69 @@ impl ActuatorSpec {
             actuator.fpmax.is_some(),
             actuator.fvmax.is_some(),
         ];
-        for (k, unset, muscle) in MUSCLE_DYNPRM {
-            // MuJoCo's own test is exact (`user_api.cc:1013-1014`).
-            #[allow(clippy::float_cmp)]
-            if self.dynamics(k) == unset {
-                if !own_dynprm[k]
-                    && self.dynprm[k].is_some()
-                    && self.dynprm[k] == self.asked_dynprm[k]
+        let own = |slot: usize| {
+            if slot < 9 {
+                own_gainprm[slot]
+            } else {
+                own_dynprm[slot - 9]
+            }
+        };
+        let attribute = |slot: usize| {
+            if slot < 9 {
+                MUSCLE_GAINPRM[slot].3
+            } else {
+                "timeconst"
+            }
+        };
+        let replaced = |attribute: &str, value: f64| {
+            refuse(
+                attribute,
+                format!("a muscle replaces the {attribute} {value} its class asked for"),
+            )
+        };
+        if writer == Writer::Actuator {
+            for slot in 0..MUSCLE_SLOTS {
+                if let Some(value) = self.provenance.lost[slot]
+                    && !own(slot)
                 {
-                    return refuse(
-                        "timeconst",
-                        format!("a muscle replaces the timeconst {unset} it takes from its class"),
-                    );
+                    return replaced(attribute(slot), value);
                 }
-                self.dynprm[k] = Some(muscle);
             }
         }
-        for (k, unset, muscle, attribute) in MUSCLE_GAINPRM {
-            // MuJoCo's own test is exact (`user_api.cc:1015-1023`).
+        let slots = MUSCLE_DYNPRM
+            .iter()
+            .map(|&(k, unset, muscle)| (9 + k, unset, muscle))
+            .chain(
+                MUSCLE_GAINPRM
+                    .iter()
+                    .map(|&(k, unset, muscle, _)| (k, unset, muscle)),
+            );
+        for (slot, unset, muscle) in slots {
+            let current = if slot < 9 {
+                self.gain(slot)
+            } else {
+                self.dynamics(slot - 9)
+            };
+            // MuJoCo's own test is exact (`user_api.cc:1013-1023`).
             #[allow(clippy::float_cmp)]
-            if self.gain(k) == unset {
-                if !own_gainprm[k]
-                    && self.gainprm[k].is_some()
-                    && self.gainprm[k] == self.asked_gainprm[k]
-                {
-                    return refuse(
-                        attribute,
-                        format!(
-                            "a muscle replaces the {attribute} {unset} it takes from its class"
-                        ),
-                    );
+            if current == unset {
+                let lost = (self.provenance.asked[slot] && !own(slot)).then_some(unset);
+                if lost.is_some() && writer == Writer::Actuator {
+                    return replaced(attribute(slot), unset);
                 }
-                self.gainprm[k] = Some(muscle);
+                if slot < 9 {
+                    self.set_gain(slot, muscle);
+                } else {
+                    self.set_dynamics(slot - 9, muscle);
+                }
+                self.provenance.lost[slot] = lost;
             }
         }
         let tausmooth = actuator.tausmooth.unwrap_or_else(|| self.dynamics(2));
         if tausmooth < 0.0 {
             return refuse("tausmooth", "muscle tausmooth cannot be negative".into());
         }
-        self.dynprm[2] = Some(tausmooth);
+        self.set_dynamics(2, tausmooth);
         if let Some(force) = actuator.force {
             let class = self.gain(2);
             if force < 0.0 && class > 0.0 {
@@ -463,21 +561,19 @@ impl ActuatorSpec {
             }
         }
         if let Some((t0, t1)) = actuator.muscle_timeconst {
-            self.dynprm[..2].copy_from_slice(&[Some(t0), Some(t1)]);
-            self.asked_dynprm = [Some(t0), Some(t1)];
+            self.ask_dynamics(0, t0);
+            self.ask_dynamics(1, t1);
         }
         if let Some((r0, r1)) = actuator.range {
-            self.gainprm[..2].copy_from_slice(&[Some(r0), Some(r1)]);
-            self.asked_gainprm[..2].copy_from_slice(&[Some(r0), Some(r1)]);
+            self.ask_gain(0, r0);
+            self.ask_gain(1, r1);
         }
         if let Some(force) = actuator.force.filter(|f| *f >= 0.0) {
-            self.gainprm[2] = Some(force);
-            self.asked_gainprm[2] = Some(force);
+            self.ask_gain(2, force);
         }
         for (k, _, value) in scalars {
-            if value.is_some() {
-                self.gainprm[k] = value;
-                self.asked_gainprm[k] = value;
+            if let Some(value) = value {
+                self.ask_gain(k, value);
             }
         }
         self.biasprm = self.gainprm;
@@ -491,7 +587,7 @@ impl ActuatorSpec {
     /// element's, else the spec's `gainprm[0]` (`xml_native_reader.cc:2481`).
     fn set_to_adhesion(&mut self, actuator: &MjcfActuator) -> Result<()> {
         let gain = actuator.gain.unwrap_or_else(|| self.gain(0));
-        self.gainprm[0] = Some(gain);
+        self.set_gain(0, gain);
         self.ctrllimited = Some(TfAuto::True);
         self.gaintype = Some(GainType::Fixed);
         self.biastype = Some(BiasType::None);

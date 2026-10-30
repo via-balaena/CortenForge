@@ -717,3 +717,91 @@ fn a_muscle_replaces_a_value_its_class_kind_set() {
     );
     assert_eq!((dynamics[0], dynamics[1]), (0.01, 0.04));
 }
+
+// ── Where the stricter rules apply: at the actuator that takes the value ──
+//
+// A class's own `<damper>` or `<muscle>` may drop a value an earlier writer
+// asked for, as MuJoCo drops it; that is refused only for an actuator that
+// would be built with the loss (D-DAMPER-CLASS-KV, D-MUSCLE-SENTINEL), not
+// for the class, nor for an actuator that writes the value itself. Each
+// value is MuJoCo 3.5.0's for the same document (measured).
+
+#[test]
+fn a_class_that_drops_a_value_refuses_no_actuator_writing_its_own() {
+    for (xml, gain) in [
+        (
+            r#"<mujoco><default><default class="c"><general gaintype="affine" gainprm="0 0 -3"/><damper ctrlrange="0 1"/></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><damper class="c" joint="h" kv="2"/></actuator></mujoco>"#,
+            [0.0, 0.0, -2.0, 0.0],
+        ),
+        (
+            r#"<mujoco><default><default class="c"><damper kv="4" ctrlrange="0 1"/><default class="d"><damper ctrlrange="0 2"/></default></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><damper class="d" joint="h" kv="2"/></actuator></mujoco>"#,
+            [0.0, 0.0, -2.0, 0.0],
+        ),
+        (
+            r#"<mujoco><default><damper kv="4" ctrlrange="0 1"/></default><default><damper ctrlrange="0 2"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><damper joint="h" kv="1"/></actuator></mujoco>"#,
+            [0.0, 0.0, -1.0, 0.0],
+        ),
+        (
+            r#"<mujoco><default><default class="c"><general gainprm="1"/><muscle scale="100"/></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle class="c" joint="h" range="0.5 1.2"/></actuator></mujoco>"#,
+            [0.5, 1.2, -1.0, 100.0],
+        ),
+        // A <motor> under a class whose muscle replaced a general's values.
+        (
+            r#"<mujoco><default><general gainprm="1 0 5"/><muscle/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/></actuator></mujoco>"#,
+            [1.0, 1.05, 5.0, 200.0],
+        ),
+    ] {
+        let (built, _, _) = params(xml);
+        assert_eq!(built[..4], gain, "{xml}");
+    }
+}
+
+/// A class no actuator takes the dropped value from loads.
+#[test]
+fn a_class_that_drops_a_value_unused_loads() {
+    for xml in [
+        r#"<mujoco><default><default class="p"><muscle range="1 2"/><default class="c"><muscle/></default></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/></actuator></mujoco>"#,
+        r#"<mujoco><default><default class="p"><damper kv="4" ctrlrange="0 1"/><default class="c"><damper/></default></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/></actuator></mujoco>"#,
+    ] {
+        let (gain, _, _) = params(xml);
+        assert_eq!(gain[0], 1.0, "{xml}");
+    }
+}
+
+/// An actuator that takes a value its class's muscle or damper dropped is
+/// refused (MuJoCo builds range 0.75 2 for the first, kv 0 for the second).
+#[test]
+fn an_actuator_taking_a_value_its_class_dropped_is_refused() {
+    for (xml, attribute) in [
+        (
+            r#"<mujoco><default><default class="p"><muscle range="1 2"/><default class="c"><muscle/></default></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle class="c" joint="h"/></actuator></mujoco>"#,
+            "range",
+        ),
+        (
+            r#"<mujoco><default><default class="p"><damper kv="4" ctrlrange="0 1"/><default class="c"><damper ctrlrange="0 1"/></default></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><damper class="c" joint="h"/></actuator></mujoco>"#,
+            "kv",
+        ),
+    ] {
+        match load_model(xml) {
+            Err(MjcfError::InvalidValue { attribute: a, .. }) => assert_eq!(a, attribute, "{xml}"),
+            Err(err) => panic!("{xml}: not an invalid value: {err}"),
+            Ok(_) => panic!("{xml}: loaded"),
+        }
+    }
+}
+
+/// A value a kind's own write set is no muscle value anyone asked for, even
+/// where a writer asked for that value before it: a muscle replaces it, as
+/// MuJoCo does (gainprm 0.75, dynprm 0.01, measured).
+#[test]
+fn a_kinds_own_write_clears_what_was_asked() {
+    for xml in [
+        r#"<mujoco><default><general gainprm="1"/><position kp="3"/><velocity kv="1"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+        r#"<mujoco><default><general gainprm="1"/><position kp="2"/><cylinder area="1"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+        r#"<mujoco><default><general dynprm="1"/><position timeconst="0.5"/><cylinder timeconst="1"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+        r#"<mujoco><default><default class="c"><general gainprm="1"/><velocity kv="3"/><default class="d"><velocity kv="1"/></default></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle class="d" joint="h"/></actuator></mujoco>"#,
+    ] {
+        let (gain, _, dynamics) = params(xml);
+        assert_eq!((gain[0], dynamics[0]), (0.75, 0.01), "{xml}");
+    }
+}
