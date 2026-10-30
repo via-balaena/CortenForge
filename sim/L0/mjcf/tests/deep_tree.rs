@@ -7,7 +7,7 @@
 
 use sim_mjcf::{
     MjcfBody, MjcfError, MjcfJoint, MjcfModel, load_model, load_model_from_file, model_from_mjcf,
-    validate, validate_tendons,
+    validate,
 };
 
 /// `n` bodies nested in the worldbody (the root `<mujoco>` at depth 1, the
@@ -151,13 +151,12 @@ fn a_tree_built_in_code_deeper_than_4096_is_refused() {
     // 100,000 deep: past the limit, and too deep for the loader's own stack
     // to clone, so model_from_mjcf must refuse it before cloning (with the
     // guard moved after the clone, this binary aborts). Its walks fit, so
-    // where validate's and validate_tendons' guards sit is not tested here.
+    // where validate's guard sits is not tested here.
     on_big_stack(|| {
         let model = chain(100_000);
         for err in [
             model_from_mjcf(&model, None).unwrap_err(),
             validate(&model).unwrap_err(),
-            validate_tendons(&model).unwrap_err(),
         ] {
             assert!(
                 matches!(err, MjcfError::TooDeep { limit: 4096, .. }),

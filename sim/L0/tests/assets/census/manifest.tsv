@@ -2282,3 +2282,8 @@ b79ab18fe4595f3b	sim/L0/mjcf/tests/errors.rs:188
 a1d405cfd3c01620	sim/L0/mjcf/tests/default_classes.rs:326
 cd321cd614105e9d	sim/L0/mjcf/tests/default_classes.rs:316
 dc074a66f69c17ad	sim/L0/mjcf/tests/default_classes.rs:327
+1db7441b43fc8209	sim/L0/mjcf/tests/validation_order.rs:59
+310d63c436c0067e	sim/L0/mjcf/tests/validation_order.rs:41
+c87f07641ccae6dd	sim/L0/mjcf/tests/validation_order.rs:50
+ecfcb214ccc0fd04	sim/L0/mjcf/tests/validation_order.rs:21
+ecfcb214ccc0fd04	sim/L0/mjcf/tests/validation_order.rs:31

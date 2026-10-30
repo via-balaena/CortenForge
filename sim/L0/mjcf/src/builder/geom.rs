@@ -395,11 +395,16 @@ pub fn resolve_site_fromto(site: &mut MjcfSite) -> Result<()> {
 ///
 /// # Errors
 ///
+/// [`MjcfError::NonFinite`] on `fromto` for a value that is not finite (a
+/// document's is refused when it is read; this one was built in code);
 /// [`MjcfError::InvalidValue`] on `fromto` for each refusal above.
 pub fn resolve_geom_fromto(geom: &mut MjcfGeom) -> Result<()> {
     let Some(fromto) = geom.fromto.take() else {
         return Ok(());
     };
+    if let Some(v) = fromto.iter().find(|v| !v.is_finite()) {
+        return Err(MjcfError::non_finite("geom", "fromto", *v));
+    }
     let radius = geom.size.first().copied().unwrap_or(0.1);
     let refuse = |what: &str| MjcfError::invalid_value("geom", "fromto", what);
     let (pos, quat, size) = fromto_pose(

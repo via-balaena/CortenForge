@@ -205,7 +205,7 @@ pub use types::{
     MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendon, MjcfTendonDefaults,
     MjcfTendonType, MjcfWeld, Prefix, SpatialPathElement, TfAuto,
 };
-pub use validation::{ValidationResult, validate, validate_tendons};
+pub use validation::{ValidationResult, validate};
 
 // MuJoCo-aligned Model conversion (primary API)
 pub use builder::{load_model, load_model_from_file, model_from_mjcf};

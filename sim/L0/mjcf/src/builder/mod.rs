@@ -229,31 +229,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Before anything walks or clones the tree, whoever built it.
     crate::validation::check_tree_depth(&mjcf.worldbody)?;
 
-    // Apply compiler pre-processing passes on a mutable clone
-    let mut mjcf = mjcf.clone();
-    mesh::name_assets(&mut mjcf)?;
-
-    // Active ingress validation (Phase 0): full validate() promoted from
-    // defense-in-depth dead code. Fail-closed on any finding. Runs against
-    // user input as-parsed, before frame/composite expansion.
-    crate::validation::validate_unwrapped(&mjcf)?;
-
-    // Each element's class, before frames, composites and the compiler
-    // passes move or make elements, as MuJoCo applies it when it reads one.
-    let resolver = DefaultResolver::from_model(&mjcf)?;
-    resolve::apply_defaults(&mut mjcf, &resolver)?;
-
-    // Expand <frame> elements first: compose transforms into children, lift onto parent bodies.
-    // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
-    // visible to those passes (matches MuJoCo, which expands frames during XML parsing).
-    expand_frames(&mut mjcf.worldbody, &mjcf.compiler)?;
-
-    // Expand <composite> elements: generates body chains from composite definitions.
-    // Runs AFTER frame expansion and BEFORE discardvisual/fusestatic (which need
-    // to see the expanded bodies).
-    let composite_excludes = composite::expand_composites(&mut mjcf.worldbody)?;
-    crate::validation::check_tree_depth(&mjcf.worldbody)?;
-    mjcf.contact.excludes.extend(composite_excludes);
+    let (mut mjcf, resolver, _) = front_end(mjcf)?;
 
     if mjcf.compiler.discardvisual {
         apply_discardvisual(&mut mjcf);
@@ -291,9 +267,6 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     for child in &mjcf.worldbody.children {
         builder.process_body(child, 0, None)?;
     }
-
-    // Validate tendons before processing (catches bad references early)
-    crate::validation::validate_tendons_unwrapped(&mjcf)?;
 
     // Process tendons (must be before actuators, since actuators may reference tendons)
     builder.process_tendons(&mjcf.tendons)?;
@@ -354,6 +327,44 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         .collect();
 
     Ok(model)
+}
+
+/// The model as the loader checks it: a clone of `mjcf` with its assets
+/// named, every element given its class, its frames and composites expanded,
+/// then validated (`validate_resolved`), before the compiler passes remove any
+/// element. The caller has checked the tree's depth.
+pub fn front_end(
+    mjcf: &MjcfModel,
+) -> Result<(
+    MjcfModel,
+    DefaultResolver,
+    crate::validation::ValidationResult,
+)> {
+    let mut mjcf = mjcf.clone();
+    mesh::name_assets(&mut mjcf)?;
+
+    // Each element's class, before frames, composites and the compiler
+    // passes move or make elements, as MuJoCo applies it when it reads one.
+    let resolver = DefaultResolver::from_model(&mjcf)?;
+    resolve::apply_defaults(&mut mjcf, &resolver)?;
+
+    // Expand <frame> elements first: compose transforms into children, lift onto parent bodies.
+    // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
+    // visible to those passes (matches MuJoCo, which expands frames during XML parsing).
+    expand_frames(&mut mjcf.worldbody, &mjcf.compiler)?;
+
+    // Expand <composite> elements: generates body chains from composite definitions.
+    // Runs AFTER frame expansion and BEFORE discardvisual/fusestatic (which need
+    // to see the expanded bodies).
+    let composite_excludes = composite::expand_composites(&mut mjcf.worldbody)?;
+    crate::validation::check_tree_depth(&mjcf.worldbody)?;
+    mjcf.contact.excludes.extend(composite_excludes);
+
+    // Every name, reference and value check, on the model as resolved and
+    // expanded, before fusion or discarding hides an element (MuJoCo 3.5.0
+    // checks names before either, measured).
+    let checked = crate::validation::validate_resolved(&mjcf)?;
+    Ok((mjcf, resolver, checked))
 }
 
 /// Parse MJCF XML and convert directly to Model.
