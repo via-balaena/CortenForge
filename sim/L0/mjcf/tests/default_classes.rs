@@ -272,7 +272,7 @@ fn an_unknown_pair_class_is_refused() {
 }
 
 /// A sensor's `class` is sim-mjcf's own (MuJoCo 3.5.0 refuses the attribute),
-/// checked as every other class name is.
+/// checked as the other class names sim-mjcf reads are.
 #[test]
 fn an_unknown_sensor_class_is_refused() {
     let err = refused(

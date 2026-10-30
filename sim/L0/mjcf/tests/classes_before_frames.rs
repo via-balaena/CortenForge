@@ -270,7 +270,8 @@ fn a_cables_sites_take_no_main_class() {
 }
 
 /// Ledger L240 (a): a cable's last boundary site sits at its last body's
-/// length (one `f32` third of the cable), at the cable's far end.
+/// length (0.3333333134651184, from MuJoCo's `f32` vertices), at the cable's
+/// far end.
 #[test]
 fn a_cables_last_site_is_at_its_far_end() {
     let model = load_model(

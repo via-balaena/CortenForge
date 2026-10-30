@@ -383,10 +383,10 @@ pub fn check_tree_depth(worldbody: &MjcfBody) -> Result<()> {
 
 /// Check that a geom's dimensional numeric fields are finite.
 ///
-/// Rejects NaN or ±Inf in the user-supplied `size` vector and the optional
-/// `fromto` array at the validation boundary so that downstream mass/volume
-/// computation, mesh construction, and collision code can assume finite
-/// geometry. Other numeric fields (orientation, friction, density, solver
+/// Rejects NaN or ±Inf in the `size` vector at the validation boundary so
+/// that downstream mass/volume computation, mesh construction, and collision
+/// code can assume finite geometry (a non-finite `fromto` is refused where the
+/// resolve pass resolves it, `resolve_geom_fromto`). Other numeric fields (orientation, friction, density, solver
 /// params) are out of scope here; mass/inertia have separate validation
 /// paths via the inertial check, and the rest are deferred as a follow-up
 /// audit candidate.
@@ -614,10 +614,11 @@ fn validate_spatial_tendon(
     Ok(())
 }
 
-/// Validate tendon physical parameters: frictionloss, range. A negative
-/// stiffness or damping loads, as MuJoCo 3.5.0 loads and applies it
-/// (`engine_passive.c:453-473`); a negative frictionloss does not, as
-/// MuJoCo makes no constraint row for one (`engine_core_constraint.c:737`).
+/// Validate tendon physical parameters, as the tendon's class leaves them:
+/// frictionloss, range. A negative stiffness or damping loads, as MuJoCo
+/// 3.5.0 loads and applies it (`engine_passive.c:453-473`). A negative
+/// frictionloss is refused (`D-TENDON-FRICTIONLOSS`, stricter): MuJoCo loads
+/// it and makes no constraint row for it (`engine_core_constraint.c:737`).
 fn validate_tendon_params(tendon: &MjcfTendon) -> Result<()> {
     let frictionloss = tendon.frictionloss.unwrap_or(0.0);
     if frictionloss < 0.0 {

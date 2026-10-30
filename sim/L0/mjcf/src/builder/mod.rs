@@ -348,7 +348,7 @@ pub fn front_end(
     let resolver = DefaultResolver::from_model(&mjcf)?;
     resolve::apply_defaults(&mut mjcf, &resolver)?;
 
-    // Expand <frame> elements first: compose transforms into children, lift onto parent bodies.
+    // Expand <frame> elements: compose transforms into children, lift onto parent bodies.
     // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
     // visible to those passes (matches MuJoCo, which expands frames during XML parsing).
     expand_frames(&mut mjcf.worldbody, &mjcf.compiler)?;

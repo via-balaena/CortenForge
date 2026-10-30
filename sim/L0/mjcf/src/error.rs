@@ -266,7 +266,7 @@ pub enum MjcfError {
     RenamedRootClass {
         /// The name it was given.
         name: String,
-        /// Where it is.
+        /// Where it is: none is set, the name saying which block.
         at: Location,
     },
 

@@ -135,10 +135,12 @@ impl DefaultResolver {
     }
 
     /// A top-level entry read onto the main class, its values over the main
-    /// class's. An actuator default is the exception: MuJoCo keeps one per
-    /// class, which each shortcut element rewrites, so a later block's
-    /// replaces an earlier one, as the last actuator element does within one
-    /// block (a class written by two kinds: book L17).
+    /// class's. An actuator default is the exception: a later block's
+    /// replaces an earlier one, as a later actuator element does within one
+    /// block. MuJoCo keeps one actuator default per class, each element
+    /// writing only its own fields, so a `<motor gear="5"/>` block's gear
+    /// survives a later `<position kp="10"/>` block (measured); what a class
+    /// two kinds write means is book L17's, with A3-O1.
     fn read_onto_main(&mut self, entry: &MjcfDefault) {
         let main = self.classes.entry(String::new()).or_default();
         let mut merged = Self::merge_defaults(main, entry);

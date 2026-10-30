@@ -25,8 +25,8 @@ enum Pending<'a> {
 }
 
 /// Every element given its class: the body tree's (`apply_to_body_tree`),
-/// then each mesh, actuator, tendon, sensor, contact pair and equality. An actuator's own servo gains are checked before its class
-/// gives any.
+/// then each mesh, actuator, tendon, sensor, contact pair and equality. An
+/// actuator's own servo gains are checked before its class gives any.
 ///
 /// # Errors
 ///
@@ -201,7 +201,9 @@ fn apply_to_body_tree(world: &mut MjcfBody, resolver: &DefaultResolver) -> Resul
                 }
                 apply_to_geoms(geoms, resolver, effective.as_deref(), name)?;
                 apply_to_sites(sites, resolver, effective.as_deref(), name)?;
-                // Popped in document order: frames, then bodies, each as written.
+                // Popped frames first, then child bodies, each in the order
+                // written; a body's elements are visited by kind (joints,
+                // geoms, sites), not as they interleave in the document.
                 for child in children.iter_mut().rev() {
                     pending.push(Pending::Body(child, effective.clone()));
                 }
