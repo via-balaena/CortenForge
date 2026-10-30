@@ -202,6 +202,16 @@ fn a_nested_class_without_a_name_is_refused() {
     assert!(matches!(&err, MjcfError::EmptyClassName { .. }), "{err}");
 }
 
+/// The refusal names the class the nameless one is nested in.
+#[test]
+fn a_nested_class_without_a_name_is_located_at_its_parent() {
+    let err = refused(
+        r#"<mujoco><default><default class="a"><default><joint/></default></default></default><worldbody><body><joint name="j" type="hinge"/><geom size=".1"/></body></worldbody></mujoco>"#,
+    );
+    assert!(matches!(&err, MjcfError::EmptyClassName { .. }), "{err}");
+    assert!(err.to_string().ends_with("(default 'a')"), "{err}");
+}
+
 #[test]
 fn a_nested_class_written_empty_is_refused() {
     let err = refused(

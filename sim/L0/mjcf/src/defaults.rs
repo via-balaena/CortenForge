@@ -40,7 +40,7 @@ use std::collections::HashMap;
 
 use nalgebra::{Vector3, Vector4};
 
-use crate::error::{ElementKind, MjcfError, Result};
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
     MjcfActuator, MjcfActuatorDefaults, MjcfContactPair, MjcfDefault, MjcfEqualityDefaults,
     MjcfGeom, MjcfGeomDefaults, MjcfJoint, MjcfJointDefaults, MjcfMesh, MjcfMeshDefaults,
@@ -90,7 +90,9 @@ impl DefaultResolver {
                 continue;
             };
             if entry.class.is_empty() {
-                return Err(MjcfError::empty_class_name());
+                let nested_in = if parent.is_empty() { MAIN } else { parent };
+                return Err(MjcfError::empty_class_name()
+                    .at(Location::named(ElementKind::DefaultClass, nested_in)));
             }
             if entry.class == MAIN || resolver.classes.contains_key(&entry.class) {
                 return Err(MjcfError::duplicate_name(

@@ -2307,3 +2307,4 @@ c279f89418b659bd	sim/L0/mjcf/tests/default_classes.rs:383
 8f7f8b6e2bbdb50f	sim/L0/mjcf/tests/validation_order.rs:92
 ab110cedfedb2c9a	sim/L0/mjcf/tests/tendon_parameters.rs:54
 d5eabf30f6f7e672	sim/L0/mjcf/tests/validation_order.rs:93
+ef07de83bc3f1b9c	sim/L0/mjcf/tests/default_classes.rs:209
