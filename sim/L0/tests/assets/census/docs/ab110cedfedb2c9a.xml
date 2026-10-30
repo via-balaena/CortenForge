@@ -1,0 +1,1 @@
+<mujoco><default><tendon limited="true" range="1 0"/></default><worldbody><body><joint name="j" type="hinge"/><geom size=".1"/></body></worldbody><tendon><fixed name="t"><joint joint="j" coef="1"/></fixed></tendon></mujoco>

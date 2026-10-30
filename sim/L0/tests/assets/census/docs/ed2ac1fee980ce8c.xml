@@ -1,0 +1,1 @@
+<mujoco><compiler discardvisual="true"/><default><default class="v"><geom contype="0" conaffinity="0"/></default></default><worldbody><body><joint/><geom size=".1"/><geom class="v" size=".2"/></body></worldbody></mujoco>

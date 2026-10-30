@@ -1,0 +1,1 @@
+<mujoco><worldbody><geom name="a" size=".1"/><geom name="b" size=".1" pos="1 0 0"/></worldbody><contact><pair geom1="a" geom2="b" class="nope"/></contact></mujoco>

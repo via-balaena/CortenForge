@@ -193,20 +193,19 @@ mod types;
 mod validation;
 
 // Re-export main types
-pub use defaults::DefaultResolver;
 pub use error::{ElementKind, Location, MjcfError, Result, ValueCount};
 pub use parser::parse_mjcf_str;
 pub use types::{
-    AngleUnit, CompositeGeom, CompositeJoint, CompositeShape, CompositeType, EqualityKind,
-    FluidShape, InertiaFromGeom, MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody,
-    MjcfCompiler, MjcfComposite, MjcfConeType, MjcfConnect, MjcfDefault, MjcfDistance,
-    MjcfEquality, MjcfEqualityDefaults, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType,
-    MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
-    MjcfJointEquality, MjcfJointType, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption,
-    MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendon, MjcfTendonDefaults,
-    MjcfTendonType, MjcfWeld, Prefix, SpatialPathElement, TfAuto,
+    AngleUnit, CompositeGeom, CompositeJoint, CompositeShape, CompositeSite, CompositeType,
+    EqualityKind, FluidShape, InertiaFromGeom, MjcfActuator, MjcfActuatorDefaults,
+    MjcfActuatorType, MjcfBody, MjcfCompiler, MjcfComposite, MjcfConeType, MjcfConnect,
+    MjcfDefault, MjcfDistance, MjcfEquality, MjcfEqualityDefaults, MjcfFlag, MjcfGeom,
+    MjcfGeomDefaults, MjcfGeomType, MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint,
+    MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfMesh, MjcfMeshDefaults, MjcfModel,
+    MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendon,
+    MjcfTendonDefaults, MjcfTendonType, MjcfWeld, Prefix, SpatialPathElement, TfAuto,
 };
-pub use validation::{ValidationResult, validate, validate_tendons};
+pub use validation::{ValidationResult, validate};
 
 // MuJoCo-aligned Model conversion (primary API)
 pub use builder::{load_model, load_model_from_file, model_from_mjcf};

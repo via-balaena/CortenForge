@@ -41,7 +41,8 @@ impl ModelBuilder {
             .map_err(|e| e.with_location_if_unknown(at()))?;
 
         // A geom's `fromto` is already its `pos`, `quat` and `size`
-        // (`resolve_geom_fromto`, where its class is applied).
+        // (`resolve_geom_fromto`, once its class is applied:
+        // `resolve::apply_defaults`).
         let quat = resolve_orientation(
             geom.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
             geom.euler,
@@ -144,7 +145,7 @@ impl ModelBuilder {
             .push(site_geom_type(site).map_err(|e| e.with_location_if_unknown(at()))?);
 
         // The site's class values and its `fromto` are already in it
-        // (`resolve_sites`).
+        // (`resolve::apply_defaults`).
         self.site_pos.push(site.pos.unwrap_or_else(Vector3::zeros));
         self.site_quat
             .push(site_orientation(site, &self.compiler).map_err(|e| e.on("site").at(at()))?);
@@ -382,8 +383,9 @@ pub fn resolve_site_fromto(site: &mut MjcfSite) -> Result<()> {
 }
 
 /// A geom's `fromto` made into its `pos`, `quat` and `size` (`fromto_pose`),
-/// once its class is applied and before its mass or its arrays are taken (its
-/// class's `pos` counts: an element starts from its class's values), in place
+/// in its own frame, once its class is applied and before a frame, fusion,
+/// its mass or its arrays take it (its class's `pos` counts: an element
+/// starts from its class's values), in place
 /// of any other orientation the geom or its class gives (MuJoCo never resolves
 /// an alternative beside a `fromto`). A geom that also names a mesh (a name
 /// that is not empty) is refused after, as MuJoCo refuses it
@@ -393,11 +395,16 @@ pub fn resolve_site_fromto(site: &mut MjcfSite) -> Result<()> {
 ///
 /// # Errors
 ///
+/// [`MjcfError::NonFinite`] on `fromto` for a value that is not finite (a
+/// document's is refused when it is read; this one was built in code);
 /// [`MjcfError::InvalidValue`] on `fromto` for each refusal above.
 pub fn resolve_geom_fromto(geom: &mut MjcfGeom) -> Result<()> {
     let Some(fromto) = geom.fromto.take() else {
         return Ok(());
     };
+    if let Some(v) = fromto.iter().find(|v| !v.is_finite()) {
+        return Err(MjcfError::non_finite("geom", "fromto", *v));
+    }
     let radius = geom.size.first().copied().unwrap_or(0.1);
     let refuse = |what: &str| MjcfError::invalid_value("geom", "fromto", what);
     let (pos, quat, size) = fromto_pose(

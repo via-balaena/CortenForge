@@ -6,7 +6,7 @@
 //! profile (research A4 §1.4, macOS arm64), more than a test thread's 2 MiB.
 //! So the entry points that parse, expand includes, validate or build
 //! (`parse_mjcf_str`, `load_model`, `load_model_from_file`, `model_from_mjcf`,
-//! `validate`, `validate_tendons`) run their work on a thread of their own with
+//! `validate`) run their work on a thread of their own with
 //! [`LOADER_STACK_BYTES`], and the depths that reach it are bounded: the XML by
 //! MuJoCo's reader's rule (`parser`), a tree built in code or by a composite by
 //! [`MAX_BODY_TREE_DEPTH`]. The `.mjb` readers and writers are not among them

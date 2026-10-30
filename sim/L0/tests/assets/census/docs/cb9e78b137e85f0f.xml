@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="h"><composite prefix="c" type="cable" count="4 1 1" curve="s" size="1" initial="none"><geom type="capsule" size=".01"/></composite></body></worldbody></mujoco>

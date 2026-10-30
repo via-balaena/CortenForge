@@ -180,6 +180,16 @@ fn a_build_error_in_a_keyframe_names_it_by_its_tag() {
     );
 }
 
+/// A cable's geom is refused for its `fromto` where the composite makes it,
+/// named as the geom and body the cable makes.
+#[test]
+fn a_cables_geom_is_named_by_the_cables_names() {
+    assert_located(
+        r#"<mujoco><worldbody><composite type="cable" count="5 1 1" size="1"><geom type="capsule" size="0.01"/></composite></worldbody></mujoco>"#,
+        "(geom 'G0' in body 'B_first')",
+    );
+}
+
 #[test]
 fn an_element_without_a_name_is_named_by_its_body() {
     assert_located(

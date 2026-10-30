@@ -1,0 +1,1 @@
+<mujoco><default><site size="0.02 0.03 0.04" group="1"/></default><worldbody><body><composite type="cable" count="4 1 1" curve="s" size="1" initial="none"><geom type="capsule" size=".01"/></composite></body></worldbody></mujoco>

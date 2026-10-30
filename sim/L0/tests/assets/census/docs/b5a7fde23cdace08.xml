@@ -1,0 +1,1 @@
+<mujoco><worldbody><body childclass="nope"><joint name="j" type="hinge"/><geom size=".1"/></body></worldbody></mujoco>

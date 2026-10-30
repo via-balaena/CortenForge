@@ -24,6 +24,7 @@ pub mod joint;
 pub mod mass;
 pub mod mesh;
 pub mod orientation;
+mod resolve;
 pub mod sensor;
 pub mod tendon;
 
@@ -51,9 +52,7 @@ use crate::types::{
 };
 
 use self::compiler::{apply_discardvisual, apply_fusestatic};
-use self::frame::{
-    expand_frames, resolve_class_fromto, resolve_sites, validate_childclass_references,
-};
+use self::frame::expand_frames;
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
 ///
@@ -230,36 +229,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Before anything walks or clones the tree, whoever built it.
     crate::validation::check_tree_depth(&mjcf.worldbody)?;
 
-    // Apply compiler pre-processing passes on a mutable clone
-    let mut mjcf = mjcf.clone();
-    mesh::name_assets(&mut mjcf)?;
-
-    // Active ingress validation (Phase 0): full validate() promoted from
-    // defense-in-depth dead code. Fail-closed on any finding. Runs against
-    // user input as-parsed, before frame/composite expansion.
-    crate::validation::validate_unwrapped(&mjcf)?;
-
-    // Validate childclass references before frame expansion dissolves frames.
-    // MuJoCo rejects undefined childclass at schema validation (S7).
-    let pre_resolver = DefaultResolver::from_model(&mjcf);
-    validate_childclass_references(&mjcf.worldbody, &pre_resolver)?;
-
-    // Each site's class values and its `fromto`, before frames and static bodies move it.
-    resolve_sites(&mut mjcf.worldbody, &pre_resolver, None)?;
-    // Each geom's class's `fromto`, for the same passes to see it.
-    resolve_class_fromto(&mut mjcf.worldbody, &pre_resolver, None);
-
-    // Expand <frame> elements first: compose transforms into children, lift onto parent bodies.
-    // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
-    // visible to those passes (matches MuJoCo, which expands frames during XML parsing).
-    expand_frames(&mut mjcf.worldbody, &mjcf.compiler, None)?;
-
-    // Expand <composite> elements: generates body chains from composite definitions.
-    // Runs AFTER frame expansion and BEFORE discardvisual/fusestatic (which need
-    // to see the expanded bodies).
-    let composite_excludes = composite::expand_composites(&mut mjcf.worldbody)?;
-    crate::validation::check_tree_depth(&mjcf.worldbody)?;
-    mjcf.contact.excludes.extend(composite_excludes);
+    let (mut mjcf, resolver, _) = front_end(mjcf)?;
 
     if mjcf.compiler.discardvisual {
         apply_discardvisual(&mut mjcf);
@@ -269,7 +239,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     }
 
     let mut builder = ModelBuilder::new();
-    builder.resolver = DefaultResolver::from_model(&mjcf);
+    builder.resolver = resolver;
     builder.compiler = mjcf.compiler.clone();
 
     // Set model name
@@ -280,8 +250,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
 
     // Process mesh assets FIRST (before geoms can reference them)
     for mesh in &mjcf.meshes {
-        let mesh = builder.resolver.apply_to_mesh(mesh);
-        builder.process_mesh(&mesh, base_path)?;
+        builder.process_mesh(mesh, base_path)?;
     }
 
     // Process hfield assets (before geoms can reference them)
@@ -295,38 +264,22 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
 
     // Recursively process body tree starting from worldbody children.
     // World body (body 0) has no DOFs, so parent_last_dof is None.
-    // Note: worldbody.childclass is always None for parsed MJCF — MuJoCo's schema
-    // rejects attributes on <worldbody>. Our parser (parse_worldbody) never reads
-    // worldbody attributes, so this is correct by construction.
     for child in &mjcf.worldbody.children {
-        builder.process_body(child, 0, None, mjcf.worldbody.childclass.as_deref())?;
+        builder.process_body(child, 0, None)?;
     }
-
-    // Validate tendons before processing (catches bad references early)
-    crate::validation::validate_tendons_unwrapped(&mjcf)?;
 
     // Process tendons (must be before actuators, since actuators may reference tendons)
     builder.process_tendons(&mjcf.tendons)?;
 
     // Process actuators
     for (i, actuator) in mjcf.actuators.iter().enumerate() {
-        // A servo's own gains, before its class gives any (the parser checked
-        // a parsed one; this holds an actuator built in code to it).
-        let own = actuator::check_servo_gains(
-            actuator.actuator_type.as_str(),
-            actuator.kv,
-            actuator.dampratio,
-            actuator.timeconst,
-        );
-        let actuator = builder.resolver.apply_to_actuator(actuator);
-        own.and_then(|()| builder.process_actuator(&actuator))
-            .map_err(|e| {
-                e.with_location_if_unknown(Location::nth(
-                    ElementKind::Actuator,
-                    Some(&actuator.name),
-                    i,
-                ))
-            })?;
+        builder.process_actuator(actuator).map_err(|e| {
+            e.with_location_if_unknown(Location::nth(
+                ElementKind::Actuator,
+                Some(&actuator.name),
+                i,
+            ))
+        })?;
     }
 
     // Process equality constraints (must be after bodies and joints)
@@ -374,6 +327,44 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         .collect();
 
     Ok(model)
+}
+
+/// The model as the loader checks it: a clone of `mjcf` with its assets
+/// named, every element given its class, its frames and composites expanded,
+/// then validated (`validate_resolved`), before the compiler passes remove any
+/// element. The caller has checked the tree's depth.
+pub fn front_end(
+    mjcf: &MjcfModel,
+) -> Result<(
+    MjcfModel,
+    DefaultResolver,
+    crate::validation::ValidationResult,
+)> {
+    let mut mjcf = mjcf.clone();
+    mesh::name_assets(&mut mjcf)?;
+
+    // Each element's class, before frames, composites and the compiler
+    // passes move or make elements, as MuJoCo applies it when it reads one.
+    let resolver = DefaultResolver::from_model(&mjcf)?;
+    resolve::apply_defaults(&mut mjcf, &resolver)?;
+
+    // Expand <frame> elements: compose transforms into children, lift onto parent bodies.
+    // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
+    // visible to those passes (matches MuJoCo, which expands frames during XML parsing).
+    expand_frames(&mut mjcf.worldbody, &mjcf.compiler)?;
+
+    // Expand <composite> elements: generates body chains from composite definitions.
+    // Runs AFTER frame expansion and BEFORE discardvisual/fusestatic (which need
+    // to see the expanded bodies).
+    let composite_excludes = composite::expand_composites(&mut mjcf.worldbody)?;
+    crate::validation::check_tree_depth(&mjcf.worldbody)?;
+    mjcf.contact.excludes.extend(composite_excludes);
+
+    // Every name, reference and value check, on the model as resolved and
+    // expanded, before fusion or discarding hides an element (MuJoCo 3.5.0
+    // checks names before either, measured).
+    let checked = crate::validation::validate_resolved(&mjcf)?;
+    Ok((mjcf, resolver, checked))
 }
 
 /// Parse MJCF XML and convert directly to Model.
@@ -434,7 +425,9 @@ pub struct ModelBuilder {
     // Model name
     pub(crate) name: String,
 
-    // Default class resolver (applies <default> class attributes to elements)
+    // The model's classes, for the elements the builder makes itself (a
+    // flexcomp's vertex spheres); every parsed element has its class already
+    // (`resolve::apply_defaults`).
     pub(crate) resolver: DefaultResolver,
 
     // Compiler settings (controls angle conversion, euler sequence, etc.)

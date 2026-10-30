@@ -1,13 +1,12 @@
 //! Integration tests for `<default>` class resolution in the model builder.
 //!
-//! Verifies that `DefaultResolver` is wired into `model_from_mjcf()` so that
-//! `<default>` class attributes are applied to elements before per-element
-//! attributes override them.
+//! Verifies that `model_from_mjcf()` applies `<default>` class attributes to
+//! elements, with per-element attributes over them.
 //!
 //! Covers acceptance criteria 1–12 from `sim/docs/todo/future_work_2.md` §1.
 
 use approx::assert_relative_eq;
-use sim_mjcf::load_model;
+use sim_mjcf::{MjcfError, load_model};
 
 // ============================================================================
 // Core functionality (criteria 1–7)
@@ -272,9 +271,10 @@ fn test_no_class_gets_root_defaults() {
     assert_relative_eq!(model.jnt_damping[0], 0.3, epsilon = 1e-10);
 }
 
-/// Criterion 10: Nonexistent class falls through gracefully (no panic).
+/// Criterion 10: a class no `<default>` makes is refused, as MuJoCo 3.5.0
+/// refuses it ("unknown default class name").
 #[test]
-fn test_nonexistent_class_no_panic() {
+fn test_nonexistent_class_is_refused() {
     let mjcf = r#"
         <mujoco model="bad_class">
             <default>
@@ -289,11 +289,11 @@ fn test_nonexistent_class_no_panic() {
         </mujoco>
     "#;
 
-    // Should not panic — element keeps its own values unchanged
-    let model = load_model(mjcf).expect("should load");
-    // damping should be the parser default (0.0), not the root class default (0.5),
-    // because the class "nonexistent" is not found and apply_to_joint returns unchanged
-    assert_relative_eq!(model.jnt_damping[0], 0.0, epsilon = 1e-10);
+    let err = load_model(mjcf).unwrap_err();
+    assert!(
+        matches!(&err, MjcfError::UnknownClass { name, .. } if name == "nonexistent"),
+        "{err}"
+    );
 }
 
 /// Criterion 11: Model with no `<default>` block builds identically to before.

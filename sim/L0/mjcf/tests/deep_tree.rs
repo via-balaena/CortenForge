@@ -7,7 +7,7 @@
 
 use sim_mjcf::{
     MjcfBody, MjcfError, MjcfJoint, MjcfModel, load_model, load_model_from_file, model_from_mjcf,
-    validate, validate_tendons,
+    validate,
 };
 
 /// `n` bodies nested in the worldbody (the root `<mujoco>` at depth 1, the
@@ -151,13 +151,12 @@ fn a_tree_built_in_code_deeper_than_4096_is_refused() {
     // 100,000 deep: past the limit, and too deep for the loader's own stack
     // to clone, so model_from_mjcf must refuse it before cloning (with the
     // guard moved after the clone, this binary aborts). Its walks fit, so
-    // where validate's and validate_tendons' guards sit is not tested here.
+    // where validate's guard sits is not tested here.
     on_big_stack(|| {
         let model = chain(100_000);
         for err in [
             model_from_mjcf(&model, None).unwrap_err(),
             validate(&model).unwrap_err(),
-            validate_tendons(&model).unwrap_err(),
         ] {
             assert!(
                 matches!(err, MjcfError::TooDeep { limit: 4096, .. }),
@@ -270,12 +269,14 @@ fn a_wide_document_is_not_a_deep_one() {
 #[test]
 fn a_cable_that_nests_past_4096_below_its_body_is_refused_after_expansion() {
     // 4097 vertices make 4096 bodies, each within the cable's own limit; in a
-    // body they nest to 4097, refused by the tree guard once expanded.
+    // body they nest to 4097, refused by the tree guard once expanded. The
+    // curve gives the geoms a length: a cable without one is refused when its
+    // geoms are made ("fromto points too close"), before the guard.
     let err = load_model(
         r#"<mujoco>
             <worldbody>
                 <body name="holder">
-                    <composite type="cable" count="4097 1 1" size="1 0 0">
+                    <composite type="cable" count="4097 1 1" curve="s" size="1 0 0">
                         <geom type="capsule" size="0.01"/>
                     </composite>
                 </body>

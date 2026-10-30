@@ -111,7 +111,13 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
     Ok(())
 }
 
-/// Validate an MJCF model.
+/// Validate an MJCF model, as the loader validates it.
+///
+/// The model is checked once every element has its class and its frames and
+/// composites are expanded, before `discardvisual` and `fusestatic` remove
+/// any element (MuJoCo 3.5.0 checks names before it fuses or discards,
+/// measured). The result describes that model, the bodies a frame or a
+/// composite makes among its bodies.
 ///
 /// This checks:
 /// - No duplicate body names
@@ -120,21 +126,23 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 /// - Actuators reference valid joints
 /// - Valid mass properties (if present)
 /// - Valid simulation options
+/// - Tendons reference valid joints, sites and geoms, with valid parameters
 /// - A body and frame tree no deeper than the loader takes
 ///
 /// # Errors
 ///
-/// Returns an error if validation fails.
+/// Returns an error if validation fails, or if the model is refused before
+/// it (an unknown class, an element its frame or composite refuses).
 pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
     crate::stack::on_large_stack(|| {
         check_tree_depth(&model.worldbody)?;
-        validate_unwrapped(model)
+        crate::builder::front_end(model).map(|(_, _, checked)| checked)
     })
 }
 
-/// [`validate`]'s work, on the caller's stack, for a tree whose depth the
-/// caller has checked.
-pub fn validate_unwrapped(model: &MjcfModel) -> Result<ValidationResult> {
+/// [`validate`]'s checks, on a model whose classes are applied and whose
+/// frames and composites are expanded (`builder::front_end`).
+pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
     // Validate options first
     validate_option(&model.option)?;
     // Check for duplicate names
@@ -338,6 +346,8 @@ pub fn validate_unwrapped(model: &MjcfModel) -> Result<ValidationResult> {
         }
     }
 
+    check_tendons(model)?;
+
     Ok(ValidationResult {
         sorted_bodies,
         body_parent,
@@ -373,41 +383,28 @@ pub fn check_tree_depth(worldbody: &MjcfBody) -> Result<()> {
 
 /// Check that a geom's dimensional numeric fields are finite.
 ///
-/// Rejects NaN or ±Inf in the user-supplied `size` vector and the optional
-/// `fromto` array at the validation boundary so that downstream mass/volume
-/// computation, mesh construction, and collision code can assume finite
-/// geometry. Other numeric fields (orientation, friction, density, solver
-/// params) are out of scope here; mass/inertia have separate validation
+/// Rejects NaN or ±Inf in the `size` vector at the validation boundary so
+/// that downstream mass/volume computation, mesh construction, and collision
+/// code can assume finite geometry (a non-finite `fromto` is refused where the
+/// resolve pass resolves it, `resolve_geom_fromto`). Other numeric fields
+/// (orientation, friction, density, solver params) are out of scope here;
+/// mass/inertia have separate validation
 /// paths via the inertial check, and the rest are deferred as a follow-up
 /// audit candidate.
 fn check_geom_finite(geom: &MjcfGeom, body_name: &str) -> Result<()> {
     let at = || {
         Location::named(ElementKind::Geom, geom.name.as_deref().unwrap_or("")).in_body(body_name)
     };
+    // A geom's `fromto` is its pose and size already (the resolve pass refuses
+    // a non-finite one).
     if let Some(v) = geom.size.iter().find(|v| !v.is_finite()) {
         return Err(MjcfError::non_finite("geom", "size", *v).at(at()));
-    }
-    if let Some(v) = geom.fromto.iter().flatten().find(|v| !v.is_finite()) {
-        return Err(MjcfError::non_finite("geom", "fromto", *v).at(at()));
     }
     Ok(())
 }
 
-/// Validate tendon definitions against model structure.
-///
-/// Returns Err on fatal issues (unknown references), matching the existing
-/// validation pattern which uses `Result<()>` with `MjcfError`, and on a body
-/// and frame tree deeper than the loader takes.
-pub fn validate_tendons(model: &MjcfModel) -> Result<()> {
-    crate::stack::on_large_stack(|| {
-        check_tree_depth(&model.worldbody)?;
-        validate_tendons_unwrapped(model)
-    })
-}
-
-/// [`validate_tendons`]'s work, on the caller's stack, for a tree whose depth
-/// the caller has checked.
-pub fn validate_tendons_unwrapped(model: &MjcfModel) -> Result<()> {
+/// Each tendon's references to joints, sites and geoms, and its parameters.
+fn check_tendons(model: &MjcfModel) -> Result<()> {
     // Collect joint, site, and geom names from the body tree (joints/sites/geoms
     // are nested inside MjcfBody, not top-level on MjcfModel).
     let mut joint_names = HashSet::new();
@@ -618,24 +615,12 @@ fn validate_spatial_tendon(
     Ok(())
 }
 
-/// Validate tendon physical parameters: stiffness, damping, frictionloss, range.
+/// Validate tendon physical parameters, as the tendon's class leaves them:
+/// frictionloss, range. A negative stiffness or damping loads, as MuJoCo
+/// 3.5.0 loads and applies it (`engine_passive.c:453-473`). A negative
+/// frictionloss is refused (`D-TENDON-FRICTIONLOSS`, stricter): MuJoCo loads
+/// it and makes no constraint row for it (`engine_core_constraint.c:737`).
 fn validate_tendon_params(tendon: &MjcfTendon) -> Result<()> {
-    let stiffness = tendon.stiffness.unwrap_or(0.0);
-    if stiffness < 0.0 {
-        return Err(MjcfError::invalid_value(
-            "tendon",
-            "stiffness",
-            format!("negative stiffness {stiffness}"),
-        ));
-    }
-    let damping = tendon.damping.unwrap_or(0.0);
-    if damping < 0.0 {
-        return Err(MjcfError::invalid_value(
-            "tendon",
-            "damping",
-            format!("negative damping {damping}"),
-        ));
-    }
     let frictionloss = tendon.frictionloss.unwrap_or(0.0);
     if frictionloss < 0.0 {
         return Err(MjcfError::invalid_value(

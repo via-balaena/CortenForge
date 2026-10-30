@@ -1,0 +1,1 @@
+<mujoco><compiler angle="degree"/><default><default class="c"><geom type="capsule" fromto="0 0 0 0 0 0.4"/></default></default><worldbody><body><frame euler="0 90 0"><geom class="c" size=".05"/></frame></body></worldbody></mujoco>

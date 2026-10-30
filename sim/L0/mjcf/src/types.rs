@@ -1021,6 +1021,8 @@ pub struct MjcfMesh {
     /// it; the build gives it that name, so a parsed model's mesh keeps it
     /// empty until then.
     pub name: String,
+    /// The default class it takes, by name; none for the main class.
+    pub class: Option<String>,
     /// File path for external mesh (STL, OBJ, etc.).
     pub file: Option<String>,
     /// Scale factor for the mesh vertices.
@@ -1044,6 +1046,7 @@ impl Default for MjcfMesh {
     fn default() -> Self {
         Self {
             name: String::new(),
+            class: None,
             file: None,
             scale: None,
             vertex: None,
@@ -1618,6 +1621,9 @@ pub struct MjcfJoint {
     pub class: Option<String>,
     /// Joint type.
     pub joint_type: Option<MjcfJointType>,
+    /// Written as `<freejoint>`, which MuJoCo 3.5.0 makes without defaults
+    /// (`mjs_addFreeJoint`): it takes no class.
+    pub freejoint: bool,
     /// Joint position relative to body frame.
     pub pos: Option<Vector3<f64>>,
     /// Joint axis (for hinge and slide).
@@ -1666,6 +1672,7 @@ impl Default for MjcfJoint {
             name: String::new(),
             class: None,
             joint_type: None,
+            freejoint: false,
             pos: None,
             axis: None,
             limited: None,
@@ -2542,6 +2549,21 @@ pub struct CompositeJoint {
     pub range: Option<[f64; 2]>,
 }
 
+/// Template for a cable's boundary sites (from `<site>` child), the four
+/// attributes MuJoCo reads onto its composite default's site.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct CompositeSite {
+    /// Size, written over MuJoCo's 0.005 for each, element-wise.
+    pub size: [f64; 3],
+    /// Visualization group (none: MuJoCo's composite default, 3).
+    pub group: Option<i32>,
+    /// Material asset name.
+    pub material: Option<String>,
+    /// RGBA color.
+    pub rgba: Option<[f64; 4]>,
+}
+
 /// Template geom for cable bodies (from `<geom>` child).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -2609,6 +2631,8 @@ pub struct MjcfComposite {
     pub joint: Option<CompositeJoint>,
     /// Template geom (from `<geom>` child).
     pub geom: Option<CompositeGeom>,
+    /// Template for the boundary sites (from `<site>` child).
+    pub site: Option<CompositeSite>,
 }
 
 // ============================================================================

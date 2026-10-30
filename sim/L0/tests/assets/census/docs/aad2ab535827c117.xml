@@ -1,0 +1,1 @@
+<mujoco><worldbody><body><joint name="j" type="hinge"/><geom size=".1"/></body></worldbody><actuator><motor joint="j" class="nope"/></actuator></mujoco>

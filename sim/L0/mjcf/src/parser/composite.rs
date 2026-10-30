@@ -7,7 +7,9 @@ use std::io::BufRead;
 use crate::error::{MjcfError, Result, ValueCount};
 use crate::keywords;
 
-use crate::types::{CompositeGeom, CompositeJoint, CompositeShape, MjcfComposite, MjcfGeomType};
+use crate::types::{
+    CompositeGeom, CompositeJoint, CompositeShape, CompositeSite, MjcfComposite, MjcfGeomType,
+};
 
 use super::attrs::{Attrs, is_c_space, skip_element};
 
@@ -56,8 +58,8 @@ pub(super) fn parse_composite<R: BufRead>(
 
     let uservert = a.vector("vertex")?.unwrap_or_default();
 
-    let (joint, geom) = if empty {
-        (None, None)
+    let (joint, geom, site) = if empty {
+        (None, None, None)
     } else {
         parse_composite_children(reader)?
     };
@@ -74,16 +76,22 @@ pub(super) fn parse_composite<R: BufRead>(
         uservert,
         joint,
         geom,
+        site,
     })
 }
 
-/// A `<composite>`'s children, up to its end tag: its `<joint kind="main">`
-/// and `<geom>`; others are skipped.
+/// A `<composite>`'s children, up to its end tag: its `<joint kind="main">`,
+/// `<geom>` and `<site>`; others are skipped.
 fn parse_composite_children<R: BufRead>(
     reader: &mut Reader<R>,
-) -> Result<(Option<CompositeJoint>, Option<CompositeGeom>)> {
+) -> Result<(
+    Option<CompositeJoint>,
+    Option<CompositeGeom>,
+    Option<CompositeSite>,
+)> {
     let mut joint = None;
     let mut geom = None;
+    let mut site = None;
     let mut buf = Vec::new();
 
     loop {
@@ -93,6 +101,7 @@ fn parse_composite_children<R: BufRead>(
                 match child.name().as_ref() {
                     b"joint" => joint = Some(parse_composite_joint_attrs(child)?),
                     b"geom" => geom = Some(parse_composite_geom_attrs(child)?),
+                    b"site" => site = Some(parse_composite_site_attrs(child)?),
                     _ => {}
                 }
                 skip_element(reader, child.name().as_ref(), child_empty)?;
@@ -107,7 +116,22 @@ fn parse_composite_children<R: BufRead>(
         buf.clear();
     }
 
-    Ok((joint, geom))
+    Ok((joint, geom, site))
+}
+
+/// Parse attributes of a `<composite><site>` child: its `size` over MuJoCo's
+/// default 0.005 for each, element-wise (`ReadAttr` with `exact` false), its
+/// `group`, `material` and `rgba` (`xml_native_reader.cc`, OneComposite).
+pub(super) fn parse_composite_site_attrs(e: &BytesStart) -> Result<CompositeSite> {
+    let a = Attrs::new(e)?;
+    Ok(CompositeSite {
+        size: a
+            .prefix::<3>("size")?
+            .map_or([0.005; 3], |size| size.over([0.005; 3])),
+        group: a.int("group")?,
+        material: a.string("material"),
+        rgba: a.array("rgba")?,
+    })
 }
 
 /// Parse attributes of a `<composite><joint kind="main">` child. `kind` is

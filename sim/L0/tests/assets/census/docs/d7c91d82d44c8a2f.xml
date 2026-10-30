@@ -1,0 +1,1 @@
+<mujoco><default><joint damping="2"/></default><default><joint armature=".5"/></default><worldbody><body><joint name="j" type="hinge"/><geom size=".1"/></body></worldbody></mujoco>

@@ -9,11 +9,12 @@
 use nalgebra::{Rotation3, UnitQuaternion, Vector3};
 use std::f64::consts::PI;
 
+use super::geom::resolve_geom_fromto;
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::stack::MAX_BODY_TREE_DEPTH;
 use crate::types::{
     CompositeType, MjcfBody, MjcfComposite, MjcfContactExclude, MjcfGeom, MjcfGeomType, MjcfJoint,
-    MjcfJointType, MjcfSite,
+    MjcfJointType, MjcfSite, Prefix,
 };
 
 /// Expand all composite elements in the body tree.
@@ -388,32 +389,43 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
             )
         };
 
-        // Build geom from template
-        let geom = build_cable_geom(composite, &geom_name, length);
+        // Build geom from template; a refusal of its `fromto` names it and
+        // its body.
+        let geom = build_cable_geom(composite, &geom_name, length).map_err(|e| {
+            e.with_location_if_unknown(
+                Location::named(ElementKind::Geom, &geom_name).in_body(&body_name),
+            )
+        })?;
 
         // Build joint
         let joint = build_cable_joint(composite, &joint_name, is_first);
 
         // Build sites — first and last body get boundary sites, in group 3
-        // as MuJoCo's (`user_composite.cc:112`, `:437`). For count=2 the
-        // single body gets both here; MuJoCo makes one, S_first at the
-        // body's far end (`:350-362`, `:436-441`).
+        // as MuJoCo's (`user_composite.cc:112`, `:437`), or as the
+        // composite's own `<site>` gives them. For count=2 the single body
+        // gets both here; MuJoCo makes one, S_first at the body's far end
+        // (`:350-362`, `:436-441`).
+        let boundary_site = |name: String, pos: Vector3<f64>| {
+            let template = composite.site.as_ref();
+            MjcfSite {
+                name,
+                pos: Some(pos),
+                size: template.map(|t| Prefix::full(t.size)),
+                group: Some(template.and_then(|t| t.group).unwrap_or(3)),
+                rgba: template.and_then(|t| t.rgba).map(nalgebra::Vector4::from),
+                material: template.and_then(|t| t.material.clone()),
+                ..Default::default()
+            }
+        };
         let mut sites = Vec::new();
         if is_first {
-            sites.push(MjcfSite {
-                name: format!("{prefix}S_first"),
-                pos: Some(Vector3::zeros()),
-                group: Some(3),
-                ..Default::default()
-            });
+            sites.push(boundary_site(format!("{prefix}S_first"), Vector3::zeros()));
         }
         if is_last {
-            sites.push(MjcfSite {
-                name: format!("{prefix}S_last"),
-                pos: Some(Vector3::new(length, 0.0, 0.0)),
-                group: Some(3),
-                ..Default::default()
-            });
+            sites.push(boundary_site(
+                format!("{prefix}S_last"),
+                Vector3::new(length, 0.0, 0.0),
+            ));
         }
 
         // Assemble body
@@ -452,9 +464,11 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
 }
 
 /// Build an `MjcfGeom` from the composite's geom template.
-/// Matches `AddCableBody:392-403` in `user_composite.cc`.
+/// Matches `AddCableBody:392-403` in `user_composite.cc`. Its `fromto` is
+/// made into its pose here, as for every geom before frames and fusion
+/// (`resolve::apply_defaults`), which ran before the composite made it.
 #[allow(clippy::unreachable)] // unwrap_or_else fallback: geom presence validated by validate_cable() upstream
-fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> MjcfGeom {
+fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> Result<MjcfGeom> {
     // geom presence validated by validate_cable() before this point
     let template = composite
         .geom
@@ -508,7 +522,8 @@ fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> MjcfG
         _ => {} // Validated earlier — unreachable
     }
 
-    geom
+    resolve_geom_fromto(&mut geom)?;
+    Ok(geom)
 }
 
 /// Build an `MjcfJoint` for a cable body.
@@ -598,6 +613,7 @@ mod tests {
                 material: None,
                 priority: None,
             }),
+            site: None,
         }
     }
 
@@ -705,6 +721,7 @@ mod tests {
             uservert: Vec::new(),
             joint: None,
             geom: None,
+            site: None,
         });
         let result = expand_composites(&mut body);
         assert!(result.is_err());

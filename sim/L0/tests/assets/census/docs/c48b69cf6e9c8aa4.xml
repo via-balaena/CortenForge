@@ -1,0 +1,1 @@
+<mujoco><default><default class="m"><mesh scale="2 2 2"/></default></default><asset><mesh name="t" class="m" scale="0.5 0.5 0.5" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 2 1 0 1 3 0 3 2 1 2 3"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="t"/></body></worldbody></mujoco>

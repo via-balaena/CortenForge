@@ -1,5 +1,7 @@
 //! `<default>` class parsing for every element type.
 
+use std::collections::HashSet;
+
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
@@ -35,6 +37,9 @@ pub(super) fn parse_default<R: BufRead>(
         return Ok(vec![default]);
     }
     let mut buf = Vec::new();
+    // MuJoCo 3.5.0's schema takes each element of a class once ("unique
+    // element"), each actuator shortcut's tag apart.
+    let mut seen = HashSet::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -45,6 +50,10 @@ pub(super) fn parse_default<R: BufRead>(
                     let nested = parse_default(reader, e, Some(class.clone()), child_empty)?;
                     nested_defaults.extend(nested);
                 } else {
+                    let tag = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+                    if !seen.insert(tag.clone()) {
+                        return Err(MjcfError::repeated_element(tag, "default"));
+                    }
                     read_class_element(&mut default, e)?;
                     skip_element(reader, e.name().as_ref(), child_empty)?;
                 }

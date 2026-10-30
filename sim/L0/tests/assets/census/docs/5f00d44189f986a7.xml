@@ -1,0 +1,1 @@
+<mujoco><default><tendon stiffness="-2" damping="-0.5"/></default><worldbody><body><joint name="j0" type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0 0 -1" size="0.05" mass="1"/></body></worldbody><tendon><fixed name="t"><joint joint="j0" coef="1"/></fixed></tendon></mujoco>
