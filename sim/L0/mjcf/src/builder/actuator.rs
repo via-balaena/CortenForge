@@ -512,6 +512,45 @@ pub fn check_servo_gains(
     Ok(())
 }
 
+/// A `<muscle>`'s negative value, as written on an element or a default
+/// class's element, refused: MuJoCo 3.5.0's `mjs_setToMuscle` takes a
+/// negative one as unwritten (`user_api.cc:1036-1046`) and silently keeps
+/// the class's or the built-in value in its place (measured: `lmin="-0.5"`
+/// builds 0.5, `scale="-3"` 200, `timeconst="-1 0.05"` 0.01 0.05)
+/// (D-MUSCLE-NEGATIVE). `scalars` are `scale`, `lmin`, `lmax`, `vmax`,
+/// `fpmax` and `fvmax`, in that order. A negative `force` asks for one
+/// computed when the model is made, and is checked against its class's
+/// (`DefaultResolver::apply_to_actuator`).
+pub fn check_muscle_values(
+    element: &str,
+    timeconst: Option<(f64, f64)>,
+    range: Option<(f64, f64)>,
+    scalars: [Option<f64>; 6],
+) -> Result<()> {
+    if element != "muscle" {
+        return Ok(());
+    }
+    let pair = |pair: Option<(f64, f64)>| pair.is_some_and(|(a, b)| a < 0.0 || b < 0.0);
+    let negative = if pair(timeconst) {
+        Some("timeconst")
+    } else if pair(range) {
+        Some("range")
+    } else {
+        ["scale", "lmin", "lmax", "vmax", "fpmax", "fvmax"]
+            .into_iter()
+            .zip(scalars)
+            .find_map(|(name, value)| value.is_some_and(|v| v < 0.0).then_some(name))
+    };
+    match negative {
+        Some(attribute) => Err(MjcfError::invalid_value(
+            element,
+            attribute,
+            format!("muscle {attribute} cannot be negative"),
+        )),
+        None => Ok(()),
+    }
+}
+
 /// A position or intvelocity servo's `inheritrange` beside a range it would
 /// replace, refused as MuJoCo 3.5.0's `mjs_setToPosition` and
 /// `mjs_setToIntVelocity` refuse it (`user_api.cc:926-952`), a written range

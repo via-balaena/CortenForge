@@ -227,6 +227,19 @@ pub(super) fn parse_actuator_attrs(
         actuator.dampratio,
         actuator.timeconst,
     )?;
+    crate::builder::actuator::check_muscle_values(
+        a.element(),
+        actuator.muscle_timeconst,
+        actuator.range,
+        [
+            actuator.scale,
+            actuator.lmin,
+            actuator.lmax,
+            actuator.vmax,
+            actuator.fpmax,
+            actuator.fvmax,
+        ],
+    )?;
 
     Ok(actuator)
 }

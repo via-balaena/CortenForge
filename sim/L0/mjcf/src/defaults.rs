@@ -351,7 +351,9 @@ impl DefaultResolver {
     ///
     /// # Errors
     ///
-    /// [`MjcfError::UnknownClass`] for a class no `<default>` makes.
+    /// [`MjcfError::UnknownClass`] for a class no `<default>` makes;
+    /// [`MjcfError::InvalidValue`] for a muscle's negative `force` under a
+    /// class's positive one.
     pub fn apply_to_actuator(&self, actuator: &MjcfActuator) -> Result<MjcfActuator> {
         let mut result = actuator.clone();
 
@@ -454,11 +456,22 @@ impl DefaultResolver {
 
             result.muscle_timeconst = result.muscle_timeconst.or(defaults.muscle_timeconst);
             result.range = result.range.or(defaults.range);
-            // MuJoCo reads a negative force as unwritten (`mjs_setToMuscle`,
-            // `user_api.cc:1009-1050`): the class's, if it writes one.
-            if defaults.force.is_some() && result.force.is_none_or(|f| f < 0.0) {
-                result.force = defaults.force;
+            // A negative force asks for one computed when the model is made;
+            // MuJoCo reads it as unwritten (`mjs_setToMuscle`,
+            // `user_api.cc:1009-1050`) and so builds a class's positive force
+            // in its place (D-MUSCLE-NEGATIVE). A class's 0 MuJoCo turns into
+            // -1 when the actuator copies it (measured), as the element asks.
+            if let (Some(own), Some(class)) = (result.force, defaults.force)
+                && own < 0.0
+                && class > 0.0
+            {
+                return Err(MjcfError::invalid_value(
+                    "muscle",
+                    "force",
+                    format!("a negative force cannot replace its class's force {class}"),
+                ));
             }
+            result.force = result.force.or(defaults.force);
             result.scale = result.scale.or(defaults.scale);
             result.lmin = result.lmin.or(defaults.lmin);
             result.lmax = result.lmax.or(defaults.lmax);

@@ -1,0 +1,1 @@
+<mujoco><default><default class="c"><muscle lmin="-0.5"/></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/></actuator></mujoco>
