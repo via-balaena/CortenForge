@@ -42,3 +42,42 @@ fn a_tendons_negative_frictionloss_is_refused() {
         "{err}"
     );
 }
+
+/// A tendon's values are checked as its class leaves them: a class's
+/// `limited` with no range, or a backwards limited range, is refused (MuJoCo
+/// 3.5.0: "invalid limits in tendon"), and a class's range under the
+/// tendon's own `limited` loads.
+#[test]
+fn a_tendons_limits_are_checked_with_its_class() {
+    for xml in [
+        r#"<mujoco><default><tendon limited="true"/></default><worldbody><body><joint name="j" type="hinge"/><geom size=".1"/></body></worldbody><tendon><fixed name="t"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
+        r#"<mujoco><default><tendon limited="true" range="1 0"/></default><worldbody><body><joint name="j" type="hinge"/><geom size=".1"/></body></worldbody><tendon><fixed name="t"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
+    ] {
+        let err = load_model(xml).unwrap_err();
+        assert!(
+            matches!(&err, MjcfError::InvalidValue { element, .. } if element == "tendon"),
+            "{err}"
+        );
+    }
+    let model = load_model(
+        r#"<mujoco><default><tendon range="-1 1"/></default><worldbody><body><joint name="j" type="hinge"/><geom size=".1"/></body></worldbody><tendon><fixed name="t" limited="true"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
+    )
+    .unwrap();
+    assert!(model.tendon_limited[0]);
+    assert_relative_eq!(model.tendon_range[0].0, -1.0);
+    assert_relative_eq!(model.tendon_range[0].1, 1.0);
+}
+
+/// A negative frictionloss its class gives is refused as a written one is
+/// (`D-TENDON-FRICTIONLOSS`); MuJoCo loads it and makes no row for it.
+#[test]
+fn a_tendons_negative_frictionloss_from_its_class_is_refused() {
+    let err = load_model(
+        r#"<mujoco><default><tendon frictionloss="-1"/></default><worldbody><body><joint name="j" type="hinge"/><geom size=".1"/></body></worldbody><tendon><fixed name="t"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, MjcfError::InvalidValue { element, attribute, .. } if element == "tendon" && attribute == "frictionloss"),
+        "{err}"
+    );
+}

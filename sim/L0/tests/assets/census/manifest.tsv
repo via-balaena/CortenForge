@@ -2300,3 +2300,10 @@ cb9e78b137e85f0f	sim/L0/mjcf/tests/classes_before_frames.rs:277
 4143ce5c09be9678	sim/L0/mjcf/tests/default_classes.rs:396
 7d45e1679577e6fc	sim/L0/mjcf/tests/default_classes.rs:382
 c279f89418b659bd	sim/L0/mjcf/tests/default_classes.rs:383
+0e7e28c06379e210	sim/L0/mjcf/tests/validation_order.rs:102
+1116de3b3f902434	sim/L0/mjcf/tests/tendon_parameters.rs:53
+457d0743508ee853	sim/L0/mjcf/tests/tendon_parameters.rs:63
+467a5a2bb9848ed9	sim/L0/mjcf/tests/tendon_parameters.rs:76
+8f7f8b6e2bbdb50f	sim/L0/mjcf/tests/validation_order.rs:92
+ab110cedfedb2c9a	sim/L0/mjcf/tests/tendon_parameters.rs:54
+d5eabf30f6f7e672	sim/L0/mjcf/tests/validation_order.rs:93

@@ -83,3 +83,27 @@ fn an_equality_order_naming_a_missing_equality_is_refused() {
         );
     }
 }
+
+/// References into a frame resolve, as MuJoCo 3.5.0's do: an actuator on a
+/// site a frame holds, a motor on a joint of a body a frame holds.
+#[test]
+fn an_actuator_reaches_what_a_frame_holds() {
+    for xml in [
+        r#"<mujoco><worldbody><body><joint name="j" type="hinge"/><geom size=".1"/><frame pos="0.1 0 0"><site name="s"/></frame></body></worldbody><actuator><general site="s" gear="1 0 0 0 0 0"/></actuator></mujoco>"#,
+        r#"<mujoco><worldbody><frame pos="1 0 0"><body><joint name="j" type="hinge"/><geom size=".1"/></body></frame></worldbody><actuator><motor joint="j"/></actuator></mujoco>"#,
+    ] {
+        assert_eq!(load_model(xml).unwrap().nu, 1);
+    }
+}
+
+#[test]
+fn a_joint_name_repeated_in_a_frame_is_refused() {
+    let err = load_model(
+        r#"<mujoco><worldbody><body><joint name="j"/><geom size=".1"/><frame><body><joint name="j"/><geom size=".1"/></body></frame></body></worldbody></mujoco>"#,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, MjcfError::DuplicateName { kind: ElementKind::Joint, name, .. } if name == "j"),
+        "{err}"
+    );
+}
