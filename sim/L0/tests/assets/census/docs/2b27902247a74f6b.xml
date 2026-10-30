@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="b"><joint/><geom size=".1"/></body></worldbody></mujoco>

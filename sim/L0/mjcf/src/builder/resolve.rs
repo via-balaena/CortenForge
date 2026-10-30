@@ -11,7 +11,7 @@
 use super::actuator::check_servo_gains;
 use super::geom::{resolve_geom_fromto, resolve_site_fromto};
 use crate::defaults::DefaultResolver;
-use crate::error::{ElementKind, Location, Result};
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
     EqualityKind, MjcfBody, MjcfEquality, MjcfFrame, MjcfGeom, MjcfModel, MjcfSite,
 };
@@ -32,7 +32,9 @@ enum Pending<'a> {
 ///
 /// [`MjcfError::UnknownClass`](crate::MjcfError::UnknownClass) for a `class`
 /// or `childclass` no `<default>` makes; an actuator's own servo gains that
-/// `check_servo_gains` refuses; a `fromto` the body tree's pass refuses.
+/// `check_servo_gains` refuses; a `fromto` the body tree's pass refuses;
+/// [`MjcfError::InvalidModel`](crate::MjcfError::InvalidModel) for an
+/// equality order naming an equality the model does not hold.
 pub fn apply_defaults(mjcf: &mut MjcfModel, resolver: &DefaultResolver) -> Result<()> {
     apply_to_body_tree(&mut mjcf.worldbody, resolver)?;
     for mesh in &mut mjcf.meshes {
@@ -70,6 +72,13 @@ pub fn apply_defaults(mjcf: &mut MjcfModel, resolver: &DefaultResolver) -> Resul
 }
 
 /// Each equality given its class, numbered among them all in document order.
+///
+/// # Errors
+///
+/// [`MjcfError::UnknownClass`](crate::MjcfError::UnknownClass) for a class no
+/// `<default>` makes; [`MjcfError::InvalidModel`](crate::MjcfError::InvalidModel)
+/// where the order names an equality its lists do not hold (a model built in
+/// code).
 fn apply_to_equalities(equality: &mut MjcfEquality, resolver: &DefaultResolver) -> Result<()> {
     let MjcfEquality {
         connects,
@@ -81,61 +90,77 @@ fn apply_to_equalities(equality: &mut MjcfEquality, resolver: &DefaultResolver) 
         ..
     } = equality;
     for (i, &(kind, k)) in order.iter().enumerate() {
-        let (name, done) = match kind {
-            EqualityKind::Connect => {
-                let e = &mut connects[k];
-                let done = resolver.apply_equality_defaults(
-                    e.class.as_deref(),
+        // The equality's name, class, and the three values a class gives.
+        let (name, class, active, solref, solimp) = match kind {
+            EqualityKind::Connect => connects.get_mut(k).map(|e| {
+                (
+                    &e.name,
+                    &e.class,
                     &mut e.active,
                     &mut e.solref,
                     &mut e.solimp,
-                );
-                (e.name.clone(), done)
-            }
-            EqualityKind::Weld => {
-                let e = &mut welds[k];
-                let done = resolver.apply_equality_defaults(
-                    e.class.as_deref(),
+                )
+            }),
+            EqualityKind::Weld => welds.get_mut(k).map(|e| {
+                (
+                    &e.name,
+                    &e.class,
                     &mut e.active,
                     &mut e.solref,
                     &mut e.solimp,
-                );
-                (e.name.clone(), done)
-            }
-            EqualityKind::Joint => {
-                let e = &mut joints[k];
-                let done = resolver.apply_equality_defaults(
-                    e.class.as_deref(),
+                )
+            }),
+            EqualityKind::Joint => joints.get_mut(k).map(|e| {
+                (
+                    &e.name,
+                    &e.class,
                     &mut e.active,
                     &mut e.solref,
                     &mut e.solimp,
-                );
-                (e.name.clone(), done)
-            }
-            EqualityKind::Distance => {
-                let e = &mut distances[k];
-                let done = resolver.apply_equality_defaults(
-                    e.class.as_deref(),
+                )
+            }),
+            EqualityKind::Distance => distances.get_mut(k).map(|e| {
+                (
+                    &e.name,
+                    &e.class,
                     &mut e.active,
                     &mut e.solref,
                     &mut e.solimp,
-                );
-                (e.name.clone(), done)
-            }
-            EqualityKind::Tendon => {
-                let e = &mut tendons[k];
-                let done = resolver.apply_equality_defaults(
-                    e.class.as_deref(),
+                )
+            }),
+            EqualityKind::Tendon => tendons.get_mut(k).map(|e| {
+                (
+                    &e.name,
+                    &e.class,
                     &mut e.active,
                     &mut e.solref,
                     &mut e.solimp,
-                );
-                (e.name.clone(), done)
-            }
-        };
-        done.map_err(|e| e.at(Location::nth(ElementKind::Equality, name.as_deref(), i)))?;
+                )
+            }),
+        }
+        .ok_or_else(|| {
+            MjcfError::invalid_model(format!(
+                "the equality order names {} #{k}, which the model does not hold",
+                equality_tag(kind)
+            ))
+            .at(Location::nth(ElementKind::Equality, None, i))
+        })?;
+        resolver
+            .apply_equality_defaults(class.as_deref(), active, solref, solimp)
+            .map_err(|e| e.at(Location::nth(ElementKind::Equality, name.as_deref(), i)))?;
     }
     Ok(())
+}
+
+/// An equality kind's MJCF tag.
+fn equality_tag(kind: EqualityKind) -> &'static str {
+    match kind {
+        EqualityKind::Connect => "connect",
+        EqualityKind::Weld => "weld",
+        EqualityKind::Joint => "joint",
+        EqualityKind::Distance => "distance",
+        EqualityKind::Tendon => "tendon",
+    }
 }
 
 /// Each geom, joint and site of the body tree given its class: its own, else

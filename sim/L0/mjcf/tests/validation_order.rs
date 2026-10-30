@@ -6,7 +6,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use sim_mjcf::{ElementKind, MjcfError, load_model, parse_mjcf_str, validate};
+use sim_mjcf::{
+    ElementKind, EqualityKind, MjcfError, load_model, model_from_mjcf, parse_mjcf_str, validate,
+};
 
 fn assert_repeated_body(err: &MjcfError, name: &str) {
     assert!(
@@ -60,4 +62,24 @@ fn a_cable_body_named_as_a_written_body_is_refused() {
     )
     .unwrap_err();
     assert_repeated_body(&err, "B_first");
+}
+
+/// A model built in code whose equality order names an equality its lists do
+/// not hold is refused, by `validate` and by the loader alike.
+#[test]
+fn an_equality_order_naming_a_missing_equality_is_refused() {
+    let mut mjcf = parse_mjcf_str(
+        r#"<mujoco><worldbody><body name="b"><joint/><geom size=".1"/></body></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    mjcf.equality.order.push((EqualityKind::Connect, 0));
+    for err in [
+        validate(&mjcf).unwrap_err(),
+        model_from_mjcf(&mjcf, None).unwrap_err(),
+    ] {
+        assert!(
+            matches!(&err, MjcfError::InvalidModel { reason, .. } if reason.contains("connect #0")),
+            "{err}"
+        );
+    }
 }
