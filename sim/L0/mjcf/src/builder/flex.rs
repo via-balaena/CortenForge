@@ -616,7 +616,7 @@ impl ModelBuilder {
                 size: vec![flex.radius],
                 group: Some(4),
                 ..MjcfGeom::default()
-            });
+            })?;
             self.process_geom(&sphere, body_id)?;
             self.body_geom_num[body_id] = self.geom_type.len() - geom_adr;
         }

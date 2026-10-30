@@ -26,7 +26,13 @@ impl ModelBuilder {
         // Process pairs
         for (i, mjcf_pair) in contact.pairs.iter().enumerate() {
             // Stage 1: apply defaults class
-            let pair = self.resolver.apply_to_pair(mjcf_pair);
+            let pair = self.resolver.apply_to_pair(mjcf_pair).map_err(|e| {
+                e.with_location_if_unknown(Location::nth(
+                    ElementKind::Pair,
+                    mjcf_pair.name.as_deref(),
+                    i,
+                ))
+            })?;
             let at = || Location::nth(ElementKind::Pair, pair.name.as_deref(), i);
 
             // Resolve geom names to indices

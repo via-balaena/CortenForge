@@ -31,9 +31,8 @@ impl ModelBuilder {
 
         // Process worldbody geoms
         for geom in &worldbody.geoms {
-            let mut geom = self.resolver.apply_to_geom(geom);
-            resolve_geom_fromto(&mut geom).map_err(|e| {
-                e.at(Location::nth(
+            let at = || {
+                Location::nth(
                     ElementKind::Geom,
                     geom.name.as_deref(),
                     self.geom_type.len(),
@@ -42,8 +41,13 @@ impl ModelBuilder {
                     ElementKind::Body,
                     self.body_name.first().and_then(Option::as_deref),
                     0,
-                ))
-            })?;
+                )
+            };
+            let mut geom = self
+                .resolver
+                .apply_to_geom(geom)
+                .map_err(|e| e.with_location_if_unknown(at()))?;
+            resolve_geom_fromto(&mut geom).map_err(|e| e.at(at()))?;
             self.process_geom(&geom, 0)?;
         }
 
@@ -184,13 +188,13 @@ impl ModelBuilder {
                 if g.class.is_none() {
                     g.class = effective_childclass.map(|s| s.to_string());
                 }
-                let mut g = self.resolver.apply_to_geom(&g);
-                resolve_geom_fromto(&mut g).map_err(|e| {
-                    e.at(
-                        Location::nth(ElementKind::Geom, g.name.as_deref(), first_geom + k)
-                            .within_nth(ElementKind::Body, Some(&body.name), body_id),
-                    )
-                })?;
+                let at = Location::nth(ElementKind::Geom, g.name.as_deref(), first_geom + k)
+                    .within_nth(ElementKind::Body, Some(&body.name), body_id);
+                let mut g = self
+                    .resolver
+                    .apply_to_geom(&g)
+                    .map_err(|e| e.with_location_if_unknown(at.clone()))?;
+                resolve_geom_fromto(&mut g).map_err(|e| e.at(at))?;
                 Ok(g)
             })
             .collect::<Result<Vec<MjcfGeom>>>()?;
@@ -261,7 +265,11 @@ impl ModelBuilder {
             if joint.class.is_none() {
                 joint.class = effective_childclass.map(|s| s.to_string());
             }
-            let joint = self.resolver.apply_to_joint(&joint);
+            let joint = self.resolver.apply_to_joint(&joint).map_err(|e| {
+                e.with_location_if_unknown(
+                    Location::named(ElementKind::Joint, &joint.name).in_body(&body.name),
+                )
+            })?;
             let jnt_id =
                 self.process_joint(&joint, body_id, current_last_dof, world_pos, world_quat)?;
             let jnt_nv = self.jnt_type[jnt_id].nv();

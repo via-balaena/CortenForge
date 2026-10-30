@@ -193,7 +193,6 @@ mod types;
 mod validation;
 
 // Re-export main types
-pub use defaults::DefaultResolver;
 pub use error::{ElementKind, Location, MjcfError, Result, ValueCount};
 pub use parser::parse_mjcf_str;
 pub use types::{

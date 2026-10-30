@@ -241,13 +241,13 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
 
     // Validate childclass references before frame expansion dissolves frames.
     // MuJoCo rejects undefined childclass at schema validation (S7).
-    let pre_resolver = DefaultResolver::from_model(&mjcf);
+    let pre_resolver = DefaultResolver::from_model(&mjcf)?;
     validate_childclass_references(&mjcf.worldbody, &pre_resolver)?;
 
     // Each site's class values and its `fromto`, before frames and static bodies move it.
     resolve_sites(&mut mjcf.worldbody, &pre_resolver, None)?;
     // Each geom's class's `fromto`, for the same passes to see it.
-    resolve_class_fromto(&mut mjcf.worldbody, &pre_resolver, None);
+    resolve_class_fromto(&mut mjcf.worldbody, &pre_resolver, None)?;
 
     // Expand <frame> elements first: compose transforms into children, lift onto parent bodies.
     // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
@@ -269,7 +269,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     }
 
     let mut builder = ModelBuilder::new();
-    builder.resolver = DefaultResolver::from_model(&mjcf);
+    builder.resolver = DefaultResolver::from_model(&mjcf)?;
     builder.compiler = mjcf.compiler.clone();
 
     // Set model name
@@ -318,8 +318,10 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
             actuator.dampratio,
             actuator.timeconst,
         );
-        let actuator = builder.resolver.apply_to_actuator(actuator);
-        own.and_then(|()| builder.process_actuator(&actuator))
+        builder
+            .resolver
+            .apply_to_actuator(actuator)
+            .and_then(|resolved| own.and_then(|()| builder.process_actuator(&resolved)))
             .map_err(|e| {
                 e.with_location_if_unknown(Location::nth(
                     ElementKind::Actuator,

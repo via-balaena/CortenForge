@@ -29,11 +29,18 @@
 //!
 //! A joint without a class would inherit:
 //! - `damping="0.5"` (from root defaults)
+//!
+//! As MuJoCo 3.5.0's reader makes classes (`mjXReader::Default`): every
+//! top-level `<default>` is the one main class, which `class` and
+//! `childclass` may name `main`; and a nested class copies its parent as the
+//! parent stands when the class is made, so a later top-level block does not
+//! reach a class made before it.
 
 use std::collections::HashMap;
 
 use nalgebra::{Vector3, Vector4};
 
+use crate::error::{ElementKind, MjcfError, Result};
 use crate::types::{
     MjcfActuator, MjcfActuatorDefaults, MjcfContactPair, MjcfDefault, MjcfEqualityDefaults,
     MjcfGeom, MjcfGeomDefaults, MjcfJoint, MjcfJointDefaults, MjcfMesh, MjcfMeshDefaults,
@@ -41,124 +48,147 @@ use crate::types::{
     MjcfTendon, MjcfTendonDefaults, Prefix,
 };
 
+/// The name `class` and `childclass` may give the main class, which a
+/// top-level `<default>` may also be written with (`mjs_findDefault`; the
+/// main class is stored under `""`).
+const MAIN: &str = "main";
+
 /// Resolves and applies default classes to MJCF elements.
 ///
-/// The resolver builds an inheritance chain for each default class and
-/// provides methods to apply resolved defaults to joints, geoms, actuators,
-/// tendons, and sensors.
+/// Holds every class a model's `<default>`s make, each as it stood when it was
+/// made, and applies a class to an element: the element's own values over its
+/// class's.
 #[derive(Debug, Clone)]
 pub struct DefaultResolver {
-    /// Map from class name to resolved defaults (with inheritance applied).
-    resolved_defaults: HashMap<String, MjcfDefault>,
+    /// Each class by name, the main class under `""`.
+    classes: HashMap<String, MjcfDefault>,
 }
 
 impl DefaultResolver {
-    /// Create a new resolver from a list of default classes.
+    /// The classes `defaults` makes, in order, as MuJoCo 3.5.0's reader makes
+    /// them (`mjXReader::Default`): an entry without a parent is read onto the
+    /// one main class; a nested entry copies its parent as the parent stands
+    /// then (`mjs_addDefault`), with its own values over the copy. The parser
+    /// lists each block's own elements before its nested classes, as MuJoCo
+    /// reads them. No entry is visited twice, so no list makes a cycle.
     ///
-    /// This builds the inheritance hierarchy and resolves all defaults.
-    #[must_use]
-    pub fn new(defaults: &[MjcfDefault]) -> Self {
-        let resolved_defaults = Self::resolve_all(defaults);
-        Self { resolved_defaults }
+    /// # Errors
+    ///
+    /// [`MjcfError::RenamedRootClass`] for an entry without a parent named
+    /// other than `""` or `main`; [`MjcfError::EmptyClassName`] for a nested
+    /// entry without a name; [`MjcfError::DuplicateName`] for a nested entry
+    /// named `main` or as an earlier class; [`MjcfError::UnknownClass`] for a
+    /// parent that no earlier entry made (a list built in code).
+    pub fn new(defaults: &[MjcfDefault]) -> Result<Self> {
+        let mut resolver = Self::default();
+        for entry in defaults {
+            let Some(parent) = entry.parent_class.as_deref() else {
+                if !entry.class.is_empty() && entry.class != MAIN {
+                    return Err(MjcfError::renamed_root_class(&entry.class));
+                }
+                resolver.read_onto_main(entry);
+                continue;
+            };
+            if entry.class.is_empty() {
+                return Err(MjcfError::empty_class_name());
+            }
+            if entry.class == MAIN || resolver.classes.contains_key(&entry.class) {
+                return Err(MjcfError::duplicate_name(
+                    ElementKind::DefaultClass,
+                    &entry.class,
+                ));
+            }
+            let parent_name = if parent == MAIN { "" } else { parent };
+            let Some(parent) = resolver.classes.get(parent_name) else {
+                return Err(MjcfError::unknown_class(parent_name));
+            };
+            let class = Self::merge_defaults(parent, entry);
+            resolver.classes.insert(entry.class.clone(), class);
+        }
+        Ok(resolver)
     }
 
     /// Create a resolver from an MJCF model.
-    #[must_use]
-    pub fn from_model(model: &MjcfModel) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::new`].
+    pub fn from_model(model: &MjcfModel) -> Result<Self> {
         Self::new(&model.defaults)
     }
 
-    /// Get the resolved defaults for a class name.
+    /// The class `name` names: none or `main` the main class.
     ///
-    /// Returns `None` if the class name is not found in the resolved defaults.
-    #[must_use]
-    pub fn get_defaults(&self, class: Option<&str>) -> Option<&MjcfDefault> {
-        let class_name = class.unwrap_or("");
-        self.resolved_defaults.get(class_name)
+    /// # Errors
+    ///
+    /// [`MjcfError::UnknownClass`] for any other name no class has, `""`
+    /// included (`mjXReader::GetClass`).
+    pub fn class(&self, name: Option<&str>) -> Result<&MjcfDefault> {
+        let key = match name {
+            None | Some(MAIN) => "",
+            Some("") => return Err(MjcfError::unknown_class("")),
+            Some(name) => name,
+        };
+        self.classes
+            .get(key)
+            .ok_or_else(|| MjcfError::unknown_class(key))
     }
 
-    /// Get the resolved joint defaults for a class.
-    #[must_use]
-    pub fn joint_defaults(&self, class: Option<&str>) -> Option<&MjcfJointDefaults> {
-        self.get_defaults(class).and_then(|d| d.joint.as_ref())
+    /// The main class.
+    fn main(&self) -> &MjcfDefault {
+        &self.classes[""]
     }
 
-    /// Get the resolved geom defaults for a class.
-    #[must_use]
-    pub fn geom_defaults(&self, class: Option<&str>) -> Option<&MjcfGeomDefaults> {
-        self.get_defaults(class).and_then(|d| d.geom.as_ref())
-    }
-
-    /// Get the resolved actuator defaults for a class.
-    #[must_use]
-    pub fn actuator_defaults(&self, class: Option<&str>) -> Option<&MjcfActuatorDefaults> {
-        self.get_defaults(class).and_then(|d| d.actuator.as_ref())
-    }
-
-    /// Get the resolved tendon defaults for a class.
-    #[must_use]
-    pub fn tendon_defaults(&self, class: Option<&str>) -> Option<&MjcfTendonDefaults> {
-        self.get_defaults(class).and_then(|d| d.tendon.as_ref())
-    }
-
-    /// Get the resolved sensor defaults for a class.
-    #[must_use]
-    pub fn sensor_defaults(&self, class: Option<&str>) -> Option<&MjcfSensorDefaults> {
-        self.get_defaults(class).and_then(|d| d.sensor.as_ref())
-    }
-
-    /// Get the resolved mesh defaults for a class.
-    #[must_use]
-    pub fn mesh_defaults(&self, class: Option<&str>) -> Option<&MjcfMeshDefaults> {
-        self.get_defaults(class).and_then(|d| d.mesh.as_ref())
-    }
-
-    /// Get the resolved site defaults for a class.
-    #[must_use]
-    pub fn site_defaults(&self, class: Option<&str>) -> Option<&MjcfSiteDefaults> {
-        self.get_defaults(class).and_then(|d| d.site.as_ref())
-    }
-
-    /// Get the resolved pair defaults for a class.
-    #[must_use]
-    pub fn pair_defaults(&self, class: Option<&str>) -> Option<&MjcfPairDefaults> {
-        self.get_defaults(class).and_then(|d| d.pair.as_ref())
-    }
-
-    /// Get the resolved equality defaults for a class.
-    #[must_use]
-    pub fn equality_defaults(&self, class: Option<&str>) -> Option<&MjcfEqualityDefaults> {
-        self.get_defaults(class).and_then(|d| d.equality.as_ref())
+    /// A top-level entry read onto the main class, its values over the main
+    /// class's. An actuator default is the exception: MuJoCo keeps one per
+    /// class, which each shortcut element rewrites, so a later block's
+    /// replaces an earlier one, as the last actuator element does within one
+    /// block (a class written by two kinds: book L17).
+    fn read_onto_main(&mut self, entry: &MjcfDefault) {
+        let main = self.classes.entry(String::new()).or_default();
+        let mut merged = Self::merge_defaults(main, entry);
+        if entry.actuator.is_some() {
+            merged.actuator.clone_from(&entry.actuator);
+        }
+        *main = merged;
     }
 
     /// Apply equality defaults to mutable field references.
     /// Generic across all 5 equality constraint types — they share the same 3
     /// defaultable fields (active, solref, solimp).
     /// MuJoCo ref: `OneEquality()` in `xml_native_reader.cc` (defaults context).
+    ///
+    /// # Errors
+    ///
+    /// [`MjcfError::UnknownClass`] for a class no `<default>` makes.
     pub fn apply_equality_defaults(
         &self,
         class: Option<&str>,
         active: &mut Option<bool>,
         solref: &mut Option<Prefix<2>>,
         solimp: &mut Option<Prefix<5>>,
-    ) {
-        if let Some(defaults) = self.equality_defaults(class) {
+    ) -> Result<()> {
+        if let Some(defaults) = &self.class(class)?.equality {
             if active.is_none() {
                 *active = defaults.active;
             }
             *solref = over(*solref, defaults.solref);
             *solimp = over(*solimp, defaults.solimp);
         }
+        Ok(())
     }
 
     /// Apply defaults to a joint, returning a new joint with defaults applied.
     ///
     /// Values explicitly set on the joint take precedence over defaults.
-    #[must_use]
-    pub fn apply_to_joint(&self, joint: &MjcfJoint) -> MjcfJoint {
+    ///
+    /// # Errors
+    ///
+    /// [`MjcfError::UnknownClass`] for a class no `<default>` makes.
+    pub fn apply_to_joint(&self, joint: &MjcfJoint) -> Result<MjcfJoint> {
         let mut result = joint.clone();
 
-        if let Some(defaults) = self.joint_defaults(joint.class.as_deref()) {
+        if let Some(defaults) = &self.class(joint.class.as_deref())?.joint {
             // All Option<T> fields: element value wins if set, otherwise inherit default.
             if result.joint_type.is_none() {
                 result.joint_type = defaults.joint_type;
@@ -215,15 +245,18 @@ impl DefaultResolver {
             }
         }
 
-        result
+        Ok(result)
     }
 
     /// Apply defaults to a geom, returning a new geom with defaults applied.
-    #[must_use]
-    pub fn apply_to_geom(&self, geom: &MjcfGeom) -> MjcfGeom {
+    ///
+    /// # Errors
+    ///
+    /// [`MjcfError::UnknownClass`] for a class no `<default>` makes.
+    pub fn apply_to_geom(&self, geom: &MjcfGeom) -> Result<MjcfGeom> {
         let mut result = geom.clone();
 
-        if let Some(defaults) = self.geom_defaults(geom.class.as_deref()) {
+        if let Some(defaults) = &self.class(geom.class.as_deref())?.geom {
             // All Option<T> fields: element value wins if set, otherwise inherit default.
             if result.geom_type.is_none() {
                 result.geom_type = defaults.geom_type;
@@ -312,15 +345,18 @@ impl DefaultResolver {
             }
         }
 
-        result
+        Ok(result)
     }
 
     /// Apply defaults to an actuator, returning a new actuator with defaults applied.
-    #[must_use]
-    pub fn apply_to_actuator(&self, actuator: &MjcfActuator) -> MjcfActuator {
+    ///
+    /// # Errors
+    ///
+    /// [`MjcfError::UnknownClass`] for a class no `<default>` makes.
+    pub fn apply_to_actuator(&self, actuator: &MjcfActuator) -> Result<MjcfActuator> {
         let mut result = actuator.clone();
 
-        if let Some(defaults) = self.actuator_defaults(actuator.class.as_deref()) {
+        if let Some(defaults) = &self.class(actuator.class.as_deref())?.actuator {
             // #todo: kp and sensor noise/cutoff use sentinel-value detection
             // (== default) instead of Option<T>. Explicitly setting kp=1.0,
             // noise=0.0, or cutoff=0.0 is indistinguishable from "unset" and
@@ -498,15 +534,18 @@ impl DefaultResolver {
             }
         }
 
-        result
+        Ok(result)
     }
 
     /// Apply defaults to a site, returning a new site with defaults applied.
-    #[must_use]
-    pub fn apply_to_site(&self, site: &MjcfSite) -> MjcfSite {
+    ///
+    /// # Errors
+    ///
+    /// [`MjcfError::UnknownClass`] for a class no `<default>` makes.
+    pub fn apply_to_site(&self, site: &MjcfSite) -> Result<MjcfSite> {
         let mut result = site.clone();
 
-        if let Some(defaults) = self.site_defaults(site.class.as_deref()) {
+        if let Some(defaults) = &self.class(site.class.as_deref())?.site {
             // An Option<T> field: the element's value wins if set, otherwise
             // the default's; the size is read over the default's (`over`).
             if result.site_type.is_none() {
@@ -549,17 +588,20 @@ impl DefaultResolver {
             }
         }
 
-        result
+        Ok(result)
     }
 
     /// Apply defaults to a tendon, returning a new tendon with defaults applied.
     ///
     /// Values explicitly set on the tendon take precedence over defaults.
-    #[must_use]
-    pub fn apply_to_tendon(&self, tendon: &MjcfTendon) -> MjcfTendon {
+    ///
+    /// # Errors
+    ///
+    /// [`MjcfError::UnknownClass`] for a class no `<default>` makes.
+    pub fn apply_to_tendon(&self, tendon: &MjcfTendon) -> Result<MjcfTendon> {
         let mut result = tendon.clone();
 
-        if let Some(defaults) = self.tendon_defaults(tendon.class.as_deref()) {
+        if let Some(defaults) = &self.class(tendon.class.as_deref())?.tendon {
             // Range: apply default if None
             if result.range.is_none() {
                 result.range = defaults.range;
@@ -615,17 +657,20 @@ impl DefaultResolver {
             }
         }
 
-        result
+        Ok(result)
     }
 
     /// Apply defaults to a sensor, returning a new sensor with defaults applied.
     ///
     /// Values explicitly set on the sensor take precedence over defaults.
-    #[must_use]
-    pub fn apply_to_sensor(&self, sensor: &MjcfSensor) -> MjcfSensor {
+    ///
+    /// # Errors
+    ///
+    /// [`MjcfError::UnknownClass`] for a class no `<default>` makes.
+    pub fn apply_to_sensor(&self, sensor: &MjcfSensor) -> Result<MjcfSensor> {
         let mut result = sensor.clone();
 
-        if let Some(defaults) = self.sensor_defaults(sensor.class.as_deref()) {
+        if let Some(defaults) = &self.class(sensor.class.as_deref())?.sensor {
             // Noise: apply default if zero
             if result.noise == 0.0
                 && let Some(noise) = defaults.noise
@@ -648,16 +693,19 @@ impl DefaultResolver {
             }
         }
 
-        result
+        Ok(result)
     }
 
     /// Apply defaults to a contact pair, returning a new pair with defaults applied.
     ///
     /// Values explicitly set on the pair take precedence over defaults.
-    #[must_use]
-    pub fn apply_to_pair(&self, pair: &MjcfContactPair) -> MjcfContactPair {
+    ///
+    /// # Errors
+    ///
+    /// [`MjcfError::UnknownClass`] for a class no `<default>` makes.
+    pub fn apply_to_pair(&self, pair: &MjcfContactPair) -> Result<MjcfContactPair> {
         let mut result = pair.clone();
-        if let Some(defaults) = self.pair_defaults(pair.class.as_deref()) {
+        if let Some(defaults) = &self.class(pair.class.as_deref())?.pair {
             if result.condim.is_none() {
                 result.condim = defaults.condim;
             }
@@ -672,7 +720,7 @@ impl DefaultResolver {
                 result.gap = defaults.gap;
             }
         }
-        result
+        Ok(result)
     }
 
     /// Apply defaults to a mesh, returning a new mesh with defaults applied.
@@ -682,7 +730,7 @@ impl DefaultResolver {
     pub fn apply_to_mesh(&self, mesh: &MjcfMesh) -> MjcfMesh {
         let mut result = mesh.clone();
 
-        if let Some(defaults) = self.mesh_defaults(None) {
+        if let Some(defaults) = &self.main().mesh {
             if result.scale.is_none() {
                 result.scale = defaults.scale;
             }
@@ -692,84 +740,6 @@ impl DefaultResolver {
             if result.inertia.is_none() {
                 result.inertia = defaults.inertia;
             }
-        }
-
-        result
-    }
-
-    /// Resolve all defaults by building inheritance chains.
-    fn resolve_all(defaults: &[MjcfDefault]) -> HashMap<String, MjcfDefault> {
-        // First, build a map of raw defaults
-        let mut raw_map: HashMap<&str, &MjcfDefault> =
-            defaults.iter().map(|d| (d.class.as_str(), d)).collect();
-
-        // Every unnamed top-level `<default>` is MuJoCo 3.5.0's one main class
-        // (`mjXReader::Default` takes `mjs_getSpecDefault` for each), so they
-        // merge in document order, the later over the earlier, rather than the
-        // last replacing the rest (ledger L247; a block named `main` is ledger
-        // L239's). A class of an earlier block still sees a later block's
-        // values here, where MuJoCo's copies the main class as it stood when
-        // the class was made (book L16). An actuator default is the exception:
-        // MuJoCo keeps one per class, which each shortcut element rewrites, so
-        // a later block's replaces an earlier one, as the last actuator element
-        // does within one block (a class written by two kinds: book L17).
-        let main = defaults
-            .iter()
-            .filter(|d| d.class.is_empty() && d.parent_class.is_none())
-            .cloned()
-            .reduce(|earlier, later| {
-                let mut merged = Self::merge_defaults(&earlier, &later);
-                if later.actuator.is_some() {
-                    merged.actuator.clone_from(&later.actuator);
-                }
-                merged
-            });
-        if let Some(main) = &main {
-            raw_map.insert("", main);
-        }
-
-        // Resolve each default class
-        let mut resolved = HashMap::new();
-
-        for default in defaults {
-            let resolved_default = Self::resolve_single(&default.class, &raw_map);
-            resolved.insert(default.class.clone(), resolved_default);
-        }
-
-        // Always include root defaults (empty class)
-        if !resolved.contains_key("") {
-            resolved.insert(String::new(), MjcfDefault::default());
-        }
-
-        resolved
-    }
-
-    /// Resolve a single default class by merging with parent chain.
-    fn resolve_single(class: &str, raw_map: &HashMap<&str, &MjcfDefault>) -> MjcfDefault {
-        // Build inheritance chain from root to this class
-        let mut chain = Vec::new();
-        let mut current = class;
-
-        while let Some(default) = raw_map.get(current) {
-            chain.push(*default);
-            match &default.parent_class {
-                Some(parent) => current = parent,
-                None => break,
-            }
-        }
-
-        // Reverse to go from root to specific
-        chain.reverse();
-
-        // Merge chain
-        let mut result = MjcfDefault {
-            class: class.to_string(),
-            parent_class: None,
-            ..Default::default()
-        };
-
-        for default in chain {
-            result = Self::merge_defaults(&result, default);
         }
 
         result
@@ -1102,8 +1072,11 @@ pub fn over<const N: usize>(
 }
 
 impl Default for DefaultResolver {
+    /// The main class alone, empty.
     fn default() -> Self {
-        Self::new(&[])
+        Self {
+            classes: HashMap::from([(String::new(), MjcfDefault::default())]),
+        }
     }
 }
 
@@ -1125,20 +1098,23 @@ mod tests {
                 ..Default::default()
             }),
             ..Default::default()
-        }]);
+        }])
+        .unwrap();
         let mut active = None;
         let mut solref = Prefix::new(&[0.05]);
         let mut solimp = Prefix::new(&[0.6]);
-        resolver.apply_equality_defaults(None, &mut active, &mut solref, &mut solimp);
+        resolver
+            .apply_equality_defaults(None, &mut active, &mut solref, &mut solimp)
+            .unwrap();
         assert_eq!(solref.unwrap().given(), &[0.05, 0.5]);
         assert_eq!(solimp.unwrap().given(), &[0.6, 0.8, 0.002, 0.4, 3.0]);
     }
 
     #[test]
     fn test_empty_resolver() {
-        let resolver = DefaultResolver::new(&[]);
-        assert!(resolver.joint_defaults(None).is_none());
-        assert!(resolver.geom_defaults(None).is_none());
+        let resolver = DefaultResolver::new(&[]).unwrap();
+        assert!(resolver.class(None).unwrap().joint.as_ref().is_none());
+        assert!(resolver.class(None).unwrap().geom.as_ref().is_none());
     }
 
     #[test]
@@ -1157,15 +1133,21 @@ mod tests {
             ..Default::default()
         }];
 
-        let resolver = DefaultResolver::new(&defaults);
+        let resolver = DefaultResolver::new(&defaults).unwrap();
 
         let joint_defaults = resolver
-            .joint_defaults(None)
+            .class(None)
+            .unwrap()
+            .joint
+            .as_ref()
             .expect("should have joint defaults");
         assert_relative_eq!(joint_defaults.damping.unwrap(), 0.5, epsilon = 1e-10);
 
         let geom_defaults = resolver
-            .geom_defaults(None)
+            .class(None)
+            .unwrap()
+            .geom
+            .as_ref()
             .expect("should have geom defaults");
         assert_relative_eq!(geom_defaults.density.unwrap(), 2000.0, epsilon = 1e-10);
     }
@@ -1194,14 +1176,24 @@ mod tests {
             },
         ];
 
-        let resolver = DefaultResolver::new(&defaults);
+        let resolver = DefaultResolver::new(&defaults).unwrap();
 
         // Root class should have damping 0.5
-        let root_defaults = resolver.joint_defaults(None).expect("root defaults");
+        let root_defaults = resolver
+            .class(None)
+            .unwrap()
+            .joint
+            .as_ref()
+            .expect("root defaults");
         assert_relative_eq!(root_defaults.damping.unwrap(), 0.5, epsilon = 1e-10);
 
         // Arm class should have damping 1.0 (overridden) and armature 0.1
-        let arm_defaults = resolver.joint_defaults(Some("arm")).expect("arm defaults");
+        let arm_defaults = resolver
+            .class(Some("arm"))
+            .unwrap()
+            .joint
+            .as_ref()
+            .expect("arm defaults");
         assert_relative_eq!(arm_defaults.damping.unwrap(), 1.0, epsilon = 1e-10);
         assert_relative_eq!(arm_defaults.armature.unwrap(), 0.1, epsilon = 1e-10);
     }
@@ -1239,9 +1231,14 @@ mod tests {
             },
         ];
 
-        let resolver = DefaultResolver::new(&defaults);
+        let resolver = DefaultResolver::new(&defaults).unwrap();
 
-        let arm_defaults = resolver.joint_defaults(Some("arm")).expect("arm defaults");
+        let arm_defaults = resolver
+            .class(Some("arm"))
+            .unwrap()
+            .joint
+            .as_ref()
+            .expect("arm defaults");
         // damping should be 0.5 (from "robot", not root's 0.1)
         assert_relative_eq!(arm_defaults.damping.unwrap(), 0.5, epsilon = 1e-10);
         // stiffness should be 10.0 (inherited from root through robot)
@@ -1254,7 +1251,7 @@ mod tests {
     fn test_apply_to_joint() {
         let defaults = vec![MjcfDefault {
             class: "test".to_string(),
-            parent_class: None,
+            parent_class: Some(String::new()),
             joint: Some(MjcfJointDefaults {
                 damping: Some(2.0),
                 stiffness: Some(100.0),
@@ -1264,7 +1261,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let resolver = DefaultResolver::new(&defaults);
+        let resolver = DefaultResolver::new(&defaults).unwrap();
 
         // Joint with no explicit values
         let joint = MjcfJoint {
@@ -1272,7 +1269,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolver.apply_to_joint(&joint);
+        let resolved = resolver.apply_to_joint(&joint).unwrap();
         assert_relative_eq!(resolved.damping.unwrap(), 2.0, epsilon = 1e-10);
         assert_relative_eq!(resolved.stiffness.unwrap(), 100.0, epsilon = 1e-10);
         assert_eq!(resolved.joint_type, Some(MjcfJointType::Slide));
@@ -1284,7 +1281,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolver.apply_to_joint(&joint_with_damping);
+        let resolved = resolver.apply_to_joint(&joint_with_damping).unwrap();
         assert_relative_eq!(resolved.damping.unwrap(), 0.5, epsilon = 1e-10); // Kept explicit value
         assert_relative_eq!(resolved.stiffness.unwrap(), 100.0, epsilon = 1e-10); // Got default
     }
@@ -1293,7 +1290,7 @@ mod tests {
     fn test_apply_to_geom() {
         let defaults = vec![MjcfDefault {
             class: "visual".to_string(),
-            parent_class: None,
+            parent_class: Some(String::new()),
             geom: Some(MjcfGeomDefaults {
                 rgba: Some(Vector4::new(1.0, 0.0, 0.0, 1.0)),
                 density: Some(500.0),
@@ -1302,14 +1299,14 @@ mod tests {
             ..Default::default()
         }];
 
-        let resolver = DefaultResolver::new(&defaults);
+        let resolver = DefaultResolver::new(&defaults).unwrap();
 
         let geom = MjcfGeom {
             class: Some("visual".to_string()),
             ..Default::default()
         };
 
-        let resolved = resolver.apply_to_geom(&geom);
+        let resolved = resolver.apply_to_geom(&geom).unwrap();
         assert_relative_eq!(resolved.rgba.unwrap().x, 1.0, epsilon = 1e-10);
         assert_relative_eq!(resolved.rgba.unwrap().y, 0.0, epsilon = 1e-10);
         assert_relative_eq!(resolved.density.unwrap(), 500.0, epsilon = 1e-10);
@@ -1319,7 +1316,7 @@ mod tests {
     fn test_apply_to_actuator() {
         let defaults = vec![MjcfDefault {
             class: "motor".to_string(),
-            parent_class: None,
+            parent_class: Some(String::new()),
             actuator: Some(MjcfActuatorDefaults {
                 gear: Some(Prefix::full([100.0, 0.0, 0.0, 0.0, 0.0, 0.0])),
                 ctrlrange: Some((-1.0, 1.0)),
@@ -1329,14 +1326,14 @@ mod tests {
             ..Default::default()
         }];
 
-        let resolver = DefaultResolver::new(&defaults);
+        let resolver = DefaultResolver::new(&defaults).unwrap();
 
         let actuator = MjcfActuator {
             class: Some("motor".to_string()),
             ..Default::default()
         };
 
-        let resolved = resolver.apply_to_actuator(&actuator);
+        let resolved = resolver.apply_to_actuator(&actuator).unwrap();
         assert_relative_eq!(resolved.gear.unwrap().given()[0], 100.0, epsilon = 1e-10);
         assert_eq!(resolved.ctrlrange, Some((-1.0, 1.0)));
         assert_relative_eq!(resolved.kp, 50.0, epsilon = 1e-10);
@@ -1346,7 +1343,7 @@ mod tests {
     fn test_tendon_defaults() {
         let defaults = vec![MjcfDefault {
             class: "cable".to_string(),
-            parent_class: None,
+            parent_class: Some(String::new()),
             tendon: Some(MjcfTendonDefaults {
                 stiffness: Some(1000.0),
                 damping: Some(10.0),
@@ -1356,10 +1353,13 @@ mod tests {
             ..Default::default()
         }];
 
-        let resolver = DefaultResolver::new(&defaults);
+        let resolver = DefaultResolver::new(&defaults).unwrap();
 
         let tendon_defaults = resolver
-            .tendon_defaults(Some("cable"))
+            .class(Some("cable"))
+            .unwrap()
+            .tendon
+            .as_ref()
             .expect("tendon defaults");
         assert_relative_eq!(tendon_defaults.stiffness.unwrap(), 1000.0, epsilon = 1e-10);
         assert_relative_eq!(tendon_defaults.damping.unwrap(), 10.0, epsilon = 1e-10);
@@ -1370,7 +1370,7 @@ mod tests {
     fn test_sensor_defaults() {
         let defaults = vec![MjcfDefault {
             class: "noisy".to_string(),
-            parent_class: None,
+            parent_class: Some(String::new()),
             sensor: Some(MjcfSensorDefaults {
                 noise: Some(0.01),
                 cutoff: Some(100.0),
@@ -1379,10 +1379,13 @@ mod tests {
             ..Default::default()
         }];
 
-        let resolver = DefaultResolver::new(&defaults);
+        let resolver = DefaultResolver::new(&defaults).unwrap();
 
         let sensor_defaults = resolver
-            .sensor_defaults(Some("noisy"))
+            .class(Some("noisy"))
+            .unwrap()
+            .sensor
+            .as_ref()
             .expect("sensor defaults");
         assert_relative_eq!(sensor_defaults.noise.unwrap(), 0.01, epsilon = 1e-10);
         assert_relative_eq!(sensor_defaults.cutoff.unwrap(), 100.0, epsilon = 1e-10);
@@ -1392,7 +1395,7 @@ mod tests {
     fn test_nonexistent_class() {
         let defaults = vec![MjcfDefault {
             class: "existing".to_string(),
-            parent_class: None,
+            parent_class: Some(String::new()),
             joint: Some(MjcfJointDefaults {
                 damping: Some(1.0),
                 ..Default::default()
@@ -1400,10 +1403,13 @@ mod tests {
             ..Default::default()
         }];
 
-        let resolver = DefaultResolver::new(&defaults);
+        let resolver = DefaultResolver::new(&defaults).unwrap();
 
-        // Nonexistent class should return None
-        assert!(resolver.joint_defaults(Some("nonexistent")).is_none());
+        // A class no `<default>` makes is refused (MuJoCo's `GetClass`).
+        assert!(matches!(
+            resolver.class(Some("nonexistent")),
+            Err(MjcfError::UnknownClass { name, .. }) if name == "nonexistent"
+        ));
     }
 
     #[test]
@@ -1412,7 +1418,7 @@ mod tests {
 
         let defaults = vec![MjcfDefault {
             class: "cable".to_string(),
-            parent_class: None,
+            parent_class: Some(String::new()),
             tendon: Some(MjcfTendonDefaults {
                 stiffness: Some(1000.0),
                 damping: Some(10.0),
@@ -1423,7 +1429,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let resolver = DefaultResolver::new(&defaults);
+        let resolver = DefaultResolver::new(&defaults).unwrap();
 
         // Tendon with no explicit values
         let tendon = MjcfTendon {
@@ -1431,7 +1437,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolver.apply_to_tendon(&tendon);
+        let resolved = resolver.apply_to_tendon(&tendon).unwrap();
         assert_relative_eq!(resolved.stiffness.unwrap(), 1000.0, epsilon = 1e-10);
         assert_relative_eq!(resolved.damping.unwrap(), 10.0, epsilon = 1e-10);
         assert_relative_eq!(resolved.width.unwrap(), 0.01, epsilon = 1e-10);
@@ -1444,7 +1450,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolver.apply_to_tendon(&tendon_with_stiffness);
+        let resolved = resolver.apply_to_tendon(&tendon_with_stiffness).unwrap();
         assert_relative_eq!(resolved.stiffness.unwrap(), 500.0, epsilon = 1e-10); // Kept explicit
         assert_relative_eq!(resolved.damping.unwrap(), 10.0, epsilon = 1e-10); // Got default
     }
@@ -1455,7 +1461,7 @@ mod tests {
 
         let defaults = vec![MjcfDefault {
             class: "noisy".to_string(),
-            parent_class: None,
+            parent_class: Some(String::new()),
             sensor: Some(MjcfSensorDefaults {
                 noise: Some(0.01),
                 cutoff: Some(100.0),
@@ -1464,7 +1470,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let resolver = DefaultResolver::new(&defaults);
+        let resolver = DefaultResolver::new(&defaults).unwrap();
 
         // Sensor with no explicit values
         let sensor = MjcfSensor {
@@ -1472,7 +1478,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolver.apply_to_sensor(&sensor);
+        let resolved = resolver.apply_to_sensor(&sensor).unwrap();
         assert_relative_eq!(resolved.noise, 0.01, epsilon = 1e-10);
         assert_relative_eq!(resolved.cutoff, 100.0, epsilon = 1e-10);
         assert_eq!(resolved.user, vec![1.0, 2.0, 3.0]);
@@ -1484,7 +1490,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolver.apply_to_sensor(&sensor_with_noise);
+        let resolved = resolver.apply_to_sensor(&sensor_with_noise).unwrap();
         assert_relative_eq!(resolved.noise, 0.05, epsilon = 1e-10); // Kept explicit
         assert_relative_eq!(resolved.cutoff, 100.0, epsilon = 1e-10); // Got default
     }
@@ -1515,14 +1521,14 @@ mod tests {
             },
         ];
 
-        let resolver = DefaultResolver::new(&defaults);
+        let resolver = DefaultResolver::new(&defaults).unwrap();
 
         let tendon = MjcfTendon {
             class: Some("strong".to_string()),
             ..Default::default()
         };
 
-        let resolved = resolver.apply_to_tendon(&tendon);
+        let resolved = resolver.apply_to_tendon(&tendon).unwrap();
         assert_relative_eq!(resolved.stiffness.unwrap(), 1000.0, epsilon = 1e-10); // From "strong"
         assert_relative_eq!(resolved.damping.unwrap(), 1.0, epsilon = 1e-10); // Inherited from root
     }
@@ -1553,14 +1559,14 @@ mod tests {
             },
         ];
 
-        let resolver = DefaultResolver::new(&defaults);
+        let resolver = DefaultResolver::new(&defaults).unwrap();
 
         let sensor = MjcfSensor {
             class: Some("filtered".to_string()),
             ..Default::default()
         };
 
-        let resolved = resolver.apply_to_sensor(&sensor);
+        let resolved = resolver.apply_to_sensor(&sensor).unwrap();
         assert_relative_eq!(resolved.noise, 0.001, epsilon = 1e-10); // Inherited from root
         assert_relative_eq!(resolved.cutoff, 10.0, epsilon = 1e-10); // From "filtered"
     }
@@ -1578,9 +1584,9 @@ mod tests {
             ..Default::default()
         }];
 
-        let resolver = DefaultResolver::new(&defaults);
+        let resolver = DefaultResolver::new(&defaults).unwrap();
         let joint = MjcfJoint::default(); // no explicit margin
-        let resolved = resolver.apply_to_joint(&joint);
+        let resolved = resolver.apply_to_joint(&joint).unwrap();
         assert_eq!(
             resolved.margin,
             Some(0.05),
@@ -1592,7 +1598,7 @@ mod tests {
             margin: Some(0.1),
             ..Default::default()
         };
-        let resolved_override = resolver.apply_to_joint(&joint_override);
+        let resolved_override = resolver.apply_to_joint(&joint_override).unwrap();
         assert_eq!(
             resolved_override.margin,
             Some(0.1),

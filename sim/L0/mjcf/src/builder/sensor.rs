@@ -36,7 +36,7 @@ impl ModelBuilder {
 
     /// One sensor's entries, its data at `adr`, which it advances by its size.
     fn process_sensor(&mut self, mjcf_sensor: &MjcfSensor, adr: &mut usize) -> Result<()> {
-        let mjcf_sensor = self.resolver.apply_to_sensor(mjcf_sensor);
+        let mjcf_sensor = self.resolver.apply_to_sensor(mjcf_sensor)?;
         let Some(sensor_type) = convert_sensor_type(mjcf_sensor.sensor_type) else {
             // Unknown sensor type — skip with log
             warn!(

@@ -100,7 +100,7 @@ pub mod actuator_pass_parity;
 // Default Class Resolution Tests
 // ============================================================================
 
-/// Default class resolution: wiring DefaultResolver into builder/.
+/// Default class resolution in the builder.
 pub mod default_classes;
 
 // ============================================================================

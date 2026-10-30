@@ -207,7 +207,7 @@ impl ModelBuilder {
             &mut active,
             &mut solref,
             &mut solimp,
-        );
+        )?;
 
         self.eq_type.push(EqualityType::Connect);
         self.eq_obj1id.push(body1_id);
@@ -295,7 +295,7 @@ impl ModelBuilder {
             &mut active,
             &mut solref,
             &mut solimp,
-        );
+        )?;
 
         self.eq_type.push(EqualityType::Weld);
         self.eq_obj1id.push(*body1_id);
@@ -354,7 +354,7 @@ impl ModelBuilder {
             &mut active,
             &mut solref,
             &mut solimp,
-        );
+        )?;
 
         self.eq_type.push(EqualityType::Joint);
         self.eq_obj1id.push(*joint1_id);
@@ -406,7 +406,7 @@ impl ModelBuilder {
             &mut active,
             &mut solref,
             &mut solimp,
-        );
+        )?;
 
         self.eq_type.push(EqualityType::Distance);
         self.eq_obj1id.push(geom1_id);
@@ -460,7 +460,7 @@ impl ModelBuilder {
             &mut active,
             &mut solref,
             &mut solimp,
-        );
+        )?;
 
         self.eq_type.push(EqualityType::Tendon);
         self.eq_obj1id.push(t1_id);

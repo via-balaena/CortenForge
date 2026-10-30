@@ -13,7 +13,7 @@ use nalgebra::{UnitQuaternion, Vector3, Vector4};
 use super::geom::resolve_site_fromto;
 use super::orientation::{quat_to_wxyz, resolve_orientation, site_quat_as_written};
 use crate::defaults::DefaultResolver;
-use crate::error::{ElementKind, Location, MjcfError, Result};
+use crate::error::{ElementKind, Location, Result};
 use crate::types::{MjcfBody, MjcfCompiler, MjcfFrame, MjcfGeom, MjcfSite};
 
 /// Core SE(3) composition — direct translation of MuJoCo's `mjuu_frameaccumChild`.
@@ -37,10 +37,10 @@ fn frame_accum_child(
 ///
 /// MuJoCo rejects undefined childclass references at schema validation (S7).
 pub fn validate_childclass_references(body: &MjcfBody, resolver: &DefaultResolver) -> Result<()> {
-    if let Some(ref cc) = body.childclass
-        && resolver.get_defaults(Some(cc.as_str())).is_none()
-    {
-        return Err(MjcfError::unknown_class(cc).at(Location::named(ElementKind::Body, &body.name)));
+    if let Some(ref cc) = body.childclass {
+        resolver
+            .class(Some(cc))
+            .map_err(|e| e.at(Location::named(ElementKind::Body, &body.name)))?;
     }
     for frame in &body.frames {
         validate_frame_childclass_refs(frame, resolver, &body.name)?;
@@ -58,14 +58,13 @@ fn validate_frame_childclass_refs(
     resolver: &DefaultResolver,
     body: &str,
 ) -> Result<()> {
-    if let Some(ref cc) = frame.childclass
-        && resolver.get_defaults(Some(cc.as_str())).is_none()
-    {
-        return Err(MjcfError::unknown_class(cc).at(Location::named(
-            ElementKind::Frame,
-            frame.name.as_deref().unwrap_or(""),
-        )
-        .in_body(body)));
+    if let Some(ref cc) = frame.childclass {
+        resolver.class(Some(cc)).map_err(|e| {
+            e.at(
+                Location::named(ElementKind::Frame, frame.name.as_deref().unwrap_or(""))
+                    .in_body(body),
+            )
+        })?;
     }
     for nested in &frame.frames {
         validate_frame_childclass_refs(nested, resolver, body)?;
@@ -159,53 +158,67 @@ pub fn resolve_sites(
 /// writes. The geom's other class values wait for the builder (the book's L16
 /// applies them all here). The class is its own, else the childclass of its
 /// frame or body, and it is pinned on the geom with the `fromto`.
+///
+/// # Errors
+///
+/// [`MjcfError::UnknownClass`](crate::MjcfError::UnknownClass) for a geom's
+/// class no `<default>` makes.
 pub fn resolve_class_fromto(
     body: &mut MjcfBody,
     resolver: &DefaultResolver,
     inherited: Option<&str>,
-) {
+) -> Result<()> {
     let effective = body
         .childclass
         .clone()
         .or_else(|| inherited.map(str::to_string));
     for geom in &mut body.geoms {
-        take_class_fromto(geom, resolver, effective.as_deref());
+        take_class_fromto(geom, resolver, effective.as_deref(), &body.name)?;
     }
     for frame in &mut body.frames {
-        resolve_class_fromto_in_frame(frame, resolver, effective.as_deref());
+        resolve_class_fromto_in_frame(frame, resolver, effective.as_deref(), &body.name)?;
     }
     for child in &mut body.children {
-        resolve_class_fromto(child, resolver, effective.as_deref());
+        resolve_class_fromto(child, resolver, effective.as_deref())?;
     }
+    Ok(())
 }
 
-/// `resolve_class_fromto` within a frame, whose childclass its contents take.
+/// `resolve_class_fromto` within a frame in `body`, whose childclass its
+/// contents take.
 fn resolve_class_fromto_in_frame(
     frame: &mut MjcfFrame,
     resolver: &DefaultResolver,
     inherited: Option<&str>,
-) {
+    body: &str,
+) -> Result<()> {
     let effective = frame
         .childclass
         .clone()
         .or_else(|| inherited.map(str::to_string));
     for geom in &mut frame.geoms {
-        take_class_fromto(geom, resolver, effective.as_deref());
+        take_class_fromto(geom, resolver, effective.as_deref(), body)?;
     }
     for sub in &mut frame.frames {
-        resolve_class_fromto_in_frame(sub, resolver, effective.as_deref());
+        resolve_class_fromto_in_frame(sub, resolver, effective.as_deref(), body)?;
     }
     for child in &mut frame.bodies {
-        resolve_class_fromto(child, resolver, effective.as_deref());
+        resolve_class_fromto(child, resolver, effective.as_deref())?;
     }
+    Ok(())
 }
 
 /// `geom`'s class's `fromto`, where the geom writes none, with the class that
 /// gives it pinned on the geom: fusion moves a geom into another body, whose
 /// childclass the builder would apply otherwise.
-fn take_class_fromto(geom: &mut MjcfGeom, resolver: &DefaultResolver, childclass: Option<&str>) {
+fn take_class_fromto(
+    geom: &mut MjcfGeom,
+    resolver: &DefaultResolver,
+    childclass: Option<&str>,
+    body: &str,
+) -> Result<()> {
     if geom.fromto.is_some() {
-        return;
+        return Ok(());
     }
     let class = geom
         .class
@@ -213,10 +226,14 @@ fn take_class_fromto(geom: &mut MjcfGeom, resolver: &DefaultResolver, childclass
         .or_else(|| childclass.map(str::to_string));
     let mut classed = geom.clone();
     classed.class.clone_from(&class);
-    if let Some(fromto) = resolver.apply_to_geom(&classed).fromto {
+    let classed = resolver.apply_to_geom(&classed).map_err(|e| {
+        e.at(Location::named(ElementKind::Geom, geom.name.as_deref().unwrap_or("")).in_body(body))
+    })?;
+    if let Some(fromto) = classed.fromto {
         geom.fromto = Some(fromto);
         geom.class = class;
     }
+    Ok(())
 }
 
 /// `resolve_sites` within a frame in `body`, whose childclass its contents
@@ -254,10 +271,11 @@ fn resolve_site(
     if site.class.is_none() {
         site.class = childclass.map(str::to_string);
     }
-    *site = resolver.apply_to_site(site);
-    resolve_site_fromto(site).map_err(|e| {
-        e.with_location_if_unknown(Location::named(ElementKind::Site, &site.name).in_body(body))
-    })
+    let at = |name: &str| Location::named(ElementKind::Site, name).in_body(body);
+    *site = resolver
+        .apply_to_site(site)
+        .map_err(|e| e.at(at(&site.name)))?;
+    resolve_site_fromto(site).map_err(|e| e.with_location_if_unknown(at(&site.name)))
 }
 
 /// Expand a single frame, composing its transform into children and lifting

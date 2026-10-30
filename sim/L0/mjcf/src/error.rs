@@ -84,6 +84,19 @@ pub enum MjcfError {
         at: Location,
     },
 
+    /// An element MuJoCo 3.5.0's schema takes at most once inside its parent,
+    /// written again ("Schema violation: unique element … found 2 times").
+    #[error("element <{element}> written more than once in <{parent}>{at}")]
+    #[non_exhaustive]
+    RepeatedElement {
+        /// The element's tag.
+        element: String,
+        /// Its parent's tag.
+        parent: String,
+        /// Where the second one is.
+        at: Location,
+    },
+
     /// An attribute MuJoCo 3.5.0's schema does not take on its element
     /// ("Schema violation: unrecognized attribute").
     #[error("unrecognized attribute '{attribute}' on <{element}>{at}")]
@@ -238,6 +251,25 @@ pub enum MjcfError {
         at: Location,
     },
 
+    /// A nested `<default>` without a class name.
+    #[error("empty class name: a nested <default> needs class=\"…\"{at}")]
+    #[non_exhaustive]
+    EmptyClassName {
+        /// The class it is nested in.
+        at: Location,
+    },
+
+    /// A top-level `<default>` with a class name other than `main`, the one
+    /// main class's.
+    #[error("top-level default class 'main' cannot be renamed (class=\"{name}\"){at}")]
+    #[non_exhaustive]
+    RenamedRootClass {
+        /// The name it was given.
+        name: String,
+        /// Where it is.
+        at: Location,
+    },
+
     // ── model-level compiler rules, assets ──
     /// The model breaks one of MuJoCo's compiler rules that is not about one
     /// attribute's value.
@@ -353,6 +385,8 @@ pub enum ElementKind {
     Sensor,
     /// `<key>`.
     Keyframe,
+    /// A `<default>` class.
+    DefaultClass,
 }
 
 impl fmt::Display for ElementKind {
@@ -373,6 +407,7 @@ impl fmt::Display for ElementKind {
             Self::Actuator => "actuator",
             Self::Sensor => "sensor",
             Self::Keyframe => "key",
+            Self::DefaultClass => "default",
         })
     }
 }
@@ -731,6 +766,30 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::EmptyClassName`].
+    pub(crate) fn empty_class_name() -> Self {
+        Self::EmptyClassName {
+            at: Location::unknown(),
+        }
+    }
+
+    /// An [`MjcfError::RenamedRootClass`].
+    pub(crate) fn renamed_root_class(name: impl Into<String>) -> Self {
+        Self::RenamedRootClass {
+            name: name.into(),
+            at: Location::unknown(),
+        }
+    }
+
+    /// An [`MjcfError::RepeatedElement`].
+    pub(crate) fn repeated_element(element: impl Into<String>, parent: impl Into<String>) -> Self {
+        Self::RepeatedElement {
+            element: element.into(),
+            parent: parent.into(),
+            at: Location::unknown(),
+        }
+    }
+
     /// An [`MjcfError::InvalidModel`].
     pub(crate) fn invalid_model(reason: impl Into<String>) -> Self {
         Self::InvalidModel {
@@ -787,6 +846,7 @@ impl MjcfError {
             | Self::TooDeep { at, .. }
             | Self::MissingAttribute { at, .. }
             | Self::UnknownElement { at, .. }
+            | Self::RepeatedElement { at, .. }
             | Self::UnknownAttribute { at, .. }
             | Self::ConflictingAttributes { at, .. }
             | Self::BadNumber { at, .. }
@@ -798,6 +858,8 @@ impl MjcfError {
             | Self::DuplicateName { at, .. }
             | Self::UndefinedReference { at, .. }
             | Self::UnknownClass { at, .. }
+            | Self::EmptyClassName { at }
+            | Self::RenamedRootClass { at, .. }
             | Self::InvalidModel { at, .. }
             | Self::Asset { at, .. }
             | Self::Unsupported { at, .. } => Some(at),
