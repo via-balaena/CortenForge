@@ -14,13 +14,6 @@ use crate::types::{MjcfTendon, MjcfTendonType, SpatialPathElement};
 impl ModelBuilder {
     pub(crate) fn process_tendons(&mut self, tendons: &[MjcfTendon]) -> Result<()> {
         for (t_idx, tendon) in tendons.iter().enumerate() {
-            let tendon = self.resolver.apply_to_tendon(tendon).map_err(|e| {
-                e.with_location_if_unknown(Location::nth(
-                    ElementKind::Tendon,
-                    Some(&tendon.name),
-                    t_idx,
-                ))
-            })?;
             let at = || Location::nth(ElementKind::Tendon, Some(&tendon.name), t_idx);
             if !tendon.name.is_empty() {
                 self.tendon_name_to_id.insert(tendon.name.clone(), t_idx);

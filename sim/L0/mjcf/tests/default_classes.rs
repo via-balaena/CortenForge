@@ -280,3 +280,18 @@ fn an_unknown_sensor_class_is_refused() {
     );
     assert_unknown_class(&err, "nope");
 }
+
+/// An equality's class is checked when the equality is read, before the
+/// bodies, joints or tendons it names, as MuJoCo 3.5.0's `GetClass` comes
+/// first: each names an unknown class and a missing element.
+#[test]
+fn an_equalitys_class_is_checked_before_what_it_names() {
+    for xml in [
+        r#"<mujoco><worldbody><body name="b1"><joint name="j" type="hinge"/><geom size=".1"/></body></worldbody><equality><connect class="nope" body1="missing" anchor="0 0 0"/></equality></mujoco>"#,
+        r#"<mujoco><worldbody><body name="b1"><joint name="j" type="hinge"/><geom size=".1"/></body></worldbody><equality><weld class="nope" body1="missing"/></equality></mujoco>"#,
+        r#"<mujoco><worldbody><body name="b1"><joint name="j" type="hinge"/><geom size=".1"/></body></worldbody><equality><joint class="nope" joint1="missing"/></equality></mujoco>"#,
+        r#"<mujoco><worldbody><body name="b1"><joint name="j" type="hinge"/><geom size=".1"/></body></worldbody><equality><tendon class="nope" tendon1="missing"/></equality></mujoco>"#,
+    ] {
+        assert_unknown_class(&refused(xml), "nope");
+    }
+}

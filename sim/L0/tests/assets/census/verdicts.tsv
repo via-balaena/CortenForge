@@ -321,6 +321,7 @@
 277ebe25e7a353db	mj-refuses
 27a5746e9c0b0e6f	agree
 27cdfde2dad0e192	agree
+27e7c90e6aa3bcc6	both-refuse
 27f9154a529f3aa3	agree
 280671eca694f13b	agree
 284dc51e979ce392	agree
@@ -1181,6 +1182,7 @@
 8c51346119e8a5e7	both-refuse
 8c5a96752b82a62b	agree
 8cb624ab4c12cc66	model:neq
+8cb636a360179a6a	both-refuse
 8cc5b09cefea229d	agree
 8ccd1666ebae3822	agree
 8cef1f2155033a74	agree
@@ -1361,6 +1363,7 @@ a100e6bb8383fd89	both-refuse
 a12872cf7beb39c4	agree
 a172c34b4a036ad9	mj-refuses
 a1762715f919d469	agree
+a18efdfc1b778bad	both-refuse
 a19a55c780431d02	agree
 a19daa9cd12b079a	agree
 a1b33ed699cd992f	ours-refused	divergence=D-FLEX-NODE
@@ -1946,6 +1949,7 @@ e60973e68ea07fb6	ours-refused	divergence=D-FRAME-INERTIAL
 e60a4037dff29d3b	ours-refused	divergence=D-NONFINITE
 e617caab86ca940f	both-refuse
 e64076f828aed57d	agree
+e65195a5627e3a15	both-refuse
 e67472e1681c2d87	agree
 e6a8fc5ad5bb52c4	agree
 e6cc4b19185315a2	agree

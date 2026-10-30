@@ -274,8 +274,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
 
     // Process mesh assets FIRST (before geoms can reference them)
     for mesh in &mjcf.meshes {
-        let mesh = builder.resolver.apply_to_mesh(mesh);
-        builder.process_mesh(&mesh, base_path)?;
+        builder.process_mesh(mesh, base_path)?;
     }
 
     // Process hfield assets (before geoms can reference them)
@@ -301,25 +300,13 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
 
     // Process actuators
     for (i, actuator) in mjcf.actuators.iter().enumerate() {
-        // A servo's own gains, before its class gives any (the parser checked
-        // a parsed one; this holds an actuator built in code to it).
-        let own = actuator::check_servo_gains(
-            actuator.actuator_type.as_str(),
-            actuator.kv,
-            actuator.dampratio,
-            actuator.timeconst,
-        );
-        builder
-            .resolver
-            .apply_to_actuator(actuator)
-            .and_then(|resolved| own.and_then(|()| builder.process_actuator(&resolved)))
-            .map_err(|e| {
-                e.with_location_if_unknown(Location::nth(
-                    ElementKind::Actuator,
-                    Some(&actuator.name),
-                    i,
-                ))
-            })?;
+        builder.process_actuator(actuator).map_err(|e| {
+            e.with_location_if_unknown(Location::nth(
+                ElementKind::Actuator,
+                Some(&actuator.name),
+                i,
+            ))
+        })?;
     }
 
     // Process equality constraints (must be after bodies and joints)
@@ -427,7 +414,9 @@ pub struct ModelBuilder {
     // Model name
     pub(crate) name: String,
 
-    // Default class resolver (applies <default> class attributes to elements)
+    // The model's classes, for the elements the builder makes itself (a
+    // flexcomp's vertex spheres); every parsed element has its class already
+    // (`resolve::apply_defaults`).
     pub(crate) resolver: DefaultResolver,
 
     // Compiler settings (controls angle conversion, euler sequence, etc.)

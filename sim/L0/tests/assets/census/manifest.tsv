@@ -2270,3 +2270,7 @@ fd319557ca9c266f	sim/L0/mjcf/tests/classes_before_frames.rs:160
 5a2b8db0bb3e6de7	sim/L0/mjcf/tests/tendon_parameters.rs:37
 5f00d44189f986a7	sim/L0/mjcf/tests/tendon_parameters.rs:27
 8682b006621264c4	sim/L0/mjcf/tests/tendon_parameters.rs:17
+27e7c90e6aa3bcc6	sim/L0/mjcf/tests/default_classes.rs:291
+8cb636a360179a6a	sim/L0/mjcf/tests/default_classes.rs:293
+a18efdfc1b778bad	sim/L0/mjcf/tests/default_classes.rs:292
+e65195a5627e3a15	sim/L0/mjcf/tests/default_classes.rs:290

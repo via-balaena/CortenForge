@@ -199,15 +199,7 @@ impl ModelBuilder {
             }
         };
 
-        let mut active = connect.active;
-        let mut solref = connect.solref;
-        let mut solimp = connect.solimp;
-        self.resolver.apply_equality_defaults(
-            connect.class.as_deref(),
-            &mut active,
-            &mut solref,
-            &mut solimp,
-        )?;
+        let (active, solref, solimp) = (connect.active, connect.solref, connect.solimp);
 
         self.eq_type.push(EqualityType::Connect);
         self.eq_obj1id.push(body1_id);
@@ -287,15 +279,7 @@ impl ModelBuilder {
         }
         data[10] = 1.0;
 
-        let mut active = weld.active;
-        let mut solref = weld.solref;
-        let mut solimp = weld.solimp;
-        self.resolver.apply_equality_defaults(
-            weld.class.as_deref(),
-            &mut active,
-            &mut solref,
-            &mut solimp,
-        )?;
+        let (active, solref, solimp) = (weld.active, weld.solref, weld.solimp);
 
         self.eq_type.push(EqualityType::Weld);
         self.eq_obj1id.push(*body1_id);
@@ -346,15 +330,7 @@ impl ModelBuilder {
             data[i] = coef;
         }
 
-        let mut active = joint_eq.active;
-        let mut solref = joint_eq.solref;
-        let mut solimp = joint_eq.solimp;
-        self.resolver.apply_equality_defaults(
-            joint_eq.class.as_deref(),
-            &mut active,
-            &mut solref,
-            &mut solimp,
-        )?;
+        let (active, solref, solimp) = (joint_eq.active, joint_eq.solref, joint_eq.solimp);
 
         self.eq_type.push(EqualityType::Joint);
         self.eq_obj1id.push(*joint1_id);
@@ -398,15 +374,7 @@ impl ModelBuilder {
         let mut data = [0.0; 11];
         data[0] = target_distance;
 
-        let mut active = dist.active;
-        let mut solref = dist.solref;
-        let mut solimp = dist.solimp;
-        self.resolver.apply_equality_defaults(
-            dist.class.as_deref(),
-            &mut active,
-            &mut solref,
-            &mut solimp,
-        )?;
+        let (active, solref, solimp) = (dist.active, dist.solref, dist.solimp);
 
         self.eq_type.push(EqualityType::Distance);
         self.eq_obj1id.push(geom1_id);
@@ -452,15 +420,7 @@ impl ModelBuilder {
             data[i] = coef;
         }
 
-        let mut active = ten_eq.active;
-        let mut solref = ten_eq.solref;
-        let mut solimp = ten_eq.solimp;
-        self.resolver.apply_equality_defaults(
-            ten_eq.class.as_deref(),
-            &mut active,
-            &mut solref,
-            &mut solimp,
-        )?;
+        let (active, solref, solimp) = (ten_eq.active, ten_eq.solref, ten_eq.solimp);
 
         self.eq_type.push(EqualityType::Tendon);
         self.eq_obj1id.push(t1_id);

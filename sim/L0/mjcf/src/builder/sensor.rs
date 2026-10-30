@@ -36,7 +36,6 @@ impl ModelBuilder {
 
     /// One sensor's entries, its data at `adr`, which it advances by its size.
     fn process_sensor(&mut self, mjcf_sensor: &MjcfSensor, adr: &mut usize) -> Result<()> {
-        let mjcf_sensor = self.resolver.apply_to_sensor(mjcf_sensor)?;
         let Some(sensor_type) = convert_sensor_type(mjcf_sensor.sensor_type) else {
             // Unknown sensor type — skip with log
             warn!(
@@ -98,7 +97,7 @@ impl ModelBuilder {
         // A user sensor's object is resolved before its dimension is checked,
         // as MuJoCo's `mjCSensor::Compile` orders them.
         let (dim, datatype) = if sensor_type == MjSensorType::User {
-            user_sensor_layout(&mjcf_sensor)?
+            user_sensor_layout(mjcf_sensor)?
         } else {
             (sensor_type.dim(), sensor_datatype(sensor_type))
         };
@@ -153,7 +152,7 @@ impl ModelBuilder {
         self.sensor_interp.push(interp);
         self.sensor_delay.push(delay);
         self.sensor_interval.push((interval, 0.0));
-        self.sensor_user_raw.push(mjcf_sensor.user);
+        self.sensor_user_raw.push(mjcf_sensor.user.clone());
 
         *adr += dim;
         Ok(())
