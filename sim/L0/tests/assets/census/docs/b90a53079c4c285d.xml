@@ -1,0 +1,1 @@
+<mujoco><default><default class="c"><cylinder area="5"/></default></default><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><actuator><cylinder class="c" joint="h" area="1"/></actuator></mujoco>

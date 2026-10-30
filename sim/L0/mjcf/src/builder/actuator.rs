@@ -18,6 +18,15 @@ use crate::types::{MjcfActuator, MjcfActuatorType};
 /// MuJoCo's default `gear` (`user_init.c` `mjs_defaultActuator`).
 const DEFAULT_GEAR: [f64; 6] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
 
+/// A muscle's parameters a `<muscle>` writes none of, as MuJoCo's
+/// `mjs_setToMuscle` sets them (`user_api.cc:1009-1050`): range, force (-1,
+/// computed when the model is made), scale, lmin, lmax, vmax, fpmax, fvmax.
+const DEFAULT_MUSCLE: [f64; 9] = [0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2];
+
+/// A muscle's activation and deactivation time constants written by none
+/// (`mjs_setToMuscle`).
+const DEFAULT_MUSCLE_TIMECONST: (f64, f64) = (0.01, 0.04);
+
 impl ModelBuilder {
     pub(crate) fn process_actuator(&mut self, actuator: &MjcfActuator) -> Result<usize> {
         let act_id = self.actuator_trntype.len();
@@ -574,7 +583,7 @@ fn compute_gain_bias_params(
         )),
 
         MjcfActuatorType::Position => {
-            let kp = actuator.kp; // default 1.0
+            let kp = actuator.kp.unwrap_or(1.0);
             let tc = timeconst;
             let mut gp = [0.0; 9];
             gp[0] = kp;
@@ -598,10 +607,11 @@ fn compute_gain_bias_params(
             // `mjs_setToIntVelocity` = `mjs_setToPosition`'s gain and bias
             // (`user_api.cc:942-954`); its `dynprm` is the actuator's own:
             // what a class writes, over MuJoCo's default [1, 0, ..., 0].
+            let kp = actuator.kp.unwrap_or(1.0);
             let mut gp = [0.0; 9];
-            gp[0] = actuator.kp;
+            gp[0] = kp;
             let mut bp = [0.0; 9];
-            bp[1] = -actuator.kp;
+            bp[1] = -kp;
             bp[2] = servo_bias2(actuator);
             let mut dynprm_default = [0.0; 10];
             dynprm_default[0] = 1.0;
@@ -629,15 +639,14 @@ fn compute_gain_bias_params(
             let area = if let Some(d) = actuator.diameter {
                 std::f64::consts::PI / 4.0 * d * d
             } else {
-                actuator.area
+                actuator.area.unwrap_or(1.0)
             };
             let tc = timeconst;
             let mut gp = [0.0; 9];
             gp[0] = area;
             let mut bp = [0.0; 9];
-            bp[0] = actuator.bias[0];
-            bp[1] = actuator.bias[1];
-            bp[2] = actuator.bias[2];
+            let bias = actuator.bias.unwrap_or_default();
+            bp[..3].copy_from_slice(&bias);
             Ok((GainType::Fixed, BiasType::Affine, gp, bp, {
                 let mut d = [0.0; 10];
                 d[0] = tc;
@@ -647,22 +656,27 @@ fn compute_gain_bias_params(
 
         MjcfActuatorType::Adhesion => {
             let mut gp = [0.0; 9];
-            gp[0] = actuator.gain;
+            gp[0] = actuator.gain.unwrap_or(1.0);
             Ok((GainType::Fixed, BiasType::None, gp, [0.0; 9], [0.0; 10]))
         }
 
         MjcfActuatorType::Muscle => {
+            let [range0, range1, force, scale, lmin, lmax, vmax, fpmax, fvmax] = DEFAULT_MUSCLE;
+            let range = actuator.range.unwrap_or((range0, range1));
             let gp = [
-                actuator.range.0,
-                actuator.range.1,
-                actuator.force,
-                actuator.scale,
-                actuator.lmin,
-                actuator.lmax,
-                actuator.vmax,
-                actuator.fpmax,
-                actuator.fvmax.max(1.0), // fvmax < 1.0 is physically nonsensical
+                range.0,
+                range.1,
+                actuator.force.unwrap_or(force),
+                actuator.scale.unwrap_or(scale),
+                actuator.lmin.unwrap_or(lmin),
+                actuator.lmax.unwrap_or(lmax),
+                actuator.vmax.unwrap_or(vmax),
+                actuator.fpmax.unwrap_or(fpmax),
+                actuator.fvmax.unwrap_or(fvmax).max(1.0), // fvmax < 1.0 is physically nonsensical
             ];
+            let timeconst = actuator
+                .muscle_timeconst
+                .unwrap_or(DEFAULT_MUSCLE_TIMECONST);
             Ok((
                 GainType::Muscle,
                 BiasType::Muscle,
@@ -670,8 +684,8 @@ fn compute_gain_bias_params(
                 gp, // biasprm = gainprm (shared layout, MuJoCo convention)
                 {
                     let mut d = [0.0; 10];
-                    d[0] = actuator.muscle_timeconst.0;
-                    d[1] = actuator.muscle_timeconst.1;
+                    d[0] = timeconst.0;
+                    d[1] = timeconst.1;
                     d
                 },
             ))

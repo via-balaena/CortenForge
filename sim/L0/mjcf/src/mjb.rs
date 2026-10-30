@@ -58,6 +58,8 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
 ///
+/// 11 since Rigid-loading PR RL-5b: `MjcfActuator`'s `kp`, `area`, `bias`,
+/// muscle values and `gain`, and `MjcfSensor`'s `noise` and `cutoff`, optional.
 /// 10 since Rigid-loading PR RL-5a: `MjcfMesh` took `class`, `MjcfComposite`
 /// `site`, `MjcfJoint` `freejoint`.
 /// 9 since Rigid-loading PR RL-4b: `MjcfBody` took `xyaxes` and `zaxis`.
@@ -69,7 +71,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// one below mjMINVAL is refused (Rigid-loading PR RL-3b): a version-6 file
 /// holds 0.0 there for a flexcomp that did not write it. 6 since `MjcfFlex`
 /// took `vertex_bodies` (Rigid-loading L10).
-pub const MJB_VERSION: u32 = 10;
+pub const MJB_VERSION: u32 = 11;
 
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;

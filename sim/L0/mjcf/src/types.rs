@@ -2890,8 +2890,9 @@ pub struct MjcfActuator {
     /// Whether force is clamped to range. `None`, as `Auto`, leaves it
     /// to `autolimits` and the range.
     pub forcelimited: Option<TfAuto>,
-    /// Position gain (for position actuators).
-    pub kp: f64,
+    /// Position gain (for position and intvelocity actuators). `None`
+    /// means not written (MuJoCo's 1).
+    pub kp: Option<f64>,
     /// Velocity gain. `None` means use actuator-type default.
     pub kv: Option<f64>,
     /// Damping ratio for position actuators. When specified, `compute_actuator_params`
@@ -2924,42 +2925,46 @@ pub struct MjcfActuator {
     // ========================================================================
     // Cylinder-specific attributes
     // ========================================================================
-    /// Cylinder cross-sectional area (m²). Used as gain for cylinder actuators.
-    pub area: f64,
+    /// Cylinder cross-sectional area (m²), its gain. `None` means not
+    /// written (MuJoCo's 1).
+    pub area: Option<f64>,
     /// Cylinder diameter (m). Alternative to area; takes precedence if set.
     pub diameter: Option<f64>,
     /// Activation dynamics time constant (s). `None` means use actuator-type default.
     pub timeconst: Option<f64>,
-    /// Bias parameters [prm0, prm1, prm2] for cylinder.
-    pub bias: [f64; 3],
+    /// Bias parameters [prm0, prm1, prm2] for cylinder. `None` means not
+    /// written (MuJoCo's 0 0 0).
+    pub bias: Option<[f64; 3]>,
 
     // ========================================================================
     // Muscle-specific attributes
     // ========================================================================
-    /// Activation/deactivation time constants [act, deact] for muscle.
-    pub muscle_timeconst: (f64, f64),
-    /// Operating length range [lower, upper] in L0 units for muscle.
-    pub range: (f64, f64),
-    /// Peak active force (N). Negative triggers automatic computation.
-    pub force: f64,
-    /// Force scaling factor for muscle.
-    pub scale: f64,
-    /// Lower FLV curve position (L0 units).
-    pub lmin: f64,
-    /// Upper FLV curve position (L0 units).
-    pub lmax: f64,
-    /// Shortening velocity limit (L0/second).
-    pub vmax: f64,
-    /// Passive force at lmax (relative to peak force).
-    pub fpmax: f64,
-    /// Active force at lengthening (relative to peak force).
-    pub fvmax: f64,
+    // Each `None` means not written: MuJoCo's default, given beside each.
+    /// Activation/deactivation time constants [act, deact] for muscle (0.01, 0.04).
+    pub muscle_timeconst: Option<(f64, f64)>,
+    /// Operating length range [lower, upper] in L0 units for muscle (0.75, 1.05).
+    pub range: Option<(f64, f64)>,
+    /// Peak active force (N); negative, computed when the model is made (-1).
+    pub force: Option<f64>,
+    /// Force scaling factor for muscle (200).
+    pub scale: Option<f64>,
+    /// Lower FLV curve position (L0 units) (0.5).
+    pub lmin: Option<f64>,
+    /// Upper FLV curve position (L0 units) (1.6).
+    pub lmax: Option<f64>,
+    /// Shortening velocity limit (L0/second) (1.5).
+    pub vmax: Option<f64>,
+    /// Passive force at lmax (relative to peak force) (1.3).
+    pub fpmax: Option<f64>,
+    /// Active force at lengthening (relative to peak force) (1.2).
+    pub fvmax: Option<f64>,
 
     // ========================================================================
     // Adhesion-specific attributes
     // ========================================================================
     /// Gain in force units for adhesion (total force = control × gain).
-    pub gain: f64,
+    /// `None` means not written (MuJoCo's 1).
+    pub gain: Option<f64>,
 
     // ========================================================================
     // <general>-specific attributes
@@ -3014,7 +3019,7 @@ impl Default for MjcfActuator {
             forcerange: None,
             ctrllimited: None,
             forcelimited: None,
-            kp: 1.0,
+            kp: None,
             kv: None,
             dampratio: None,
             inheritrange: None,
@@ -3026,23 +3031,20 @@ impl Default for MjcfActuator {
             nsample: None,
             interp: None,
             delay: None,
-            // Cylinder defaults (MuJoCo defaults)
-            area: 1.0,
+            area: None,
             diameter: None,
             timeconst: None,
-            bias: [0.0, 0.0, 0.0],
-            // Muscle defaults (MuJoCo defaults)
-            muscle_timeconst: (0.01, 0.04),
-            range: (0.75, 1.05),
-            force: -1.0, // Negative triggers automatic computation
-            scale: 200.0,
-            lmin: 0.5,
-            lmax: 1.6,
-            vmax: 1.5,
-            fpmax: 1.3,
-            fvmax: 1.2,
-            // Adhesion defaults
-            gain: 1.0,
+            bias: None,
+            muscle_timeconst: None,
+            range: None,
+            force: None,
+            scale: None,
+            lmin: None,
+            lmax: None,
+            vmax: None,
+            fpmax: None,
+            fvmax: None,
+            gain: None,
             // <general>-specific defaults (all None = use MuJoCo defaults in model builder)
             gaintype: None,
             biastype: None,
@@ -3075,7 +3077,7 @@ impl MjcfActuator {
             name: name.into(),
             actuator_type: MjcfActuatorType::Position,
             joint: Some(joint.into()),
-            kp,
+            kp: Some(kp),
             ..Default::default()
         }
     }
@@ -3099,7 +3101,7 @@ impl MjcfActuator {
             name: name.into(),
             actuator_type: MjcfActuatorType::Cylinder,
             joint: Some(joint.into()),
-            area,
+            area: Some(area),
             timeconst: Some(1.0),
             ..Default::default()
         }
@@ -3135,7 +3137,7 @@ impl MjcfActuator {
             name: name.into(),
             actuator_type: MjcfActuatorType::Adhesion,
             body: Some(body.into()),
-            gain,
+            gain: Some(gain),
             ..Default::default()
         }
     }
@@ -3645,10 +3647,11 @@ pub struct MjcfSensor {
     pub reftype: Option<String>,
     /// Reference object name from MJCF `refname` attribute.
     pub refname: Option<String>,
-    /// Noise standard deviation.
-    pub noise: f64,
-    /// Cutoff frequency for low-pass filter (0 = no filter).
-    pub cutoff: f64,
+    /// Noise standard deviation. `None` means not written (0).
+    pub noise: Option<f64>,
+    /// Cutoff frequency for low-pass filter (0 = no filter). `None` means
+    /// not written (0).
+    pub cutoff: Option<f64>,
     /// User-defined data fields.
     pub user: Vec<f64>,
     /// First geom name (for distance/normal/fromto sensors).
@@ -3693,8 +3696,8 @@ impl Default for MjcfSensor {
             objtype: None,
             reftype: None,
             refname: None,
-            noise: 0.0,
-            cutoff: 0.0,
+            noise: None,
+            cutoff: None,
             user: Vec::new(),
             geom1: None,
             geom2: None,
@@ -3760,14 +3763,14 @@ impl MjcfSensor {
     /// Set noise standard deviation.
     #[must_use]
     pub fn with_noise(mut self, noise: f64) -> Self {
-        self.noise = noise;
+        self.noise = Some(noise);
         self
     }
 
     /// Set cutoff frequency for filtering.
     #[must_use]
     pub fn with_cutoff(mut self, cutoff: f64) -> Self {
-        self.cutoff = cutoff;
+        self.cutoff = Some(cutoff);
         self
     }
 

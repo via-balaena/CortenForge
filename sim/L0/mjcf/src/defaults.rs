@@ -356,11 +356,6 @@ impl DefaultResolver {
         let mut result = actuator.clone();
 
         if let Some(defaults) = &self.class(actuator.class.as_deref())?.actuator {
-            // #todo: kp and sensor noise/cutoff use sentinel-value detection
-            // (== default) instead of Option<T>. Explicitly setting kp=1.0,
-            // noise=0.0, or cutoff=0.0 is indistinguishable from "unset" and
-            // will be overwritten by defaults. Migrate these to Option<T> to fix.
-
             result.gear = over(result.gear, defaults.gear);
 
             // Control range: apply default if None
@@ -387,12 +382,7 @@ impl DefaultResolver {
                 result.forcelimited = Some(forcelimited);
             }
 
-            // kp: apply default if at default (1.0)
-            if (result.kp - 1.0).abs() < 1e-10
-                && let Some(kp) = defaults.kp
-            {
-                result.kp = kp;
-            }
+            result.kp = result.kp.or(defaults.kp);
 
             // kv: apply default if not explicitly set
             if result.kv.is_none()
@@ -453,79 +443,30 @@ impl DefaultResolver {
                 result.delay = defaults.delay;
             }
 
-            // Cylinder-specific: sentinel-value detection
-            if (result.area - 1.0).abs() < 1e-10
-                && let Some(area) = defaults.area
-            {
-                result.area = area;
-            }
+            result.area = result.area.or(defaults.area);
             if result.diameter.is_none() {
                 result.diameter = defaults.diameter;
             }
             if result.timeconst.is_none() {
                 result.timeconst = defaults.timeconst;
             }
-            if result.bias == [0.0, 0.0, 0.0]
-                && let Some(bias) = defaults.bias
-            {
-                result.bias = bias;
-            }
+            result.bias = result.bias.or(defaults.bias);
 
-            // Muscle-specific: sentinel-value detection
-            if (result.muscle_timeconst.0 - 0.01).abs() < 1e-10
-                && (result.muscle_timeconst.1 - 0.04).abs() < 1e-10
-                && let Some(tc) = defaults.muscle_timeconst
-            {
-                result.muscle_timeconst = tc;
+            result.muscle_timeconst = result.muscle_timeconst.or(defaults.muscle_timeconst);
+            result.range = result.range.or(defaults.range);
+            // MuJoCo reads a negative force as unwritten (`mjs_setToMuscle`,
+            // `user_api.cc:1009-1050`): the class's, if it writes one.
+            if defaults.force.is_some() && result.force.is_none_or(|f| f < 0.0) {
+                result.force = defaults.force;
             }
-            if (result.range.0 - 0.75).abs() < 1e-10
-                && (result.range.1 - 1.05).abs() < 1e-10
-                && let Some(r) = defaults.range
-            {
-                result.range = r;
-            }
-            if (result.force - (-1.0)).abs() < 1e-10
-                && let Some(f) = defaults.force
-            {
-                result.force = f;
-            }
-            if (result.scale - 200.0).abs() < 1e-10
-                && let Some(s) = defaults.scale
-            {
-                result.scale = s;
-            }
-            if (result.lmin - 0.5).abs() < 1e-10
-                && let Some(v) = defaults.lmin
-            {
-                result.lmin = v;
-            }
-            if (result.lmax - 1.6).abs() < 1e-10
-                && let Some(v) = defaults.lmax
-            {
-                result.lmax = v;
-            }
-            if (result.vmax - 1.5).abs() < 1e-10
-                && let Some(v) = defaults.vmax
-            {
-                result.vmax = v;
-            }
-            if (result.fpmax - 1.3).abs() < 1e-10
-                && let Some(v) = defaults.fpmax
-            {
-                result.fpmax = v;
-            }
-            if (result.fvmax - 1.2).abs() < 1e-10
-                && let Some(v) = defaults.fvmax
-            {
-                result.fvmax = v;
-            }
+            result.scale = result.scale.or(defaults.scale);
+            result.lmin = result.lmin.or(defaults.lmin);
+            result.lmax = result.lmax.or(defaults.lmax);
+            result.vmax = result.vmax.or(defaults.vmax);
+            result.fpmax = result.fpmax.or(defaults.fpmax);
+            result.fvmax = result.fvmax.or(defaults.fvmax);
 
-            // Adhesion-specific: sentinel-value detection
-            if (result.gain - 1.0).abs() < 1e-10
-                && let Some(g) = defaults.gain
-            {
-                result.gain = g;
-            }
+            result.gain = result.gain.or(defaults.gain);
             if result.user.is_empty()
                 && let Some(ref user) = defaults.user
             {
@@ -670,19 +611,8 @@ impl DefaultResolver {
         let mut result = sensor.clone();
 
         if let Some(defaults) = &self.class(sensor.class.as_deref())?.sensor {
-            // Noise: apply default if zero
-            if result.noise == 0.0
-                && let Some(noise) = defaults.noise
-            {
-                result.noise = noise;
-            }
-
-            // Cutoff: apply default if zero
-            if result.cutoff == 0.0
-                && let Some(cutoff) = defaults.cutoff
-            {
-                result.cutoff = cutoff;
-            }
+            result.noise = result.noise.or(defaults.noise);
+            result.cutoff = result.cutoff.or(defaults.cutoff);
 
             // User: apply default if empty
             if result.user.is_empty()
@@ -1338,7 +1268,7 @@ mod tests {
         let resolved = resolver.apply_to_actuator(&actuator).unwrap();
         assert_relative_eq!(resolved.gear.unwrap().given()[0], 100.0, epsilon = 1e-10);
         assert_eq!(resolved.ctrlrange, Some((-1.0, 1.0)));
-        assert_relative_eq!(resolved.kp, 50.0, epsilon = 1e-10);
+        assert_eq!(resolved.kp, Some(50.0));
     }
 
     #[test]
@@ -1481,20 +1411,20 @@ mod tests {
         };
 
         let resolved = resolver.apply_to_sensor(&sensor).unwrap();
-        assert_relative_eq!(resolved.noise, 0.01, epsilon = 1e-10);
-        assert_relative_eq!(resolved.cutoff, 100.0, epsilon = 1e-10);
+        assert_eq!(resolved.noise, Some(0.01));
+        assert_eq!(resolved.cutoff, Some(100.0));
         assert_eq!(resolved.user, vec![1.0, 2.0, 3.0]);
 
         // Sensor with explicit noise should keep it
         let sensor_with_noise = MjcfSensor {
             class: Some("noisy".to_string()),
-            noise: 0.05,
+            noise: Some(0.05),
             ..Default::default()
         };
 
         let resolved = resolver.apply_to_sensor(&sensor_with_noise).unwrap();
-        assert_relative_eq!(resolved.noise, 0.05, epsilon = 1e-10); // Kept explicit
-        assert_relative_eq!(resolved.cutoff, 100.0, epsilon = 1e-10); // Got default
+        assert_eq!(resolved.noise, Some(0.05)); // Kept explicit
+        assert_eq!(resolved.cutoff, Some(100.0)); // Got default
     }
 
     #[test]
@@ -1569,8 +1499,8 @@ mod tests {
         };
 
         let resolved = resolver.apply_to_sensor(&sensor).unwrap();
-        assert_relative_eq!(resolved.noise, 0.001, epsilon = 1e-10); // Inherited from root
-        assert_relative_eq!(resolved.cutoff, 10.0, epsilon = 1e-10); // From "filtered"
+        assert_eq!(resolved.noise, Some(0.001)); // Inherited from root
+        assert_eq!(resolved.cutoff, Some(10.0)); // From "filtered"
     }
 
     // ---- T14 (Spec B): Margin parsed from MJCF defaults ----

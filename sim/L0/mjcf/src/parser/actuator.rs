@@ -145,9 +145,7 @@ pub(super) fn parse_actuator_attrs(
     actuator.ctrllimited = a.tf_auto("ctrllimited")?;
     actuator.forcelimited = a.tf_auto("forcelimited")?;
 
-    if let Some(kp) = a.real("kp")? {
-        actuator.kp = kp;
-    }
+    actuator.kp = a.real("kp")?;
     if let Some(kv) = a.real("kv")? {
         actuator.kv = Some(kv);
     }
@@ -178,59 +176,35 @@ pub(super) fn parse_actuator_attrs(
     // ========================================================================
     // Cylinder-specific attributes
     // ========================================================================
-    if let Some(area) = a.real("area")? {
-        actuator.area = area;
-    }
+    actuator.area = a.real("area")?;
     if let Some(diameter) = a.real("diameter")? {
         actuator.diameter = Some(diameter);
     }
     // A muscle's `timeconst` is a pair [activation, deactivation]; every other
     // type's is one number (`xml_native_reader.cc` reads 2 and 1, exactly).
     if actuator_type == MjcfActuatorType::Muscle {
-        if let Some(pair) = a.array::<2>("timeconst")? {
-            actuator.muscle_timeconst = pair.into();
-        }
+        actuator.muscle_timeconst = a.array::<2>("timeconst")?.map(Into::into);
     } else if let Some(timeconst) = a.real("timeconst")? {
         actuator.timeconst = Some(timeconst);
     }
-    if let Some(bias) = a.array::<3>("bias")? {
-        actuator.bias = bias;
-    }
+    actuator.bias = a.array::<3>("bias")?;
 
     // ========================================================================
     // Muscle-specific attributes
     // ========================================================================
-    if let Some(pair) = a.array::<2>("range")? {
-        actuator.range = pair.into();
-    }
-    if let Some(force) = a.real("force")? {
-        actuator.force = force;
-    }
-    if let Some(scale) = a.real("scale")? {
-        actuator.scale = scale;
-    }
-    if let Some(lmin) = a.real("lmin")? {
-        actuator.lmin = lmin;
-    }
-    if let Some(lmax) = a.real("lmax")? {
-        actuator.lmax = lmax;
-    }
-    if let Some(vmax) = a.real("vmax")? {
-        actuator.vmax = vmax;
-    }
-    if let Some(fpmax) = a.real("fpmax")? {
-        actuator.fpmax = fpmax;
-    }
-    if let Some(fvmax) = a.real("fvmax")? {
-        actuator.fvmax = fvmax;
-    }
+    actuator.range = a.array::<2>("range")?.map(Into::into);
+    actuator.force = a.real("force")?;
+    actuator.scale = a.real("scale")?;
+    actuator.lmin = a.real("lmin")?;
+    actuator.lmax = a.real("lmax")?;
+    actuator.vmax = a.real("vmax")?;
+    actuator.fpmax = a.real("fpmax")?;
+    actuator.fvmax = a.real("fvmax")?;
 
     // ========================================================================
     // Adhesion-specific attributes
     // ========================================================================
-    if let Some(gain) = a.real("gain")? {
-        actuator.gain = gain;
-    }
+    actuator.gain = a.real("gain")?;
 
     // ========================================================================
     // Activation parameters

@@ -177,13 +177,8 @@ pub(super) fn parse_sensor_attrs(
     sensor.reftype = a.string("reftype");
     sensor.refname = a.string("refname");
 
-    if let Some(noise) = a.real("noise")? {
-        sensor.noise = noise;
-    }
-
-    if let Some(cutoff) = a.real("cutoff")? {
-        sensor.cutoff = cutoff;
-    }
+    sensor.noise = a.real("noise")?;
+    sensor.cutoff = a.real("cutoff")?;
 
     if let Some(user) = a.vector("user")? {
         sensor.user = user;
