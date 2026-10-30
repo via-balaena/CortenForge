@@ -675,3 +675,45 @@ fn a_muscles_tausmooth_is_its_dynprm2() {
         "{err}"
     );
 }
+
+// ── What `e6efb4b3`'s mutants found untested ───────────────────────────────
+
+/// A `<velocity>` zeroes its class's bias before writing its own damping
+/// (`mjs_setToVelocity`: biasprm 0 0 -10 under a position class's kp 10,
+/// measured); a `<damper>` zeroes its class's gain and takes kv 0 under a
+/// class whose fixed gain has a third value (gainprm 0 0 -0, measured).
+#[test]
+fn a_velocity_and_a_damper_clear_what_their_class_wrote() {
+    let model = load_model(
+        r#"<mujoco><default><position kp="10"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><velocity joint="h"/></actuator></mujoco>"#,
+    )
+    .unwrap();
+    assert_eq!(model.actuator_biasprm[0][..3], [0.0, 0.0, -10.0]);
+    let model = load_model(
+        r#"<mujoco><default><general gainprm="1 0 -3"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><damper joint="h" ctrlrange="0 1"/></actuator></mujoco>"#,
+    )
+    .unwrap();
+    assert_eq!(model.actuator_gainprm[0][..3], [0.0, 0.0, 0.0]);
+}
+
+/// A damper's and an adhesion's control are limited whatever `autolimits`
+/// says (`mjs_setToDamper`, `mjs_setToAdhesion`; measured with it off).
+#[test]
+fn a_damper_and_an_adhesion_are_control_limited_without_autolimits() {
+    let model = load_model(
+        r#"<mujoco><compiler autolimits="false"/><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><actuator><damper joint="h" kv="1" ctrlrange="0 1"/><adhesion body="world" gain="1" ctrlrange="0 1"/></actuator></mujoco>"#,
+    )
+    .unwrap();
+    assert_eq!(model.actuator_ctrlrange, vec![(0.0, 1.0), (0.0, 1.0)]);
+}
+
+/// A cylinder class's `dynprm[0]` of 1 is its own default timeconst, not a
+/// muscle time constant anyone asked for: a muscle under it takes 0.01, as
+/// MuJoCo's muscle replaces it (measured: dynprm 0.01 0.04).
+#[test]
+fn a_muscle_replaces_a_value_its_class_kind_set() {
+    let (_, _, dynamics) = params(
+        r#"<mujoco><default><cylinder/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+    );
+    assert_eq!((dynamics[0], dynamics[1]), (0.01, 0.04));
+}
