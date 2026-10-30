@@ -389,8 +389,13 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
             )
         };
 
-        // Build geom from template
-        let geom = build_cable_geom(composite, &geom_name, length)?;
+        // Build geom from template; a refusal of its `fromto` names it and
+        // its body.
+        let geom = build_cable_geom(composite, &geom_name, length).map_err(|e| {
+            e.with_location_if_unknown(
+                Location::named(ElementKind::Geom, &geom_name).in_body(&body_name),
+            )
+        })?;
 
         // Build joint
         let joint = build_cable_joint(composite, &joint_name, is_first);

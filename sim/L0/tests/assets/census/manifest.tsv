@@ -2274,3 +2274,4 @@ fd319557ca9c266f	sim/L0/mjcf/tests/classes_before_frames.rs:160
 8cb636a360179a6a	sim/L0/mjcf/tests/default_classes.rs:293
 a18efdfc1b778bad	sim/L0/mjcf/tests/default_classes.rs:292
 e65195a5627e3a15	sim/L0/mjcf/tests/default_classes.rs:290
+b79ab18fe4595f3b	sim/L0/mjcf/tests/errors.rs:188
