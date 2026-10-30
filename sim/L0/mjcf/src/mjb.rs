@@ -59,7 +59,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// Current MJB format version.
 ///
 /// 10 since Rigid-loading PR RL-5a: `MjcfMesh` took `class`, `MjcfComposite`
-/// `site`.
+/// `site`, `MjcfJoint` `freejoint`.
 /// 9 since Rigid-loading PR RL-4b: `MjcfBody` took `xyaxes` and `zaxis`.
 /// 8 since Rigid-loading PR RL-4a: `MjcfActuator` and `MjcfActuatorDefaults`
 /// took `inheritrange`, `MjcfActuatorType` `IntVelocity`, `MjcfSensor` `dim`,

@@ -1,0 +1,1 @@
+<mujoco><default><joint limited="true" range="-1 1"/></default><worldbody><body><freejoint/><geom size=".1"/></body></worldbody></mujoco>

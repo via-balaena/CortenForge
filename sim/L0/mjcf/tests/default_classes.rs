@@ -371,3 +371,49 @@ fn an_unknown_mesh_class_is_refused() {
         "nope",
     );
 }
+
+/// A `<freejoint>` is made without defaults (MuJoCo 3.5.0's
+/// `mjs_addFreeJoint`): no class reaches it, the main class or a
+/// `childclass`; its own `group` is read. A `<joint type="free">` takes its
+/// class.
+#[test]
+fn a_freejoint_takes_no_class() {
+    for xml in [
+        r#"<mujoco><default><joint damping="1" armature="0.1" frictionloss="0.2" group="2"/></default><worldbody><body><freejoint/><geom size=".1"/></body></worldbody></mujoco>"#,
+        r#"<mujoco><default><default class="c"><joint damping="1" armature="0.1" frictionloss="0.2" group="2"/></default></default><worldbody><body childclass="c"><freejoint/><geom size=".1"/></body></worldbody></mujoco>"#,
+    ] {
+        let model = load_model(xml).unwrap();
+        assert_eq!(model.dof_damping, vec![0.0; 6]);
+        assert_eq!(model.dof_armature, vec![0.0; 6]);
+        assert_eq!(model.dof_frictionloss, vec![0.0; 6]);
+        assert_eq!(model.jnt_group, vec![0]);
+    }
+}
+
+#[test]
+fn a_freejoint_is_not_limited_by_its_bodys_class() {
+    let model = load_model(
+        r#"<mujoco><default><joint limited="true" range="-1 1"/></default><worldbody><body><freejoint/><geom size=".1"/></body></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    assert_eq!(model.jnt_limited, vec![false]);
+}
+
+#[test]
+fn a_freejoint_reads_its_own_group() {
+    let model = load_model(
+        r#"<mujoco><default><joint group="2"/></default><worldbody><body><freejoint group="4"/><geom size=".1"/></body></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    assert_eq!(model.jnt_group, vec![4]);
+}
+
+#[test]
+fn a_joint_of_type_free_takes_its_class() {
+    let model = load_model(
+        r#"<mujoco><default><joint damping="1" armature="0.1" frictionloss="0.2" group="2"/></default><worldbody><body><joint type="free"/><geom size=".1"/></body></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    assert_eq!(model.dof_damping, vec![1.0; 6]);
+    assert_eq!(model.jnt_group, vec![2]);
+}

@@ -215,16 +215,16 @@ pub(super) fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     Ok(joint)
 }
 
-/// Parse freejoint attributes (MuJoCo shorthand for `<joint type="free"/>`).
-///
-/// The `<freejoint/>` element is a convenience shorthand in MuJoCo that creates
-/// a 6-DOF free joint. It only supports `name` and `group` attributes.
+/// Parse freejoint attributes: a free joint MuJoCo 3.5.0 makes without
+/// defaults (`mjs_addFreeJoint`), so no class reaches it; it reads `name` and
+/// `group` (its `align` is not read).
 pub(super) fn parse_freejoint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     let a = Attrs::new(e)?;
     let mut joint = MjcfJoint::default();
     joint.joint_type = Some(MjcfJointType::Free);
+    joint.freejoint = true;
     joint.name = a.string("name").unwrap_or_default();
-    // Note: MuJoCo's freejoint also supports 'group' attribute, but we don't use it
+    joint.group = a.int("group")?;
     Ok(joint)
 }
 

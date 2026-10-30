@@ -1621,6 +1621,9 @@ pub struct MjcfJoint {
     pub class: Option<String>,
     /// Joint type.
     pub joint_type: Option<MjcfJointType>,
+    /// Written as `<freejoint>`, which MuJoCo 3.5.0 makes without defaults
+    /// (`mjs_addFreeJoint`): it takes no class.
+    pub freejoint: bool,
     /// Joint position relative to body frame.
     pub pos: Option<Vector3<f64>>,
     /// Joint axis (for hinge and slide).
@@ -1669,6 +1672,7 @@ impl Default for MjcfJoint {
             name: String::new(),
             class: None,
             joint_type: None,
+            freejoint: false,
             pos: None,
             axis: None,
             limited: None,

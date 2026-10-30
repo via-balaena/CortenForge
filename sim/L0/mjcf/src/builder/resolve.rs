@@ -191,7 +191,8 @@ fn apply_to_body_tree(world: &mut MjcfBody, resolver: &DefaultResolver) -> Resul
                         .map_err(|e| e.at(Location::named(ElementKind::Body, name)))?;
                 }
                 let effective = childclass.clone().or(inherited);
-                for joint in joints.iter_mut() {
+                // A `<freejoint>` takes no class.
+                for joint in joints.iter_mut().filter(|j| !j.freejoint) {
                     if joint.class.is_none() {
                         joint.class.clone_from(&effective);
                     }

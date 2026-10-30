@@ -1,0 +1,1 @@
+<mujoco><default><joint damping="1" armature="0.1" frictionloss="0.2" group="2"/></default><worldbody><body><joint type="free"/><geom size=".1"/></body></worldbody></mujoco>

@@ -2295,3 +2295,8 @@ d6ce5586c3a5bd13	sim/L0/mjcf/tests/default_classes.rs:350
 6a3b11f9226cb07c	sim/L0/mjcf/tests/classes_before_frames.rs:311
 cb9e78b137e85f0f	sim/L0/mjcf/tests/classes_before_frames.rs:277
 2b27902247a74f6b	sim/L0/mjcf/tests/validation_order.rs:72
+31a581a881e2e976	sim/L0/mjcf/tests/default_classes.rs:405
+393fedd05ed8ae45	sim/L0/mjcf/tests/default_classes.rs:414
+4143ce5c09be9678	sim/L0/mjcf/tests/default_classes.rs:396
+7d45e1679577e6fc	sim/L0/mjcf/tests/default_classes.rs:382
+c279f89418b659bd	sim/L0/mjcf/tests/default_classes.rs:383
