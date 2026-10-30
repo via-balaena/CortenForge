@@ -2545,6 +2545,21 @@ pub struct CompositeJoint {
     pub range: Option<[f64; 2]>,
 }
 
+/// Template for a cable's boundary sites (from `<site>` child), the four
+/// attributes MuJoCo reads onto its composite default's site.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct CompositeSite {
+    /// Size, written over MuJoCo's 0.005 for each, element-wise.
+    pub size: [f64; 3],
+    /// Visualization group (none: MuJoCo's composite default, 3).
+    pub group: Option<i32>,
+    /// Material asset name.
+    pub material: Option<String>,
+    /// RGBA color.
+    pub rgba: Option<[f64; 4]>,
+}
+
 /// Template geom for cable bodies (from `<geom>` child).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -2612,6 +2627,8 @@ pub struct MjcfComposite {
     pub joint: Option<CompositeJoint>,
     /// Template geom (from `<geom>` child).
     pub geom: Option<CompositeGeom>,
+    /// Template for the boundary sites (from `<site>` child).
+    pub site: Option<CompositeSite>,
 }
 
 // ============================================================================

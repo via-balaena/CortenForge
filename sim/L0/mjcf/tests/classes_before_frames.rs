@@ -268,3 +268,51 @@ fn a_cables_sites_take_no_main_class() {
         assert_eq!(model.site_group[s], 3);
     }
 }
+
+/// Ledger L240 (a): a cable's last boundary site sits at its last body's
+/// length (one `f32` third of the cable), at the cable's far end.
+#[test]
+fn a_cables_last_site_is_at_its_far_end() {
+    let model = load_model(
+        r#"<mujoco><worldbody><body name="h"><composite prefix="c" type="cable" count="4 1 1" curve="s" size="1" initial="none"><geom type="capsule" size=".01"/></composite></body></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    assert_eq!(
+        model.site_name,
+        vec![Some("cS_first".into()), Some("cS_last".into())]
+    );
+    assert_vec3(model.site_pos[0], [0.0, 0.0, 0.0]);
+    assert_vec3(model.site_pos[1], [0.3333333134651184, 0.0, 0.0]);
+    let mut data = model.make_data();
+    data.forward(&model).unwrap();
+    assert_vec3(data.site_xpos[1], [1.0, 0.0, 0.0]);
+}
+
+/// Ledger L240 (b): a composite's own `<site>` gives its boundary sites their
+/// size (over MuJoCo's 0.005, element-wise), group and color.
+#[test]
+fn a_cables_site_gives_its_boundary_sites() {
+    let model = load_model(
+        r#"<mujoco><worldbody><body name="h"><composite prefix="c" type="cable" count="4 1 1" curve="s" size="1" initial="none"><geom type="capsule" size=".01"/><site size="0.02" group="1" rgba="1 0 0 1"/></composite></body></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    for s in 0..2 {
+        assert_vec3(model.site_size[s], [0.02, 0.005, 0.005]);
+        assert_eq!(model.site_group[s], 1);
+        for (got, want) in model.site_rgba[s].iter().zip([1.0, 0.0, 0.0, 1.0]) {
+            assert_relative_eq!(*got, want);
+        }
+    }
+}
+
+#[test]
+fn a_cables_site_size_of_three_is_taken_whole() {
+    let model = load_model(
+        r#"<mujoco><worldbody><body name="h"><composite prefix="c" type="cable" count="4 1 1" curve="s" size="1" initial="none"><geom type="capsule" size=".01"/><site size="0.02 0.03 0.04"/></composite></body></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    for s in 0..2 {
+        assert_vec3(model.site_size[s], [0.02, 0.03, 0.04]);
+        assert_eq!(model.site_group[s], 3);
+    }
+}
