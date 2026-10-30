@@ -2275,3 +2275,10 @@ fd319557ca9c266f	sim/L0/mjcf/tests/classes_before_frames.rs:160
 a18efdfc1b778bad	sim/L0/mjcf/tests/default_classes.rs:292
 e65195a5627e3a15	sim/L0/mjcf/tests/default_classes.rs:290
 b79ab18fe4595f3b	sim/L0/mjcf/tests/errors.rs:188
+26d50238928f5214	sim/L0/mjcf/tests/default_classes.rs:328
+33a01eb4541f9036	sim/L0/mjcf/tests/default_classes.rs:304
+61eba7e52d42993a	sim/L0/mjcf/tests/default_classes.rs:329
+893718bf892cba2c	sim/L0/mjcf/tests/default_classes.rs:305
+a1d405cfd3c01620	sim/L0/mjcf/tests/default_classes.rs:326
+cd321cd614105e9d	sim/L0/mjcf/tests/default_classes.rs:316
+dc074a66f69c17ad	sim/L0/mjcf/tests/default_classes.rs:327

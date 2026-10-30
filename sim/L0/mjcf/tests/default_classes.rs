@@ -295,3 +295,39 @@ fn an_equalitys_class_is_checked_before_what_it_names() {
         assert_unknown_class(&refused(xml), "nope");
     }
 }
+
+/// A geom's unknown class is refused on the world body's own geoms and a
+/// body's, outside any frame.
+#[test]
+fn an_unknown_geom_class_is_refused() {
+    for xml in [
+        r#"<mujoco><worldbody><geom class="nope" size=".1"/></worldbody></mujoco>"#,
+        r#"<mujoco><worldbody><body><geom class="nope" size=".1"/></body></worldbody></mujoco>"#,
+    ] {
+        assert_unknown_class(&refused(xml), "nope");
+    }
+}
+
+/// A body's unknown `childclass` is refused where it is written, though no
+/// element takes it (MuJoCo: "unknown default childclass").
+#[test]
+fn an_unknown_childclass_on_a_body_without_elements_is_refused() {
+    assert_unknown_class(
+        &refused(r#"<mujoco><worldbody><body childclass="nope"/></worldbody></mujoco>"#),
+        "nope",
+    );
+}
+
+/// Each equality kind's unknown class is refused. The distance equality is
+/// sim-mjcf's own (MuJoCo 3.5.0's schema refuses the element).
+#[test]
+fn every_equality_kinds_unknown_class_is_refused() {
+    for xml in [
+        r#"<mujoco><worldbody><body name="b1"><joint name="j" type="hinge"/><geom size=".1"/></body><body name="b2" pos="1 0 0"><joint name="j2" type="hinge"/><geom size=".1"/></body></worldbody><equality><connect class="nope" body1="b1" body2="b2" anchor="0 0 0"/></equality></mujoco>"#,
+        r#"<mujoco><worldbody><body name="b1"><joint name="j" type="hinge"/><geom size=".1"/></body><body name="b2" pos="1 0 0"><joint name="j2" type="hinge"/><geom size=".1"/></body></worldbody><equality><weld class="nope" body1="b1" body2="b2"/></equality></mujoco>"#,
+        r#"<mujoco><worldbody><body name="b1"><joint name="j" type="hinge"/><geom size=".1"/></body><body name="b2" pos="1 0 0"><joint name="j2" type="hinge"/><geom size=".1"/></body></worldbody><tendon><fixed name="t1"><joint joint="j" coef="1"/></fixed><fixed name="t2"><joint joint="j2" coef="1"/></fixed></tendon><equality><tendon class="nope" tendon1="t1" tendon2="t2"/></equality></mujoco>"#,
+        r#"<mujoco><worldbody><body name="b1"><joint name="j" type="hinge"/><geom name="g1" size=".1"/></body><body name="b2" pos="1 0 0"><joint name="j2" type="hinge"/><geom name="g2" size=".1"/></body></worldbody><equality><distance class="nope" geom1="g1" geom2="g2"/></equality></mujoco>"#,
+    ] {
+        assert_unknown_class(&refused(xml), "nope");
+    }
+}

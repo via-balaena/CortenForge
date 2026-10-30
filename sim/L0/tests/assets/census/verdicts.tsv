@@ -317,6 +317,7 @@
 26a2f4d642297627	mj-refuses
 26d13bc8aebd466d	mj-refuses
 26d223bffa0fba77	mj-refuses
+26d50238928f5214	both-refuse
 26f3b447ba348f20	agree
 277ebe25e7a353db	mj-refuses
 27a5746e9c0b0e6f	agree
@@ -425,6 +426,7 @@
 32be1503120a3a19	agree
 32d640baf8fc76e8	agree
 33730125ce762006	agree
+33a01eb4541f9036	both-refuse
 33fc69293c376e71	agree
 33fff2ce019aaccb	agree
 340567b32d82e767	agree
@@ -849,6 +851,7 @@
 61753ef78ae111ba	agree
 617feadaa55ecbb9	both-refuse
 61c303dc2aa0dacc	agree
+61eba7e52d42993a	both-refuse
 61fd390a8c171e4d	both-refuse
 6220a39646c07ebf	agree
 62243c1caa859851	both-refuse
@@ -1158,6 +1161,7 @@
 88df115039e3d8fd	agree
 890dee7740613285	agree
 8911fdab9393973e	mj-refuses
+893718bf892cba2c	both-refuse
 89463ef98ed617da	agree
 897a2981f00d0da8	agree
 897fa76174527055	agree
@@ -1367,6 +1371,7 @@ a18efdfc1b778bad	both-refuse
 a19a55c780431d02	agree
 a19daa9cd12b079a	agree
 a1b33ed699cd992f	ours-refused	divergence=D-FLEX-NODE
+a1d405cfd3c01620	both-refuse
 a1d4ffc78e5855bd	agree
 a1fcfad754c92514	model:neq
 a2025dd2e7d7f3f5	agree
@@ -1763,6 +1768,7 @@ ccb734846cfec89d	agree
 ccd362fb69930a4b	agree
 cd0170f458e31f8f	both-refuse
 cd2d95f252d23f01	agree
+cd321cd614105e9d	both-refuse
 cd4cd1a99f089b01	mj-refuses
 cd65f024c57fd53e	agree
 cd6e25e5b5717a43	both-refuse
@@ -1873,6 +1879,7 @@ db3dc2391aa17081	agree
 db5261a208146fff	agree
 db7b2a4beee4fcbd	agree
 dbc74eee1da5b220	both-refuse
+dc074a66f69c17ad	both-refuse
 dc0e4d13f26a8729	agree
 dc2267f6c52bba1f	agree
 dc490fd0b120a5df	agree
