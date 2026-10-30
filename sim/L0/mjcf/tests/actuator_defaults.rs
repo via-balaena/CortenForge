@@ -1158,6 +1158,10 @@ fn a_kind_copying_its_classs_value_keeps_what_was_asked() {
             "range",
         ),
         (
+            r#"<mujoco><default><general gainprm="1"/><cylinder/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+            "range",
+        ),
+        (
             r#"<mujoco><default><general dynprm="1"/><cylinder/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
             "timeconst",
         ),
