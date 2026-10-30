@@ -134,7 +134,8 @@ fn a_muscle_negative_force_under_a_class_force_is_refused() {
 }
 
 /// A negative force under no class force, or under a class's own negative or
-/// zero one, is computed as asked (MuJoCo: -1 in each, measured).
+/// zero one, is computed as asked, stored as MuJoCo's -1 (measured, -5
+/// included).
 #[test]
 fn a_muscle_negative_force_with_no_positive_class_force_loads() {
     for xml in [
@@ -144,7 +145,7 @@ fn a_muscle_negative_force_with_no_positive_class_force_loads() {
         r#"<mujoco><default><default class="c"><muscle force="0"/></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle class="c" joint="h" force="-1"/></actuator></mujoco>"#,
     ] {
         let (gain, _, _) = params(xml);
-        assert!(gain[2] < 0.0, "{xml}: force {}", gain[2]);
+        assert_eq!(gain[2], -1.0, "{xml}");
     }
 }
 
@@ -893,4 +894,74 @@ fn a_muscles_actearly_is_allowlisted() {
     ] {
         assert!(load_model(xml).unwrap().actuator_actearly[0], "{xml}");
     }
+}
+
+/// Each value a kind takes from its class's spec where it writes none, and
+/// the cases its rules single out, as MuJoCo 3.5.0 builds them (measured).
+#[test]
+fn values_each_kind_takes_from_its_class() {
+    let load = |xml: &str| load_model(xml).unwrap();
+    // A muscle's tausmooth is its class's dynprm[2].
+    let m = load(
+        r#"<mujoco><default><general dynprm="0.02 0.05 0.3"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+    );
+    assert_eq!(m.actuator_dynprm[0][..3], [0.02, 0.05, 0.3]);
+    // A cylinder's timeconst is its class's dynprm[0]; a position's bias
+    // stays beside its own.
+    let m = load(
+        r#"<mujoco><default><position timeconst="0.2"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><cylinder joint="h"/></actuator></mujoco>"#,
+    );
+    assert_eq!(
+        (m.actuator_dynprm[0][0], m.actuator_biasprm[0][1]),
+        (0.2, -1.0)
+    );
+    // A position's timeconst of 0 is no dynamics, over its class's 0.3.
+    let m = load(
+        r#"<mujoco><default><position timeconst="0.3"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><position joint="h" timeconst="0"/></actuator></mujoco>"#,
+    );
+    assert_eq!(
+        (m.actuator_dyntype[0], m.actuator_dynprm[0][0]),
+        (sim_core::ActuatorDynamics::None, 0.0)
+    );
+    // A cylinder's diameter of 0 is its gain, over its area.
+    let m = load(
+        r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><cylinder joint="h" area="3" diameter="0"/></actuator></mujoco>"#,
+    );
+    assert_eq!(m.actuator_gainprm[0][0], 0.0);
+    // A <motor> under a <damper> class keeps the damper's gain and its
+    // forced control limit, autolimits on or off.
+    for xml in [
+        r#"<mujoco><default><damper kv="4" ctrlrange="0 1"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/></actuator></mujoco>"#,
+        r#"<mujoco><compiler autolimits="false"/><default><damper kv="4" ctrlrange="0 1"/></default><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/></actuator></mujoco>"#,
+    ] {
+        let m = load(xml);
+        assert_eq!(m.actuator_gainprm[0][..3], [1.0, 0.0, -4.0], "{xml}");
+        assert_eq!(m.actuator_ctrlrange[0], (0.0, 1.0), "{xml}");
+    }
+}
+
+/// A cylinder under a position class's `inheritrange` (ledger L330's c17):
+/// with area 0 its gain and bias are no servo's, so it takes no range and
+/// loads; with area 1 they are a servo's, and its filter dynamics refuse
+/// the range, as MuJoCo does (measured).
+#[test]
+fn a_cylinder_under_a_servo_class_inheritrange() {
+    let m = load_model(
+        r#"<mujoco><default><default class="c"><position kp="1" inheritrange="1"/></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><cylinder class="c" joint="h" area="0"/></actuator></mujoco>"#,
+    )
+    .unwrap();
+    assert_eq!(
+        (m.actuator_gainprm[0][0], m.actuator_biasprm[0][1]),
+        (0.0, -1.0)
+    );
+    assert!(m.actuator_ctrlrange[0].0.is_infinite());
+    let err = load_model(
+        r#"<mujoco><default><default class="c"><position kp="1" inheritrange="1"/></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><cylinder class="c" joint="h" area="1"/></actuator></mujoco>"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("inheritrange only available for position and intvelocity actuators"),
+        "{err}"
+    );
 }

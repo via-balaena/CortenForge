@@ -1,0 +1,1 @@
+<mujoco><compiler autolimits="false"/><default><damper kv="4" ctrlrange="0 1"/></default><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/></actuator></mujoco>

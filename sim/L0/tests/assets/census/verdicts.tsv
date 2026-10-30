@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1437
+# agree_floor 1442
 001bc4149d608b24	agree
 00308b83da9d8bab	agree
 0032a4ca7e233aec	agree
@@ -186,6 +186,7 @@
 13fdd82f2ab90b66	agree
 14074c2917322bdd	both-refuse
 140b7da39d174c9c	agree
+1410c2b957b490a7	agree
 14229d86e283ac31	both-refuse
 143a252455fd7272	both-refuse
 144254b62c5c1c46	agree
@@ -886,6 +887,7 @@
 5f7144f037e6e57a	both-refuse
 5f8fccc75ceb8cab	agree
 5f96e77258032f2b	agree
+5fa75b4af3167da8	agree
 5facc585cc0fc3f6	agree
 5fddbc7f8533ead9	both-refuse
 5fe11cf81bf72aa8	agree
@@ -1125,6 +1127,7 @@
 7c8e5b144882c516	both-refuse
 7c92936ec5c5be78	agree
 7c973d9ff749f189	agree
+7cb7f52d594094b0	agree
 7cb8d6c22d3f60f4	agree
 7cff5ddd98669244	agree
 7d1db7cb4a240466	agree
@@ -1171,6 +1174,7 @@
 809ac3f334a5fc73	both-refuse
 809fc2ad17ccbc42	e1:t0:sensordata	divergence=D-STATIC-ACCELEROMETER
 80da5a6e93ad3d8a	agree
+80de2f3dcca2bcff	agree
 8118725707e1de2a	agree
 81678be07e627aee	mj-refuses
 81929e60ca84febe	ours-refused	divergence=D-NONFINITE
@@ -1532,6 +1536,7 @@ a989dbd221caf95e	mj-refuses
 a99c7c8d44645c32	both-refuse
 a9a3337a984f7707	agree
 a9b7ddf9e479aa7b	mj-refuses
+a9c07fd63d8d879b	agree
 a9eed09f93777e21	mj-refuses
 a9efc39a81509d70	both-refuse
 a9f02cd71aa1c5e8	model:body_mass;dyn:agree
@@ -1743,6 +1748,7 @@ bfc20bb7de87c6f8	mj-refuses
 bfc82bd7a13e1dff	agree
 bff78a79fbc32c5c	agree
 c03a28f89bfd3f58	both-refuse
+c053f03974b8a60a	both-refuse
 c055933cc8348dd3	both-refuse
 c093e8d15fe4a250	agree
 c0aa2aebb96d22fc	agree
@@ -2144,6 +2150,7 @@ ed1e4de6aba0c595	both-refuse
 ed2ac1fee980ce8c	model:meaninertia;dyn:e1:t0:qM
 ed4fa97aa1931207	model:neq
 ed65d8197d4282ec	agree
+ed81a3e98e945a56	model:actuator_actlimited;dyn:agree
 ed8d322a842a1358	both-refuse
 ed913b2009a8d1a0	ours-refused	divergence=D-CYLINDER-BIAS
 ed994df10cc5e1bc	agree
