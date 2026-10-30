@@ -42,7 +42,6 @@ pub struct ActuatorSpec {
     pub ctrlrange: Option<(f64, f64)>,
     pub forcerange: Option<(f64, f64)>,
     pub actrange: Option<(f64, f64)>,
-    pub lengthrange: Option<(f64, f64)>,
     pub ctrllimited: Option<TfAuto>,
     pub forcelimited: Option<TfAuto>,
     pub actlimited: Option<TfAuto>,
@@ -191,7 +190,8 @@ impl ActuatorSpec {
     }
 
     /// The attributes `OneActuator` reads alike for every kind
-    /// (`xml_native_reader.cc:2297-2308`), and `cranklength` (`:2349`).
+    /// (`xml_native_reader.cc:2297-2308`), and `cranklength` (`:2349`), but
+    /// `lengthrange`, which the builder does not take yet (book L44).
     fn write_common(&mut self, actuator: &MjcfActuator) {
         set(&mut self.group, actuator.group);
         set(&mut self.nsample, actuator.nsample);
@@ -203,7 +203,6 @@ impl ActuatorSpec {
         set(&mut self.ctrlrange, actuator.ctrlrange);
         set(&mut self.forcerange, actuator.forcerange);
         set(&mut self.actrange, actuator.actrange);
-        set(&mut self.lengthrange, actuator.lengthrange);
         self.gear = over(actuator.gear, self.gear);
         set(&mut self.cranklength, actuator.cranklength);
     }

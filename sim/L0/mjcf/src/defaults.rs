@@ -62,10 +62,15 @@ const MAIN: &str = "main";
 #[derive(Debug, Clone)]
 pub struct DefaultResolver {
     /// Each class by name, the main class under `""`.
-    classes: HashMap<String, MjcfDefault>,
-    /// Each class's one actuator default, as its actuator elements wrote it,
-    /// by the same names.
-    actuators: HashMap<String, ActuatorSpec>,
+    classes: HashMap<String, Class>,
+}
+
+/// A class as made: its defaults for every element kind but actuators, and
+/// its one actuator default, as its actuator elements wrote it.
+#[derive(Debug, Clone, Default)]
+struct Class {
+    default: MjcfDefault,
+    actuator: ActuatorSpec,
 }
 
 impl DefaultResolver {
@@ -109,11 +114,12 @@ impl DefaultResolver {
             let Some(parent) = resolver.classes.get(parent_name) else {
                 return Err(MjcfError::unknown_class(parent_name));
             };
-            let class = Self::merge_defaults(parent, entry);
-            let mut actuator = resolver.actuators[parent_name].clone();
-            write_class_actuators(&mut actuator, entry)?;
+            let mut class = Class {
+                default: Self::merge_defaults(&parent.default, entry),
+                actuator: parent.actuator.clone(),
+            };
+            write_class_actuators(&mut class.actuator, entry)?;
             resolver.classes.insert(entry.class.clone(), class);
-            resolver.actuators.insert(entry.class.clone(), actuator);
         }
         Ok(resolver)
     }
@@ -137,6 +143,7 @@ impl DefaultResolver {
         let key = Self::key(name)?;
         self.classes
             .get(key)
+            .map(|class| &class.default)
             .ok_or_else(|| MjcfError::unknown_class(key))
     }
 
@@ -165,8 +172,8 @@ impl DefaultResolver {
     /// An actuator element its kind refuses (`ActuatorSpec::write`).
     fn read_onto_main(&mut self, entry: &MjcfDefault) -> Result<()> {
         let main = self.classes.entry(String::new()).or_default();
-        *main = Self::merge_defaults(main, entry);
-        write_class_actuators(self.actuators.entry(String::new()).or_default(), entry)
+        main.default = Self::merge_defaults(&main.default, entry);
+        write_class_actuators(&mut main.actuator, entry)
     }
 
     /// Apply equality defaults to mutable field references.
@@ -375,9 +382,10 @@ impl DefaultResolver {
     pub fn apply_to_actuator(&self, actuator: &MjcfActuator) -> Result<ActuatorSpec> {
         let key = Self::key(actuator.class.as_deref())?;
         let mut spec = self
-            .actuators
+            .classes
             .get(key)
             .ok_or_else(|| MjcfError::unknown_class(key))?
+            .actuator
             .clone();
         spec.write(actuator, Writer::Actuator)?;
         Ok(spec)
@@ -590,8 +598,8 @@ impl DefaultResolver {
             parent_class: child.parent_class.clone(),
             joint: Self::merge_joint_defaults(parent.joint.as_ref(), child.joint.as_ref()),
             geom: Self::merge_geom_defaults(parent.geom.as_ref(), child.geom.as_ref()),
-            // What the actuator elements wrote is the class's `ActuatorSpec`.
-            actuators: child.actuators.clone(),
+            // A class's actuator elements live on as its `Class::actuator`.
+            actuators: Vec::new(),
             tendon: Self::merge_tendon_defaults(parent.tendon.as_ref(), child.tendon.as_ref()),
             sensor: Self::merge_sensor_defaults(parent.sensor.as_ref(), child.sensor.as_ref()),
             mesh: Self::merge_mesh_defaults(parent.mesh.as_ref(), child.mesh.as_ref()),
@@ -875,8 +883,7 @@ impl Default for DefaultResolver {
     /// The main class alone, empty.
     fn default() -> Self {
         Self {
-            classes: HashMap::from([(String::new(), MjcfDefault::default())]),
-            actuators: HashMap::from([(String::new(), ActuatorSpec::default())]),
+            classes: HashMap::from([(String::new(), Class::default())]),
         }
     }
 }
