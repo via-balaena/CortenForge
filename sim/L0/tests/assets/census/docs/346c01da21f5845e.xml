@@ -1,0 +1,1 @@
+<mujoco><compiler angle="degree"/><default><default class="c"><geom euler="0 0 90"/></default><default class="q"><geom quat="0 1 0 0"/></default></default><worldbody><body><frame pos="0 0 1"><geom class="c" size=".1" axisangle="1 0 0 90"/></frame></body></worldbody></mujoco>

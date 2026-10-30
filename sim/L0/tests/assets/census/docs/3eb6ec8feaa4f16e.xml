@@ -1,0 +1,1 @@
+<mujoco><default><geom friction="2 0.3 0.4" solref="0.03 0.5" condim="1"/></default><worldbody><body><composite type="cable" count="4 1 1" curve="s" size="1" initial="none"><geom type="capsule" size=".01" friction="0.5" solref="0.05"/></composite></body></worldbody></mujoco>

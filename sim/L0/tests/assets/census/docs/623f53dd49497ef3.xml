@@ -1,0 +1,1 @@
+<mujoco><compiler fusestatic="true"/><default><default class="f"><geom friction="0.3"/></default></default><worldbody><body name="p"><joint/><geom size=".1"/><body childclass="f" pos="0 0 .5"><geom size=".1"/></body></body></worldbody></mujoco>

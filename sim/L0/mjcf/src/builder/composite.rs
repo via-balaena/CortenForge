@@ -9,6 +9,7 @@
 use nalgebra::{Rotation3, UnitQuaternion, Vector3};
 use std::f64::consts::PI;
 
+use super::geom::resolve_geom_fromto;
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::stack::MAX_BODY_TREE_DEPTH;
 use crate::types::{
@@ -389,7 +390,7 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
         };
 
         // Build geom from template
-        let geom = build_cable_geom(composite, &geom_name, length);
+        let geom = build_cable_geom(composite, &geom_name, length)?;
 
         // Build joint
         let joint = build_cable_joint(composite, &joint_name, is_first);
@@ -452,9 +453,11 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
 }
 
 /// Build an `MjcfGeom` from the composite's geom template.
-/// Matches `AddCableBody:392-403` in `user_composite.cc`.
+/// Matches `AddCableBody:392-403` in `user_composite.cc`. Its `fromto` is
+/// made into its pose here, as for every geom before frames and fusion
+/// (`resolve::apply_defaults`), which ran before the composite made it.
 #[allow(clippy::unreachable)] // unwrap_or_else fallback: geom presence validated by validate_cable() upstream
-fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> MjcfGeom {
+fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> Result<MjcfGeom> {
     // geom presence validated by validate_cable() before this point
     let template = composite
         .geom
@@ -508,7 +511,8 @@ fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> MjcfG
         _ => {} // Validated earlier — unreachable
     }
 
-    geom
+    resolve_geom_fromto(&mut geom)?;
+    Ok(geom)
 }
 
 /// Build an `MjcfJoint` for a cable body.

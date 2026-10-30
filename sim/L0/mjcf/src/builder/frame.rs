@@ -4,17 +4,14 @@
 //! transform into each child element and then disappear.  This module expands
 //! all frames before the builder processes bodies, matching MuJoCo's ordering.
 //!
-//! Also validates `childclass` references and resolves each site, which must
-//! run *before* frame expansion because `std::mem::take` dissolves the frame
-//! nodes.
+//! Each element reaches it with its class applied and its `fromto` resolved
+//! (`resolve::apply_defaults`), so a frame composes the element's own pose.
 
 use nalgebra::{UnitQuaternion, Vector3, Vector4};
 
-use super::geom::resolve_site_fromto;
 use super::orientation::{quat_to_wxyz, resolve_orientation, site_quat_as_written};
-use crate::defaults::DefaultResolver;
 use crate::error::{ElementKind, Location, Result};
-use crate::types::{MjcfBody, MjcfCompiler, MjcfFrame, MjcfGeom, MjcfSite};
+use crate::types::{MjcfBody, MjcfCompiler, MjcfFrame};
 
 /// Core SE(3) composition — direct translation of MuJoCo's `mjuu_frameaccumChild`.
 ///
@@ -31,75 +28,21 @@ fn frame_accum_child(
     *child_quat = *frame_quat * *child_quat;
 }
 
-/// Validate that all `childclass` references in the body tree point to defined
-/// default classes. Must run BEFORE `expand_frames()` because frame expansion
-/// dissolves frames (via `std::mem::take`), losing `frame.childclass` values.
-///
-/// MuJoCo rejects undefined childclass references at schema validation (S7).
-pub fn validate_childclass_references(body: &MjcfBody, resolver: &DefaultResolver) -> Result<()> {
-    if let Some(ref cc) = body.childclass {
-        resolver
-            .class(Some(cc))
-            .map_err(|e| e.at(Location::named(ElementKind::Body, &body.name)))?;
-    }
-    for frame in &body.frames {
-        validate_frame_childclass_refs(frame, resolver, &body.name)?;
-    }
-    for child in &body.children {
-        validate_childclass_references(child, resolver)?;
-    }
-    Ok(())
-}
-
-/// Validate childclass references on a frame in `body` and its nested
-/// contents.
-fn validate_frame_childclass_refs(
-    frame: &MjcfFrame,
-    resolver: &DefaultResolver,
-    body: &str,
-) -> Result<()> {
-    if let Some(ref cc) = frame.childclass {
-        resolver.class(Some(cc)).map_err(|e| {
-            e.at(
-                Location::named(ElementKind::Frame, frame.name.as_deref().unwrap_or(""))
-                    .in_body(body),
-            )
-        })?;
-    }
-    for nested in &frame.frames {
-        validate_frame_childclass_refs(nested, resolver, body)?;
-    }
-    for child_body in &frame.bodies {
-        validate_childclass_references(child_body, resolver)?;
-    }
-    Ok(())
-}
-
 /// Recursively expand all `<frame>` elements in a body tree.
 ///
 /// Frames are coordinate-system wrappers that compose their transform into
 /// each child element and then disappear. This runs before `discardvisual`/`fusestatic`
 /// (matching MuJoCo's order) and before `ModelBuilder` processes bodies.
 ///
-/// A site reaches it resolved (`resolve_sites`): its class's values applied and its
-/// `fromto` made into its `pos`, `quat` and `size`.
+/// Each geom and site reaches it resolved (`resolve::apply_defaults`): its
+/// class's values applied and its `fromto` made into its `pos`, `quat` and
+/// `size`.
 ///
 /// # Errors
 ///
 /// An orientation alternative `ResolveOrientation` refuses, on a frame or on
 /// an element in one.
-pub fn expand_frames(
-    body: &mut MjcfBody,
-    compiler: &MjcfCompiler,
-    parent_childclass: Option<&str>,
-) -> Result<()> {
-    // Resolve effective childclass early and own it to avoid borrow conflicts
-    let effective_owned: Option<String> = body
-        .childclass
-        .clone()
-        .or_else(|| parent_childclass.map(|s| s.to_string()));
-    let effective = effective_owned.as_deref();
-
+pub fn expand_frames(body: &mut MjcfBody, compiler: &MjcfCompiler) -> Result<()> {
     // Take frames out of the body to avoid borrow issues
     let frames = std::mem::take(&mut body.frames);
 
@@ -110,172 +53,14 @@ pub fn expand_frames(
             &Vector3::zeros(),
             &UnitQuaternion::identity(),
             compiler,
-            effective,
         )?;
     }
 
     // Recursively expand frames in child bodies
     for child in &mut body.children {
-        expand_frames(child, compiler, effective)?;
+        expand_frames(child, compiler)?;
     }
     Ok(())
-}
-
-/// Each site resolved before frames and static bodies move it, the one place a
-/// site's class is applied: its own values over its class's, then its `fromto`
-/// made into its `pos`, `quat` and `size` (`resolve_site_fromto`). MuJoCo
-/// compiles a site in its own frame, then composes the frame
-/// (`mjCSite::Compile`, `user_objects.cc:3937-3985`), and fusion moves the
-/// compiled pose (`user_model.cc:4194-4202`). A site without a class takes its
-/// body's or frame's childclass, as `expand_frames` and the builder give a geom.
-pub fn resolve_sites(
-    body: &mut MjcfBody,
-    resolver: &DefaultResolver,
-    inherited: Option<&str>,
-) -> Result<()> {
-    let effective = body
-        .childclass
-        .clone()
-        .or_else(|| inherited.map(str::to_string));
-    for site in &mut body.sites {
-        resolve_site(site, resolver, effective.as_deref(), &body.name)?;
-    }
-    for frame in &mut body.frames {
-        resolve_sites_in_frame(frame, resolver, effective.as_deref(), &body.name)?;
-    }
-    for child in &mut body.children {
-        resolve_sites(child, resolver, effective.as_deref())?;
-    }
-    Ok(())
-}
-
-/// Each geom that writes no `fromto` and whose class (its own, else
-/// `childclass`) gives one takes it, before frames and static bodies move the
-/// geom: they then treat it as a `fromto` geom, as MuJoCo, which sees a class's
-/// `fromto` when it compiles the geom and composes the frame after
-/// (`mjCGeom::Compile`, `user_objects.cc:3677-3833`), never resolves an
-/// alternative beside it, and refuses only the `pos` the geom or its class
-/// writes. The geom's other class values wait for the builder (the book's L16
-/// applies them all here). The class is its own, else the childclass of its
-/// frame or body, and it is pinned on the geom with the `fromto`.
-///
-/// # Errors
-///
-/// [`MjcfError::UnknownClass`](crate::MjcfError::UnknownClass) for a geom's
-/// class no `<default>` makes.
-pub fn resolve_class_fromto(
-    body: &mut MjcfBody,
-    resolver: &DefaultResolver,
-    inherited: Option<&str>,
-) -> Result<()> {
-    let effective = body
-        .childclass
-        .clone()
-        .or_else(|| inherited.map(str::to_string));
-    for geom in &mut body.geoms {
-        take_class_fromto(geom, resolver, effective.as_deref(), &body.name)?;
-    }
-    for frame in &mut body.frames {
-        resolve_class_fromto_in_frame(frame, resolver, effective.as_deref(), &body.name)?;
-    }
-    for child in &mut body.children {
-        resolve_class_fromto(child, resolver, effective.as_deref())?;
-    }
-    Ok(())
-}
-
-/// `resolve_class_fromto` within a frame in `body`, whose childclass its
-/// contents take.
-fn resolve_class_fromto_in_frame(
-    frame: &mut MjcfFrame,
-    resolver: &DefaultResolver,
-    inherited: Option<&str>,
-    body: &str,
-) -> Result<()> {
-    let effective = frame
-        .childclass
-        .clone()
-        .or_else(|| inherited.map(str::to_string));
-    for geom in &mut frame.geoms {
-        take_class_fromto(geom, resolver, effective.as_deref(), body)?;
-    }
-    for sub in &mut frame.frames {
-        resolve_class_fromto_in_frame(sub, resolver, effective.as_deref(), body)?;
-    }
-    for child in &mut frame.bodies {
-        resolve_class_fromto(child, resolver, effective.as_deref())?;
-    }
-    Ok(())
-}
-
-/// `geom`'s class's `fromto`, where the geom writes none, with the class that
-/// gives it pinned on the geom: fusion moves a geom into another body, whose
-/// childclass the builder would apply otherwise.
-fn take_class_fromto(
-    geom: &mut MjcfGeom,
-    resolver: &DefaultResolver,
-    childclass: Option<&str>,
-    body: &str,
-) -> Result<()> {
-    if geom.fromto.is_some() {
-        return Ok(());
-    }
-    let class = geom
-        .class
-        .clone()
-        .or_else(|| childclass.map(str::to_string));
-    let mut classed = geom.clone();
-    classed.class.clone_from(&class);
-    let classed = resolver.apply_to_geom(&classed).map_err(|e| {
-        e.at(Location::named(ElementKind::Geom, geom.name.as_deref().unwrap_or("")).in_body(body))
-    })?;
-    if let Some(fromto) = classed.fromto {
-        geom.fromto = Some(fromto);
-        geom.class = class;
-    }
-    Ok(())
-}
-
-/// `resolve_sites` within a frame in `body`, whose childclass its contents
-/// take.
-fn resolve_sites_in_frame(
-    frame: &mut MjcfFrame,
-    resolver: &DefaultResolver,
-    inherited: Option<&str>,
-    body: &str,
-) -> Result<()> {
-    let effective = frame
-        .childclass
-        .clone()
-        .or_else(|| inherited.map(str::to_string));
-    for site in &mut frame.sites {
-        resolve_site(site, resolver, effective.as_deref(), body)?;
-    }
-    for sub in &mut frame.frames {
-        resolve_sites_in_frame(sub, resolver, effective.as_deref(), body)?;
-    }
-    for child in &mut frame.bodies {
-        resolve_sites(child, resolver, effective.as_deref())?;
-    }
-    Ok(())
-}
-
-/// One site of `body`: its class (its own, else `childclass`) applied, then
-/// its `fromto`.
-fn resolve_site(
-    site: &mut MjcfSite,
-    resolver: &DefaultResolver,
-    childclass: Option<&str>,
-    body: &str,
-) -> Result<()> {
-    if site.class.is_none() {
-        site.class = childclass.map(str::to_string);
-    }
-    let at = |name: &str| Location::named(ElementKind::Site, name).in_body(body);
-    *site = resolver
-        .apply_to_site(site)
-        .map_err(|e| e.at(at(&site.name)))?;
-    resolve_site_fromto(site).map_err(|e| e.with_location_if_unknown(at(&site.name)))
 }
 
 /// Expand a single frame, composing its transform into children and lifting
@@ -286,7 +71,6 @@ fn expand_single_frame(
     accumulated_pos: &Vector3<f64>,
     accumulated_quat: &UnitQuaternion<f64>,
     compiler: &MjcfCompiler,
-    parent_childclass: Option<&str>,
 ) -> Result<()> {
     let in_body =
         |kind, name: Option<&str>| Location::named(kind, name.unwrap_or("")).in_body(&body.name);
@@ -314,58 +98,37 @@ fn expand_single_frame(
         &mut composed_quat,
     );
 
-    // 3. Determine effective childclass: frame's overrides parent's
-    let effective = frame.childclass.as_deref().or(parent_childclass);
-
-    // 4. Process child geoms
+    // 3. Process child geoms: each one's orientation (a `fromto` resolved
+    // already gives its `quat`), composed with the frame's.
     for geom in &frame.geoms {
         let mut g = geom.clone();
-
-        // Apply childclass if geom has no explicit class
-        if g.class.is_none() {
-            g.class = effective.map(|s| s.to_string());
-        }
-
-        if let Some(ref mut fromto) = g.fromto {
-            // fromto geoms: transform both endpoints through the composed frame.
-            // Leave pos/quat untouched — resolve_geom_fromto derives them later.
-            let from = Vector3::new(fromto[0], fromto[1], fromto[2]);
-            let to = Vector3::new(fromto[3], fromto[4], fromto[5]);
-            let from_new = composed_pos + composed_quat.transform_vector(&from);
-            let to_new = composed_pos + composed_quat.transform_vector(&to);
-            *fromto = [
-                from_new.x, from_new.y, from_new.z, to_new.x, to_new.y, to_new.z,
-            ];
-        } else {
-            // Non-fromto geoms: resolve orientation, compose with frame
-            let geom_quat = resolve_orientation(
-                g.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
-                g.euler,
-                g.axisangle,
-                g.xyaxes,
-                g.zaxis,
-                compiler,
-            )
-            .map_err(|e| {
-                e.on("geom")
-                    .at(in_body(ElementKind::Geom, g.name.as_deref()))
-            })?;
-            let mut pos = g.pos.unwrap_or_else(Vector3::zeros);
-            let mut quat = geom_quat;
-            frame_accum_child(&composed_pos, &composed_quat, &mut pos, &mut quat);
-            g.pos = Some(pos);
-            g.quat = Some(quat_to_wxyz(&quat));
-            // Clear alternative orientations (already resolved)
-            g.euler = None;
-            g.axisangle = None;
-            g.xyaxes = None;
-            g.zaxis = None;
-        }
+        let geom_quat = resolve_orientation(
+            g.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
+            g.euler,
+            g.axisangle,
+            g.xyaxes,
+            g.zaxis,
+            compiler,
+        )
+        .map_err(|e| {
+            e.on("geom")
+                .at(in_body(ElementKind::Geom, g.name.as_deref()))
+        })?;
+        let mut pos = g.pos.unwrap_or_else(Vector3::zeros);
+        let mut quat = geom_quat;
+        frame_accum_child(&composed_pos, &composed_quat, &mut pos, &mut quat);
+        g.pos = Some(pos);
+        g.quat = Some(quat_to_wxyz(&quat));
+        // Clear alternative orientations (already resolved)
+        g.euler = None;
+        g.axisangle = None;
+        g.xyaxes = None;
+        g.zaxis = None;
 
         body.geoms.push(g);
     }
 
-    // 5. Process child sites (resolved already: `resolve_sites`). The frame is
+    // 4. Process child sites (resolved already). The frame is
     // composed with the site's quaternion as written; the builder makes the
     // product unit, as MuJoCo does (`user_objects.cc:3984-3988`).
     for site in &frame.sites {
@@ -384,15 +147,9 @@ fn expand_single_frame(
         body.sites.push(s);
     }
 
-    // 6. Process child bodies
+    // 5. Process child bodies
     for child_body in &frame.bodies {
         let mut b = child_body.clone();
-
-        // If body has no own childclass, inherit from frame's effective childclass
-        if b.childclass.is_none() {
-            b.childclass = effective.map(|s| s.to_string());
-        }
-
         let body_quat =
             resolve_orientation(b.quat, b.euler, b.axisangle, b.xyaxes, b.zaxis, compiler)
                 .map_err(|e| e.on("body").at(Location::named(ElementKind::Body, &b.name)))?;
@@ -409,16 +166,9 @@ fn expand_single_frame(
         body.children.push(b);
     }
 
-    // 7. Recurse into nested frames
+    // 6. Recurse into nested frames
     for nested in &frame.frames {
-        expand_single_frame(
-            body,
-            nested,
-            &composed_pos,
-            &composed_quat,
-            compiler,
-            effective,
-        )?;
+        expand_single_frame(body, nested, &composed_pos, &composed_quat, compiler)?;
     }
     Ok(())
 }

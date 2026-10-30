@@ -7,7 +7,6 @@
 use nalgebra::{UnitQuaternion, Vector3};
 
 use super::ModelBuilder;
-use super::geom::resolve_geom_fromto;
 use super::mass::{
     check_replaced_full_inertia, compute_inertia_from_geoms, extract_inertial_properties,
 };
@@ -22,33 +21,15 @@ impl ModelBuilder {
     /// In MJCF, the worldbody can have geoms (like ground planes) and sites
     /// directly attached to it. These are static geometries at world coordinates.
     ///
-    /// No childclass is applied here — MuJoCo's worldbody accepts no attributes
-    /// (including childclass), so worldbody elements use only their own explicit
-    /// class or the unnamed top-level default.
+    /// Each geom and site reaches it with its class applied and its `fromto`
+    /// resolved (`resolve::apply_defaults`).
     pub(crate) fn process_worldbody_geoms_and_sites(&mut self, worldbody: &MjcfBody) -> Result<()> {
         // Track geom start address for body 0
         let geom_adr = self.geom_type.len();
 
         // Process worldbody geoms
         for geom in &worldbody.geoms {
-            let at = || {
-                Location::nth(
-                    ElementKind::Geom,
-                    geom.name.as_deref(),
-                    self.geom_type.len(),
-                )
-                .within_nth(
-                    ElementKind::Body,
-                    self.body_name.first().and_then(Option::as_deref),
-                    0,
-                )
-            };
-            let mut geom = self
-                .resolver
-                .apply_to_geom(geom)
-                .map_err(|e| e.with_location_if_unknown(at()))?;
-            resolve_geom_fromto(&mut geom).map_err(|e| e.at(at()))?;
-            self.process_geom(&geom, 0)?;
+            self.process_geom(geom, 0)?;
         }
 
         // Process worldbody sites
@@ -81,7 +62,6 @@ impl ModelBuilder {
         body: &MjcfBody,
         parent_id: usize,
         parent_last_dof: Option<usize>,
-        inherited_childclass: Option<&str>,
     ) -> Result<usize> {
         // Start with parent's world frame (world body is at origin)
         let (parent_world_pos, parent_world_quat) = if parent_id == 0 {
@@ -101,7 +81,6 @@ impl ModelBuilder {
             parent_last_dof,
             parent_world_pos,
             parent_world_quat,
-            inherited_childclass,
         )
     }
 
@@ -113,7 +92,6 @@ impl ModelBuilder {
         parent_last_dof: Option<usize>,
         parent_world_pos: Vector3<f64>,
         parent_world_quat: UnitQuaternion<f64>,
-        inherited_childclass: Option<&str>,
     ) -> Result<usize> {
         let body_id = self.body_parent.len();
 
@@ -172,36 +150,8 @@ impl ModelBuilder {
         self.body_world_pos.push(world_pos);
         self.body_world_quat.push(world_quat);
 
-        // Determine effective childclass for this body's children
-        let effective_childclass = body.childclass.as_deref().or(inherited_childclass);
-
-        // Resolve geom defaults once for both inertia computation and geom processing.
-        // Apply childclass: if a geom has no explicit class, set it from effective_childclass.
-        // Then its `fromto`, which its class may give and whose pose its mass needs.
-        let first_geom = self.geom_type.len();
-        let resolved_geoms = body
-            .geoms
-            .iter()
-            .enumerate()
-            .map(|(k, g)| {
-                let mut g = g.clone();
-                if g.class.is_none() {
-                    g.class = effective_childclass.map(|s| s.to_string());
-                }
-                let at = Location::nth(ElementKind::Geom, g.name.as_deref(), first_geom + k)
-                    .within_nth(ElementKind::Body, Some(&body.name), body_id);
-                let mut g = self
-                    .resolver
-                    .apply_to_geom(&g)
-                    .map_err(|e| e.with_location_if_unknown(at.clone()))?;
-                resolve_geom_fromto(&mut g).map_err(|e| e.at(at))?;
-                Ok(g)
-            })
-            .collect::<Result<Vec<MjcfGeom>>>()?;
-
-        let (mass, inertia, ipos, iquat) = self
-            .resolve_body_inertia(body, &resolved_geoms)
-            .map_err(|e| {
+        let (mass, inertia, ipos, iquat) =
+            self.resolve_body_inertia(body, &body.geoms).map_err(|e| {
                 e.with_location_if_unknown(Location::nth(
                     ElementKind::Body,
                     Some(&body.name),
@@ -261,17 +211,8 @@ impl ModelBuilder {
         let mut current_last_dof = parent_last_dof;
 
         for joint in &body.joints {
-            let mut joint = joint.clone();
-            if joint.class.is_none() {
-                joint.class = effective_childclass.map(|s| s.to_string());
-            }
-            let joint = self.resolver.apply_to_joint(&joint).map_err(|e| {
-                e.with_location_if_unknown(
-                    Location::named(ElementKind::Joint, &joint.name).in_body(&body.name),
-                )
-            })?;
             let jnt_id =
-                self.process_joint(&joint, body_id, current_last_dof, world_pos, world_quat)?;
+                self.process_joint(joint, body_id, current_last_dof, world_pos, world_quat)?;
             let jnt_nv = self.jnt_type[jnt_id].nv();
             body_nv += jnt_nv;
 
@@ -285,13 +226,13 @@ impl ModelBuilder {
         self.body_jnt_num.push(body.joints.len());
         self.body_dof_num.push(body_nv);
 
-        // Process geoms for this body (using pre-resolved defaults)
-        for geom in &resolved_geoms {
+        // Process geoms for this body
+        for geom in &body.geoms {
             self.process_geom(geom, body_id)?;
         }
         self.body_geom_num.push(body.geoms.len());
 
-        // Process sites for this body (their classes applied: `resolve_sites`)
+        // Process sites for this body
         for site in &body.sites {
             self.process_site(site, body_id)?;
         }
@@ -304,7 +245,6 @@ impl ModelBuilder {
                 current_last_dof,
                 world_pos,
                 world_quat,
-                effective_childclass,
             )?;
         }
 

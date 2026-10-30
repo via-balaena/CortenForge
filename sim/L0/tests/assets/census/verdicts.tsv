@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1364
+# agree_floor 1384
 001bc4149d608b24	agree
 00308b83da9d8bab	agree
 0032a4ca7e233aec	agree
@@ -16,6 +16,7 @@
 01754d97eae6606c	agree
 0184724e473fb444	agree
 01acb803c047ad69	agree
+01b111c3b5fde4e5	agree
 01c8e6f213fe086a	agree
 01c95f378fcaff8a	agree
 022d7d69ebeb3ca6	both-refuse
@@ -331,6 +332,7 @@
 28d58ebfea4dabb1	agree
 28dcb75dcf09996c	agree
 28faab2d562cf86c	agree
+29063490440b7122	agree
 294c3a94e8328d92	both-refuse
 29661ba2fd5620f9	agree
 298b4dbc9bd6c9f6	agree
@@ -347,6 +349,7 @@
 2b24e15c58d32083	agree
 2b6c9b303ec9581d	both-refuse
 2b9de5431a2e5ffe	agree
+2bae3e550200de77	agree
 2bc7ea617edcf60e	agree
 2bd6ec5991aa2e64	agree
 2bed3f230290cbc1	mj-refuses
@@ -428,6 +431,7 @@
 3421581294d1496f	agree
 3431ea3d39a0708b	model:eq_obj1id;dyn:e1:t0:qfrc_constraint	divergence=D-FUSESTATIC-SITE-INDEX
 34593f3ba52c2e8a	both-refuse
+346c01da21f5845e	agree
 3486dd3e43cb05ca	both-refuse
 34e084197442a3f7	agree
 3514416898dc1b03	agree
@@ -484,6 +488,7 @@
 3a2b70da5051b0f7	ours-refused	divergence=D-REPLICATE
 3a2fb4d1b2d991a2	ours-refused	divergence=D-NONFINITE
 3a36709226ba29e0	agree
+3a45d59a8a1ecaad	agree
 3a5b4d1f92139f8c	agree
 3a663b1deb4a7f30	agree
 3a7d7b13b966c1ff	agree
@@ -523,6 +528,7 @@
 3e49fd5e5305a6c7	both-refuse
 3e5bdab78e3a9b7e	model:meaninertia;dyn:e1:t0:qM
 3e78dd893afd9d63	agree
+3eb6ec8feaa4f16e	agree
 3edb0151bf9a023d	both-refuse
 3f09f3c7146768e5	agree
 3f185a7705f05173	agree
@@ -658,7 +664,7 @@
 4e6971f6e1e2e357	mj-refuses
 4ea6c4e3b1af36f6	both-refuse
 4ed5050c07bad07a	both-refuse
-4eed75d122e4fc26	model:geom_quat;dyn:agree
+4eed75d122e4fc26	agree
 4f568d84ac961d20	agree
 4f6683a920356ee4	agree
 4f80dc96e6d41ecc	agree
@@ -843,6 +849,7 @@
 61fd390a8c171e4d	both-refuse
 6220a39646c07ebf	agree
 62243c1caa859851	both-refuse
+623f53dd49497ef3	agree
 62882178ff21d928	agree
 62b043b7f6a18a1b	agree
 62cddd8f06ee02ae	agree
@@ -878,6 +885,7 @@
 66c72cf754f3aa38	agree
 66f9ccb6ddbc3abb	agree
 67374b975cd431ce	both-refuse
+6739a5ca309ced9c	agree
 673c7951b16fd3ee	agree
 67799f341b674067	agree
 6783fed9248e6649	model:neq
@@ -885,7 +893,7 @@
 67bba3a77c16482d	agree
 67c452938dcc2a0c	agree
 67ed261056e8c19d	both-refuse
-67f32550234c815b	model:geom_quat;dyn:agree
+67f32550234c815b	agree
 67f4c35f3ec89578	agree
 681acac6292f9e95	agree
 682b755b1fa36f9d	agree
@@ -953,6 +961,7 @@
 704d9318eb82bfb8	model:neq
 70609a6f4a28d099	agree
 707dd2196d297184	both-refuse
+7098e7cc6f0c3417	agree
 70b20f041f46fcdb	agree
 70b30fc5d2190ee4	agree
 70e982bc2f4ae719	agree
@@ -1030,7 +1039,7 @@
 7ad5a27cd99555d3	agree
 7ae121d9f93cf4e8	both-refuse
 7af60f487a3ec00a	both-refuse
-7b25ced0969d4e3f	model:geom_pos;dyn:agree
+7b25ced0969d4e3f	model:geom_size;dyn:agree
 7b53469f81b43d81	agree
 7b5928434fff25b7	agree
 7b64e1017e70e9ab	both-refuse
@@ -1046,6 +1055,7 @@
 7cff5ddd98669244	agree
 7d1db7cb4a240466	agree
 7d34184c5e7fc697	mj-refuses
+7d4b71cb3bc9b4a2	both-refuse
 7da3d52c5be24536	agree
 7de1c0e574aa1af1	agree
 7e14ae04107d2516	mj-refuses
@@ -1103,6 +1113,7 @@
 840af86363aae25b	both-refuse
 841c7b0dbc8d39a7	agree
 8430f715935ff91d	both-refuse
+84667c1b23b941bd	agree
 84b1697fbec84504	agree
 84c4ba5378047b12	agree
 84f80f87f0169f72	both-refuse
@@ -1197,6 +1208,7 @@
 901ffffa67631a39	both-refuse
 907b816f9cca3e6d	both-refuse
 90a3f33bd2829dad	both-refuse
+90babc3f5ee1d81c	agree
 90ec93d8a45c12bd	both-refuse
 90fbfcce2e6b212a	both-refuse
 90fe1274af761012	agree
@@ -1254,6 +1266,7 @@
 97281ed3a1ad70a0	agree
 97356b1b048749d8	agree
 975707be8f4f097e	agree
+9773cc5dc1594ca9	agree
 978d8613972e763e	both-refuse
 97c2da41b6b81ae1	both-refuse
 9802c21f2863943c	agree
@@ -1574,6 +1587,7 @@ ba54b8132b9a565f	agree
 ba62543002737d31	agree
 baa0e121fae6b603	agree
 bae36c97c6a70859	agree
+bb45459170596875	agree
 bb644760e47a468a	agree
 bb69b8b2790a4a69	agree
 bb6c01d439f57bb5	agree
@@ -1595,7 +1609,7 @@ bcfc3e4c6c04c963	both-refuse
 bd0a81225241de7c	agree
 bd0efdf0e9a5354e	agree
 bd3180b529825072	agree
-bd87b8b57b371f9e	model:meaninertia;dyn:e1:t0:qM
+bd87b8b57b371f9e	agree
 bd9a43632714e008	agree
 bd9d79126f46dae2	mj-refuses
 bda6718fd70c2a56	agree
@@ -1795,6 +1809,7 @@ d48ee3564e6b19e9	both-refuse
 d497c31e8fc541c8	agree
 d4ac308432e38b40	agree
 d4ef2aa311a049f8	agree
+d4f39de4a8d85efc	agree
 d4f5cf758c82747b	agree
 d5508eb4b387b674	agree
 d55240eae7907408	agree
@@ -1988,6 +2003,7 @@ eca4fe58c11d1c69	agree
 ecb5a767b60490ef	mj-refuses
 ecf16381af1256a3	both-refuse
 ed1e4de6aba0c595	both-refuse
+ed2ac1fee980ce8c	model:meaninertia;dyn:e1:t0:qM
 ed4fa97aa1931207	model:neq
 ed65d8197d4282ec	agree
 ed8d322a842a1358	both-refuse
@@ -2000,7 +2016,7 @@ ee13f2c107f13807	agree
 ee61e84548cacee3	both-refuse
 ee74e6fdb1b5d9bf	agree
 eee6660c9094068e	agree
-eef83d84853cd5a9	model:geom_quat;dyn:agree
+eef83d84853cd5a9	agree
 ef2bd41db46acae3	agree
 ef41a589b68d459c	agree
 ef6a2cbdfa650617	mj-refuses
@@ -2127,10 +2143,12 @@ fc974f045921927a	both-refuse
 fc99ebfb217ade84	both-refuse
 fcbad70195a88d0f	agree
 fcdd943a686639d0	agree
+fcf1fb09f74aa2aa	agree
 fcf8a85491215d85	agree
 fd0d7f95669281be	agree
 fd15c59b3f1ecf9a	agree
 fd26237cb81fa7b7	both-refuse
+fd319557ca9c266f	agree
 fd5e37ce44262783	agree
 fd6188c08122b166	agree
 fdd8701089dfb2c4	agree

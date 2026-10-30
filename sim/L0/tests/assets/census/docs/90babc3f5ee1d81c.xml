@@ -1,0 +1,1 @@
+<mujoco><default><joint armature="0.2"/><geom friction="0.3"/></default><worldbody><body><composite type="cable" count="4 1 1" curve="s" size="1" initial="none"><geom type="capsule" size=".01"/></composite></body></worldbody></mujoco>

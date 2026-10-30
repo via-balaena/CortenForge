@@ -24,6 +24,7 @@ pub mod joint;
 pub mod mass;
 pub mod mesh;
 pub mod orientation;
+mod resolve;
 pub mod sensor;
 pub mod tendon;
 
@@ -51,9 +52,7 @@ use crate::types::{
 };
 
 use self::compiler::{apply_discardvisual, apply_fusestatic};
-use self::frame::{
-    expand_frames, resolve_class_fromto, resolve_sites, validate_childclass_references,
-};
+use self::frame::expand_frames;
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
 ///
@@ -239,20 +238,15 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // user input as-parsed, before frame/composite expansion.
     crate::validation::validate_unwrapped(&mjcf)?;
 
-    // Validate childclass references before frame expansion dissolves frames.
-    // MuJoCo rejects undefined childclass at schema validation (S7).
-    let pre_resolver = DefaultResolver::from_model(&mjcf)?;
-    validate_childclass_references(&mjcf.worldbody, &pre_resolver)?;
-
-    // Each site's class values and its `fromto`, before frames and static bodies move it.
-    resolve_sites(&mut mjcf.worldbody, &pre_resolver, None)?;
-    // Each geom's class's `fromto`, for the same passes to see it.
-    resolve_class_fromto(&mut mjcf.worldbody, &pre_resolver, None)?;
+    // Each element's class, before frames, composites and the compiler
+    // passes move or make elements, as MuJoCo applies it when it reads one.
+    let resolver = DefaultResolver::from_model(&mjcf)?;
+    resolve::apply_defaults(&mut mjcf, &resolver)?;
 
     // Expand <frame> elements first: compose transforms into children, lift onto parent bodies.
     // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
     // visible to those passes (matches MuJoCo, which expands frames during XML parsing).
-    expand_frames(&mut mjcf.worldbody, &mjcf.compiler, None)?;
+    expand_frames(&mut mjcf.worldbody, &mjcf.compiler)?;
 
     // Expand <composite> elements: generates body chains from composite definitions.
     // Runs AFTER frame expansion and BEFORE discardvisual/fusestatic (which need
@@ -269,7 +263,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     }
 
     let mut builder = ModelBuilder::new();
-    builder.resolver = DefaultResolver::from_model(&mjcf)?;
+    builder.resolver = resolver;
     builder.compiler = mjcf.compiler.clone();
 
     // Set model name
@@ -295,11 +289,8 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
 
     // Recursively process body tree starting from worldbody children.
     // World body (body 0) has no DOFs, so parent_last_dof is None.
-    // Note: worldbody.childclass is always None for parsed MJCF — MuJoCo's schema
-    // rejects attributes on <worldbody>. Our parser (parse_worldbody) never reads
-    // worldbody attributes, so this is correct by construction.
     for child in &mjcf.worldbody.children {
-        builder.process_body(child, 0, None, mjcf.worldbody.childclass.as_deref())?;
+        builder.process_body(child, 0, None)?;
     }
 
     // Validate tendons before processing (catches bad references early)

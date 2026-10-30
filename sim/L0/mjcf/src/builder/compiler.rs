@@ -184,15 +184,9 @@ fn fuse_static_body(
             let in_removed = |kind, name: &str| Location::named(kind, name).in_body(&removed.name);
             let has_rotation = body_quat.angle() > 1e-10;
 
-            // Transform geoms into parent frame
+            // Transform geoms into parent frame (each one's `fromto` is its
+            // pos, quat and size already: `resolve::apply_defaults`)
             for g in &mut removed.geoms {
-                // A fromto geom's pose is its segment's, which fusion does not
-                // move yet (the book's L42): it gets no `pos`, which beside a
-                // `fromto` is refused, and its alternative is never resolved,
-                // as MuJoCo never resolves it (`user_objects.cc:3677-3724`).
-                if g.fromto.is_some() {
-                    continue;
-                }
                 let gpos = g.pos.unwrap_or_else(nalgebra::Vector3::zeros);
                 if !has_rotation {
                     g.pos = Some(gpos + body_pos);
@@ -222,7 +216,8 @@ fn fuse_static_body(
                 g.zaxis = None;
             }
 
-            // Transform sites into parent frame (resolved already: `resolve_sites`)
+            // Transform sites into parent frame (resolved already:
+            // `resolve::apply_defaults`)
             for s in &mut removed.sites {
                 let s_pos = s.pos.unwrap_or_else(nalgebra::Vector3::zeros);
                 if has_rotation {
