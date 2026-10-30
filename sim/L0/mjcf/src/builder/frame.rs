@@ -832,7 +832,7 @@ mod tests {
         assert!(result.is_err(), "joint inside frame should error");
         let err = result.unwrap_err();
         assert!(
-            matches!(&err, MjcfError::Unsupported { feature, .. } if feature == "<joint/> inside <frame>"),
+            matches!(&err, MjcfError::Unsupported { feature, .. } if feature == "<joint> inside <frame>"),
             "{err}"
         );
     }

@@ -26,7 +26,7 @@ use std::io::BufRead;
 
 use crate::error::{Location, MjcfError, Result};
 
-use crate::types::{EqualityKind, MjcfContact, MjcfModel};
+use crate::types::{EqualityKind, MjcfModel};
 
 use self::actuator::parse_actuators;
 use self::asset::parse_asset;
@@ -38,7 +38,7 @@ use self::deformable::parse_deformable;
 use self::equality::parse_equality;
 use self::extension::parse_extension;
 use self::keyframe::parse_keyframes;
-use self::options::{parse_compiler_attrs, parse_option, parse_option_attrs, parse_size_attrs};
+use self::options::{parse_compiler_attrs, parse_option, parse_size_attrs};
 use self::sensor::parse_sensors;
 use self::tendon::parse_tendons;
 
@@ -196,8 +196,17 @@ fn parse_mjcf_reader<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfModel> {
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) if e.name().as_ref() == b"mujoco" => {
-                model = Some(parse_mujoco(reader, e)?);
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e)))
+                if e.name().as_ref() == b"mujoco" =>
+            {
+                let empty = matches!(event, Event::Empty(_));
+                // MuJoCo 3.5.0 reads the first root element (tinyxml2's
+                // `RootElement`); a later one is skipped.
+                if model.is_none() {
+                    model = Some(parse_mujoco(reader, e, empty)?);
+                } else {
+                    skip_element(reader, b"mujoco", empty)?;
+                }
             }
             Ok(Event::Eof) => break,
             Ok(_) => {}
@@ -209,37 +218,47 @@ fn parse_mjcf_reader<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfModel> {
     model.ok_or_else(|| MjcfError::xml("no <mujoco> root element"))
 }
 
-/// Parse the mujoco root element and its children.
-fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<MjcfModel> {
+/// Parse the mujoco root element and its children (`empty`: it closed
+/// itself, so the model is empty, as MuJoCo 3.5.0 loads it).
+fn parse_mujoco<R: BufRead>(
+    reader: &mut Reader<R>,
+    start: &BytesStart,
+    empty: bool,
+) -> Result<MjcfModel> {
     let name = Attrs::new(start)?
         .string("model")
         .unwrap_or_else(|| "unnamed".to_string());
     let mut model = MjcfModel::new(name);
+    if empty {
+        return Ok(model);
+    }
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
+            // A self-closing section is the same section with no children, so
+            // one arm reads both forms (MuJoCo's reader does not tell them apart).
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let child_empty = matches!(event, Event::Empty(_));
+                match e.name().as_ref() {
                     b"option" => {
-                        parse_option(reader, e, &mut model.option)?;
+                        parse_option(reader, e, &mut model.option, child_empty)?;
                     }
                     b"compiler" => {
                         parse_compiler_attrs(e, &mut model.compiler)?;
-                        skip_element(reader, &elem_name)?;
+                        skip_element(reader, b"compiler", child_empty)?;
                     }
                     b"default" => {
-                        let defaults = parse_default(reader, e, None)?;
+                        let defaults = parse_default(reader, e, None, child_empty)?;
                         model.defaults.extend(defaults);
                     }
                     b"asset" => {
-                        let (meshes, hfields) = parse_asset(reader)?;
+                        let (meshes, hfields) = parse_asset(reader, child_empty)?;
                         model.meshes.extend(meshes);
                         model.hfields.extend(hfields);
                     }
                     b"worldbody" => {
-                        let wb = parse_worldbody(reader)?;
+                        let wb = parse_worldbody(reader, child_empty)?;
                         // Merge: append children, geoms, sites, frames, composites into existing worldbody
                         model.worldbody.children.extend(wb.children);
                         model.worldbody.geoms.extend(wb.geoms);
@@ -249,11 +268,11 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                         model.worldbody.composites.extend(wb.composites);
                     }
                     b"actuator" => {
-                        let actuators = parse_actuators(reader)?;
+                        let actuators = parse_actuators(reader, child_empty)?;
                         model.actuators.extend(actuators);
                     }
                     b"equality" => {
-                        let eq = parse_equality(reader)?;
+                        let eq = parse_equality(reader, child_empty)?;
                         // Offset order indices before merging (indices are relative
                         // to the parsed block's vecs, but must reference positions
                         // in the merged vecs).
@@ -279,52 +298,37 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                         model.equality.tendons.extend(eq.tendons);
                     }
                     b"deformable" => {
-                        let (skins, flex) = parse_deformable(reader)?;
+                        let (skins, flex) = parse_deformable(reader, child_empty)?;
                         model.skins.extend(skins);
                         model.flex.extend(flex);
                     }
                     b"tendon" => {
-                        let tendons = parse_tendons(reader)?;
+                        let tendons = parse_tendons(reader, child_empty)?;
                         model.tendons.extend(tendons);
                     }
                     b"sensor" => {
-                        let sensors = parse_sensors(reader)?;
+                        let sensors = parse_sensors(reader, child_empty)?;
                         model.sensors.extend(sensors);
                     }
                     b"contact" => {
-                        let ct = parse_contact(reader)?;
+                        let ct = parse_contact(reader, child_empty)?;
                         model.contact.pairs.extend(ct.pairs);
                         model.contact.excludes.extend(ct.excludes);
                     }
                     b"keyframe" => {
-                        let kfs = parse_keyframes(reader)?;
+                        let kfs = parse_keyframes(reader, child_empty)?;
                         model.keyframes.extend(kfs);
                     }
                     b"size" => {
                         parse_size_attrs(e, &mut model)?;
-                        skip_element(reader, &elem_name)?;
+                        skip_element(reader, b"size", child_empty)?;
                     }
                     b"extension" => {
-                        let ext = parse_extension(reader)?;
+                        let ext = parse_extension(reader, child_empty)?;
                         model.extensions.push(ext);
                     }
                     // Skip other elements
-                    _ => skip_element(reader, &elem_name)?,
-                }
-            }
-            Ok(Event::Empty(ref e)) => {
-                // Handle self-closing elements
-                if e.name().as_ref() == b"option" {
-                    parse_option_attrs(e, &mut model.option)?;
-                } else if e.name().as_ref() == b"compiler" {
-                    parse_compiler_attrs(e, &mut model.compiler)?;
-                } else if e.name().as_ref() == b"contact" {
-                    model.contact = MjcfContact::default();
-                } else if e.name().as_ref() == b"keyframe" {
-                    // Empty <keyframe/> — no keyframes defined. model.keyframes is
-                    // already Vec::new() from Default, so nothing to do.
-                } else if e.name().as_ref() == b"size" {
-                    parse_size_attrs(e, &mut model)?;
+                    name => skip_element(reader, name, child_empty)?,
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"mujoco" => break,

@@ -1,0 +1,1 @@
+<mujoco><extension><plugin plugin="mujoco.elasticity.cable"><instance name="i"><config key="twist" value="1"></config></instance></plugin></extension><worldbody/></mujoco>

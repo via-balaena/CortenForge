@@ -14,27 +14,26 @@ use super::attrs::{Attrs, skip_element};
 // Keyframe parsing
 // ============================================================================
 
-/// Parse the `<keyframe>` element containing `<key>` children.
-pub(super) fn parse_keyframes<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfKeyframe>> {
+/// Parse the `<keyframe>` element containing `<key>` children (`empty`: it
+/// closed itself, so it has none).
+pub(super) fn parse_keyframes<R: BufRead>(
+    reader: &mut Reader<R>,
+    empty: bool,
+) -> Result<Vec<MjcfKeyframe>> {
     let mut keyframes = Vec::new();
+    if empty {
+        return Ok(keyframes);
+    }
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
-                    b"key" => {
-                        keyframes.push(parse_key_attrs(e)?);
-                        skip_element(reader, &elem_name)?;
-                    }
-                    _ => skip_element(reader, &elem_name)?,
-                }
-            }
-            Ok(Event::Empty(ref e)) => {
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let child_empty = matches!(event, Event::Empty(_));
                 if e.name().as_ref() == b"key" {
                     keyframes.push(parse_key_attrs(e)?);
                 }
+                skip_element(reader, e.name().as_ref(), child_empty)?;
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"keyframe" => break,
             Ok(Event::Eof) => {

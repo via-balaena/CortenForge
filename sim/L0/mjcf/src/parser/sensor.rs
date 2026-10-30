@@ -10,35 +10,34 @@ use crate::keywords;
 use crate::types::{MjcfSensor, MjcfSensorType};
 
 use super::attrs::{Attrs, is_c_space, skip_element};
-use super::extension::{parse_plugin_ref, parse_plugin_ref_empty};
+use super::extension::parse_plugin_ref;
 
 // ============================================================================
 // Sensor parsing
 // ============================================================================
 
-/// Parse the sensor section.
-pub(super) fn parse_sensors<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfSensor>> {
+/// Parse the sensor section (`empty`: it closed itself, so it has none).
+pub(super) fn parse_sensors<R: BufRead>(
+    reader: &mut Reader<R>,
+    empty: bool,
+) -> Result<Vec<MjcfSensor>> {
     let mut sensors = Vec::new();
+    if empty {
+        return Ok(sensors);
+    }
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let child_empty = matches!(event, Event::Empty(_));
                 let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 let sensor_type = MjcfSensorType::from_str(&elem_name)
                     .ok_or_else(|| unread_sensor(&elem_name))?;
                 let mut sensor = parse_sensor_attrs(e, sensor_type)?;
                 // Parse children (may contain <plugin> sub-element)
-                parse_sensor_children(reader, elem_name.as_bytes(), &mut sensor)?;
+                parse_sensor_children(reader, elem_name.as_bytes(), &mut sensor, child_empty)?;
                 sensors.push(sensor);
-            }
-            Ok(Event::Empty(ref e)) => {
-                let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                let sensor_type = MjcfSensorType::from_str(&elem_name)
-                    .ok_or_else(|| unread_sensor(&elem_name))?;
-                let sensor = parse_sensor_attrs(e, sensor_type)?;
-                sensors.push(sensor);
-                // Self-closing, no need to skip
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"sensor" => break,
             Ok(Event::Eof) => return Err(MjcfError::eof_in("sensor")),
@@ -227,26 +226,27 @@ pub(super) fn parse_sensor_attrs(
     Ok(sensor)
 }
 
-/// Parse children of a sensor element (may contain `<plugin>` sub-element).
+/// Parse children of a sensor element (may contain `<plugin>` sub-element;
+/// `empty`: the sensor closed itself, so it has none).
 pub(super) fn parse_sensor_children<R: BufRead>(
     reader: &mut Reader<R>,
     parent_tag: &[u8],
     sensor: &mut MjcfSensor,
+    empty: bool,
 ) -> Result<()> {
+    if empty {
+        return Ok(());
+    }
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) if e.name().as_ref() == b"plugin" => {
-                let plugin_ref = parse_plugin_ref(reader, e)?;
-                sensor.plugin = Some(plugin_ref);
-            }
-            Ok(Event::Empty(ref e)) if e.name().as_ref() == b"plugin" => {
-                let plugin_ref = parse_plugin_ref_empty(e)?;
-                sensor.plugin = Some(plugin_ref);
-            }
-            Ok(Event::Start(ref e)) => {
-                let name = e.name().as_ref().to_vec();
-                skip_element(reader, &name)?;
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let child_empty = matches!(event, Event::Empty(_));
+                if e.name().as_ref() == b"plugin" {
+                    sensor.plugin = Some(parse_plugin_ref(reader, e, child_empty)?);
+                } else {
+                    skip_element(reader, e.name().as_ref(), child_empty)?;
+                }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == parent_tag => break,
             Ok(Event::Eof) => {

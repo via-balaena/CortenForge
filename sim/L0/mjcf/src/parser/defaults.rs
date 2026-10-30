@@ -15,11 +15,14 @@ use crate::types::{
 
 use super::attrs::{Attrs, parse_maxhullvert, skip_element};
 
-/// Parse default element and its nested defaults.
+/// Parse default element and its nested defaults (`empty`: it closed itself,
+/// so it has none; the class is still defined, as MuJoCo 3.5.0 adds a class
+/// before reading its children, `mjXReader::Default`).
 pub(super) fn parse_default<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
     parent_class: Option<String>,
+    empty: bool,
 ) -> Result<Vec<MjcfDefault>> {
     let class = Attrs::new(start)?.string("class").unwrap_or_default();
     let mut default = MjcfDefault {
@@ -28,80 +31,24 @@ pub(super) fn parse_default<R: BufRead>(
         ..Default::default()
     };
     let mut nested_defaults = Vec::new();
+    if empty {
+        return Ok(vec![default]);
+    }
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
-                    b"joint" => {
-                        default.joint = Some(parse_joint_defaults(e)?);
-                    }
-                    b"geom" => {
-                        default.geom = Some(parse_geom_defaults(e)?);
-                    }
-                    b"actuator" | b"motor" | b"position" | b"velocity" | b"general"
-                    | b"cylinder" | b"muscle" | b"adhesion" | b"damper" | b"intvelocity" => {
-                        default.actuator = Some(parse_actuator_defaults(e)?);
-                    }
-                    b"tendon" => {
-                        default.tendon = Some(parse_tendon_defaults(e)?);
-                    }
-                    b"sensor" => {
-                        default.sensor = Some(parse_sensor_defaults(e)?);
-                    }
-                    b"mesh" => {
-                        default.mesh = Some(parse_mesh_defaults(e)?);
-                    }
-                    b"site" => {
-                        default.site = Some(parse_site_defaults(e)?);
-                    }
-                    b"pair" => {
-                        default.pair = Some(parse_pair_defaults(e)?);
-                    }
-                    b"equality" => {
-                        default.equality = Some(parse_equality_defaults(e)?);
-                    }
-                    b"default" => {
-                        // Nested default class
-                        let nested = parse_default(reader, e, Some(class.clone()))?;
-                        nested_defaults.extend(nested);
-                    }
-                    _ => skip_element(reader, &elem_name)?,
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let child_empty = matches!(event, Event::Empty(_));
+                if e.name().as_ref() == b"default" {
+                    // Nested default class; it reads its own children.
+                    let nested = parse_default(reader, e, Some(class.clone()), child_empty)?;
+                    nested_defaults.extend(nested);
+                } else {
+                    read_class_element(&mut default, e)?;
+                    skip_element(reader, e.name().as_ref(), child_empty)?;
                 }
             }
-            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
-                b"joint" => {
-                    default.joint = Some(parse_joint_defaults(e)?);
-                }
-                b"geom" => {
-                    default.geom = Some(parse_geom_defaults(e)?);
-                }
-                b"actuator" | b"motor" | b"position" | b"velocity" | b"general" | b"cylinder"
-                | b"muscle" | b"adhesion" | b"damper" | b"intvelocity" => {
-                    default.actuator = Some(parse_actuator_defaults(e)?);
-                }
-                b"tendon" => {
-                    default.tendon = Some(parse_tendon_defaults(e)?);
-                }
-                b"sensor" => {
-                    default.sensor = Some(parse_sensor_defaults(e)?);
-                }
-                b"mesh" => {
-                    default.mesh = Some(parse_mesh_defaults(e)?);
-                }
-                b"site" => {
-                    default.site = Some(parse_site_defaults(e)?);
-                }
-                b"pair" => {
-                    default.pair = Some(parse_pair_defaults(e)?);
-                }
-                b"equality" => {
-                    default.equality = Some(parse_equality_defaults(e)?);
-                }
-                _ => {}
-            },
             Ok(Event::End(ref e)) if e.name().as_ref() == b"default" => break,
             Ok(Event::Eof) => return Err(MjcfError::eof_in("default")),
             Ok(_) => {}
@@ -113,6 +60,43 @@ pub(super) fn parse_default<R: BufRead>(
     let mut result = vec![default];
     result.extend(nested_defaults);
     Ok(result)
+}
+
+/// One element of a default class, other than a nested class, read onto
+/// `default`; an element a class does not take is ignored.
+fn read_class_element(default: &mut MjcfDefault, e: &BytesStart) -> Result<()> {
+    match e.name().as_ref() {
+        b"joint" => {
+            default.joint = Some(parse_joint_defaults(e)?);
+        }
+        b"geom" => {
+            default.geom = Some(parse_geom_defaults(e)?);
+        }
+        b"actuator" | b"motor" | b"position" | b"velocity" | b"general" | b"cylinder"
+        | b"muscle" | b"adhesion" | b"damper" | b"intvelocity" => {
+            default.actuator = Some(parse_actuator_defaults(e)?);
+        }
+        b"tendon" => {
+            default.tendon = Some(parse_tendon_defaults(e)?);
+        }
+        b"sensor" => {
+            default.sensor = Some(parse_sensor_defaults(e)?);
+        }
+        b"mesh" => {
+            default.mesh = Some(parse_mesh_defaults(e)?);
+        }
+        b"site" => {
+            default.site = Some(parse_site_defaults(e)?);
+        }
+        b"pair" => {
+            default.pair = Some(parse_pair_defaults(e)?);
+        }
+        b"equality" => {
+            default.equality = Some(parse_equality_defaults(e)?);
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Parse joint defaults.

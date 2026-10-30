@@ -700,8 +700,33 @@ impl DefaultResolver {
     /// Resolve all defaults by building inheritance chains.
     fn resolve_all(defaults: &[MjcfDefault]) -> HashMap<String, MjcfDefault> {
         // First, build a map of raw defaults
-        let raw_map: HashMap<&str, &MjcfDefault> =
+        let mut raw_map: HashMap<&str, &MjcfDefault> =
             defaults.iter().map(|d| (d.class.as_str(), d)).collect();
+
+        // Every unnamed top-level `<default>` is MuJoCo 3.5.0's one main class
+        // (`mjXReader::Default` takes `mjs_getSpecDefault` for each), so they
+        // merge in document order, the later over the earlier, rather than the
+        // last replacing the rest (ledger L247; a block named `main` is ledger
+        // L239's). A class of an earlier block still sees a later block's
+        // values here, where MuJoCo's copies the main class as it stood when
+        // the class was made (book L16). An actuator default is the exception:
+        // MuJoCo keeps one per class, which each shortcut element rewrites, so
+        // a later block's replaces an earlier one, as the last actuator element
+        // does within one block (a class written by two kinds: book L17).
+        let main = defaults
+            .iter()
+            .filter(|d| d.class.is_empty() && d.parent_class.is_none())
+            .cloned()
+            .reduce(|earlier, later| {
+                let mut merged = Self::merge_defaults(&earlier, &later);
+                if later.actuator.is_some() {
+                    merged.actuator.clone_from(&later.actuator);
+                }
+                merged
+            });
+        if let Some(main) = &main {
+            raw_map.insert("", main);
+        }
 
         // Resolve each default class
         let mut resolved = HashMap::new();

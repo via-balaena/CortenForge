@@ -15,10 +15,12 @@ use super::attrs::{Attrs, is_c_space, skip_element};
 // Composite parsing
 // ============================================================================
 
-/// Parse a `<composite>` element with all its attributes and child elements.
+/// Parse a `<composite>` element with all its attributes and child elements
+/// (`empty`: it closed itself, so it has none).
 pub(super) fn parse_composite<R: BufRead>(
     reader: &mut Reader<R>,
     e: &BytesStart,
+    empty: bool,
 ) -> Result<MjcfComposite> {
     let a = Attrs::new(e)?;
     let prefix = a.string("prefix").unwrap_or_default();
@@ -54,46 +56,11 @@ pub(super) fn parse_composite<R: BufRead>(
 
     let uservert = a.vector("vertex")?.unwrap_or_default();
 
-    // Parse child elements: <joint kind="main">, <geom>, and skip others.
-    let mut joint = None;
-    let mut geom = None;
-    let mut buf = Vec::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref child)) => {
-                let child_name = child.name().as_ref().to_vec();
-                match child_name.as_slice() {
-                    b"joint" => {
-                        joint = Some(parse_composite_joint_attrs(child)?);
-                        // Skip to closing tag (composite <joint> has no children)
-                        skip_element(reader, &child_name)?;
-                    }
-                    b"geom" => {
-                        geom = Some(parse_composite_geom_attrs(child)?);
-                        skip_element(reader, &child_name)?;
-                    }
-                    _ => skip_element(reader, &child_name)?,
-                }
-            }
-            Ok(Event::Empty(ref child)) => match child.name().as_ref() {
-                b"joint" => {
-                    joint = Some(parse_composite_joint_attrs(child)?);
-                }
-                b"geom" => {
-                    geom = Some(parse_composite_geom_attrs(child)?);
-                }
-                _ => {}
-            },
-            Ok(Event::End(ref end)) if end.name().as_ref() == b"composite" => break,
-            Ok(Event::Eof) => {
-                return Err(MjcfError::eof_in("composite"));
-            }
-            Ok(_) => {}
-            Err(e) => return Err(MjcfError::xml(e)),
-        }
-        buf.clear();
-    }
+    let (joint, geom) = if empty {
+        (None, None)
+    } else {
+        parse_composite_children(reader)?
+    };
 
     Ok(MjcfComposite {
         prefix,
@@ -108,6 +75,39 @@ pub(super) fn parse_composite<R: BufRead>(
         joint,
         geom,
     })
+}
+
+/// A `<composite>`'s children, up to its end tag: its `<joint kind="main">`
+/// and `<geom>`; others are skipped.
+fn parse_composite_children<R: BufRead>(
+    reader: &mut Reader<R>,
+) -> Result<(Option<CompositeJoint>, Option<CompositeGeom>)> {
+    let mut joint = None;
+    let mut geom = None;
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(ref event @ (Event::Start(ref child) | Event::Empty(ref child))) => {
+                let child_empty = matches!(event, Event::Empty(_));
+                match child.name().as_ref() {
+                    b"joint" => joint = Some(parse_composite_joint_attrs(child)?),
+                    b"geom" => geom = Some(parse_composite_geom_attrs(child)?),
+                    _ => {}
+                }
+                skip_element(reader, child.name().as_ref(), child_empty)?;
+            }
+            Ok(Event::End(ref end)) if end.name().as_ref() == b"composite" => break,
+            Ok(Event::Eof) => {
+                return Err(MjcfError::eof_in("composite"));
+            }
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::xml(e)),
+        }
+        buf.clear();
+    }
+
+    Ok((joint, geom))
 }
 
 /// Parse attributes of a `<composite><joint kind="main">` child. `kind` is

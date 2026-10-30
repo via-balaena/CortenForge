@@ -12,7 +12,7 @@ use crate::types::{
     MjcfSolverType,
 };
 
-use super::attrs::Attrs;
+use super::attrs::{Attrs, skip_element};
 use crate::error::ValueCount;
 
 /// Parse `<size>` element attributes into MjcfModel nuser_* fields.
@@ -51,17 +51,23 @@ pub(super) fn parse_option<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
     option: &mut MjcfOption,
+    empty: bool,
 ) -> Result<()> {
     parse_option_attrs(start, option)?;
+    if empty {
+        return Ok(());
+    }
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let child_empty = matches!(event, Event::Empty(_));
                 // Handle flag element
                 if e.name().as_ref() == b"flag" {
                     parse_flag_attrs(e, &mut option.flag)?;
                 }
+                skip_element(reader, e.name().as_ref(), child_empty)?;
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"option" => break,
             Ok(Event::Eof) => return Err(MjcfError::eof_in("option")),
@@ -75,7 +81,7 @@ pub(super) fn parse_option<R: BufRead>(
 }
 
 /// An `<option>`'s attributes, read onto `option`.
-pub(super) fn parse_option_attrs(e: &BytesStart, option: &mut MjcfOption) -> Result<()> {
+fn parse_option_attrs(e: &BytesStart, option: &mut MjcfOption) -> Result<()> {
     let a = Attrs::new(e)?;
 
     // Core simulation

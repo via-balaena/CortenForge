@@ -1,0 +1,1 @@
+<mujoco><extension><plugin plugin="mujoco.elasticity.cable"/></extension><worldbody><frame><body name="b"><plugin plugin="mujoco.elasticity.cable"><config key="twist" value="1"><config key="bend" value="2"/></config></plugin><geom size=".1"/></body></frame></worldbody></mujoco>

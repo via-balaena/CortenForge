@@ -1,0 +1,1 @@
+<mujoco><worldbody/><deformable><skin name="a" vertex="0 0 0 1 0 0 0 1 0" face="0 1 2"/><skin name="c" vertex="0 0 0 1 0 0 0 1 0" face="0 1 2"/></deformable></mujoco>

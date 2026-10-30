@@ -186,10 +186,7 @@ fn extract_root_children(xml: &str, source_path: &Path) -> Result<String> {
             }
             Ok(Event::Empty(_)) => {
                 // Self-closing root → no children
-                return Err(MjcfError::include(format!(
-                    "include file '{}' has empty root element (no children to include)",
-                    source_path.display()
-                )));
+                return Err(empty_root(source_path));
             }
             Ok(Event::Eof) => {
                 return Err(MjcfError::include(format!(
@@ -223,11 +220,13 @@ fn extract_root_children(xml: &str, source_path: &Path) -> Result<String> {
     // We need to track depth to know when we hit the matching close tag.
     let mut depth = 1i32;
     let mut children_writer = Writer::new(Vec::new());
+    let mut holds_an_element = false;
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 depth += 1;
+                holds_an_element = true;
                 children_writer
                     .write_event(Event::Start(e.clone()))
                     .map_err(|e| MjcfError::include(format!("write error: {e}")))?;
@@ -249,6 +248,7 @@ fn extract_root_children(xml: &str, source_path: &Path) -> Result<String> {
                 )));
             }
             Ok(event) => {
+                holds_an_element |= matches!(event, Event::Empty(_));
                 children_writer
                     .write_event(event)
                     .map_err(|e| MjcfError::include(format!("write error: {e}")))?;
@@ -263,8 +263,23 @@ fn extract_root_children(xml: &str, source_path: &Path) -> Result<String> {
         buf.clear();
     }
 
+    // A root with an end tag that holds no element (only text or comments) is
+    // as empty as a self-closing one: MuJoCo 3.5.0 takes the root's first child
+    // element and refuses the file when there is none (`xml.cc:211-216`).
+    if !holds_an_element {
+        return Err(empty_root(source_path));
+    }
+
     let bytes = children_writer.into_inner();
     String::from_utf8(bytes).map_err(|e| MjcfError::include(format!("UTF-8 error: {e}")))
+}
+
+/// The refusal of an included file whose root holds no element.
+fn empty_root(source_path: &Path) -> MjcfError {
+    MjcfError::include(format!(
+        "include file '{}' has empty root element (no children to include)",
+        source_path.display()
+    ))
 }
 
 /// Skip past a non-self-closing `<include>...</include>` element.
@@ -505,6 +520,44 @@ mod tests {
             "actuator section should be present"
         );
         assert!(result.contains("m1"), "motor should be present");
+    }
+
+    /// An included file whose root holds no element is refused, however its
+    /// root is written, as MuJoCo 3.5.0 refuses it: it takes the root's first
+    /// child element, and says "Empty include file" when there is none
+    /// (`xml.cc:211-216`).
+    #[test]
+    fn an_include_whose_root_holds_no_element_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = [
+            ("closed.xml", "<wrap/>"),
+            ("end_tag.xml", "<wrap></wrap>"),
+            ("comment.xml", "<wrap><!-- nothing --></wrap>"),
+            ("text.xml", "<wrap> text </wrap>"),
+        ];
+        setup_include_files(dir.path(), &roots);
+        for (file, _) in roots {
+            let xml = format!(r#"<mujoco><include file="{file}"/><worldbody/></mujoco>"#);
+            let err = expand_includes(&xml, dir.path()).unwrap_err();
+            assert!(
+                err.to_string().contains("empty root element"),
+                "{file}: {err}"
+            );
+        }
+        // One element is enough, closed on itself or with an end tag.
+        let held = [
+            ("closed_child.xml", r#"<wrap><geom size=".1"/></wrap>"#),
+            (
+                "end_tag_child.xml",
+                r#"<wrap><body name="b"></body></wrap>"#,
+            ),
+        ];
+        setup_include_files(dir.path(), &held);
+        for (file, _) in held {
+            let xml =
+                format!(r#"<mujoco><worldbody><include file="{file}"/></worldbody></mujoco>"#);
+            expand_includes(&xml, dir.path()).unwrap_or_else(|e| panic!("{file}: {e}"));
+        }
     }
 
     #[test]

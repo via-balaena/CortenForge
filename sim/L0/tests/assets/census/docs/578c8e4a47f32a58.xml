@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="b"><attach model="m" prefix="p"/></body></worldbody></mujoco>

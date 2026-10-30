@@ -11,42 +11,31 @@ use crate::types::{MjcfHfield, MjcfMesh};
 
 use super::attrs::{Attrs, parse_maxhullvert, skip_element};
 
-/// Parse asset element (contains mesh, texture, material definitions).
+/// Parse asset element (contains mesh, texture, material definitions;
+/// `empty`: it closed itself, so it has none).
 pub(super) fn parse_asset<R: BufRead>(
     reader: &mut Reader<R>,
+    empty: bool,
 ) -> Result<(Vec<MjcfMesh>, Vec<MjcfHfield>)> {
     let mut meshes = Vec::new();
     let mut hfields = Vec::new();
+    if empty {
+        return Ok((meshes, hfields));
+    }
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
-                    b"mesh" => {
-                        let mesh = parse_mesh(reader, e)?;
-                        meshes.push(mesh);
-                    }
-                    b"hfield" => {
-                        let hfield = parse_hfield_attrs(e)?;
-                        // <hfield> has no child elements — skip to closing tag
-                        skip_element(reader, &elem_name)?;
-                        hfields.push(hfield);
-                    }
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let child_empty = matches!(event, Event::Empty(_));
+                match e.name().as_ref() {
+                    b"mesh" => meshes.push(parse_mesh_attrs(e)?),
+                    b"hfield" => hfields.push(parse_hfield_attrs(e)?),
                     // Skip other asset types (texture, material, etc.)
-                    _ => skip_element(reader, &elem_name)?,
+                    _ => {}
                 }
-            }
-            Ok(Event::Empty(ref e)) => {
-                if e.name().as_ref() == b"mesh" {
-                    let mesh = parse_mesh_attrs(e)?;
-                    meshes.push(mesh);
-                } else if e.name().as_ref() == b"hfield" {
-                    let hfield = parse_hfield_attrs(e)?;
-                    hfields.push(hfield);
-                }
-                // Skip other self-closing asset types
+                // A mesh's or hfield's children are not read either.
+                skip_element(reader, e.name().as_ref(), child_empty)?;
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"asset" => break,
             Ok(Event::Eof) => return Err(MjcfError::eof_in("asset")),
@@ -57,28 +46,6 @@ pub(super) fn parse_asset<R: BufRead>(
     }
 
     Ok((meshes, hfields))
-}
-
-/// Parse mesh element.
-pub(super) fn parse_mesh<R: BufRead>(
-    reader: &mut Reader<R>,
-    start: &BytesStart,
-) -> Result<MjcfMesh> {
-    let mesh = parse_mesh_attrs(start)?;
-    let mut buf = Vec::new();
-
-    // Meshes typically don't have children, but we still need to read to the end
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"mesh" => break,
-            Ok(Event::Eof) => return Err(MjcfError::eof_in("mesh")),
-            Ok(_) => {}
-            Err(e) => return Err(MjcfError::xml(e)),
-        }
-        buf.clear();
-    }
-
-    Ok(mesh)
 }
 
 /// Parse mesh attributes only.

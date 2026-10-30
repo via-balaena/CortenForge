@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="p"><geom size=".1"/><body name="c" pos="0 0 1"/></body></worldbody></mujoco>

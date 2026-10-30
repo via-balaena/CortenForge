@@ -1,0 +1,1 @@
+<mujoco><default><position kp="10"/></default><default><motor gear="5"/></default><worldbody><body><joint name="j"/><geom size=".1"/></body></worldbody><actuator><position joint="j"/><motor joint="j"/></actuator></mujoco>

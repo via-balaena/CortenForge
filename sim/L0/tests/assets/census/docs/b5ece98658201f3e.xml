@@ -1,0 +1,1 @@
+<mujoco><worldbody><composite type="cable" count="5 1 1" curve="s" size="1"/></worldbody></mujoco>

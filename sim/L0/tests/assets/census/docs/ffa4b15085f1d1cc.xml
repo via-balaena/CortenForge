@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="pb" pos="0 0 2"><geom size=".1"/></body><frame pos="1 0 0"><attach model="m" body="b" prefix="p"/></frame></worldbody></mujoco>

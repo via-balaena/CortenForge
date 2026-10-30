@@ -157,7 +157,7 @@ DT-181 added during derivatives examples (sensor FD optimization).
 | DT-165 | T2 | Cable skin generation -- rendering-only box-geom cable skin with bicubic interpolation and subgrid support. Visual-only. | Phase 13 |
 | DT-166 | T1 | Custom text metadata for composites -- cable adds `composite_{prefix}` text element. Requires `<custom><text>` infrastructure. | Phase 13 |
 | DT-167 | T2 | `<flexcomp>` element -- separate MJCF element from `<composite>`. Generates flex bodies from templates (box, cylinder, ellipsoid, mesh). | Phase 13 |
-| DT-168 | T1 | `<replicate>` element -- MuJoCo 3.4.0 replacement for deprecated `<composite type="particle">`. Repeats body templates at specified positions. | Phase 13 |
+| DT-168 | T1 | `<replicate>` element -- MuJoCo 3.4.0 replacement for deprecated `<composite type="particle">`. Repeats body templates at specified positions. **Refused** as not supported since Rigid-loading PR RL-4c (registry D-REPLICATE); making it is the 0.10 ledger's L338 | Phase 13 |
 | DT-169 | T1 | Cable `<site>` template customization -- `<site>` child element support inside `<composite>` for boundary site properties. | Phase 13 |
 
 ## Low-Priority MuJoCo Compatibility

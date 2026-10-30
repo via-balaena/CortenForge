@@ -1,0 +1,1 @@
+<mujoco><worldbody><frame pos="0 0 1"><replicate count="2" offset="1 0 0"><site name="s" size="0.1"/></replicate></frame></worldbody></mujoco>

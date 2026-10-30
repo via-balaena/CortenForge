@@ -10,30 +10,36 @@ use crate::keywords;
 use crate::types::{MjcfActuator, MjcfActuatorType, Prefix};
 
 use super::attrs::{Attrs, skip_element};
-use super::extension::{parse_plugin_ref, parse_plugin_ref_empty};
+use super::extension::parse_plugin_ref;
 
-/// Parse actuators element.
-pub(super) fn parse_actuators<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfActuator>> {
+/// Parse actuators element (`empty`: it closed itself, so it has none).
+pub(super) fn parse_actuators<R: BufRead>(
+    reader: &mut Reader<R>,
+    empty: bool,
+) -> Result<Vec<MjcfActuator>> {
     let mut actuators = Vec::new();
+    if empty {
+        return Ok(actuators);
+    }
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let child_empty = matches!(event, Event::Empty(_));
                 let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 if let Some(actuator_type) = MjcfActuatorType::from_str(&elem_name) {
                     let mut actuator = parse_actuator_attrs(e, actuator_type)?;
                     // Parse children (may contain <plugin> sub-element)
-                    parse_actuator_children(reader, elem_name.as_bytes(), &mut actuator)?;
+                    parse_actuator_children(
+                        reader,
+                        elem_name.as_bytes(),
+                        &mut actuator,
+                        child_empty,
+                    )?;
                     actuators.push(actuator);
-                }
-            }
-            Ok(Event::Empty(ref e)) => {
-                let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                if let Some(actuator_type) = MjcfActuatorType::from_str(&elem_name) {
-                    let actuator = parse_actuator_attrs(e, actuator_type)?;
-                    actuators.push(actuator);
-                    // Self-closing, no need to skip
+                } else {
+                    skip_element(reader, e.name().as_ref(), child_empty)?;
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"actuator" => break,
@@ -251,27 +257,28 @@ pub(super) fn parse_actuator_attrs(
     Ok(actuator)
 }
 
-/// Parse children of an actuator element (may contain `<plugin>` sub-element).
+/// Parse children of an actuator element (may contain `<plugin>` sub-element;
+/// `empty`: the actuator closed itself, so it has none).
 pub(super) fn parse_actuator_children<R: BufRead>(
     reader: &mut Reader<R>,
     parent_tag: &[u8],
     actuator: &mut MjcfActuator,
+    empty: bool,
 ) -> Result<()> {
+    if empty {
+        return Ok(());
+    }
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) if e.name().as_ref() == b"plugin" => {
-                let plugin_ref = parse_plugin_ref(reader, e)?;
-                actuator.plugin = Some(plugin_ref);
-            }
-            Ok(Event::Empty(ref e)) if e.name().as_ref() == b"plugin" => {
-                let plugin_ref = parse_plugin_ref_empty(e)?;
-                actuator.plugin = Some(plugin_ref);
-            }
-            Ok(Event::Start(ref e)) => {
-                // Unknown child — skip
-                let name = e.name().as_ref().to_vec();
-                skip_element(reader, &name)?;
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let child_empty = matches!(event, Event::Empty(_));
+                if e.name().as_ref() == b"plugin" {
+                    actuator.plugin = Some(parse_plugin_ref(reader, e, child_empty)?);
+                } else {
+                    // Unknown child — skip
+                    skip_element(reader, e.name().as_ref(), child_empty)?;
+                }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == parent_tag => break,
             Ok(Event::Eof) => {
