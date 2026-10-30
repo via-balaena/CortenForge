@@ -1,8 +1,10 @@
 //! The model is checked once every element has its class and its frames and
 //! composites are expanded, and before `discardvisual` and `fusestatic`
 //! remove any element (book L16): MuJoCo 3.5.0 checks a name against every
-//! body a frame or a composite makes, and before it fuses or discards
-//! (measured: each document below is refused, "repeated name … in body").
+//! body a frame or a composite makes, and before it fuses or discards, and
+//! resolves a reference into a frame. Each outcome is MuJoCo 3.5.0's for the
+//! same document (measured), except the equality-order test's, a model built
+//! in code that a document cannot express.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -68,19 +70,28 @@ fn a_cable_body_named_as_a_written_body_is_refused() {
 /// not hold is refused, by `validate` and by the loader alike.
 #[test]
 fn an_equality_order_naming_a_missing_equality_is_refused() {
-    let mut mjcf = parse_mjcf_str(
+    let mjcf = parse_mjcf_str(
         r#"<mujoco><worldbody><body name="b"><joint/><geom size=".1"/></body></worldbody></mujoco>"#,
     )
     .unwrap();
-    mjcf.equality.order.push((EqualityKind::Connect, 0));
-    for err in [
-        validate(&mjcf).unwrap_err(),
-        model_from_mjcf(&mjcf, None).unwrap_err(),
+    for (kind, tag) in [
+        (EqualityKind::Connect, "connect"),
+        (EqualityKind::Weld, "weld"),
+        (EqualityKind::Joint, "joint"),
+        (EqualityKind::Distance, "distance"),
+        (EqualityKind::Tendon, "tendon"),
     ] {
-        assert!(
-            matches!(&err, MjcfError::InvalidModel { reason, .. } if reason.contains("connect #0")),
-            "{err}"
-        );
+        let mut mjcf = mjcf.clone();
+        mjcf.equality.order.push((kind, 0));
+        for err in [
+            validate(&mjcf).unwrap_err(),
+            model_from_mjcf(&mjcf, None).unwrap_err(),
+        ] {
+            assert!(
+                matches!(&err, MjcfError::InvalidModel { reason, .. } if reason.contains(&format!("{tag} #0"))),
+                "{err}"
+            );
+        }
     }
 }
 

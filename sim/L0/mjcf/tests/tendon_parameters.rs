@@ -1,5 +1,6 @@
-//! A tendon's stiffness, damping and frictionloss as MuJoCo 3.5.0 loads them
-//! (book L16): a negative stiffness or damping, written or given by its
+//! A tendon's stiffness, damping, frictionloss and limits as MuJoCo 3.5.0
+//! loads them, its class's values checked with its own (book L16): a negative
+//! stiffness or damping, written or given by its
 //! class, loads as written, and sim-core applies it as given
 //! (`engine_passive.c:453-473`); a negative frictionloss, which MuJoCo loads
 //! and makes no constraint row for (`engine_core_constraint.c:737`), is

@@ -386,8 +386,9 @@ pub fn check_tree_depth(worldbody: &MjcfBody) -> Result<()> {
 /// Rejects NaN or ±Inf in the `size` vector at the validation boundary so
 /// that downstream mass/volume computation, mesh construction, and collision
 /// code can assume finite geometry (a non-finite `fromto` is refused where the
-/// resolve pass resolves it, `resolve_geom_fromto`). Other numeric fields (orientation, friction, density, solver
-/// params) are out of scope here; mass/inertia have separate validation
+/// resolve pass resolves it, `resolve_geom_fromto`). Other numeric fields
+/// (orientation, friction, density, solver params) are out of scope here;
+/// mass/inertia have separate validation
 /// paths via the inertial check, and the rest are deferred as a follow-up
 /// audit candidate.
 fn check_geom_finite(geom: &MjcfGeom, body_name: &str) -> Result<()> {

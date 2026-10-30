@@ -210,6 +210,11 @@ fn a_nested_class_without_a_name_is_located_at_its_parent() {
     );
     assert!(matches!(&err, MjcfError::EmptyClassName { .. }), "{err}");
     assert!(err.to_string().ends_with("(default 'a')"), "{err}");
+    // Nested in the main class, it names `main`.
+    let err = refused(
+        r#"<mujoco><default><default><joint/></default></default><worldbody><body><joint name="j" type="hinge"/><geom size=".1"/></body></worldbody></mujoco>"#,
+    );
+    assert!(err.to_string().ends_with("(default 'main')"), "{err}");
 }
 
 #[test]

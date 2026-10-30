@@ -165,9 +165,10 @@ fn equality_tag(kind: EqualityKind) -> &'static str {
 
 /// Each geom, joint and site of the body tree given its class: its own, else
 /// the `childclass` of the nearest body or frame holding it (`main` where
-/// none has one). A geom's and a site's `fromto` is then made into its `pos`,
-/// `quat` and `size` in its own frame, which a frame or fusion composes
-/// after, as MuJoCo compiles the element before either. Each `childclass` is
+/// none has one); a `<freejoint>` takes none, as MuJoCo makes it. A geom's
+/// and a site's `fromto` is then made into its `pos`, `quat` and `size` in
+/// its own frame, which a frame or fusion composes after, as MuJoCo compiles
+/// the element before either. Each `childclass` is
 /// checked where it is written. The walk keeps its own stack, so a deep tree
 /// costs no call depth.
 fn apply_to_body_tree(world: &mut MjcfBody, resolver: &DefaultResolver) -> Result<()> {
