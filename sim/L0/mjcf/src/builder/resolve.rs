@@ -25,8 +25,7 @@ enum Pending<'a> {
 }
 
 /// Every element given its class: the body tree's (`apply_to_body_tree`),
-/// then each mesh (the main class), actuator, tendon, sensor, contact pair
-/// and equality. An actuator's own servo gains are checked before its class
+/// then each mesh, actuator, tendon, sensor, contact pair and equality. An actuator's own servo gains are checked before its class
 /// gives any.
 ///
 /// # Errors
@@ -37,7 +36,8 @@ enum Pending<'a> {
 pub fn apply_defaults(mjcf: &mut MjcfModel, resolver: &DefaultResolver) -> Result<()> {
     apply_to_body_tree(&mut mjcf.worldbody, resolver)?;
     for mesh in &mut mjcf.meshes {
-        *mesh = resolver.apply_to_mesh(mesh);
+        let at = Location::named(ElementKind::Mesh, &mesh.name);
+        *mesh = resolver.apply_to_mesh(mesh).map_err(|e| e.at(at))?;
     }
     for (i, actuator) in mjcf.actuators.iter_mut().enumerate() {
         let at = Location::nth(ElementKind::Actuator, Some(&actuator.name), i);

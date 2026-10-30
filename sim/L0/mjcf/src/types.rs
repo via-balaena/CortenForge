@@ -1021,6 +1021,8 @@ pub struct MjcfMesh {
     /// it; the build gives it that name, so a parsed model's mesh keeps it
     /// empty until then.
     pub name: String,
+    /// The default class it takes, by name; none for the main class.
+    pub class: Option<String>,
     /// File path for external mesh (STL, OBJ, etc.).
     pub file: Option<String>,
     /// Scale factor for the mesh vertices.
@@ -1044,6 +1046,7 @@ impl Default for MjcfMesh {
     fn default() -> Self {
         Self {
             name: String::new(),
+            class: None,
             file: None,
             scale: None,
             vertex: None,

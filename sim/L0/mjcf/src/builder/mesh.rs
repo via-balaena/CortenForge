@@ -1115,6 +1115,7 @@ mod tests {
             scale: Some(Vector3::new(1.0, 1.0, 1.0)),
             maxhullvert: None,
             inertia: None,
+            class: None,
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
@@ -1141,6 +1142,7 @@ mod tests {
             scale: Some(Vector3::new(1.0, 1.0, 1.0)),
             maxhullvert: None,
             inertia: None,
+            class: None,
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, Some(temp_dir.path()), &MjcfCompiler::default());
@@ -1168,6 +1170,7 @@ mod tests {
             scale: Some(Vector3::new(1.0, 1.0, 1.0)),
             maxhullvert: None,
             inertia: None,
+            class: None,
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
@@ -1188,6 +1191,7 @@ mod tests {
             scale: Some(Vector3::new(1.0, 1.0, 1.0)),
             maxhullvert: None,
             inertia: None,
+            class: None,
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());

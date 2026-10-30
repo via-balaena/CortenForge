@@ -134,11 +134,6 @@ impl DefaultResolver {
             .ok_or_else(|| MjcfError::unknown_class(key))
     }
 
-    /// The main class.
-    fn main(&self) -> &MjcfDefault {
-        &self.classes[""]
-    }
-
     /// A top-level entry read onto the main class, its values over the main
     /// class's. An actuator default is the exception: MuJoCo keeps one per
     /// class, which each shortcut element rewrites, so a later block's
@@ -723,14 +718,17 @@ impl DefaultResolver {
         Ok(result)
     }
 
-    /// Apply defaults to a mesh, returning a new mesh with defaults applied.
+    /// Apply defaults to a mesh, returning a new mesh with defaults applied:
+    /// its class's, else the main class's (MuJoCo's `mjXReader::Asset`
+    /// gives a mesh its `class`).
     ///
-    /// Meshes use the root default class (meshes have no `class` attribute in MuJoCo).
-    #[must_use]
-    pub fn apply_to_mesh(&self, mesh: &MjcfMesh) -> MjcfMesh {
+    /// # Errors
+    ///
+    /// [`MjcfError::UnknownClass`] for a class no `<default>` makes.
+    pub fn apply_to_mesh(&self, mesh: &MjcfMesh) -> Result<MjcfMesh> {
         let mut result = mesh.clone();
 
-        if let Some(defaults) = &self.main().mesh {
+        if let Some(defaults) = &self.class(mesh.class.as_deref())?.mesh {
             if result.scale.is_none() {
                 result.scale = defaults.scale;
             }
@@ -742,7 +740,7 @@ impl DefaultResolver {
             }
         }
 
-        result
+        Ok(result)
     }
 
     /// Merge two defaults, with `child` values overriding `parent` values.

@@ -331,3 +331,43 @@ fn every_equality_kinds_unknown_class_is_refused() {
         assert_unknown_class(&refused(xml), "nope");
     }
 }
+
+/// A mesh takes its class's values, as MuJoCo 3.5.0's asset reader gives
+/// it its class (a tetrahedron of volume 1/6 at density 1000: MuJoCo's body
+/// mass 1333.33 under its class's scale 2, 166.67 at scale 1).
+#[test]
+fn a_mesh_takes_its_class() {
+    let model = load_model(
+        r#"<mujoco><default><default class="m"><mesh scale="2 2 2"/></default></default><asset><mesh name="t" class="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 2 1 0 1 3 0 3 2 1 2 3"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="t"/></body></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    assert_relative_eq!(model.body_mass[1], 4000.0 / 3.0, max_relative = 1e-12);
+}
+
+#[test]
+fn a_mesh_may_name_the_main_class() {
+    let model = load_model(
+        r#"<mujoco><default><mesh scale="3 3 3"/></default><asset><mesh name="t" class="main" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 2 1 0 1 3 0 3 2 1 2 3"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="t"/></body></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    assert_relative_eq!(model.body_mass[1], 4500.0, max_relative = 1e-12);
+}
+
+#[test]
+fn a_meshs_own_scale_beats_its_class() {
+    let model = load_model(
+        r#"<mujoco><default><default class="m"><mesh scale="2 2 2"/></default></default><asset><mesh name="t" class="m" scale="0.5 0.5 0.5" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 2 1 0 1 3 0 3 2 1 2 3"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="t"/></body></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    assert_relative_eq!(model.body_mass[1], 125.0 / 6.0, max_relative = 1e-12);
+}
+
+#[test]
+fn an_unknown_mesh_class_is_refused() {
+    assert_unknown_class(
+        &refused(
+            r#"<mujoco><asset><mesh name="t" class="nope" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 2 1 0 1 3 0 3 2 1 2 3"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="t"/></body></worldbody></mujoco>"#,
+        ),
+        "nope",
+    );
+}

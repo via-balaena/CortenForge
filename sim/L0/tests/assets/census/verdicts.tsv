@@ -295,6 +295,7 @@
 23a69ff558a39bf3	mj-refuses
 23b8afa68cced2d7	both-refuse
 23e9a5933a608c2a	agree
+2419e4571dbe2984	both-refuse
 241de0b28cbd136d	agree
 2467e10dd21615b5	agree
 247d18369c1f6327	model:eq_data;dyn:agree	divergence=D-CONNECT-SITE
@@ -709,6 +710,7 @@
 523302880e97a6f5	agree
 524b90e618bdc706	agree
 526258fcd83604d3	both-refuse
+52c3e409ff6db41e	model:geom_pos;dyn:agree
 52ed66b9a15e31df	agree
 52f8569850ee9ce8	agree
 5312a1ccb4f38c18	agree
@@ -1686,6 +1688,7 @@ c43a7096df2c49fc	agree
 c43cae2c09fd3c87	agree
 c45c485d72f16dbf	both-refuse
 c471b6791d20e78e	agree
+c48b69cf6e9c8aa4	model:geom_pos;dyn:agree
 c49173690d77ccb2	agree
 c4b42afbf28987e4	agree
 c4f237bb92e046e5	model:neq
@@ -1838,6 +1841,7 @@ d5fce8ce2113ab3d	agree
 d62eb4a175d851b2	both-refuse
 d63d5e89d9c6b10e	agree
 d664ca10a65e6f36	agree
+d6ce5586c3a5bd13	model:geom_pos;dyn:agree
 d6ce8144027a1358	agree
 d70998fb4ff09add	agree
 d72ea476f3c31053	agree
