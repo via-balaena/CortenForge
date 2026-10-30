@@ -108,8 +108,8 @@ pub(super) fn gain_or_bias(a: &Attrs, name: &str) -> Result<Option<Prefix<9>>> {
     Ok(Prefix::new(given))
 }
 
-/// Parse actuator attributes: its name, class and target, then its values
-/// ([`actuator_values`]).
+/// Parse actuator attributes: its name, class and target, a muscle's
+/// `tausmooth`, then its values ([`actuator_values`]).
 pub(super) fn parse_actuator_attrs(
     e: &BytesStart,
     actuator_type: MjcfActuatorType,
@@ -126,6 +126,9 @@ pub(super) fn parse_actuator_attrs(
     actuator.jointinparent = a.string("jointinparent");
     actuator.cranksite = a.string("cranksite");
     actuator.slidersite = a.string("slidersite");
+    if actuator_type == MjcfActuatorType::Muscle {
+        actuator.tausmooth = a.real("tausmooth")?;
+    }
     Ok(actuator)
 }
 

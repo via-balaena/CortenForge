@@ -375,8 +375,8 @@ impl ActuatorSpec {
     /// muscle attribute or a `<general>`'s parameter asked for that the
     /// replacements would overwrite, where the element does not write that
     /// value itself (D-MUSCLE-SENTINEL; measured: a class's `range="1 2"`
-    /// builds 0.75 2). `tausmooth`, which sim-mjcf does not read, keeps the
-    /// spec's `dynprm[2]`.
+    /// builds 0.75 2). `tausmooth` is the element's, else the spec's
+    /// `dynprm[2]` (`xml_native_reader.cc:2462-2465`).
     fn set_to_muscle(&mut self, actuator: &MjcfActuator) -> Result<()> {
         let refuse = |attribute: &str, reason: String| {
             Err(MjcfError::invalid_value("muscle", attribute, reason))
@@ -448,6 +448,11 @@ impl ActuatorSpec {
                 self.gainprm[k] = Some(muscle);
             }
         }
+        let tausmooth = actuator.tausmooth.unwrap_or_else(|| self.dynamics(2));
+        if tausmooth < 0.0 {
+            return refuse("tausmooth", "muscle tausmooth cannot be negative".into());
+        }
+        self.dynprm[2] = Some(tausmooth);
         if let Some(force) = actuator.force {
             let class = self.gain(2);
             if force < 0.0 && class > 0.0 {

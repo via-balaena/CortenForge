@@ -650,3 +650,28 @@ fn an_actuator_element_in_a_class_is_refused() {
     .unwrap_err();
     assert!(matches!(err, MjcfError::Unsupported { .. }), "{err}");
 }
+
+/// A muscle's own `tausmooth` is its `dynprm[2]`, the smooth switching time
+/// of its activation; a negative one, and one in a class (MuJoCo's default
+/// schema has none), are refused, as MuJoCo refuses them (measured).
+#[test]
+fn a_muscles_tausmooth_is_its_dynprm2() {
+    let (_, _, dynamics) = params(
+        r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h" tausmooth="0.1"/></actuator></mujoco>"#,
+    );
+    assert_eq!(dynamics[2], 0.1);
+    let err = load_model(
+        r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h" tausmooth="-0.1"/></actuator></mujoco>"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("muscle tausmooth cannot be negative"), "{err}");
+    let err = load_model(
+        r#"<mujoco><default><muscle tausmooth="0.2"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, MjcfError::UnknownAttribute { attribute, .. } if attribute == "tausmooth"),
+        "{err}"
+    );
+}

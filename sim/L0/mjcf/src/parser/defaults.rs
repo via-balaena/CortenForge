@@ -191,11 +191,15 @@ pub(super) fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
 }
 
 /// A default class's actuator element: its values, as an actuator's
-/// ([`super::actuator::actuator_values`]).
+/// ([`super::actuator::actuator_values`]), and no `tausmooth`.
 pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuator> {
     let a = Attrs::new(e)?;
     let kind = MjcfActuatorType::from_str(a.element())
         .ok_or_else(|| MjcfError::unsupported(format!("a default <{}>", a.element())))?;
+    // MuJoCo 3.5.0's default schema gives no kind a `tausmooth`.
+    if a.has("tausmooth") {
+        return Err(MjcfError::unknown_attribute(a.element(), "tausmooth"));
+    }
     super::actuator::actuator_values(&a, kind)
 }
 

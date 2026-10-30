@@ -2875,6 +2875,9 @@ pub struct MjcfActuator {
     pub fpmax: Option<f64>,
     /// Active force at lengthening (relative to peak force) (1.2).
     pub fvmax: Option<f64>,
+    /// The smooth switching time of the activation, `dynprm[2]`: a muscle
+    /// element's own (MuJoCo's default schema gives a class's none).
+    pub tausmooth: Option<f64>,
 
     // ========================================================================
     // Adhesion-specific attributes
@@ -2961,6 +2964,7 @@ impl Default for MjcfActuator {
             vmax: None,
             fpmax: None,
             fvmax: None,
+            tausmooth: None,
             gain: None,
             // <general>-specific defaults (all None = use MuJoCo defaults in model builder)
             gaintype: None,
