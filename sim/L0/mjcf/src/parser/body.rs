@@ -91,9 +91,9 @@ pub(super) fn parse_body<R: BufRead>(
                         let mut joint = parse_leaf(reader, e, child_empty, read)?;
                         // Auto-generate name only when the parent body has a
                         // name. Anonymous joints in anonymous bodies stay
-                        // child_empty — mirrors the parser's anonymous-body fix
+                        // empty — mirrors the parser's anonymous-body fix
                         // (commit `c7fa0c25`); validation.rs:211 exempts
-                        // child_empty joint names from the dedup check.
+                        // empty joint names from the dedup check.
                         if joint.name.is_empty() && !body.name.is_empty() {
                             joint.name = format!("{}_joint{}", body.name, joint_counter);
                             joint_counter += 1;
@@ -399,7 +399,9 @@ pub(super) fn parse_frame<R: BufRead>(
 /// The refusal of a `<replicate>` or an `<attach>`, which sim-mjcf does not
 /// make (registry D-REPLICATE, D-ATTACH): MuJoCo 3.5.0 makes a `<replicate>`
 /// and an `<attach>` of another model with `mjs_attach`, and an `<attach>`
-/// naming a body the document already has moves it into the attach's frame.
+/// whose `prefix` and `body` name a body the document already has moves that
+/// body into the attach's frame (refused when the frame's parent is not the
+/// body's).
 fn attach_refusal(tag: &[u8]) -> MjcfError {
     MjcfError::unsupported(format!("<{}>", String::from_utf8_lossy(tag)))
 }

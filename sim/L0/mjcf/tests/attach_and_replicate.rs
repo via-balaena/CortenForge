@@ -8,9 +8,10 @@
 //! excludes that name a replicated element (measured; other referrers were
 //! not): `xml_native_reader.cc:3660-3727`. An `<attach>` of another model
 //! brings in a body of the `<asset><model>` it names, or the whole model, its
-//! names prefixed, also by `mjs_attach`; one naming a body the document
-//! already has moves that body into the attach's frame instead
-//! (`mjs_setFrame`; `:3781-3814`, read, and measured). sim-mjcf has none of
+//! names prefixed, also by `mjs_attach`; one whose `prefix` and `body` name a
+//! body the document already has moves that body into the attach's frame
+//! instead (`mjs_setFrame`, refused when the frame's parent is not the body's;
+//! `:3781-3814`, read, and measured). sim-mjcf has none of
 //! these. Each `<replicate>` document in the first test makes two sites in
 //! MuJoCo 3.5.0; each `<attach>` one in the second is refused there too, as
 //! it names no model.
@@ -49,10 +50,11 @@ fn an_attach_is_not_supported_in_the_worldbody_a_body_or_a_frame() {
 }
 
 /// Forms MuJoCo 3.5.0 builds as nothing, or with no other model, are refused
-/// too (stricter, in the same registry rows): a `<replicate>` with no children
-/// or a count of 0 or below makes nothing there, and an `<attach>` naming a
-/// body the document already has only moves it into the attach's frame
-/// (here `pb` to (1, 0, 2)). Measured on MuJoCo 3.5.0.
+/// too: a `<replicate>` with no children or a count of 0 or below makes
+/// nothing there (D-REPLICATE, stricter for these), and an `<attach>` whose
+/// `prefix` and `body` name a body the document already has only moves it
+/// into the attach's frame, here `pb` to (1, 0, 2) (D-ATTACH). Measured on
+/// MuJoCo 3.5.0.
 #[test]
 fn the_forms_mujoco_builds_without_attaching_are_refused_too() {
     for xml in [
