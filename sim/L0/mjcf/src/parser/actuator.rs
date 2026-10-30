@@ -76,7 +76,8 @@ pub(super) fn refuse_intvelocity_actlimited(a: &Attrs) -> Result<()> {
 
 /// `gainprm` or `biasprm`: MuJoCo 3.5.0 reads up to ten (`mjNGAIN`,
 /// `mjNBIAS`); sim-core stores nine. A tenth equal to MuJoCo's default, 0, is
-/// read as unwritten; any other is refused (D-GAINPRM-10).
+/// read as unwritten; any other is refused on a `<general>` (D-GAINPRM-10),
+/// and on another kind left to the write, which refuses the attribute.
 pub(super) fn gain_or_bias(a: &Attrs, name: &str) -> Result<Option<Prefix<9>>> {
     let Some(given) = a.prefix::<10>(name)? else {
         return Ok(None);
@@ -85,7 +86,7 @@ pub(super) fn gain_or_bias(a: &Attrs, name: &str) -> Result<Option<Prefix<9>>> {
     if let [nine @ .., tenth] = given
         && given.len() == 10
     {
-        if *tenth != 0.0 {
+        if *tenth != 0.0 && a.element() == "general" {
             return Err(MjcfError::unsupported(format!(
                 "a nonzero tenth {name} value on <{}>",
                 a.element()

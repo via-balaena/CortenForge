@@ -726,9 +726,10 @@ fn a_muscle_replaces_a_value_its_class_kind_set() {
 // ── Where the stricter rules apply: at the actuator that takes the value ──
 //
 // A class's own `<damper>` or `<muscle>` may drop a value an earlier writer
-// asked for, as MuJoCo drops it; that is refused only for an actuator that
-// would be built with the loss (D-DAMPER-CLASS-KV, D-MUSCLE-SENTINEL), not
-// for the class, nor for an actuator that writes the value itself. Each
+// asked for, as MuJoCo drops it; that is refused only for a `<damper>` or
+// `<muscle>` actuator that would be built with the loss (D-DAMPER-CLASS-KV,
+// D-MUSCLE-SENTINEL), not for the class, nor for an actuator that writes the
+// value itself. Each
 // value is MuJoCo 3.5.0's for the same document (measured).
 
 #[test]
@@ -859,6 +860,15 @@ fn an_attribute_its_kind_does_not_read_is_refused() {
             r#"<mujoco><default><motor range="0.5 2"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
             "range",
         ),
+        // A tenth value, which only a <general> reads.
+        (
+            r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h" gainprm="1 0 0 0 0 0 0 0 0 5"/></actuator></mujoco>"#,
+            "gainprm",
+        ),
+        (
+            r#"<mujoco><default><motor biasprm="0 0 0 0 0 0 0 0 0 5"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><motor joint="h"/></actuator></mujoco>"#,
+            "biasprm",
+        ),
     ] {
         assert_eq!(unknown(load_model(xml), xml), attribute, "{xml}");
     }
@@ -885,6 +895,20 @@ fn an_attribute_its_kind_does_not_read_is_refused() {
             "a code-built intvelocity's dynprm"
         ),
         "dynprm"
+    );
+    // A muscle's two-value `timeconst` reaches only a <muscle> from a
+    // document; built in code onto another kind, it is refused as well.
+    let mut mjcf = parse_mjcf_str(
+        r#"<mujoco><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><position joint="h" kp="3"/></actuator></mujoco>"#,
+    )
+    .unwrap();
+    mjcf.actuators[0].muscle_timeconst = Some((0.01, 0.04));
+    assert_eq!(
+        unknown(
+            model_from_mjcf(&mjcf, None),
+            "a code-built position's muscle timeconst"
+        ),
+        "timeconst"
     );
 }
 
@@ -1109,4 +1133,39 @@ fn each_kind_reads_the_attributes_mujocos_schema_gives_it() {
         }
     }
     assert_eq!(pairs, 450);
+}
+
+/// A kind that writes none of the value its class holds keeps it as it was,
+/// with what was asked of it: a class's `<general>` asking a range of 1 or a
+/// timeconst of 1, then a `<position>`, `<velocity>`, `<adhesion>` or
+/// `<cylinder>` writing no `kp`, `kv`, `gain`, `area` or `timeconst` of its
+/// own (or a nested class's, after the class's muscle replaced the value), a
+/// muscle under it refused as under the `<general>` alone
+/// (D-MUSCLE-SENTINEL; MuJoCo builds 0.75 and 0.01, measured).
+#[test]
+fn a_kind_copying_its_classs_value_keeps_what_was_asked() {
+    for (xml, attribute) in [
+        (
+            r#"<mujoco><default><general gainprm="1"/><position/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+            "range",
+        ),
+        (
+            r#"<mujoco><default><general gainprm="1"/><velocity/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+            "range",
+        ),
+        (
+            r#"<mujoco><default><general gainprm="1"/><adhesion/></default><worldbody><body name="b"><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h" ctrlrange="0 1"/></actuator></mujoco>"#,
+            "range",
+        ),
+        (
+            r#"<mujoco><default><general dynprm="1"/><cylinder/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+            "timeconst",
+        ),
+        (
+            r#"<mujoco><default><default class="c"><general dynprm="1"/><muscle/><default class="d"><cylinder/></default></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle class="d" joint="h"/></actuator></mujoco>"#,
+            "timeconst",
+        ),
+    ] {
+        assert_eq!(refused_muscle_attribute(xml), attribute, "{xml}");
+    }
 }

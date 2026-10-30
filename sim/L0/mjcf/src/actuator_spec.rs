@@ -153,6 +153,28 @@ impl ActuatorSpec {
         }
     }
 
+    /// `gainprm[k]` as a kind's write takes it, the element's value else
+    /// the spec's (`OneActuator` reads the attribute over the spec's own):
+    /// the element's is a write of the kind's own (`set_gain`); the spec's,
+    /// copied, writes nothing new, so what a writer asked for or a class
+    /// lost there stays.
+    fn take_gain(&mut self, k: usize, element: Option<f64>) -> f64 {
+        match element {
+            Some(value) => self.set_gain(k, value),
+            None => self.gainprm[k] = Some(self.gain(k)),
+        }
+        self.gain(k)
+    }
+
+    /// `dynprm[k]` as a kind's write takes it, as [`Self::take_gain`].
+    fn take_dynamics(&mut self, k: usize, element: Option<f64>) -> f64 {
+        match element {
+            Some(value) => self.set_dynamics(k, value),
+            None => self.dynprm[k] = Some(self.dynamics(k)),
+        }
+        self.dynamics(k)
+    }
+
     /// `actuator`, of its kind, written onto this spec as `OneActuator`
     /// writes it: the attributes every kind reads, then its kind's
     /// `mjs_setTo*`, then `user`.
@@ -174,10 +196,7 @@ impl ActuatorSpec {
                 .set_to_position(actuator)
                 .map_err(ServoRefusal::into_error)?,
             MjcfActuatorType::IntVelocity => self.set_to_int_velocity(actuator, writer)?,
-            MjcfActuatorType::Velocity => {
-                let kv = actuator.kv.unwrap_or_else(|| self.gain(0));
-                self.set_to_velocity(kv);
-            }
+            MjcfActuatorType::Velocity => self.set_to_velocity(actuator.kv),
             MjcfActuatorType::Damper => self.set_to_damper(actuator, writer)?,
             MjcfActuatorType::Cylinder => self.set_to_cylinder(actuator)?,
             MjcfActuatorType::Muscle => self.set_to_muscle(actuator, writer)?,
@@ -267,8 +286,7 @@ impl ActuatorSpec {
         let refuse = |attribute: &str, reason: &str| {
             ServoRefusal::Gains(MjcfError::invalid_value(element, attribute, reason))
         };
-        let kp = actuator.kp.unwrap_or_else(|| self.gain(0));
-        self.set_gain(0, kp);
+        let kp = self.take_gain(0, actuator.kp);
         self.biasprm[1] = Some(-kp);
         if actuator.kv.is_some() && actuator.dampratio.is_some() {
             return Err(refuse(
@@ -346,9 +364,9 @@ impl ActuatorSpec {
 
     /// `mjs_setToVelocity` (`user_api.cc:959-967`), its `kv` the element's,
     /// else the spec's `gainprm[0]` (`xml_native_reader.cc:2432-2436`).
-    fn set_to_velocity(&mut self, kv: f64) {
+    fn set_to_velocity(&mut self, kv: Option<f64>) {
         self.biasprm = [Some(0.0); 9];
-        self.set_gain(0, kv);
+        let kv = self.take_gain(0, kv);
         self.biasprm[2] = Some(-kv);
         self.dyntype = Some(ActuatorDynamics::None);
         self.gaintype = Some(GainType::Fixed);
@@ -420,20 +438,17 @@ impl ActuatorSpec {
                 "a cylinder's bias takes its first value only: the others must be 0",
             ));
         }
-        let timeconst = actuator.timeconst.unwrap_or_else(|| self.dynamics(0));
         let bias = actuator.bias.map_or_else(|| self.bias(0), |[b0, _, _]| b0);
-        let area = actuator.area.unwrap_or_else(|| self.gain(0));
-        self.set_dynamics(0, timeconst);
+        self.take_dynamics(0, actuator.timeconst);
         self.biasprm[0] = Some(bias);
-        self.set_gain(
-            0,
-            match actuator.diameter {
-                Some(diameter) if diameter >= 0.0 => {
-                    std::f64::consts::PI / 4.0 * diameter * diameter
-                }
-                _ => area,
-            },
-        );
+        match actuator.diameter {
+            Some(diameter) if diameter >= 0.0 => {
+                self.set_gain(0, std::f64::consts::PI / 4.0 * diameter * diameter);
+            }
+            _ => {
+                self.take_gain(0, actuator.area);
+            }
+        }
         self.dyntype = Some(ActuatorDynamics::Filter);
         self.gaintype = Some(GainType::Fixed);
         self.biastype = Some(BiasType::Affine);
@@ -590,8 +605,7 @@ impl ActuatorSpec {
     /// `mjs_setToAdhesion` (`user_api.cc:1055-1066`), its `gain` the
     /// element's, else the spec's `gainprm[0]` (`xml_native_reader.cc:2481`).
     fn set_to_adhesion(&mut self, actuator: &MjcfActuator) -> Result<()> {
-        let gain = actuator.gain.unwrap_or_else(|| self.gain(0));
-        self.set_gain(0, gain);
+        let gain = self.take_gain(0, actuator.gain);
         self.ctrllimited = Some(TfAuto::True);
         self.gaintype = Some(GainType::Fixed);
         self.biastype = Some(BiasType::None);
@@ -615,10 +629,11 @@ impl ActuatorSpec {
 }
 
 /// A kind-specific attribute `actuator`'s kind does not read, refused as
-/// MuJoCo 3.5.0's schema refuses it ("unrecognized attribute", measured):
-/// each kind's are those `OneActuator` reads for it
-/// (`xml_native_reader.cc:2366-2470`), and `actearly` on a `<muscle>`
-/// (sim-mjcf's allowlist, the book's settled call A4-Q2). A class's element
+/// MuJoCo 3.5.0's schema refuses it ("unrecognized attribute"): each kind's
+/// are those its schema gives it (`MJCF[]`, `xml_native_reader.cc:97`; every
+/// pair measured, `each_kind_reads_the_attributes_mujocos_schema_gives_it`),
+/// and `actearly` on a `<muscle>` (sim-mjcf's allowlist, the book's settled
+/// call A4-Q2). A class's element
 /// takes no `tausmooth`, which MuJoCo's default schema gives no kind.
 fn refuse_unread(actuator: &MjcfActuator, writer: Writer) -> Result<()> {
     use MjcfActuatorType::{

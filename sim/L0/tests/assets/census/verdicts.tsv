@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1443
+# agree_floor 1444
 001bc4149d608b24	agree
 00308b83da9d8bab	agree
 0032a4ca7e233aec	agree
@@ -129,6 +129,7 @@
 0d93f635d2b0cfba	agree
 0dae986a6b2fc252	agree
 0dbb47b3e366560e	agree
+0df8f9192ee51624	both-refuse
 0e3621ca4ec655b5	both-refuse
 0e58d0da558fb30a	agree
 0e6293d1a21c9f7b	agree
@@ -456,6 +457,7 @@
 3281de1c1936c5ce	both-refuse
 329e6c8328033948	both-refuse
 32be1503120a3a19	agree
+32c1036db028bea3	ours-refused	divergence=D-MUSCLE-SENTINEL
 32d640baf8fc76e8	agree
 33730125ce762006	agree
 33a01eb4541f9036	both-refuse
@@ -1088,6 +1090,7 @@
 76ea6583d9d41920	agree
 772aec50296b7787	agree
 776e9eaac77c0bf5	ours-refused	divergence=D-FLEX-VERTEX-BODY
+777168f761ba0f27	ours-refused	divergence=D-MUSCLE-SENTINEL
 777b16de46ce7cca	agree
 777e8d0d42459752	both-refuse
 778bad2ac19a01b9	both-refuse
@@ -1545,6 +1548,7 @@ a9f02cd71aa1c5e8	model:body_mass;dyn:agree
 a9fa0eaed34dc178	agree
 aa0f2efbf67f3936	agree
 aa20ff29da40acbf	both-refuse
+aa4634d9493a9fb7	ours-refused	divergence=D-MUSCLE-SENTINEL
 aa6bfb9f5f2fe80c	mj-refuses
 aa8129252a2c15c2	agree
 aa8cad299762278f	agree
@@ -2263,6 +2267,7 @@ f7fdbcd7a023d6ac	agree
 f84a884ee4f1c972	both-refuse
 f855e63141c2d08f	both-refuse
 f85879ea1574f290	agree
+f8597e8afd63a1f1	ours-refused	divergence=D-MUSCLE-SENTINEL
 f85c405a86a9ef1c	agree
 f85cc2e5a5e709e6	agree
 f865f1d13a165902	mj-refuses
@@ -2291,6 +2296,7 @@ faad979812e18455	agree
 fab255001870f623	agree
 fb0e21fd300a63de	agree
 fb40f9ec7a17d647	agree
+fb4dc5901acc9d25	ours-refused	divergence=D-MUSCLE-SENTINEL
 fb6bf8050f325479	agree
 fb78e979876042d4	both-refuse
 fb8f17ffe831871a	agree
@@ -2308,6 +2314,7 @@ fd26237cb81fa7b7	both-refuse
 fd319557ca9c266f	agree
 fd5e37ce44262783	agree
 fd6188c08122b166	agree
+fdb720750178267c	both-refuse
 fdd8701089dfb2c4	agree
 fde0cc38ce9cf888	model:neq
 fde9185fcd85cc26	agree
@@ -2320,6 +2327,7 @@ fec64b4636a305db	agree
 fed767d7dd8f4488	agree
 ff60001c783e0f4d	agree
 ff94c82fc48f8ddf	both-refuse
+ff9ebaab79b2987d	agree
 ffa4b15085f1d1cc	ours-refused	divergence=D-ATTACH
 ffdc191d5d00f71a	agree
 ffe246517dc498d6	agree

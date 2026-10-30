@@ -2426,3 +2426,11 @@ ed81a3e98e945a56	sim/L0/mjcf/tests/actuator_defaults.rs:906
 1b2240d2a0e817c1	sim/L0/mjcf/tests/actuator_defaults.rs:999
 66b5ca2c48912e6f	sim/L0/mjcf/tests/actuator_defaults.rs:992
 df76154879bdedff	sim/L0/mjcf/tests/actuator_defaults.rs:985
+0df8f9192ee51624	sim/L0/mjcf/tests/actuator_defaults.rs:865
+32c1036db028bea3	sim/L0/mjcf/tests/actuator_defaults.rs:1161
+777168f761ba0f27	sim/L0/mjcf/tests/actuator_defaults.rs:1165
+aa4634d9493a9fb7	sim/L0/mjcf/tests/actuator_defaults.rs:1153
+f8597e8afd63a1f1	sim/L0/mjcf/tests/actuator_defaults.rs:1157
+fb4dc5901acc9d25	sim/L0/mjcf/tests/actuator_defaults.rs:1149
+fdb720750178267c	sim/L0/mjcf/tests/actuator_defaults.rs:869
+ff9ebaab79b2987d	sim/L0/mjcf/tests/actuator_defaults.rs:902

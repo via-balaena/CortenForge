@@ -2889,29 +2889,27 @@ pub struct MjcfActuator {
     // ========================================================================
     // <general>-specific attributes
     // ========================================================================
-    // Written by a <general>, in a class or not; a shortcut element does not
-    // read them (as MuJoCo's `OneActuator` does not), but a class's reach
-    // every kind the class serves.
+    // Written by a <general>, in a class or not; on any other kind they are
+    // refused (MuJoCo's schema gives them to a <general> alone), but a
+    // class's reach every kind the class serves.
     /// Gain type: "fixed", "affine", "muscle".
-    /// None means use default (Fixed). Only parsed for `<general>`.
+    /// None means use default (Fixed).
     pub gaintype: Option<String>,
     /// Bias type: "none", "affine", "muscle".
-    /// None means use default (None/no bias). Only parsed for `<general>`.
+    /// None means use default (None/no bias).
     pub biastype: Option<String>,
     /// Dynamics type: "none", "integrator", "filter", "filterexact", "muscle".
-    /// None means use default (None/direct). Only parsed for `<general>`.
+    /// None means use default (None/direct).
     pub dyntype: Option<String>,
     /// Gain parameters, up to nine (MuJoCo's `exact = false`): those not
     /// written keep the class's, else MuJoCo's default [1, 0, ..., 0]; a
-    /// tenth is read and refused unless it is zero (D-GAINPRM-10). Only
-    /// parsed for `<general>`.
+    /// tenth is read and refused unless it is zero (D-GAINPRM-10).
     pub gainprm: Option<Prefix<9>>,
     /// Bias parameters, up to nine, as `gainprm` (MuJoCo's default
-    /// [0, ..., 0]). Only parsed for `<general>`.
+    /// [0, ..., 0]).
     pub biasprm: Option<Prefix<9>>,
     /// Dynamics parameters, up to ten (MuJoCo's `exact = false`): those not
-    /// written keep the class's, else MuJoCo's default [1, 0, ..., 0]. Only
-    /// parsed for `<general>`.
+    /// written keep the class's, else MuJoCo's default [1, 0, ..., 0].
     pub dynprm: Option<Prefix<10>>,
     /// Per-element user data from `user="..."` attribute.
     pub user: Vec<f64>,
