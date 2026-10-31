@@ -304,14 +304,13 @@ impl ModelBuilder {
                     .get(name)
                     .ok_or_else(|| MjcfError::undefined(ElementKind::Site, name))?;
                 // MuJoCo 3.5.0 compiles a touch sensor on a site of type sdf and
-                // stops with a fatal error at the first contact of the site's
-                // body (`mju_rayGeom`, measured): refused here
-                // (`D-SITE-SDF-TOUCH`).
+                // can stop on it with a fatal error while running
+                // (`mju_rayGeom`, measured): refused here (`D-SITE-SDF-TOUCH`).
                 if self.site_type.get(site_id) == Some(&GeomType::Sdf) {
                     return Err(MjcfError::invalid_value(
                         "touch",
                         "site",
-                        "a touch sensor's site of type sdf, on which MuJoCo 3.5.0 stops at the first contact",
+                        "a touch sensor's site of type sdf, which MuJoCo 3.5.0 can stop on while running",
                     ));
                 }
                 Ok((MjObjectType::Site, site_id))

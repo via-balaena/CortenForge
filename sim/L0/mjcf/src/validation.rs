@@ -266,7 +266,7 @@ pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
         )?;
     }
 
-    // After the names, as MuJoCo 3.5.0 checks them: the assets each geom
+    // After the body and joint names: the assets each geom
     // names (`IndexAssets`), then the bodies from the world down, a body's
     // geoms, then its sites, then its children (each order measured on a
     // document with two faults).
@@ -470,9 +470,9 @@ fn check_sizes(model: &MjcfModel) -> Result<()> {
 /// the geom nor its class writes being MuJoCo's 0. MuJoCo first fits a
 /// sphere, capsule, cylinder, ellipsoid or box that names a mesh to the mesh
 /// (`FitGeom`, `:3739`), replacing its size, and refuses a plane or height
-/// field that names one ("invalid geom type in fitting mesh",
-/// `user_mesh.cc:1008-1009`); sim-mjcf fits none (ledger L337), so it refuses
-/// the first as not supported (`D-MESH-FIT`) and the second as MuJoCo does.
+/// field that names one (`user_mesh.cc:1008-1009`, `:1047`); sim-mjcf fits
+/// none (ledger L337), so it refuses the first as not supported
+/// (`D-MESH-FIT`) and the second too.
 /// Other numeric fields
 /// (orientation, friction, density, solver params) are out of scope here;
 /// mass/inertia have separate validation

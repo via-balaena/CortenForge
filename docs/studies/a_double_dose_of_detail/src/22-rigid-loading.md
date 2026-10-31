@@ -390,7 +390,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Implements:** A9 §2.4 2b (`FlexElastic2d`; bending only for `bend`/`both`; `stretch`/`both` refused as a limitation; refusals per A9 Q4, Q7; pins + bending load per A9 Q3) — C2 implements `elastic2d` — and the 39 `elastic2d="bend"` rewrites, applied to L10's vertex-body docs. **U12:** sim-core has no dim-3 or 2-D membrane elasticity (A9 §7 H6), so a dim-3 flex with `<elasticity young>` > 0 is refused as a stated limitation, as `stretch`/`both` are. Today a dim-3 `young` becomes a bending stiffness (`builder/flex.rs:773`), not MuJoCo's tet elasticity (`user_mesh.cc:4347-4361`).
 - **Must-fail:** A9 §2.6 #2, #4, #5, #6, #7; pins #8 (bending-order deviation) and #9 (pins + bending); `flex_dim3_elasticity_is_refused` (U12; main loads).
 - **Flips:** with the rewrites, 2 docs model-only, 0 tests; without them, 12 CI tests flip (A9 §2.7). U12: `flex_unified.rs:399` `ac3_solid_compression` — its doc (`:61-77`) is the only in-tree dim-3 flex (`git grep 'dim="3"'`) and sets `young="100"`; drop `young` or make it the refusal test (which keeps its intent was not checked).
-- **Note:** the `.mjb` shape changes here, so `MJB_VERSION` moves in this pull request's first commit that changes it (Conventions; `mjb.rs`'s `MJB_VERSION` doc lists each version).
+- **Note:** the `.mjb` shape changes here, so `MJB_VERSION` moves in this pull request's first commit that changes it (Conventions).
 
 ### L33 · A10 MH3 · `fix(sim-mjcf): body inertial frame as MuJoCo: one geom copied, orientation alternatives`
 - **Closes:** ledger-L43c, census "rotated inertia" (A16 §2; `636fc5d5`, A20 §1A.2).

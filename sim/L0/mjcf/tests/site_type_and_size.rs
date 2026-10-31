@@ -204,9 +204,9 @@ fn a_site_built_in_code_with_a_nan_size_is_refused() {
     }
 }
 
-/// A touch sensor on a site of type sdf: MuJoCo 3.5.0 compiles it and stops
-/// with a fatal error at the first contact of the site's body
-/// (`mju_rayGeom: unexpected geom type 8`, measured with this document);
+/// A touch sensor on a site of type sdf: MuJoCo 3.5.0 compiles it, and stops
+/// with a fatal error on this document (`mju_rayGeom: unexpected geom type
+/// 8`, measured);
 /// sim-mjcf refuses it (`D-SITE-SDF-TOUCH`, stricter). A site of type sdf
 /// alone loads (`a_sites_type_and_size_are_mujocos`).
 #[test]
