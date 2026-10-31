@@ -5,7 +5,6 @@
 
 use nalgebra::{UnitQuaternion, Vector3};
 use sim_core::MjJointType;
-use tracing::warn;
 
 use super::orientation::{MJ_EPS, normvec};
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
@@ -54,6 +53,32 @@ impl ModelBuilder {
             MjcfJointType::Free => MjJointType::Free,
         };
 
+        // The axis as MuJoCo's `mjCJoint::Compile` makes it, before the
+        // joint's range (`user_objects.cc:2946-2960`): a ball's or a free
+        // joint's is z, whatever is written; another's is made unit by
+        // `normvec`, which returns 0 where its squared norm is below mjEPS, and
+        // then is refused ("axis too small in joint").
+        let at = || {
+            Location::nth(ElementKind::Joint, Some(&joint.name), jnt_id).within_nth(
+                ElementKind::Body,
+                self.body_name.get(body_id).and_then(Option::as_deref),
+                body_id,
+            )
+        };
+        let axis = match jnt_type {
+            MjJointType::Ball | MjJointType::Free => Vector3::z(),
+            MjJointType::Hinge | MjJointType::Slide => {
+                let written = joint.axis.unwrap_or_else(Vector3::z);
+                let mut unit = [written.x, written.y, written.z];
+                if normvec(&mut unit) < MJ_EPS {
+                    return Err(
+                        MjcfError::invalid_value("joint", "axis", "axis too small").at(at())
+                    );
+                }
+                Vector3::from(unit)
+            }
+        };
+
         let nq = jnt_type.nq();
         let nv = jnt_type.nv();
         let qpos_adr = self.nq;
@@ -65,22 +90,6 @@ impl ModelBuilder {
         self.jnt_qpos_adr.push(qpos_adr);
         self.jnt_dof_adr.push(dof_adr);
         self.jnt_pos.push(joint.pos.unwrap_or_else(Vector3::zeros));
-        // The written axis made unit once, as MuJoCo's `normvec`
-        // (`mjCJoint::Compile`, `user_objects.cc:2957-2960`). One too small to
-        // make unit falls back to z; MuJoCo refuses a hinge's or a slide's
-        // ("axis too small in joint") and sets a ball's or a free joint's to z
-        // before it looks (the Rigid-loading book's L20).
-        let raw_axis = joint.axis.unwrap_or_else(Vector3::z);
-        let mut unit = [raw_axis.x, raw_axis.y, raw_axis.z];
-        let axis = if normvec(&mut unit) >= MJ_EPS {
-            Vector3::from(unit)
-        } else {
-            warn!(
-                joint_name = ?joint.name,
-                "Joint axis is zero or near-zero, defaulting to Z-axis"
-            );
-            Vector3::z()
-        };
         self.jnt_axis.push(axis);
         // Autolimits: infer limited from range presence when no explicit value.
         let limited = super::is_limited(joint.limited, self.compiler.autolimits, joint.range);

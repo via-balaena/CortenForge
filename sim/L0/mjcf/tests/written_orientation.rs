@@ -2037,29 +2037,6 @@ fn a_joint_axis_is_made_unit_once_as_mujocos_is() {
     );
 }
 
-/// A joint axis too small to make unit (`normvec` returns 0 below a norm of
-/// 1e-7) falls back to z. MuJoCo 3.5.0 refuses both ("axis too small in
-/// joint"); that refusal is the Rigid-loading book's L20 (pull request RL-6).
-#[test]
-fn a_joint_axis_too_small_to_make_unit_falls_back_to_z() {
-    for axis in ["0 0 0", "1e-8 0 0"] {
-        let model = load_model(&format!(
-            r#"<mujoco><worldbody><body name="b"><joint type="hinge" axis="{axis}"/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#
-        ))
-        .unwrap();
-        assert_eq!(
-            [
-                model.jnt_axis[0].x,
-                model.jnt_axis[0].y,
-                model.jnt_axis[0].z
-            ]
-            .map(f64::to_bits),
-            [0.0_f64, 0.0, 1.0].map(f64::to_bits),
-            "{axis}"
-        );
-    }
-}
-
 /// A frame's turn and its geom's: MuJoCo 3.5.0's `geom_quat`, within 1e-14 (the
 /// composition is not MuJoCo's arithmetic: ledger L255).
 const FRAME_CASES: &[(&str, &str, [u64; 4])] = &[
