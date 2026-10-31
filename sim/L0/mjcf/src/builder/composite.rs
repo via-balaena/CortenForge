@@ -478,7 +478,7 @@ fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> Resul
     let mut geom = MjcfGeom {
         name: Some(name.to_string()),
         geom_type: Some(template.geom_type),
-        size: vec![template.size[0], template.size[1], template.size[2]],
+        size: Some(Prefix::full(template.size)),
         contype: template.contype,
         conaffinity: template.conaffinity,
         condim: template.condim,
@@ -517,7 +517,11 @@ fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> Resul
         MjcfGeomType::Box => {
             // Centered at midpoint, half-length along x
             geom.pos = Some(Vector3::new(length / 2.0, 0.0, 0.0));
-            geom.size = vec![length / 2.0, template.size[1], template.size[2]];
+            geom.size = Some(Prefix::full([
+                length / 2.0,
+                template.size[1],
+                template.size[2],
+            ]));
         }
         _ => {} // Validated earlier — unreachable
     }

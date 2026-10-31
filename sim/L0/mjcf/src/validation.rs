@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::stack::MAX_BODY_TREE_DEPTH;
 use crate::types::{
-    MjcfBody, MjcfFrame, MjcfGeom, MjcfModel, MjcfOption, MjcfTendon, MjcfTendonType,
+    MjcfBody, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfModel, MjcfOption, MjcfTendon, MjcfTendonType,
     SpatialPathElement, TfAuto,
 };
 
@@ -159,7 +159,7 @@ pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
     // Validate geoms anchored directly on worldbody (e.g., ground planes).
     // Descendant-body geoms are validated inside traverse_body.
     for geom in &model.worldbody.geoms {
-        check_geom_finite(geom, "world")?;
+        check_geom_size(geom, "world")?;
     }
 
     // Traverse body tree
@@ -241,7 +241,7 @@ pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
 
         // Validate geom dimensions
         for geom in &body.geoms {
-            check_geom_finite(geom, &body.name)?;
+            check_geom_size(geom, &body.name)?;
         }
 
         // Recurse to children
@@ -381,24 +381,64 @@ pub fn check_tree_depth(worldbody: &MjcfBody) -> Result<()> {
     Ok(())
 }
 
-/// Check that a geom's dimensional numeric fields are finite.
+/// Check a geom's size: finite, then as MuJoCo 3.5.0's `checksize`
+/// (`user_objects.cc:152-167`, on the size its `fromto` gave).
 ///
-/// Rejects NaN or ±Inf in the `size` vector at the validation boundary so
+/// Rejects NaN or ±Inf in the `size` at the validation boundary so
 /// that downstream mass/volume computation, mesh construction, and collision
 /// code can assume finite geometry (a non-finite `fromto` is refused where the
-/// resolve pass resolves it, `resolve_geom_fromto`). Other numeric fields
+/// resolve pass resolves it, `resolve_geom_fromto`). Then a plane's third
+/// value, and each of the first `mjGEOMINFO[type]` values of any other type
+/// (`user_objects.h:77`: a sphere 1, a capsule or cylinder 2, an ellipsoid or
+/// box 3, a mesh, height field or SDF none), must be above 0, a place neither
+/// the geom nor its class writes being MuJoCo's 0. MuJoCo first fits a geom
+/// that names a mesh and is not a mesh or SDF to the mesh (`FitGeom`,
+/// `:3739`), replacing its size; sim-mjcf fits none (ledger L337), so such a
+/// geom is refused as not supported (`D-MESH-FIT`). Other numeric fields
 /// (orientation, friction, density, solver params) are out of scope here;
 /// mass/inertia have separate validation
 /// paths via the inertial check, and the rest are deferred as a follow-up
 /// audit candidate.
-fn check_geom_finite(geom: &MjcfGeom, body_name: &str) -> Result<()> {
+fn check_geom_size(geom: &MjcfGeom, body_name: &str) -> Result<()> {
     let at = || {
         Location::named(ElementKind::Geom, geom.name.as_deref().unwrap_or("")).in_body(body_name)
     };
     // A geom's `fromto` is its pose and size already (the resolve pass refuses
     // a non-finite one).
-    if let Some(v) = geom.size.iter().find(|v| !v.is_finite()) {
+    let size = geom.size.map_or([0.0; 3], |s| s.over([0.0; 3]));
+    if let Some(v) = size.iter().find(|v| !v.is_finite()) {
         return Err(MjcfError::non_finite("geom", "size", *v).at(at()));
+    }
+    let kind = geom.geom_type.unwrap_or(MjcfGeomType::Sphere);
+    if !matches!(kind, MjcfGeomType::Mesh | MjcfGeomType::Sdf)
+        && geom.mesh.as_deref().is_some_and(|m| !m.is_empty())
+    {
+        return Err(MjcfError::unsupported(
+            "a geom of a primitive type fitted to the mesh it names",
+        )
+        .at(at()));
+    }
+    let places = match kind {
+        MjcfGeomType::Plane => {
+            if size[2] <= 0.0 {
+                return Err(MjcfError::invalid_value(
+                    "geom",
+                    "size",
+                    "plane size(3) must be positive",
+                )
+                .at(at()));
+            }
+            0
+        }
+        MjcfGeomType::Sphere => 1,
+        MjcfGeomType::Capsule | MjcfGeomType::Cylinder => 2,
+        MjcfGeomType::Ellipsoid | MjcfGeomType::Box => 3,
+        MjcfGeomType::Mesh | MjcfGeomType::Hfield | MjcfGeomType::Sdf => 0,
+    };
+    if let Some(i) = (0..places).find(|&i| size[i] <= 0.0) {
+        return Err(
+            MjcfError::invalid_value("geom", "size", format!("size {i} must be positive")).at(at()),
+        );
     }
     Ok(())
 }
@@ -653,7 +693,7 @@ fn validate_tendon_params(tendon: &MjcfTendon) -> Result<()> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::types::{MjcfActuator, MjcfGeom, MjcfGeomType, MjcfInertial, MjcfJoint};
+    use crate::types::{MjcfActuator, MjcfGeom, MjcfGeomType, MjcfInertial, MjcfJoint, Prefix};
     use nalgebra::Vector3;
 
     fn make_simple_model() -> MjcfModel {
@@ -996,7 +1036,7 @@ mod tests {
         // Build a cylinder via the size vec directly (no constructor sugar).
         let cylinder = MjcfGeom {
             geom_type: Some(MjcfGeomType::Cylinder),
-            size: vec![0.1, f64::NEG_INFINITY],
+            size: Prefix::new(&[0.1, f64::NEG_INFINITY]),
             ..Default::default()
         };
         let model = MjcfModel::new("test").with_body(body_with_geom("base", cylinder));
@@ -1007,7 +1047,7 @@ mod tests {
     fn test_invalid_geom_fromto_nan() {
         let geom = MjcfGeom {
             geom_type: Some(MjcfGeomType::Cylinder),
-            size: vec![0.1, 0.5],
+            size: Prefix::new(&[0.1, 0.5]),
             fromto: Some([0.0, 0.0, 0.0, 1.0, f64::NAN, 0.0]),
             ..Default::default()
         };

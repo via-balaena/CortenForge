@@ -1279,8 +1279,9 @@ fn a_written_nan_or_infinity_is_refused_naming_its_attribute() {
         (joint(r#"limited="true" range="-inf inf""#), "joint", "range"),
         (r#"<mujoco><worldbody><body quat="nan 0 0 0"><geom size="0.1"/></body></worldbody></mujoco>"#.to_string(), "body", "quat"),
         (r#"<mujoco><worldbody><body><geom size="0.1" friction="nan 0.005 0.0001"/></body></worldbody></mujoco>"#.to_string(), "geom", "friction"),
-        // A class's geom size is not read until book L18 (MuJoCo loads it too).
+        // A class's size, which MuJoCo loads when no element takes it.
         (r#"<mujoco><default><site size="nan"/></default><worldbody/></mujoco>"#.to_string(), "site", "size"),
+        (r#"<mujoco><default><geom size="nan"/></default><worldbody/></mujoco>"#.to_string(), "geom", "size"),
         (
             r#"<mujoco><worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody><actuator><motor joint="j" ctrlrange="nan 1"/></actuator></mujoco>"#.to_string(),
             "motor",

@@ -170,6 +170,7 @@ pub(super) fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
     defaults.xyaxes = a.array("xyaxes")?;
     defaults.zaxis = a.vec3("zaxis")?;
 
+    defaults.size = a.prefix("size")?;
     // Exotic geom defaults
     defaults.fromto = a.array("fromto")?;
     defaults.mesh = a.string("mesh");

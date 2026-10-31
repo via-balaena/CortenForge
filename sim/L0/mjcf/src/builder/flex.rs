@@ -15,7 +15,7 @@ use nalgebra::{UnitQuaternion, Vector3};
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::keywords;
-use crate::types::{FlexVertexBodies, MjcfFlex, MjcfGeom, MjcfGeomType};
+use crate::types::{FlexVertexBodies, MjcfFlex, MjcfGeom, MjcfGeomType, Prefix};
 use sim_core::{EqualityType, FlexSelfCollide, MjJointType};
 
 /// Number of coefficients per bending element in the discrete thin-shell model.
@@ -613,7 +613,7 @@ impl ModelBuilder {
         if flex.vertcollide && !pinned {
             let sphere = self.resolver.apply_to_geom(&MjcfGeom {
                 geom_type: Some(MjcfGeomType::Sphere),
-                size: vec![flex.radius],
+                size: Prefix::new(&[flex.radius]),
                 group: Some(4),
                 ..MjcfGeom::default()
             })?;

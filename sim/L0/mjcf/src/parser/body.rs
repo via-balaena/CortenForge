@@ -245,11 +245,8 @@ pub(super) fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
     geom.axisangle = a.vec4("axisangle")?;
     geom.xyaxes = a.array("xyaxes")?;
     geom.zaxis = a.vec3("zaxis")?;
-    // One up to three numbers (MuJoCo's `exact = false`); the type stays a
-    // list until the class overlay of a geom's size is MuJoCo's (book L18).
-    if let Some(size) = a.prefix::<3>("size")? {
-        geom.size = size.given().to_vec();
-    }
+    // One up to three numbers (MuJoCo's `exact = false`), over its class's.
+    geom.size = a.prefix("size")?;
     geom.fromto = a.array("fromto")?;
     geom.friction = a.prefix("friction")?;
     geom.density = a.real("density")?;

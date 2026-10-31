@@ -1,0 +1,1 @@
+<mujoco><default><geom size="0.2"/><default class="c"><geom size="0.05"/></default></default><worldbody><geom class="c"/><geom pos="1 0 0"/></worldbody></mujoco>

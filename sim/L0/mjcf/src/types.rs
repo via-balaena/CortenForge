@@ -837,6 +837,10 @@ pub struct MjcfGeomDefaults {
     pub xyaxes: Option<[f64; 6]>,
     /// Default z-axis (minimal rotation from Z).
     pub zaxis: Option<Vector3<f64>>,
+    /// Default size: one to three numbers, over its parent class's in the
+    /// first places (MuJoCo's `ReadAttr` with `exact` false,
+    /// `xml_native_reader.cc:1854`).
+    pub size: Option<Prefix<3>>,
     /// Default fromto specification [x1, y1, z1, x2, y2, z2].
     pub fromto: Option<[f64; 6]>,
     /// Default mesh asset name.
@@ -1299,13 +1303,16 @@ pub struct MjcfGeom {
     pub xyaxes: Option<[f64; 6]>,
     /// Alternative orientation as z-axis (minimal rotation from Z).
     pub zaxis: Option<Vector3<f64>>,
-    /// Size parameters (interpretation depends on type).
+    /// Size parameters: one to three numbers as written, over its class's in
+    /// the first places (`None`: none written); a place neither writes is
+    /// MuJoCo's default 0 (`user_init.c:109-110`). The loader refuses a size
+    /// MuJoCo's `checksize` refuses (`user_objects.cc:152-167`).
     /// - Sphere: `[radius]`
-    /// - Capsule: `[radius, half-length]`
+    /// - Capsule, cylinder: `[radius, half-length]`
     /// - Box: `[x, y, z]` half-extents
-    /// - Cylinder: `[radius, half-length]`
+    /// - Ellipsoid: `[x, y, z]` radii
     /// - Plane: `[x, y, spacing]` (spacing for grid visualization)
-    pub size: Vec<f64>,
+    pub size: Option<Prefix<3>>,
     /// Alternative specification using fromto (start and end points).
     pub fromto: Option<[f64; 6]>,
     /// Friction coefficients [sliding, torsional, rolling].
@@ -1369,7 +1376,7 @@ impl Default for MjcfGeom {
             axisangle: None,
             xyaxes: None,
             zaxis: None,
-            size: vec![0.1], // Default sphere radius
+            size: None,
             fromto: None,
             friction: None,
             density: None,
@@ -1403,7 +1410,7 @@ impl MjcfGeom {
     pub fn sphere(radius: f64) -> Self {
         Self {
             geom_type: Some(MjcfGeomType::Sphere),
-            size: vec![radius],
+            size: Prefix::new(&[radius]),
             ..Default::default()
         }
     }
@@ -1413,7 +1420,11 @@ impl MjcfGeom {
     pub fn box_shape(half_extents: Vector3<f64>) -> Self {
         Self {
             geom_type: Some(MjcfGeomType::Box),
-            size: vec![half_extents.x, half_extents.y, half_extents.z],
+            size: Some(Prefix::full([
+                half_extents.x,
+                half_extents.y,
+                half_extents.z,
+            ])),
             ..Default::default()
         }
     }
@@ -1423,7 +1434,7 @@ impl MjcfGeom {
     pub fn capsule(radius: f64, half_length: f64) -> Self {
         Self {
             geom_type: Some(MjcfGeomType::Capsule),
-            size: vec![radius, half_length],
+            size: Prefix::new(&[radius, half_length]),
             ..Default::default()
         }
     }
@@ -1447,27 +1458,26 @@ impl MjcfGeom {
         .map_err(|e| e.on("geom"))
     }
 
-    /// Compute mass from density and volume.
+    /// Compute mass from density and volume, the volume from the size as
+    /// written (a place not written is 0; no class is applied).
     #[must_use]
     pub fn computed_mass(&self) -> f64 {
         if let Some(mass) = self.mass {
             return mass;
         }
 
+        let size = self.size.map_or([0.0; 3], |s| s.over([0.0; 3]));
         let volume = match self.geom_type.unwrap_or(MjcfGeomType::Sphere) {
             MjcfGeomType::Sphere => {
-                let r = self.size.first().copied().unwrap_or(0.1);
+                let r = size[0];
                 (4.0 / 3.0) * std::f64::consts::PI * r.powi(3)
             }
             MjcfGeomType::Box => {
-                let x = self.size.first().copied().unwrap_or(0.1);
-                let y = self.size.get(1).copied().unwrap_or(x);
-                let z = self.size.get(2).copied().unwrap_or(y);
+                let [x, y, z] = size;
                 8.0 * x * y * z // Full size = 2 * half-extents
             }
             MjcfGeomType::Capsule | MjcfGeomType::Cylinder => {
-                let r = self.size.first().copied().unwrap_or(0.1);
-                let h = self.size.get(1).copied().unwrap_or(0.1);
+                let [r, h, _] = size;
                 // Cylinder + 2 hemispheres for capsule
                 std::f64::consts::PI * r.powi(2) * (2.0 * h)
                     + (4.0 / 3.0) * std::f64::consts::PI * r.powi(3)
@@ -4590,7 +4600,7 @@ mod tests {
     fn test_geom_computed_mass() {
         let sphere = MjcfGeom {
             geom_type: Some(MjcfGeomType::Sphere),
-            size: vec![0.1],
+            size: Prefix::new(&[0.1]),
             density: Some(1000.0),
             mass: None,
             ..Default::default()
@@ -4606,7 +4616,7 @@ mod tests {
     fn test_geom_explicit_mass() {
         let sphere = MjcfGeom {
             geom_type: Some(MjcfGeomType::Sphere),
-            size: vec![0.1],
+            size: Prefix::new(&[0.1]),
             density: Some(1000.0),
             mass: Some(5.0), // Explicit mass overrides density
             ..Default::default()

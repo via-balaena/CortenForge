@@ -14,8 +14,6 @@
 //! by `euler="30 20 10"`. The position and size take arithmetic and a square
 //! root only, so they are compared bit for bit everywhere; the quaternion
 //! passes through `atan2`, `cos` and `sin`, so off macOS arm64 within 1e-14.
-//! A capsule's or cylinder's `size[2]` is not compared: MuJoCo keeps a written
-//! third value there and sim-mjcf 0, for every capsule (the book's L18).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 // The cases are bit patterns, written as MuJoCo's values' raw bits.
@@ -567,12 +565,7 @@ fn a_fromto_geom_is_posed_and_sized_as_mujocos() {
             differ.push(format!("{what} quat: {got_quat:?}, MuJoCo {mujoco_quat:?}"));
         }
         let got_size = model.geom_size[0];
-        let compared = if matches!(kind, "capsule" | "cylinder") {
-            2
-        } else {
-            3
-        };
-        if (0..compared).any(|k| got_size[k].to_bits() != sz[k]) {
+        if (0..3).any(|k| got_size[k].to_bits() != sz[k]) {
             differ.push(format!(
                 "{what} size: {got_size:?}, MuJoCo {:?}",
                 sz.map(f64::from_bits)
