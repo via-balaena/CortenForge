@@ -485,6 +485,7 @@
 34593f3ba52c2e8a	both-refuse
 346c01da21f5845e	agree
 3486dd3e43cb05ca	both-refuse
+348da12f74b6427c	both-refuse
 34ae22eae87a77b9	model:actuator_actlimited;dyn:agree
 34e084197442a3f7	agree
 3514416898dc1b03	agree
@@ -774,6 +775,7 @@
 523302880e97a6f5	agree
 524b90e618bdc706	agree
 526258fcd83604d3	both-refuse
+52bd97e783b0cd61	both-refuse
 52c3e409ff6db41e	model:geom_pos;dyn:agree
 52ed66b9a15e31df	agree
 52f8569850ee9ce8	agree
@@ -931,6 +933,7 @@
 61c303dc2aa0dacc	agree
 61eba7e52d42993a	both-refuse
 61fd390a8c171e4d	both-refuse
+6206dbc55a616295	both-refuse
 6220a39646c07ebf	agree
 62243c1caa859851	both-refuse
 623f53dd49497ef3	agree
@@ -1096,6 +1099,7 @@
 74b045e2bcab1a19	model:actuator_actlimited;dyn:agree
 74c562a4eff50782	agree
 7516e931cf667f4b	agree
+751b97e4c0d7689c	both-refuse
 753d219e66dc524c	agree
 75477eed150228ad	agree
 7563fc80ecb0bd20	agree
@@ -1359,6 +1363,7 @@
 92349b4d911c39d0	agree
 924ccd8af8ae71c4	agree
 9260eabcbff2454e	agree
+929ca8a7ccbe1ac6	both-refuse
 92aa254b623127a5	agree
 92c2f550f9e26dba	both-refuse
 92c67ea10e6ee33a	both-refuse
@@ -1739,6 +1744,7 @@ b936240a2677c8de	agree
 b9473c3886b661b4	mj-refuses
 b989dc7a956654f6	mj-refuses
 ba09d4926399b21f	agree
+ba11bb2b27ca95be	both-refuse
 ba54b8132b9a565f	agree
 ba62543002737d31	agree
 baa0e121fae6b603	agree

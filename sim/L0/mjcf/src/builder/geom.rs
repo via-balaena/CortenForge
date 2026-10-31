@@ -140,8 +140,8 @@ impl ModelBuilder {
                 body_id,
             )
         };
+        // Its type and size are checked already (`validation::check_sizes`).
         let site_type = site_geom_type(site).map_err(|e| e.with_location_if_unknown(at()))?;
-        check_site_size(site, site_type).map_err(|e| e.at(at()))?;
         self.site_body.push(body_id);
         self.site_type.push(site_type);
 
@@ -312,6 +312,19 @@ fn site_geom_type(site: &MjcfSite) -> Result<GeomType> {
             ));
         }
     })
+}
+
+/// A site's type and size, checked as MuJoCo 3.5.0's `mjCSite::Compile`
+/// checks them (`site_geom_type`, `check_site_size`); the caller locates the
+/// error.
+///
+/// # Errors
+///
+/// [`MjcfError::InvalidKeyword`] for an unknown type word,
+/// [`MjcfError::InvalidValue`] for a type or size MuJoCo refuses,
+/// [`MjcfError::NonFinite`] for a size that is not finite.
+pub fn check_site(site: &MjcfSite) -> Result<()> {
+    check_site_size(site, site_geom_type(site)?)
 }
 
 /// A site's size checked as MuJoCo 3.5.0's `checksize` checks it

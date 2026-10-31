@@ -2486,3 +2486,9 @@ dc9fc30466a090b8	sim/L0/mjcf/tests/site_type_and_size.rs:91
 df5a40252fb7f350	sim/L0/mjcf/tests/site_type_and_size.rs:128
 e4e2e4d60e9bbbdf	sim/L0/mjcf/tests/site_type_and_size.rs:55
 f469066aa035d67e	sim/L0/mjcf/tests/site_type_and_size.rs:25
+348da12f74b6427c	sim/L0/mjcf/tests/size_refusal_order.rs:27
+52bd97e783b0cd61	sim/L0/mjcf/tests/size_refusal_order.rs:45
+6206dbc55a616295	sim/L0/mjcf/tests/size_refusal_order.rs:33
+751b97e4c0d7689c	sim/L0/mjcf/tests/size_refusal_order.rs:39
+929ca8a7ccbe1ac6	sim/L0/mjcf/tests/size_refusal_order.rs:21
+ba11bb2b27ca95be	sim/L0/mjcf/tests/size_refusal_order.rs:98

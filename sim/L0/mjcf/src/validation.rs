@@ -156,12 +156,6 @@ pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
     let mut joint_to_body: HashMap<String, String> = HashMap::new();
     let mut all_joint_names = Vec::new();
 
-    // Validate geoms anchored directly on worldbody (e.g., ground planes).
-    // Descendant-body geoms are validated inside traverse_body.
-    for geom in &model.worldbody.geoms {
-        check_geom_size(geom, "world")?;
-    }
-
     // Traverse body tree
     fn traverse_body(
         body: &MjcfBody,
@@ -239,11 +233,6 @@ pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
             }
         }
 
-        // Validate geom dimensions
-        for geom in &body.geoms {
-            check_geom_size(geom, &body.name)?;
-        }
-
         // Recurse to children
         for child in &body.children {
             traverse_body(
@@ -276,6 +265,13 @@ pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
             &mut all_joint_names,
         )?;
     }
+
+    // After the names, as MuJoCo 3.5.0 checks them: the assets each geom
+    // names (`IndexAssets`), then the bodies from the world down, a body's
+    // geoms, then its sites, then its children (each order measured on a
+    // document with two faults).
+    check_geom_assets(model)?;
+    check_sizes(model)?;
 
     // Collect site names from body tree for actuator validation.
     let mut site_names_set = HashSet::new();
@@ -381,6 +377,86 @@ pub fn check_tree_depth(worldbody: &MjcfBody) -> Result<()> {
     Ok(())
 }
 
+/// The bodies from the world down, each with its id and the id of its first
+/// geom, numbered as the builder numbers them: the world 0, each body before
+/// its children, a body's geoms before its children's.
+fn bodies_in_order(world: &MjcfBody) -> Vec<(usize, usize, &MjcfBody)> {
+    let mut out = Vec::new();
+    let mut stack = vec![world];
+    let mut geom_id = 0;
+    while let Some(body) = stack.pop() {
+        out.push((out.len(), geom_id, body));
+        geom_id += body.geoms.len();
+        stack.extend(body.children.iter().rev());
+    }
+    out
+}
+
+/// A geom's location as the builder gives it: by its name or its id, in its
+/// body by name or id.
+fn geom_at(geom: &MjcfGeom, geom_id: usize, body: &MjcfBody, body_id: usize) -> Location {
+    Location::nth(ElementKind::Geom, geom.name.as_deref(), geom_id).within_nth(
+        ElementKind::Body,
+        body_name(body, body_id),
+        body_id,
+    )
+}
+
+/// A body's name in a location: the world's is `world`, an unnamed body has
+/// none.
+fn body_name(body: &MjcfBody, body_id: usize) -> Option<&str> {
+    if body_id == 0 {
+        Some("world")
+    } else {
+        Some(body.name.as_str()).filter(|n| !n.is_empty())
+    }
+}
+
+/// Every asset a geom names exists, a mesh whatever the geom's type and a
+/// height field, as MuJoCo 3.5.0's `IndexAssets` checks them before it
+/// compiles a body (an empty name names none).
+fn check_geom_assets(model: &MjcfModel) -> Result<()> {
+    let meshes: HashSet<&str> = model.meshes.iter().map(|m| m.name.as_str()).collect();
+    let hfields: HashSet<&str> = model.hfields.iter().map(|h| h.name.as_str()).collect();
+    let named = |n: Option<&str>| n.filter(|n| !n.is_empty()).map(str::to_string);
+    for (body_id, first_geom, body) in bodies_in_order(&model.worldbody) {
+        for (k, geom) in body.geoms.iter().enumerate() {
+            let at = || geom_at(geom, first_geom + k, body, body_id);
+            if let Some(m) = named(geom.mesh.as_deref()).filter(|m| !meshes.contains(m.as_str())) {
+                return Err(MjcfError::undefined(ElementKind::Mesh, m).at(at()));
+            }
+            if let Some(h) = named(geom.hfield.as_deref()).filter(|h| !hfields.contains(h.as_str()))
+            {
+                return Err(MjcfError::undefined(ElementKind::Hfield, h).at(at()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Each geom's size, then each site's type and size, body by body from the
+/// world down, as MuJoCo 3.5.0 compiles a body's geoms, then its sites, then
+/// its children.
+fn check_sizes(model: &MjcfModel) -> Result<()> {
+    for (body_id, first_geom, body) in bodies_in_order(&model.worldbody) {
+        for (k, geom) in body.geoms.iter().enumerate() {
+            check_geom_size(geom, || geom_at(geom, first_geom + k, body, body_id))?;
+        }
+        for site in &body.sites {
+            crate::builder::geom::check_site(site).map_err(|e| {
+                e.with_location_if_unknown(
+                    Location::named(ElementKind::Site, &site.name).within_nth(
+                        ElementKind::Body,
+                        body_name(body, body_id),
+                        body_id,
+                    ),
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
 /// Check a geom's size: finite, then as MuJoCo 3.5.0's `checksize`
 /// (`user_objects.cc:152-167`, on the size its `fromto` gave).
 ///
@@ -399,10 +475,7 @@ pub fn check_tree_depth(worldbody: &MjcfBody) -> Result<()> {
 /// mass/inertia have separate validation
 /// paths via the inertial check, and the rest are deferred as a follow-up
 /// audit candidate.
-fn check_geom_size(geom: &MjcfGeom, body_name: &str) -> Result<()> {
-    let at = || {
-        Location::named(ElementKind::Geom, geom.name.as_deref().unwrap_or("")).in_body(body_name)
-    };
+fn check_geom_size(geom: &MjcfGeom, at: impl Fn() -> Location) -> Result<()> {
     // A geom's `fromto` is its pose and size already (the resolve pass refuses
     // a non-finite one).
     let size = geom.size.map_or([0.0; 3], |s| s.over([0.0; 3]));
@@ -999,9 +1072,12 @@ mod tests {
                 if element == "geom" && a == attribute),
             "{err}"
         );
+        // An unnamed geom is named by its id (`geom #0`) where its size is
+        // checked, by its body alone where the resolve pass refuses its
+        // `fromto`.
+        let text = err.to_string();
         assert!(
-            err.to_string()
-                .ends_with(&format!("(geom in body '{body}')")),
+            text.contains("(geom") && text.ends_with(&format!(" in body '{body}')")),
             "{err}"
         );
     }
