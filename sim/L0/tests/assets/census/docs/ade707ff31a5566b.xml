@@ -1,0 +1,1 @@
+<mujoco><default><default class="k"><geom type="capsule" size="0.05"/></default></default><worldbody><body pos="0 0 1"><freejoint/><geom class="k" fromto="0 0 0 0 0 0.4"/></body></worldbody></mujoco>

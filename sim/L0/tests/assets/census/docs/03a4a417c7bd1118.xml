@@ -1,0 +1,1 @@
+<mujoco><worldbody><geom type="plane" size="1 1 1"/><body pos="0 0 0.09"><freejoint/><geom size="0.1"/><site name="s" type="sdf" size="0.2"/></body></worldbody><sensor><touch site="s"/></sensor></mujoco>

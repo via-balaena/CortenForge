@@ -87,7 +87,8 @@ pub fn mj_ray(
 /// `mju_rayGeom`: the distance along the ray to the geom of `geom_type`,
 /// `size`, centred at `pos` and turned by `mat`, or −1. MuJoCo raises an
 /// error for a mesh, a height field or a signed distance field; sim-mjcf
-/// gives a site none of them, and here they read −1.
+/// gives a site neither of the first two, and refuses a touch sensor on a
+/// site of the third (`D-SITE-SDF-TOUCH`); here they read −1.
 pub fn ray_geom(
     pos: &Vector3<f64>,
     mat: &Matrix3<f64>,

@@ -284,6 +284,7 @@ impl DefaultResolver {
             if result.geom_type.is_none() {
                 result.geom_type = defaults.geom_type;
             }
+            result.size = over(result.size, defaults.size);
             result.friction = over(result.friction, defaults.friction);
             if result.density.is_none() {
                 result.density = defaults.density;
@@ -659,6 +660,7 @@ impl DefaultResolver {
                 );
                 Some(MjcfGeomDefaults {
                     geom_type: c.geom_type.or(p.geom_type),
+                    size: over(c.size, p.size),
                     friction: over(c.friction, p.friction),
                     density: c.density.or(p.density),
                     mass: c.mass.or(p.mass),

@@ -53,7 +53,7 @@ impl ModelBuilder {
         )
         .map_err(|e| e.on("geom").at(at()))?;
         let pos = geom.pos.unwrap_or_else(Vector3::zeros);
-        let size = geom_size_to_vec3(&geom.size, geom_type);
+        let size = geom_size_to_vec3(written_over(geom.size, [0.0; 3]), geom_type);
 
         // Override geom_size for hfield geoms with asset dimensions.
         // geom_size_to_vec3() has no access to hfield asset data (only gets the MJCF
@@ -140,9 +140,10 @@ impl ModelBuilder {
                 body_id,
             )
         };
+        // Its type and size are checked already (`validation::check_sizes`).
+        let site_type = site_geom_type(site).map_err(|e| e.with_location_if_unknown(at()))?;
         self.site_body.push(body_id);
-        self.site_type
-            .push(site_geom_type(site).map_err(|e| e.with_location_if_unknown(at()))?);
+        self.site_type.push(site_type);
 
         // The site's class values and its `fromto` are already in it
         // (`resolve::apply_defaults`).
@@ -288,24 +289,69 @@ pub fn geom_effective_com(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Ve
 }
 
 /// A site's type (sphere is the MuJoCo default), held to MuJoCo's geom
-/// type words as the reader holds it, so a site built in code is too. A
-/// plane, mesh, height field or signed distance field is a sphere here, as
-/// before (ledger L235: MuJoCo refuses the first three and keeps `sdf`).
+/// type words as the reader holds it, so a site built in code is too: a
+/// plane, mesh or height field refused, as MuJoCo 3.5.0 refuses one
+/// (`mjCSite::Compile`, `user_objects.cc:3933-3935`), and a signed distance
+/// field kept, as MuJoCo keeps it (a touch sensor on one: `D-SITE-SDF-TOUCH`).
 fn site_geom_type(site: &MjcfSite) -> Result<GeomType> {
     let word = site.site_type.as_deref().unwrap_or("sphere");
     let mjcf_type = MjcfGeomType::from_str(word)
         .ok_or_else(|| MjcfError::invalid_keyword("site", "type", word))?;
     Ok(match mjcf_type {
+        MjcfGeomType::Sphere => GeomType::Sphere,
         MjcfGeomType::Capsule => GeomType::Capsule,
         MjcfGeomType::Cylinder => GeomType::Cylinder,
         MjcfGeomType::Box => GeomType::Box,
         MjcfGeomType::Ellipsoid => GeomType::Ellipsoid,
-        MjcfGeomType::Sphere
-        | MjcfGeomType::Plane
-        | MjcfGeomType::Mesh
-        | MjcfGeomType::Hfield
-        | MjcfGeomType::Sdf => GeomType::Sphere,
+        MjcfGeomType::Sdf => GeomType::Sdf,
+        MjcfGeomType::Plane | MjcfGeomType::Mesh | MjcfGeomType::Hfield => {
+            return Err(MjcfError::invalid_value(
+                "site",
+                "type",
+                "meshes, hfields and planes not allowed in site",
+            ));
+        }
     })
+}
+
+/// A site's type and size, checked as MuJoCo 3.5.0's `mjCSite::Compile`
+/// checks them (`site_geom_type`, `check_site_size`); the caller locates the
+/// error.
+///
+/// # Errors
+///
+/// [`MjcfError::InvalidKeyword`] for an unknown type word,
+/// [`MjcfError::InvalidValue`] for a type or size MuJoCo refuses,
+/// [`MjcfError::NonFinite`] for a size that is not finite.
+pub fn check_site(site: &MjcfSite) -> Result<()> {
+    check_site_size(site, site_geom_type(site)?)
+}
+
+/// A site's size checked as MuJoCo 3.5.0's `checksize` checks it
+/// (`user_objects.cc:152-167`, called for a site at `:3991`, after its
+/// `fromto`): finite, and each of the first `mjGEOMINFO[type]` values above 0
+/// (`user_objects.h:77`: a sphere 1, a capsule or cylinder 2, an ellipsoid or
+/// box 3, a signed distance field none), a place neither the site nor its
+/// class writes being MuJoCo's 0.005 (`site_size`).
+fn check_site_size(site: &MjcfSite, site_type: GeomType) -> Result<()> {
+    let size = written_over(site.size, [0.005; 3]);
+    if let Some(v) = size.iter().find(|v| !v.is_finite()) {
+        return Err(MjcfError::non_finite("site", "size", *v));
+    }
+    let places = match site_type {
+        GeomType::Sphere => 1,
+        GeomType::Capsule | GeomType::Cylinder => 2,
+        GeomType::Ellipsoid | GeomType::Box => 3,
+        _ => 0,
+    };
+    if let Some(i) = (0..places).find(|&i| size[i] <= 0.0) {
+        return Err(MjcfError::invalid_value(
+            "site",
+            "size",
+            format!("size {i} must be positive"),
+        ));
+    }
+    Ok(())
 }
 
 /// MuJoCo's site size: 0.005 in each place (`mjs_defaultSite`,
@@ -389,9 +435,10 @@ pub fn resolve_site_fromto(site: &mut MjcfSite) -> Result<()> {
 /// of any other orientation the geom or its class gives (MuJoCo never resolves
 /// an alternative beside a `fromto`). A geom that also names a mesh (a name
 /// that is not empty) is refused after, as MuJoCo refuses it
-/// (`user_objects.cc:3727-3730`). Its radius is
-/// `size[0]`: a parsed geom's default size is 0.1 (`MjcfGeom::default`), where
-/// MuJoCo's is 0 and refused (the book's L18).
+/// (`user_objects.cc:3727-3730`). It starts from the geom's size over its
+/// class's, 0 in a place neither writes (MuJoCo's default), and keeps what
+/// MuJoCo keeps: a capsule's or cylinder's radius and third value, a box's or
+/// ellipsoid's first.
 ///
 /// # Errors
 ///
@@ -405,13 +452,12 @@ pub fn resolve_geom_fromto(geom: &mut MjcfGeom) -> Result<()> {
     if let Some(v) = fromto.iter().find(|v| !v.is_finite()) {
         return Err(MjcfError::non_finite("geom", "fromto", *v));
     }
-    let radius = geom.size.first().copied().unwrap_or(0.1);
     let refuse = |what: &str| MjcfError::invalid_value("geom", "fromto", what);
     let (pos, quat, size) = fromto_pose(
         fromto,
         convert_geom_type(geom.geom_type),
         geom.pos,
-        Vector3::new(radius, 0.0, 0.0),
+        Vector3::from(written_over(geom.size, [0.0; 3])),
     )
     .map_err(refuse)?;
     // An empty name names no mesh (MuJoCo resolves a non-empty one only).
@@ -420,7 +466,7 @@ pub fn resolve_geom_fromto(geom: &mut MjcfGeom) -> Result<()> {
     }
     geom.pos = Some(pos);
     geom.quat = Some(Vector4::new(quat[0], quat[1], quat[2], quat[3]));
-    geom.size = vec![size.x, size.y, size.z];
+    geom.size = Some(Prefix::full([size.x, size.y, size.z]));
     geom.euler = None;
     geom.axisangle = None;
     geom.xyaxes = None;
@@ -433,6 +479,8 @@ pub fn resolve_geom_fromto(geom: &mut MjcfGeom) -> Result<()> {
 /// For mesh geoms, accepts pre-computed mesh properties to avoid redundant
 /// `compute_mesh_inertia()` calls (see `MeshProps`).
 pub fn compute_geom_mass(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> f64 {
+    // As validated: every place the type reads is above 0 (`check_geom_size`).
+    let size = written_over(geom.size, [0.0; 3]);
     if let Some(mass) = geom.mass {
         return mass;
     }
@@ -446,23 +494,23 @@ pub fn compute_geom_mass(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> f64
 
     let volume = match geom.geom_type.unwrap_or(MjcfGeomType::Sphere) {
         MjcfGeomType::Sphere => {
-            let r = geom.size.first().copied().unwrap_or(0.1);
+            let r = size[0];
             (4.0 / 3.0) * std::f64::consts::PI * r.powi(3)
         }
         MjcfGeomType::Box => {
-            let x = geom.size.first().copied().unwrap_or(0.1);
-            let y = geom.size.get(1).copied().unwrap_or(x);
-            let z = geom.size.get(2).copied().unwrap_or(y);
+            let x = size[0];
+            let y = size[1];
+            let z = size[2];
             8.0 * x * y * z // size is half-extents
         }
         MjcfGeomType::Capsule => {
-            let r = geom.size.first().copied().unwrap_or(0.1);
-            let h = geom.size.get(1).copied().unwrap_or(0.1);
+            let r = size[0];
+            let h = size[1];
             std::f64::consts::PI * r.powi(2) * (h * 2.0 + (4.0 / 3.0) * r)
         }
         MjcfGeomType::Cylinder => {
-            let r = geom.size.first().copied().unwrap_or(0.1);
-            let h = geom.size.get(1).copied().unwrap_or(0.1);
+            let r = size[0];
+            let h = size[1];
             std::f64::consts::PI * r.powi(2) * h * 2.0
         }
         MjcfGeomType::Mesh => {
@@ -473,9 +521,9 @@ pub fn compute_geom_mass(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> f64
             }
         }
         MjcfGeomType::Ellipsoid => {
-            let a = geom.size.first().copied().unwrap_or(0.1);
-            let b = geom.size.get(1).copied().unwrap_or(a);
-            let c = geom.size.get(2).copied().unwrap_or(b);
+            let a = size[0];
+            let b = size[1];
+            let c = size[2];
             (4.0 / 3.0) * std::f64::consts::PI * a * b * c
         }
         _ => 0.001, // Default small volume for other types (Plane, Hfield)
@@ -499,6 +547,8 @@ pub fn compute_geom_mass(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> f64
 /// - Capsule: Exact formula including hemispherical end caps
 /// - Mesh: Signed tetrahedron decomposition (Mirtich 1996)
 pub fn compute_geom_inertia(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Matrix3<f64> {
+    // As validated: every place the type reads is above 0 (`check_geom_size`).
+    let size = written_over(geom.size, [0.0; 3]);
     // Shell inertia for primitive geoms
     if geom.shellinertia == Some(true)
         && geom.geom_type.unwrap_or(MjcfGeomType::Sphere) != MjcfGeomType::Mesh
@@ -510,15 +560,15 @@ pub fn compute_geom_inertia(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> 
 
     match geom.geom_type.unwrap_or(MjcfGeomType::Sphere) {
         MjcfGeomType::Sphere => {
-            let r = geom.size.first().copied().unwrap_or(0.1);
+            let r = size[0];
             let i = 0.4 * mass * r.powi(2); // (2/5) m r²
             Matrix3::from_diagonal(&Vector3::new(i, i, i))
         }
         MjcfGeomType::Box => {
             // Full dimensions (size is half-extents)
-            let x = geom.size.first().copied().unwrap_or(0.1) * 2.0;
-            let y = geom.size.get(1).copied().unwrap_or(0.1) * 2.0;
-            let z = geom.size.get(2).copied().unwrap_or(0.1) * 2.0;
+            let x = size[0] * 2.0;
+            let y = size[1] * 2.0;
+            let z = size[2] * 2.0;
             let c = mass / 12.0;
             Matrix3::from_diagonal(&Vector3::new(
                 c * (y * y + z * z),
@@ -527,8 +577,8 @@ pub fn compute_geom_inertia(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> 
             ))
         }
         MjcfGeomType::Cylinder => {
-            let r = geom.size.first().copied().unwrap_or(0.1);
-            let h = geom.size.get(1).copied().unwrap_or(0.1) * 2.0; // Full height
+            let r = size[0];
+            let h = size[1] * 2.0; // Full height
             // Solid cylinder about center
             let ix = mass * (3.0 * r.powi(2) + h.powi(2)) / 12.0;
             let iz = 0.5 * mass * r.powi(2);
@@ -537,8 +587,8 @@ pub fn compute_geom_inertia(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> 
         MjcfGeomType::Capsule => {
             // Exact capsule inertia (cylinder + two hemispheres)
             // Reference: https://www.gamedev.net/articles/programming/math-and-physics/capsule-inertia-tensor-r3856/
-            let r = geom.size.first().copied().unwrap_or(0.1);
-            let h = geom.size.get(1).copied().unwrap_or(0.1) * 2.0; // Cylinder height (not including caps)
+            let r = size[0];
+            let h = size[1] * 2.0; // Cylinder height (not including caps)
 
             // Volume components
             let v_cyl = std::f64::consts::PI * r.powi(2) * h;
@@ -580,9 +630,9 @@ pub fn compute_geom_inertia(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> 
         }
         MjcfGeomType::Ellipsoid => {
             // Ellipsoid inertia: I_x = (1/5) m (b² + c²), etc.
-            let a = geom.size.first().copied().unwrap_or(0.1);
-            let b = geom.size.get(1).copied().unwrap_or(a);
-            let c = geom.size.get(2).copied().unwrap_or(b);
+            let a = size[0];
+            let b = size[1];
+            let c = size[2];
             let coeff = mass / 5.0;
             Matrix3::from_diagonal(&Vector3::new(
                 coeff * (b * b + c * c),
@@ -612,32 +662,34 @@ pub fn compute_geom_inertia(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> 
 ///
 /// Mass = density × surface_area.
 fn compute_geom_shell_mass(geom: &MjcfGeom) -> f64 {
+    // As validated: every place the type reads is above 0 (`check_geom_size`).
+    let size = written_over(geom.size, [0.0; 3]);
     let density = geom.density.unwrap_or(1000.0);
     let sa = match geom.geom_type.unwrap_or(MjcfGeomType::Sphere) {
         MjcfGeomType::Sphere => {
-            let r = geom.size.first().copied().unwrap_or(0.1);
+            let r = size[0];
             4.0 * std::f64::consts::PI * r.powi(2)
         }
         MjcfGeomType::Box => {
-            let a = geom.size.first().copied().unwrap_or(0.1);
-            let b = geom.size.get(1).copied().unwrap_or(a);
-            let c = geom.size.get(2).copied().unwrap_or(b);
+            let a = size[0];
+            let b = size[1];
+            let c = size[2];
             8.0 * (a * b + a * c + b * c)
         }
         MjcfGeomType::Cylinder => {
-            let r = geom.size.first().copied().unwrap_or(0.1);
-            let h = geom.size.get(1).copied().unwrap_or(0.1) * 2.0;
+            let r = size[0];
+            let h = size[1] * 2.0;
             2.0 * std::f64::consts::PI * r * h + 2.0 * std::f64::consts::PI * r.powi(2)
         }
         MjcfGeomType::Capsule => {
-            let r = geom.size.first().copied().unwrap_or(0.1);
-            let h = geom.size.get(1).copied().unwrap_or(0.1) * 2.0;
+            let r = size[0];
+            let h = size[1] * 2.0;
             2.0 * std::f64::consts::PI * r * h + 4.0 * std::f64::consts::PI * r.powi(2)
         }
         MjcfGeomType::Ellipsoid => {
-            let a = geom.size.first().copied().unwrap_or(0.1);
-            let b = geom.size.get(1).copied().unwrap_or(a);
-            let c = geom.size.get(2).copied().unwrap_or(b);
+            let a = size[0];
+            let b = size[1];
+            let c = size[2];
             ellipsoid_surface_area(a, b, c)
         }
         _ => 0.001,
@@ -659,18 +711,20 @@ fn ellipsoid_surface_area(a: f64, b: f64, c: f64) -> f64 {
 
 /// Compute shell inertia tensor of a primitive geom.
 fn compute_geom_shell_inertia(geom: &MjcfGeom) -> Matrix3<f64> {
+    // As validated: every place the type reads is above 0 (`check_geom_size`).
+    let size = written_over(geom.size, [0.0; 3]);
     let mass = compute_geom_shell_mass(geom);
 
     match geom.geom_type.unwrap_or(MjcfGeomType::Sphere) {
         MjcfGeomType::Sphere => {
-            let r = geom.size.first().copied().unwrap_or(0.1);
+            let r = size[0];
             let i = (2.0 / 3.0) * mass * r.powi(2);
             Matrix3::from_diagonal(&Vector3::new(i, i, i))
         }
         MjcfGeomType::Box => {
-            let a = geom.size.first().copied().unwrap_or(0.1);
-            let b = geom.size.get(1).copied().unwrap_or(a);
-            let c = geom.size.get(2).copied().unwrap_or(b);
+            let a = size[0];
+            let b = size[1];
+            let c = size[2];
             let density = if let Some(m) = geom.mass {
                 m / (8.0 * (a * b + a * c + b * c))
             } else {
@@ -679,8 +733,8 @@ fn compute_geom_shell_inertia(geom: &MjcfGeom) -> Matrix3<f64> {
             shell_box_inertia(a, b, c, density)
         }
         MjcfGeomType::Cylinder => {
-            let r = geom.size.first().copied().unwrap_or(0.1);
-            let h = geom.size.get(1).copied().unwrap_or(0.1) * 2.0;
+            let r = size[0];
+            let h = size[1] * 2.0;
             let density = if let Some(m) = geom.mass {
                 let sa =
                     2.0 * std::f64::consts::PI * r * h + 2.0 * std::f64::consts::PI * r.powi(2);
@@ -691,8 +745,8 @@ fn compute_geom_shell_inertia(geom: &MjcfGeom) -> Matrix3<f64> {
             shell_cylinder_inertia(r, h, density)
         }
         MjcfGeomType::Capsule => {
-            let r = geom.size.first().copied().unwrap_or(0.1);
-            let h = geom.size.get(1).copied().unwrap_or(0.1) * 2.0;
+            let r = size[0];
+            let h = size[1] * 2.0;
             let density = if let Some(m) = geom.mass {
                 let sa =
                     2.0 * std::f64::consts::PI * r * h + 4.0 * std::f64::consts::PI * r.powi(2);
@@ -703,9 +757,9 @@ fn compute_geom_shell_inertia(geom: &MjcfGeom) -> Matrix3<f64> {
             shell_capsule_inertia(r, h, density)
         }
         MjcfGeomType::Ellipsoid => {
-            let a = geom.size.first().copied().unwrap_or(0.1);
-            let b = geom.size.get(1).copied().unwrap_or(a);
-            let c = geom.size.get(2).copied().unwrap_or(b);
+            let a = size[0];
+            let b = size[1];
+            let c = size[2];
             shell_ellipsoid_inertia(a, b, c, mass)
         }
         _ => Matrix3::from_diagonal(&Vector3::new(0.001, 0.001, 0.001)),
@@ -889,41 +943,22 @@ fn legendre_pd(n: usize, x: f64) -> (f64, f64) {
     (p1, dp)
 }
 
-/// Convert geom size array to `Vector3`.
-pub fn geom_size_to_vec3(size: &[f64], geom_type: GeomType) -> Vector3<f64> {
+/// A geom's size as the model stores it, from its size as resolved (written
+/// over its class's, 0 in a place neither writes). A mesh's, a height
+/// field's or an SDF's is 0.1 in each place, not MuJoCo's from its asset
+/// (ledger L354); the caller replaces a height field's with its asset's.
+pub fn geom_size_to_vec3(size: [f64; 3], geom_type: GeomType) -> Vector3<f64> {
     match geom_type {
-        GeomType::Sphere => {
-            let r = size.first().copied().unwrap_or(0.1);
-            Vector3::new(r, r, r)
-        }
-        GeomType::Box => {
-            let x = size.first().copied().unwrap_or(0.1);
-            let y = size.get(1).copied().unwrap_or(x);
-            let z = size.get(2).copied().unwrap_or(y);
-            Vector3::new(x, y, z)
-        }
-        GeomType::Capsule | GeomType::Cylinder => {
-            // Convention: size.x = radius, size.y = half_length, size.z unused
-            // This matches the collision code expectations.
-            let r = size.first().copied().unwrap_or(0.1);
-            let h = size.get(1).copied().unwrap_or(0.1);
-            Vector3::new(r, h, 0.0)
-        }
-        GeomType::Ellipsoid => {
-            // Ellipsoid radii (rx, ry, rz)
-            let rx = size.first().copied().unwrap_or(0.1);
-            let ry = size.get(1).copied().unwrap_or(rx);
-            let rz = size.get(2).copied().unwrap_or(ry);
-            Vector3::new(rx, ry, rz)
-        }
-        // As written, as MuJoCo keeps it; a missing value 0 here, where MuJoCo
-        // takes its class's and refuses a `size[2]` of 0 or below (the book's
-        // L18).
-        GeomType::Plane => Vector3::new(
-            size.first().copied().unwrap_or(0.0),
-            size.get(1).copied().unwrap_or(0.0),
-            size.get(2).copied().unwrap_or(0.0),
-        ),
+        // The radius in each place, as before (MuJoCo keeps the other two as
+        // resolved; the census compares the radius only).
+        GeomType::Sphere => Vector3::new(size[0], size[0], size[0]),
+        // As resolved, as MuJoCo keeps it (a capsule's or cylinder's third
+        // value too).
+        GeomType::Box
+        | GeomType::Capsule
+        | GeomType::Cylinder
+        | GeomType::Ellipsoid
+        | GeomType::Plane => Vector3::from(size),
         _ => Vector3::new(0.1, 0.1, 0.1),
     }
 }
@@ -967,7 +1002,7 @@ mod tests {
             axisangle: None,
             xyaxes: None,
             zaxis: None,
-            size: vec![0.1, 0.5], // radius=0.1, half-height=0.5
+            size: Prefix::new(&[0.1, 0.5]), // radius=0.1, half-height=0.5
             fromto: None,
             density: Some(1000.0),
             mass: None,
