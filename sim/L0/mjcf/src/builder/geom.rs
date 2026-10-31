@@ -944,7 +944,9 @@ fn legendre_pd(n: usize, x: f64) -> (f64, f64) {
 }
 
 /// A geom's size as the model stores it, from its size as resolved (written
-/// over its class's, 0 in a place neither writes).
+/// over its class's, 0 in a place neither writes). A mesh's, a height
+/// field's or an SDF's is 0.1 in each place, not MuJoCo's from its asset
+/// (ledger L354); the caller replaces a height field's with its asset's.
 pub fn geom_size_to_vec3(size: [f64; 3], geom_type: GeomType) -> Vector3<f64> {
     match geom_type {
         // The radius in each place, as before (MuJoCo keeps the other two as

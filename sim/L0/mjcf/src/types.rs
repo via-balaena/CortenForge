@@ -1067,7 +1067,7 @@ impl MjcfMesh {
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfSiteDefaults {
-    /// Site type (sphere, capsule, ellipsoid, cylinder, box).
+    /// Site type (sphere, capsule, ellipsoid, cylinder, box, sdf).
     pub site_type: Option<String>,
     /// Site size.
     pub size: Option<Prefix<3>>,
@@ -1459,7 +1459,9 @@ impl MjcfGeom {
     }
 
     /// Compute mass from density and volume, the volume from the size as
-    /// written (a place not written is 0; no class is applied).
+    /// written (a place not written is 0; no class is applied). A cylinder's
+    /// volume is taken as a capsule's, and an ellipsoid's, a mesh's, a height
+    /// field's or an SDF's as 0.001 (ledger L351).
     #[must_use]
     pub fn computed_mass(&self) -> f64 {
         if let Some(mass) = self.mass {
@@ -1677,7 +1679,7 @@ pub struct MjcfSite {
     pub name: String,
     /// Default class.
     pub class: Option<String>,
-    /// Site type (sphere, capsule, ellipsoid, cylinder, box).
+    /// Site type (sphere, capsule, ellipsoid, cylinder, box, sdf).
     pub site_type: Option<String>,
     /// Position relative to body frame.
     pub pos: Option<Vector3<f64>>,
