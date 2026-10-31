@@ -9,7 +9,7 @@ use tracing::warn;
 
 use super::orientation::{MJ_EPS, normvec};
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
-use crate::error::Result;
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{AngleUnit, MjcfJoint, MjcfJointType};
 
 impl ModelBuilder {
@@ -201,6 +201,63 @@ impl ModelBuilder {
         self.nv += nv;
 
         Ok(jnt_id)
+    }
+
+    /// A body's joints checked as MuJoCo 3.5.0 checks them once it has
+    /// compiled the body's geoms and joints (`mjCBody::Compile`,
+    /// `user_objects.cc:2517-2535`), the caller calling it at that point: at
+    /// most 6 degrees of freedom, then no ball or hinge after a ball. A slide
+    /// after a ball, which MuJoCo loads, is refused after those two as not
+    /// supported (`D-BALL-THEN-SLIDE`): sim-core turns a ball about its
+    /// body's final orientation, which a later joint on the body would move.
+    pub(crate) fn check_body_joints(&self, body_id: usize, name: &str) -> Result<()> {
+        let at = || Location::nth(ElementKind::Body, Some(name), body_id);
+        let start = self.body_jnt_adr[body_id];
+        let joints = &self.jnt_type[start..start + self.body_jnt_num[body_id]];
+        if joints.iter().map(|j| j.nv()).sum::<usize>() > 6 {
+            return Err(MjcfError::invalid_model("more than 6 dofs").at(at()));
+        }
+        // The first joint after a ball of each kind refused, as MuJoCo's
+        // loop finds a rotation after a ball before anything is said of a
+        // slide.
+        let after_ball = |kinds: &[MjJointType]| {
+            joints
+                .iter()
+                .skip_while(|&&j| j != MjJointType::Ball)
+                .skip(1)
+                .any(|j| kinds.contains(j))
+        };
+        if after_ball(&[MjJointType::Ball, MjJointType::Hinge]) {
+            return Err(MjcfError::invalid_model("ball followed by rotation").at(at()));
+        }
+        if after_ball(&[MjJointType::Slide]) {
+            return Err(
+                MjcfError::unsupported("a slide joint after a ball joint on one body").at(at()),
+            );
+        }
+        Ok(())
+    }
+
+    /// MuJoCo 3.5.0's last joint rule, which it applies as it copies the tree
+    /// into its model (`CopyTree`, `user_model.cc:2725-2727`), after every
+    /// other compiler check, the caller calling it last: a free joint's body
+    /// is a child of the world, frames being dissolved and static bodies fused
+    /// by then. Bodies are checked in order, as MuJoCo checks them.
+    pub(crate) fn check_free_joints_on_top_level(&self) -> Result<()> {
+        let nested = (1..self.body_parent.len()).find(|&b| {
+            self.body_parent[b] != 0 && {
+                let start = self.body_jnt_adr[b];
+                self.jnt_type[start..start + self.body_jnt_num[b]].contains(&MjJointType::Free)
+            }
+        });
+        match nested {
+            Some(b) => Err(
+                MjcfError::invalid_model("free joint can only be used on top level").at(
+                    Location::nth(ElementKind::Body, self.body_name[b].as_deref(), b),
+                ),
+            ),
+            None => Ok(()),
+        }
     }
 }
 

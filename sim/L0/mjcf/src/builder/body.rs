@@ -232,6 +232,10 @@ impl ModelBuilder {
         }
         self.body_geom_num.push(body.geoms.len());
 
+        // The body's joints checked once its geoms and joints are built and
+        // before its sites, where MuJoCo checks them.
+        self.check_body_joints(body_id, &body.name)?;
+
         // Process sites for this body
         for site in &body.sites {
             self.process_site(site, body_id)?;

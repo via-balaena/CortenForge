@@ -1,0 +1,1 @@
+<mujoco><worldbody><frame pos="0 0 1"><body name="b"><joint type="ball"/><joint type="hinge"/><geom type="sphere" size="0.1"/></body></frame></worldbody></mujoco>

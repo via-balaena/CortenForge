@@ -306,6 +306,10 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Finalize user data: resolve nuser, validate, pad
     builder.finalize_user_data(&mjcf)?;
 
+    // A free joint below the world's children, refused after every other
+    // check, as MuJoCo refuses it when it copies its tree.
+    builder.check_free_joints_on_top_level()?;
+
     // Build final model
     let mut model = builder.build();
 
