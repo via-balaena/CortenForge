@@ -2492,3 +2492,6 @@ f469066aa035d67e	sim/L0/mjcf/tests/site_type_and_size.rs:25
 751b97e4c0d7689c	sim/L0/mjcf/tests/size_refusal_order.rs:39
 929ca8a7ccbe1ac6	sim/L0/mjcf/tests/size_refusal_order.rs:21
 ba11bb2b27ca95be	sim/L0/mjcf/tests/size_refusal_order.rs:98
+096caab2a0c593fc	sim/L0/mjcf/tests/geom_size.rs:129
+47d11148c6ef099a	sim/L0/mjcf/tests/site_type_and_size.rs:148
+9a9a28396de68c0d	sim/L0/mjcf/tests/site_type_and_size.rs:57

@@ -92,6 +92,26 @@ fn a_missing_mesh_comes_before_a_size() {
     }
 }
 
+/// A height field a geom names is checked with the meshes, before any size
+/// (MuJoCo: "hfield 'nosuch' not found in geom 1", measured, in one body
+/// and across two).
+#[test]
+fn a_missing_height_field_comes_before_a_size() {
+    for world in [
+        r#"<geom name="Z" size="0"/><geom type="hfield" hfield="nosuch"/>"#,
+        r#"<body name="B1"><geom name="F" size="0"/></body><body name="B2"><geom type="hfield" hfield="nosuch"/></body>"#,
+    ] {
+        match load_model(&format!("<mujoco><worldbody>{world}</worldbody></mujoco>")) {
+            Err(MjcfError::UndefinedReference {
+                kind: ElementKind::Hfield,
+                name,
+                ..
+            }) => assert_eq!(name, "nosuch", "{world}"),
+            other => panic!("{world}: {other:?}"),
+        }
+    }
+}
+
 #[test]
 fn a_repeated_name_comes_before_a_size() {
     match load_model(

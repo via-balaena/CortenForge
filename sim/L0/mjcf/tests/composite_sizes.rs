@@ -88,6 +88,26 @@ fn a_cable_geoms_size_is_mujocos() {
     }
 }
 
+/// A cable capsule's or cylinder's written third size value is kept, as
+/// MuJoCo keeps it (measured: (0.01, 0.125, 0.3) and (0.01, 0.125, 0.4)).
+#[test]
+fn a_cable_geoms_third_size_is_kept() {
+    for (geom, third) in [
+        (r#"<geom type="capsule" size="0.01 0.5 0.3"/>"#, 0.3_f64),
+        (r#"<geom type="cylinder" size="0.01 0 0.4"/>"#, 0.4),
+    ] {
+        let model = load_model(&cable("", geom)).unwrap_or_else(|e| panic!("{geom}: {e}"));
+        for g in 0..4 {
+            let s = model.geom_size[g];
+            assert_eq!(
+                [s.x.to_bits(), s.y.to_bits(), s.z.to_bits()],
+                [0.01_f64.to_bits(), 0.125_f64.to_bits(), third.to_bits()],
+                "{geom} geom {g}: {s:?}"
+            );
+        }
+    }
+}
+
 /// `(quat, MuJoCo's first cable body's quat)`: a zero quaternion and an
 /// unnormalised (2, 0, 0, 0) turn nothing; (0, 0, 0, 1) turns the cable half
 /// a turn about z.

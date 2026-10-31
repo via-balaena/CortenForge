@@ -104,6 +104,34 @@ fn a_geoms_size_is_mujocos() {
     );
 }
 
+/// The second geom of A3 §3's `s3_08` takes the main class's size, not the
+/// named class's (MuJoCo: 0.05 and 0.2, measured).
+#[test]
+fn s3_08s_second_geom_takes_the_main_class() {
+    let model = load_model(
+        r#"<mujoco><default><geom size="0.2"/><default class="c"><geom size="0.05"/></default></default><worldbody><geom class="c"/><geom pos="1 0 0"/></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    assert_eq!(
+        [
+            model.geom_size[0].x.to_bits(),
+            model.geom_size[1].x.to_bits()
+        ],
+        [0.05_f64.to_bits(), 0.2_f64.to_bits()]
+    );
+}
+
+/// An SDF geom naming a mesh is not one MuJoCo fits: it loads, as MuJoCo
+/// loads it (`D-MESH-FIT` covers the primitive types only).
+#[test]
+fn an_sdf_geom_naming_a_mesh_loads() {
+    let model = load_model(
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 2 1 0 1 3 0 3 2 1 2 3"/></asset><worldbody><geom type="sdf" mesh="m"/></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    assert_eq!(model.geom_type[0], sim_core::GeomType::Sdf);
+}
+
 /// A class's size reaches a moving body's mass (ledger L333): MuJoCo 3.5.0
 /// gives 3.665191429188093 (a capsule of radius 0.05 and half-length 0.2 at
 /// density 1000); the parsed default of 0.1 gave another.

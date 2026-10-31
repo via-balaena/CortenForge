@@ -53,6 +53,12 @@ const REFUSED: &[(&str, &str, &str, &str)] = &[
         "meshes, hfields and planes not allowed in site",
     ),
     (
+        "a plane with a fromto (its type before its fromto)",
+        r#"<mujoco><worldbody><site type="plane" fromto="0 0 0 0 0 1"/></worldbody></mujoco>"#,
+        "type",
+        "meshes, hfields and planes not allowed in site",
+    ),
+    (
         "a sphere of size 0",
         r#"<mujoco><worldbody><site size="0"/></worldbody></mujoco>"#,
         "size",
@@ -136,6 +142,12 @@ const LOADS: &[(&str, &str, GeomType, [f64; 3])] = &[
         r#"<mujoco><worldbody><site type="sdf"/></worldbody></mujoco>"#,
         GeomType::Sdf,
         [0.005, 0.005, 0.005],
+    ),
+    (
+        "a signed distance field of size 0 (its size is not checked)",
+        r#"<mujoco><worldbody><site type="sdf" size="0"/></worldbody></mujoco>"#,
+        GeomType::Sdf,
+        [0.0, 0.005, 0.005],
     ),
     (
         "a box of one value, the rest MuJoCo's 0.005",
