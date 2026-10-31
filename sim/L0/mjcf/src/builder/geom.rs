@@ -140,9 +140,10 @@ impl ModelBuilder {
                 body_id,
             )
         };
+        let site_type = site_geom_type(site).map_err(|e| e.with_location_if_unknown(at()))?;
+        check_site_size(site, site_type).map_err(|e| e.at(at()))?;
         self.site_body.push(body_id);
-        self.site_type
-            .push(site_geom_type(site).map_err(|e| e.with_location_if_unknown(at()))?);
+        self.site_type.push(site_type);
 
         // The site's class values and its `fromto` are already in it
         // (`resolve::apply_defaults`).
@@ -288,24 +289,56 @@ pub fn geom_effective_com(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Ve
 }
 
 /// A site's type (sphere is the MuJoCo default), held to MuJoCo's geom
-/// type words as the reader holds it, so a site built in code is too. A
-/// plane, mesh, height field or signed distance field is a sphere here, as
-/// before (ledger L235: MuJoCo refuses the first three and keeps `sdf`).
+/// type words as the reader holds it, so a site built in code is too: a
+/// plane, mesh or height field refused, as MuJoCo 3.5.0 refuses one
+/// (`mjCSite::Compile`, `user_objects.cc:3933-3935`), and a signed distance
+/// field kept, as MuJoCo keeps it (a touch sensor on one: `D-SITE-SDF-TOUCH`).
 fn site_geom_type(site: &MjcfSite) -> Result<GeomType> {
     let word = site.site_type.as_deref().unwrap_or("sphere");
     let mjcf_type = MjcfGeomType::from_str(word)
         .ok_or_else(|| MjcfError::invalid_keyword("site", "type", word))?;
     Ok(match mjcf_type {
+        MjcfGeomType::Sphere => GeomType::Sphere,
         MjcfGeomType::Capsule => GeomType::Capsule,
         MjcfGeomType::Cylinder => GeomType::Cylinder,
         MjcfGeomType::Box => GeomType::Box,
         MjcfGeomType::Ellipsoid => GeomType::Ellipsoid,
-        MjcfGeomType::Sphere
-        | MjcfGeomType::Plane
-        | MjcfGeomType::Mesh
-        | MjcfGeomType::Hfield
-        | MjcfGeomType::Sdf => GeomType::Sphere,
+        MjcfGeomType::Sdf => GeomType::Sdf,
+        MjcfGeomType::Plane | MjcfGeomType::Mesh | MjcfGeomType::Hfield => {
+            return Err(MjcfError::invalid_value(
+                "site",
+                "type",
+                "meshes, hfields and planes not allowed in site",
+            ));
+        }
     })
+}
+
+/// A site's size checked as MuJoCo 3.5.0's `checksize` checks it
+/// (`user_objects.cc:152-167`, called for a site at `:3991`, after its
+/// `fromto`): finite, and each of the first `mjGEOMINFO[type]` values above 0
+/// (`user_objects.h:77`: a sphere 1, a capsule or cylinder 2, an ellipsoid or
+/// box 3, a signed distance field none), a place neither the site nor its
+/// class writes being MuJoCo's 0.005 (`site_size`).
+fn check_site_size(site: &MjcfSite, site_type: GeomType) -> Result<()> {
+    let size = written_over(site.size, [0.005; 3]);
+    if let Some(v) = size.iter().find(|v| !v.is_finite()) {
+        return Err(MjcfError::non_finite("site", "size", *v));
+    }
+    let places = match site_type {
+        GeomType::Sphere => 1,
+        GeomType::Capsule | GeomType::Cylinder => 2,
+        GeomType::Ellipsoid | GeomType::Box => 3,
+        _ => 0,
+    };
+    if let Some(i) = (0..places).find(|&i| size[i] <= 0.0) {
+        return Err(MjcfError::invalid_value(
+            "site",
+            "size",
+            format!("size {i} must be positive"),
+        ));
+    }
+    Ok(())
 }
 
 /// MuJoCo's site size: 0.005 in each place (`mjs_defaultSite`,
