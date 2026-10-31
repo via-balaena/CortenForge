@@ -192,23 +192,19 @@ fn a_site_built_in_code_with_a_nan_size_is_refused() {
     }
 }
 
-/// A touch sensor on a site of type sdf: MuJoCo 3.5.0 stops with a fatal
-/// error once the site's body has a contact (`mju_rayGeom: unexpected geom
-/// type 8`, measured with this document); sim-mjcf steps, and the touch
-/// reads 0, a site of no shape holding no contact point (`D-SITE-SDF-TOUCH`).
+/// A touch sensor on a site of type sdf: MuJoCo 3.5.0 compiles it and stops
+/// with a fatal error at the first contact of the site's body
+/// (`mju_rayGeom: unexpected geom type 8`, measured with this document);
+/// sim-mjcf refuses it (`D-SITE-SDF-TOUCH`, stricter). A site of type sdf
+/// alone loads (`a_sites_type_and_size_are_mujocos`).
 #[test]
-fn a_touch_on_a_signed_distance_field_site_reads_zero() {
-    let model = load_model(
+fn a_touch_on_a_signed_distance_field_site_is_refused() {
+    match load_model(
         r#"<mujoco><worldbody><geom type="plane" size="1 1 1"/><body pos="0 0 0.09"><freejoint/><geom size="0.1"/><site name="s" type="sdf" size="0.2"/></body></worldbody><sensor><touch site="s"/></sensor></mujoco>"#,
-    )
-    .unwrap();
-    let mut data = model.make_data();
-    for _ in 0..5 {
-        data.step(&model).expect("step");
+    ) {
+        Err(MjcfError::InvalidValue {
+            element, attribute, ..
+        }) => assert_eq!((element.as_str(), attribute.as_str()), ("touch", "site")),
+        other => panic!("{other:?}"),
     }
-    assert!(
-        data.ncon > 0,
-        "no contact: the fixture does not reach the sensor"
-    );
-    assert_eq!(data.sensordata[0].to_bits(), 0.0_f64.to_bits());
 }

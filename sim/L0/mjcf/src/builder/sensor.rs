@@ -4,7 +4,9 @@
 //! Handles object resolution (joint, tendon, actuator, site, body, geom)
 //! and sensor type/datatype mapping.
 
-use sim_core::{InterpolationType, MjJointType, MjObjectType, MjSensorDataType, MjSensorType};
+use sim_core::{
+    GeomType, InterpolationType, MjJointType, MjObjectType, MjSensorDataType, MjSensorType,
+};
 use tracing::warn;
 
 use super::ModelBuilder;
@@ -301,6 +303,17 @@ impl ModelBuilder {
                     .site_name_to_id
                     .get(name)
                     .ok_or_else(|| MjcfError::undefined(ElementKind::Site, name))?;
+                // MuJoCo 3.5.0 compiles a touch sensor on a site of type sdf and
+                // stops with a fatal error at the first contact of the site's
+                // body (`mju_rayGeom`, measured): refused here
+                // (`D-SITE-SDF-TOUCH`).
+                if self.site_type.get(site_id) == Some(&GeomType::Sdf) {
+                    return Err(MjcfError::invalid_value(
+                        "touch",
+                        "site",
+                        "a touch sensor's site of type sdf, on which MuJoCo 3.5.0 stops at the first contact",
+                    ));
+                }
                 Ok((MjObjectType::Site, site_id))
             }
 

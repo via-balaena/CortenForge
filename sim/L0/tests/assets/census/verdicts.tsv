@@ -39,7 +39,7 @@
 0371399185e86422	agree
 03848e9d63e70955	agree
 038b2978c30e1a6b	model:actuator_actlimited;dyn:agree
-03a4a417c7bd1118	mj-stops	divergence=D-SITE-SDF-TOUCH
+03a4a417c7bd1118	both-refuse	divergence=D-SITE-SDF-TOUCH
 03d755ff17a103dd	agree
 03e04796ba001309	agree
 03e904efa63233f3	agree
