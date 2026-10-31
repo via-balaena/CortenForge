@@ -153,16 +153,20 @@ pub(super) fn parse_composite_joint_attrs(e: &BytesStart) -> Result<CompositeJoi
     })
 }
 
-/// Parse attributes of a `<composite><geom>` child.
+/// Parse attributes of a `<composite><geom>` child, over MuJoCo's composite
+/// default (`mjCComposite`'s `def`, made by `mjs_defaultGeom`,
+/// `user_init.c:109-113`): a sphere of size 0. A cable refuses a sphere
+/// (`MakeCable`, `user_composite.cc:249-254`) and the size check a size of 0
+/// (`checksize`), so a cable's geom must write its type and its size.
 pub(super) fn parse_composite_geom_attrs(e: &BytesStart) -> Result<CompositeGeom> {
     let a = Attrs::new(e)?;
     let geom_type = a
         .keyword("type", MjcfGeomType::from_str)?
-        .unwrap_or(MjcfGeomType::Capsule);
+        .unwrap_or(MjcfGeomType::Sphere);
 
     let size = a
         .prefix::<3>("size")?
-        .map_or([0.005, 0.0, 0.0], |size| size.over([0.005, 0.0, 0.0]));
+        .map_or([0.0; 3], |size| size.over([0.0; 3]));
 
     Ok(CompositeGeom {
         geom_type,
