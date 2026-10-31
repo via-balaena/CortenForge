@@ -155,7 +155,7 @@ fn test_parse_actuators() {
     let servo = &model.actuators[1];
     assert_eq!(servo.name, "servo1");
     assert_eq!(servo.actuator_type, MjcfActuatorType::Position);
-    assert_relative_eq!(servo.kp, 10.0, epsilon = 1e-10);
+    assert_eq!(servo.kp, Some(10.0));
 }
 
 #[test]
@@ -804,7 +804,7 @@ fn test_parse_default_actuator() {
     let xml = r#"
             <mujoco model="test">
                 <default>
-                    <motor gear="100" ctrlrange="-1 1" kp="50" kv="5" ctrllimited="true"/>
+                    <position gear="100" ctrlrange="-1 1" kp="50" kv="5" ctrllimited="true"/>
                 </default>
                 <worldbody/>
             </mujoco>
@@ -814,10 +814,8 @@ fn test_parse_default_actuator() {
     assert_eq!(model.defaults.len(), 1);
 
     let default = &model.defaults[0];
-    let actuator_defaults = default
-        .actuator
-        .as_ref()
-        .expect("should have actuator defaults");
+    let actuator_defaults = &default.actuators[0];
+    assert_eq!(actuator_defaults.actuator_type, MjcfActuatorType::Position);
     assert_relative_eq!(
         actuator_defaults.gear.unwrap().given()[0],
         100.0,
@@ -1427,7 +1425,7 @@ fn test_parse_cylinder_actuator() {
                     </body>
                 </worldbody>
                 <actuator>
-                    <cylinder name="cyl1" joint="joint1" area="0.002" timeconst="0.5" bias="1 2 3"/>
+                    <cylinder name="cyl1" joint="joint1" area="0.002" timeconst="0.5" bias="1 0 0"/>
                 </actuator>
             </mujoco>
         "#;
@@ -1439,11 +1437,9 @@ fn test_parse_cylinder_actuator() {
     assert_eq!(cyl.name, "cyl1");
     assert_eq!(cyl.actuator_type, MjcfActuatorType::Cylinder);
     assert_eq!(cyl.joint, Some("joint1".to_string()));
-    assert_relative_eq!(cyl.area, 0.002, epsilon = 1e-10);
+    assert_eq!(cyl.area, Some(0.002));
     assert_eq!(cyl.timeconst, Some(0.5));
-    assert_relative_eq!(cyl.bias[0], 1.0, epsilon = 1e-10);
-    assert_relative_eq!(cyl.bias[1], 2.0, epsilon = 1e-10);
-    assert_relative_eq!(cyl.bias[2], 3.0, epsilon = 1e-10);
+    assert_eq!(cyl.bias, Some([1.0, 0.0, 0.0]));
 }
 
 #[test]
@@ -1493,17 +1489,15 @@ fn test_parse_muscle_actuator() {
     assert_eq!(muscle.joint, Some("joint1".to_string()));
 
     // Muscle-specific attributes
-    assert_relative_eq!(muscle.muscle_timeconst.0, 0.02, epsilon = 1e-10);
-    assert_relative_eq!(muscle.muscle_timeconst.1, 0.06, epsilon = 1e-10);
-    assert_relative_eq!(muscle.range.0, 0.8, epsilon = 1e-10);
-    assert_relative_eq!(muscle.range.1, 1.1, epsilon = 1e-10);
-    assert_relative_eq!(muscle.force, 500.0, epsilon = 1e-10);
-    assert_relative_eq!(muscle.scale, 300.0, epsilon = 1e-10);
-    assert_relative_eq!(muscle.lmin, 0.4, epsilon = 1e-10);
-    assert_relative_eq!(muscle.lmax, 1.8, epsilon = 1e-10);
-    assert_relative_eq!(muscle.vmax, 2.0, epsilon = 1e-10);
-    assert_relative_eq!(muscle.fpmax, 1.5, epsilon = 1e-10);
-    assert_relative_eq!(muscle.fvmax, 1.3, epsilon = 1e-10);
+    assert_eq!(muscle.muscle_timeconst, Some((0.02, 0.06)));
+    assert_eq!(muscle.range, Some((0.8, 1.1)));
+    assert_eq!(muscle.force, Some(500.0));
+    assert_eq!(muscle.scale, Some(300.0));
+    assert_eq!(muscle.lmin, Some(0.4));
+    assert_eq!(muscle.lmax, Some(1.8));
+    assert_eq!(muscle.vmax, Some(2.0));
+    assert_eq!(muscle.fpmax, Some(1.5));
+    assert_eq!(muscle.fvmax, Some(1.3));
 }
 
 #[test]
@@ -1525,18 +1519,17 @@ fn test_parse_muscle_actuator_defaults() {
     let model = parse_mjcf_str(xml).expect("should parse");
     let muscle = &model.actuators[0];
 
-    // Check MuJoCo default values
-    assert_relative_eq!(muscle.muscle_timeconst.0, 0.01, epsilon = 1e-10);
-    assert_relative_eq!(muscle.muscle_timeconst.1, 0.04, epsilon = 1e-10);
-    assert_relative_eq!(muscle.range.0, 0.75, epsilon = 1e-10);
-    assert_relative_eq!(muscle.range.1, 1.05, epsilon = 1e-10);
-    assert_relative_eq!(muscle.force, -1.0, epsilon = 1e-10); // Negative triggers auto computation
-    assert_relative_eq!(muscle.scale, 200.0, epsilon = 1e-10);
-    assert_relative_eq!(muscle.lmin, 0.5, epsilon = 1e-10);
-    assert_relative_eq!(muscle.lmax, 1.6, epsilon = 1e-10);
-    assert_relative_eq!(muscle.vmax, 1.5, epsilon = 1e-10);
-    assert_relative_eq!(muscle.fpmax, 1.3, epsilon = 1e-10);
-    assert_relative_eq!(muscle.fvmax, 1.2, epsilon = 1e-10);
+    // Nothing written: MuJoCo's defaults are the builder's
+    // (tests/actuator_defaults.rs).
+    assert_eq!(muscle.muscle_timeconst, None);
+    assert_eq!(muscle.range, None);
+    assert_eq!(muscle.force, None);
+    assert_eq!(muscle.scale, None);
+    assert_eq!(muscle.lmin, None);
+    assert_eq!(muscle.lmax, None);
+    assert_eq!(muscle.vmax, None);
+    assert_eq!(muscle.fpmax, None);
+    assert_eq!(muscle.fvmax, None);
 }
 
 #[test]
@@ -1561,7 +1554,7 @@ fn test_parse_adhesion_actuator() {
     assert_eq!(adhesion.name, "grip1");
     assert_eq!(adhesion.actuator_type, MjcfActuatorType::Adhesion);
     assert_eq!(adhesion.body, Some("gripper".to_string()));
-    assert_relative_eq!(adhesion.gain, 100.0, epsilon = 1e-10);
+    assert_eq!(adhesion.gain, Some(100.0));
     assert_eq!(adhesion.ctrlrange, Some((0.0, 1.0)));
 }
 
@@ -1790,12 +1783,12 @@ fn test_parse_joint_sensors() {
     assert_eq!(pos_sensor.name, "j1_pos");
     assert_eq!(pos_sensor.sensor_type, MjcfSensorType::Jointpos);
     assert_eq!(pos_sensor.objname, Some("j1".to_string()));
-    assert_relative_eq!(pos_sensor.noise, 0.0, epsilon = 1e-10);
+    assert_eq!(pos_sensor.noise, None);
 
     let vel_sensor = &model.sensors[1];
     assert_eq!(vel_sensor.name, "j1_vel");
     assert_eq!(vel_sensor.sensor_type, MjcfSensorType::Jointvel);
-    assert_relative_eq!(vel_sensor.noise, 0.01, epsilon = 1e-10);
+    assert_eq!(vel_sensor.noise, Some(0.01));
 }
 
 #[test]
@@ -1826,7 +1819,7 @@ fn test_parse_imu_sensors() {
     let gyro = &model.sensors[1];
     assert_eq!(gyro.name, "gyro");
     assert_eq!(gyro.sensor_type, MjcfSensorType::Gyro);
-    assert_relative_eq!(gyro.noise, 0.001, epsilon = 1e-10);
+    assert_eq!(gyro.noise, Some(0.001));
 }
 
 #[test]
@@ -1873,7 +1866,7 @@ fn test_parse_sensor_with_cutoff() {
 
     let model = parse_mjcf_str(xml).expect("should parse");
     let sensor = &model.sensors[0];
-    assert_relative_eq!(sensor.cutoff, 50.0, epsilon = 1e-10);
+    assert_eq!(sensor.cutoff, Some(50.0));
 }
 
 #[test]

@@ -2,7 +2,7 @@
 
 A pneumatic cylinder that extends and retracts under pressure control. Positive
 pressure pushes the piston out; vacuum (negative pressure) sucks it back. No
-springs — just air pressure, viscous damping from the fluid, and the physical
+springs — just air pressure, viscous damping on the rail, and the physical
 end-of-stroke limits of the cylinder bore.
 
 ## What you see
@@ -19,14 +19,15 @@ end-of-stroke limits of the cylinder bore.
 The `<cylinder>` shortcut combines all three actuator components:
 
 ```
-force = area * activation + bias[0] + bias[1]*position + bias[2]*velocity
-      = 0.196 * act       + 0       + 0               - 0.5 * vel
+force = area * activation + bias[0]
+      = 0.196 * act       + 0
 ```
 
 - **Gain**: `GainType::Fixed(area)` — force = pressure * piston area.
   Area is computed from diameter: `pi/4 * 0.5^2 = 0.196 m^2`.
-- **Bias**: `BiasType::Affine(0, 0, -0.5)` — viscous fluid damping only.
-  No spring (bias[1] = 0). Damping resists motion proportional to velocity.
+- **Bias**: `BiasType::Affine(bias[0], 0, 0)` — a constant force, 0 here.
+  MuJoCo's cylinder reads only the first of its three `bias` values, so the
+  viscous damping is the slide joint's (`damping="0.5"`), not the actuator's.
 - **Dynamics**: `ActuatorDynamics::Filter(tau=0.5)` — Euler-approximated
   first-order filter. Pressure doesn't arrive instantly; activation ramps
   toward the command with time constant 0.5s.
@@ -48,18 +49,12 @@ physics, different numerical method — this validates the Euler code path.
 
 **Key distinction from activation-filter:** that example uses a position servo
 with FilterExact. This one uses a cylinder with raw pressure force, Euler
-Filter, and affine bias — testing three different code paths simultaneously.
+Filter, and an affine bias type — three different code paths at once.
 
-## Expected console output
+## Console output
 
-```
-t=  1.0s  act=0.866  x=0.0375m  F=0.1237
-t=  3.0s  act=0.931  x=0.2000m  F=0.1828
-t=  5.0s  act=-0.966 x=0.0718m  F=-0.1042
-t=  8.0s  act=0.965  x=-0.0344m F=0.0972
-```
-
-Activation lags the pressure command by ~0.5s. Position oscillates between the
+Each second the console prints the activation, the position and the
+actuator force. Activation lags the pressure command by ~0.5s. Position oscillates between the
 stroke limits as pressure and vacuum alternate.
 
 ## Validation
@@ -70,7 +65,7 @@ Four automated checks at t=15s:
 |-------|----------|-----------|
 | **Activation exists** | `model.na == 1` | exact |
 | **Filter dynamics** | act(tau) = 0.632 | < 5% |
-| **Force formula** | force = area*act + bias terms | < 2% |
+| **Force formula** | force = area*act | < 2% |
 | **Area from diameter** | gainprm = pi/4 * d^2 | < 1e-10 |
 
 ## Run

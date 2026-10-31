@@ -180,6 +180,7 @@
     clippy::use_self
 )]
 
+mod actuator_spec;
 mod builder;
 mod defaults;
 mod error;
@@ -197,13 +198,13 @@ pub use error::{ElementKind, Location, MjcfError, Result, ValueCount};
 pub use parser::parse_mjcf_str;
 pub use types::{
     AngleUnit, CompositeGeom, CompositeJoint, CompositeShape, CompositeSite, CompositeType,
-    EqualityKind, FluidShape, InertiaFromGeom, MjcfActuator, MjcfActuatorDefaults,
-    MjcfActuatorType, MjcfBody, MjcfCompiler, MjcfComposite, MjcfConeType, MjcfConnect,
-    MjcfDefault, MjcfDistance, MjcfEquality, MjcfEqualityDefaults, MjcfFlag, MjcfGeom,
-    MjcfGeomDefaults, MjcfGeomType, MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint,
-    MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfMesh, MjcfMeshDefaults, MjcfModel,
-    MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendon,
-    MjcfTendonDefaults, MjcfTendonType, MjcfWeld, Prefix, SpatialPathElement, TfAuto,
+    EqualityKind, FluidShape, InertiaFromGeom, MjcfActuator, MjcfActuatorType, MjcfBody,
+    MjcfCompiler, MjcfComposite, MjcfConeType, MjcfConnect, MjcfDefault, MjcfDistance,
+    MjcfEquality, MjcfEqualityDefaults, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType,
+    MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
+    MjcfJointEquality, MjcfJointType, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption,
+    MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendon, MjcfTendonDefaults,
+    MjcfTendonType, MjcfWeld, Prefix, SpatialPathElement, TfAuto,
 };
 pub use validation::{ValidationResult, validate};
 

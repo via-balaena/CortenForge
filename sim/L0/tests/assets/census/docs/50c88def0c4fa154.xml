@@ -1,0 +1,1 @@
+<mujoco><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><actuator><cylinder joint="h" bias="0 0 -0.5"/></actuator></mujoco>

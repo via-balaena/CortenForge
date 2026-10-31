@@ -138,8 +138,8 @@ impl ModelBuilder {
         self.sensor_refid.push(refid);
         self.sensor_adr.push(*adr);
         self.sensor_dim.push(dim);
-        self.sensor_noise.push(mjcf_sensor.noise);
-        self.sensor_cutoff.push(mjcf_sensor.cutoff);
+        self.sensor_noise.push(mjcf_sensor.noise.unwrap_or(0.0));
+        self.sensor_cutoff.push(mjcf_sensor.cutoff.unwrap_or(0.0));
         let sensor_id = self.sensor_name_list.len();
         self.sensor_name_list.push(if mjcf_sensor.name.is_empty() {
             None

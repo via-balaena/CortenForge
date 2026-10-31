@@ -1,0 +1,1 @@
+<mujoco><default><cylinder diameter="2"/></default><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><actuator><cylinder joint="h"/></actuator></mujoco>

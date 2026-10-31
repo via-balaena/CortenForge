@@ -177,17 +177,16 @@ fn every_top_level_default_reads_onto_the_main_class() {
     assert_eq!(m.geom_conaffinity[0], 5);
 }
 
-/// MuJoCo 3.5.0 keeps one actuator default per class, which each shortcut
-/// element (`<position>`, `<motor>`, …) rewrites, so a later top-level
-/// block's `<motor>` leaves a `<position>` its own gain 1 (measured: gain 1,
-/// bias −1, not 10 and −10). Here a later block's actuator default replaces
-/// an earlier one, as the last actuator element does within one block; a
-/// class written by two shortcut kinds is book L17's (A3-O1).
+/// MuJoCo 3.5.0 keeps one actuator default per class, which each actuator
+/// element (`<position>`, `<motor>`, …) writes in place, top-level blocks in
+/// order: a later block's `<motor>` resets the gain to 1 and keeps its gear
+/// (measured: a `<position>`'s gain 1, bias −1, gear 5).
 #[test]
-fn a_later_top_level_blocks_actuator_default_replaces_an_earlier_ones() {
+fn a_later_top_level_blocks_actuator_element_writes_the_one_default() {
     let m = load(
         r#"<mujoco><default><position kp="10"/></default><default><motor gear="5"/></default><worldbody><body><joint name="j"/><geom size=".1"/></body></worldbody><actuator><position joint="j"/><motor joint="j"/></actuator></mujoco>"#,
     );
     assert_eq!(m.actuator_gainprm[0][0], 1.0);
     assert_eq!(m.actuator_biasprm[0][1], -1.0);
+    assert_eq!(m.actuator_gear[0][0], 5.0);
 }

@@ -63,32 +63,21 @@ pub(super) fn refuse_actdim(a: &Attrs) -> Result<()> {
     Ok(())
 }
 
-/// A servo's `inheritrange`, read only where MuJoCo 3.5.0's schema has it:
-/// on a `<position>` or `<intvelocity>`, as an element or a default class's
-/// (`xml_native_reader.cc:189-196`, `:402-416`); elsewhere refused, as its
-/// schema refuses it. An intvelocity's schema has no `timeconst` and no
-/// `actlimited` (its activation is always limited); both are refused.
-pub(super) fn servo_attributes(a: &Attrs) -> Result<Option<f64>> {
-    let element = a.element();
-    if element == "intvelocity" {
-        for attribute in ["timeconst", "actlimited"] {
-            if a.has(attribute) {
-                return Err(MjcfError::unknown_attribute(element, attribute));
-            }
-        }
+/// An `<intvelocity>`'s `actlimited`, refused as MuJoCo 3.5.0's schema refuses
+/// it (`xml_native_reader.cc:189-196`, `:402-416`): its activation is always
+/// limited. The kind-specific attributes a kind does not read are refused
+/// when it is written (`ActuatorSpec::write`).
+pub(super) fn refuse_intvelocity_actlimited(a: &Attrs) -> Result<()> {
+    if a.element() == "intvelocity" && a.has("actlimited") {
+        return Err(MjcfError::unknown_attribute("intvelocity", "actlimited"));
     }
-    if matches!(element, "position" | "intvelocity") {
-        a.real("inheritrange")
-    } else if a.has("inheritrange") {
-        Err(MjcfError::unknown_attribute(element, "inheritrange"))
-    } else {
-        Ok(None)
-    }
+    Ok(())
 }
 
 /// `gainprm` or `biasprm`: MuJoCo 3.5.0 reads up to ten (`mjNGAIN`,
 /// `mjNBIAS`); sim-core stores nine. A tenth equal to MuJoCo's default, 0, is
-/// read as unwritten; any other is refused (D-GAINPRM-10).
+/// read as unwritten; any other is refused on a `<general>` (D-GAINPRM-10),
+/// and on another kind left to the write, which refuses the attribute.
 pub(super) fn gain_or_bias(a: &Attrs, name: &str) -> Result<Option<Prefix<9>>> {
     let Some(given) = a.prefix::<10>(name)? else {
         return Ok(None);
@@ -97,7 +86,7 @@ pub(super) fn gain_or_bias(a: &Attrs, name: &str) -> Result<Option<Prefix<9>>> {
     if let [nine @ .., tenth] = given
         && given.len() == 10
     {
-        if *tenth != 0.0 {
+        if *tenth != 0.0 && a.element() == "general" {
             return Err(MjcfError::unsupported(format!(
                 "a nonzero tenth {name} value on <{}>",
                 a.element()
@@ -108,152 +97,113 @@ pub(super) fn gain_or_bias(a: &Attrs, name: &str) -> Result<Option<Prefix<9>>> {
     Ok(Prefix::new(given))
 }
 
-/// Parse actuator attributes.
+/// Parse actuator attributes: its name, class and target, then its values
+/// ([`actuator_values`]).
 pub(super) fn parse_actuator_attrs(
     e: &BytesStart,
     actuator_type: MjcfActuatorType,
 ) -> Result<MjcfActuator> {
     let a = Attrs::new(e)?;
-    refuse_actdim(&a)?;
-    let mut actuator = MjcfActuator {
-        actuator_type,
-        ..Default::default()
-    };
-
-    // Common attributes
+    let mut actuator = actuator_values(&a, actuator_type)?;
     actuator.name = a.string("name").unwrap_or_default();
     actuator.class = a.string("class");
     actuator.joint = a.string("joint");
     actuator.site = a.string("site");
     actuator.tendon = a.string("tendon");
     actuator.body = a.string("body");
-
-    actuator.gear = a.prefix("gear")?;
     actuator.refsite = a.string("refsite");
     actuator.jointinparent = a.string("jointinparent");
     actuator.cranksite = a.string("cranksite");
     actuator.slidersite = a.string("slidersite");
-    actuator.cranklength = a.real("cranklength")?;
+    Ok(actuator)
+}
 
+/// The values an actuator element writes, in a default class or not (MuJoCo
+/// 3.5.0's default schema gives a class's element each of them, but no name,
+/// class or target: `xml_native_reader.cc:184-207`), each `None` where not
+/// written, every kind's read whatever the kind: `ActuatorSpec::write`
+/// refuses one its kind does not read, and holds every value's rule. Refused
+/// here are `actdim` and an intvelocity's `actlimited`.
+pub(super) fn actuator_values(a: &Attrs, actuator_type: MjcfActuatorType) -> Result<MjcfActuator> {
+    refuse_actdim(a)?;
+    let mut actuator = MjcfActuator {
+        actuator_type,
+        ..Default::default()
+    };
+    actuator.gear = a.prefix("gear")?;
+    actuator.cranklength = a.real("cranklength")?;
     if let Some(pair) = a.array::<2>("ctrlrange")? {
         actuator.ctrlrange = Some(pair.into());
     }
     if let Some(pair) = a.array::<2>("forcerange")? {
         actuator.forcerange = Some(pair.into());
     }
-
     actuator.ctrllimited = a.tf_auto("ctrllimited")?;
     actuator.forcelimited = a.tf_auto("forcelimited")?;
-
-    if let Some(kp) = a.real("kp")? {
-        actuator.kp = kp;
-    }
-    if let Some(kv) = a.real("kv")? {
-        actuator.kv = Some(kv);
-    }
-    if let Some(dampratio) = a.real("dampratio")? {
-        actuator.dampratio = Some(dampratio);
-    }
-    actuator.inheritrange = servo_attributes(&a)?;
-
-    // Interpolation attributes (common to all actuator types)
+    actuator.kp = a.real("kp")?;
+    actuator.kv = a.real("kv")?;
+    actuator.dampratio = a.real("dampratio")?;
+    refuse_intvelocity_actlimited(a)?;
+    actuator.inheritrange = a.real("inheritrange")?;
     actuator.nsample = a.int("nsample")?;
     actuator.interp = a.keyword_text("interp", keywords::interp)?;
     actuator.delay = a.real("delay")?;
 
-    // ========================================================================
-    // <general>-specific attributes
-    // ========================================================================
-    // These are only parsed for <general> actuators. For shortcut types,
-    // these attributes are not part of the MJCF schema and are ignored.
+    // A <general>'s own: its types (their keywords checked on a <general>
+    // alone: another kind writing one is refused when it is written,
+    // `ActuatorSpec::write`), parameters and actearly
+    // (`xml_native_reader.cc:2373-2391`).
     if actuator_type == MjcfActuatorType::General {
         actuator.gaintype = a.keyword_text("gaintype", keywords::gain_type)?;
         actuator.biastype = a.keyword_text("biastype", keywords::bias_type)?;
         actuator.dyntype = a.keyword_text("dyntype", keywords::dyn_type)?;
-        actuator.gainprm = gain_or_bias(&a, "gainprm")?;
-        actuator.biasprm = gain_or_bias(&a, "biasprm")?;
-        actuator.dynprm = a.prefix("dynprm")?;
+    } else {
+        actuator.gaintype = a.string("gaintype");
+        actuator.biastype = a.string("biastype");
+        actuator.dyntype = a.string("dyntype");
     }
+    actuator.gainprm = gain_or_bias(a, "gainprm")?;
+    actuator.biasprm = gain_or_bias(a, "biasprm")?;
+    actuator.dynprm = a.prefix("dynprm")?;
+    actuator.actearly = a.boolean("actearly")?;
+    actuator.tausmooth = a.real("tausmooth")?;
 
-    // ========================================================================
-    // Cylinder-specific attributes
-    // ========================================================================
-    if let Some(area) = a.real("area")? {
-        actuator.area = area;
-    }
-    if let Some(diameter) = a.real("diameter")? {
-        actuator.diameter = Some(diameter);
-    }
+    // A cylinder's.
+    actuator.area = a.real("area")?;
+    actuator.diameter = a.real("diameter")?;
     // A muscle's `timeconst` is a pair [activation, deactivation]; every other
     // type's is one number (`xml_native_reader.cc` reads 2 and 1, exactly).
     if actuator_type == MjcfActuatorType::Muscle {
-        if let Some(pair) = a.array::<2>("timeconst")? {
-            actuator.muscle_timeconst = pair.into();
-        }
-    } else if let Some(timeconst) = a.real("timeconst")? {
-        actuator.timeconst = Some(timeconst);
+        actuator.muscle_timeconst = a.array::<2>("timeconst")?.map(Into::into);
+    } else {
+        actuator.timeconst = a.real("timeconst")?;
     }
-    if let Some(bias) = a.array::<3>("bias")? {
-        actuator.bias = bias;
-    }
+    actuator.bias = a.array::<3>("bias")?;
 
-    // ========================================================================
-    // Muscle-specific attributes
-    // ========================================================================
-    if let Some(pair) = a.array::<2>("range")? {
-        actuator.range = pair.into();
-    }
-    if let Some(force) = a.real("force")? {
-        actuator.force = force;
-    }
-    if let Some(scale) = a.real("scale")? {
-        actuator.scale = scale;
-    }
-    if let Some(lmin) = a.real("lmin")? {
-        actuator.lmin = lmin;
-    }
-    if let Some(lmax) = a.real("lmax")? {
-        actuator.lmax = lmax;
-    }
-    if let Some(vmax) = a.real("vmax")? {
-        actuator.vmax = vmax;
-    }
-    if let Some(fpmax) = a.real("fpmax")? {
-        actuator.fpmax = fpmax;
-    }
-    if let Some(fvmax) = a.real("fvmax")? {
-        actuator.fvmax = fvmax;
-    }
+    // A muscle's.
+    actuator.range = a.array::<2>("range")?.map(Into::into);
+    actuator.force = a.real("force")?;
+    actuator.scale = a.real("scale")?;
+    actuator.lmin = a.real("lmin")?;
+    actuator.lmax = a.real("lmax")?;
+    actuator.vmax = a.real("vmax")?;
+    actuator.fpmax = a.real("fpmax")?;
+    actuator.fvmax = a.real("fvmax")?;
 
-    // ========================================================================
-    // Adhesion-specific attributes
-    // ========================================================================
-    if let Some(gain) = a.real("gain")? {
-        actuator.gain = gain;
-    }
+    // An adhesion's.
+    actuator.gain = a.real("gain")?;
 
-    // ========================================================================
-    // Activation parameters
-    // ========================================================================
     actuator.group = a.int("group")?;
     actuator.actlimited = a.tf_auto("actlimited")?;
     if let Some(pair) = a.array::<2>("actrange")? {
         actuator.actrange = Some(pair.into());
     }
-    actuator.actearly = a.boolean("actearly")?;
     if let Some(pair) = a.array::<2>("lengthrange")? {
         actuator.lengthrange = Some(pair.into());
     }
     if let Some(user) = a.vector("user")? {
         actuator.user = user;
     }
-    crate::builder::actuator::check_servo_gains(
-        a.element(),
-        actuator.kv,
-        actuator.dampratio,
-        actuator.timeconst,
-    )?;
-
     Ok(actuator)
 }
 

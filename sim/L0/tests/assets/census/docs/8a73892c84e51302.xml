@@ -1,0 +1,1 @@
+<mujoco><default><default class="c"><sensor noise="0.5" cutoff="2"/></default></default><worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody><sensor><jointpos class="c" joint="h"/></sensor></mujoco>

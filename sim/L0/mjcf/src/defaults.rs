@@ -40,12 +40,13 @@ use std::collections::HashMap;
 
 use nalgebra::{Vector3, Vector4};
 
+use crate::actuator_spec::{ActuatorSpec, Writer};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
-    MjcfActuator, MjcfActuatorDefaults, MjcfContactPair, MjcfDefault, MjcfEqualityDefaults,
-    MjcfGeom, MjcfGeomDefaults, MjcfJoint, MjcfJointDefaults, MjcfMesh, MjcfMeshDefaults,
-    MjcfModel, MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults,
-    MjcfTendon, MjcfTendonDefaults, Prefix,
+    MjcfActuator, MjcfContactPair, MjcfDefault, MjcfEqualityDefaults, MjcfGeom, MjcfGeomDefaults,
+    MjcfJoint, MjcfJointDefaults, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfPairDefaults,
+    MjcfSensor, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfTendon, MjcfTendonDefaults,
+    Prefix,
 };
 
 /// The name `class` and `childclass` may give the main class, which a
@@ -61,7 +62,15 @@ const MAIN: &str = "main";
 #[derive(Debug, Clone)]
 pub struct DefaultResolver {
     /// Each class by name, the main class under `""`.
-    classes: HashMap<String, MjcfDefault>,
+    classes: HashMap<String, Class>,
+}
+
+/// A class as made: its defaults for every element kind but actuators, and
+/// its one actuator default, as its actuator elements wrote it.
+#[derive(Debug, Clone, Default)]
+struct Class {
+    default: MjcfDefault,
+    actuator: ActuatorSpec,
 }
 
 impl DefaultResolver {
@@ -78,7 +87,8 @@ impl DefaultResolver {
     /// other than `""` or `main`; [`MjcfError::EmptyClassName`] for a nested
     /// entry without a name; [`MjcfError::DuplicateName`] for a nested entry
     /// named `main` or as an earlier class; [`MjcfError::UnknownClass`] for a
-    /// parent that no earlier entry made (a list built in code).
+    /// parent that no earlier entry made (a list built in code); a class's
+    /// actuator element its kind refuses (`ActuatorSpec::write`), at the class.
     pub fn new(defaults: &[MjcfDefault]) -> Result<Self> {
         let mut resolver = Self::default();
         for entry in defaults {
@@ -86,7 +96,7 @@ impl DefaultResolver {
                 if !entry.class.is_empty() && entry.class != MAIN {
                     return Err(MjcfError::renamed_root_class(&entry.class));
                 }
-                resolver.read_onto_main(entry);
+                resolver.read_onto_main(entry)?;
                 continue;
             };
             if entry.class.is_empty() {
@@ -104,7 +114,11 @@ impl DefaultResolver {
             let Some(parent) = resolver.classes.get(parent_name) else {
                 return Err(MjcfError::unknown_class(parent_name));
             };
-            let class = Self::merge_defaults(parent, entry);
+            let mut class = Class {
+                default: Self::merge_defaults(&parent.default, entry),
+                actuator: parent.actuator.clone(),
+            };
+            write_class_actuators(&mut class.actuator, entry)?;
             resolver.classes.insert(entry.class.clone(), class);
         }
         Ok(resolver)
@@ -126,30 +140,40 @@ impl DefaultResolver {
     /// [`MjcfError::UnknownClass`] for any other name no class has, `""`
     /// included (`mjXReader::GetClass`).
     pub fn class(&self, name: Option<&str>) -> Result<&MjcfDefault> {
-        let key = match name {
-            None | Some(MAIN) => "",
-            Some("") => return Err(MjcfError::unknown_class("")),
-            Some(name) => name,
-        };
+        let key = Self::key(name)?;
         self.classes
             .get(key)
+            .map(|class| &class.default)
             .ok_or_else(|| MjcfError::unknown_class(key))
     }
 
-    /// A top-level entry read onto the main class, its values over the main
-    /// class's. An actuator default is the exception: a later block's
-    /// replaces an earlier one, as a later actuator element does within one
-    /// block. MuJoCo keeps one actuator default per class, each element
-    /// writing only its own fields, so a `<motor gear="5"/>` block's gear
-    /// survives a later `<position kp="10"/>` block (measured); what a class
-    /// two kinds write means is book L17's, with A3-O1.
-    fn read_onto_main(&mut self, entry: &MjcfDefault) {
-        let main = self.classes.entry(String::new()).or_default();
-        let mut merged = Self::merge_defaults(main, entry);
-        if entry.actuator.is_some() {
-            merged.actuator.clone_from(&entry.actuator);
+    /// The name a class `name` names is stored under: none or `main` the
+    /// main class's `""`.
+    ///
+    /// # Errors
+    ///
+    /// [`MjcfError::UnknownClass`] for `""` (`mjXReader::GetClass`).
+    fn key(name: Option<&str>) -> Result<&str> {
+        match name {
+            None | Some(MAIN) => Ok(""),
+            Some("") => Err(MjcfError::unknown_class("")),
+            Some(name) => Ok(name),
         }
-        *main = merged;
+    }
+
+    /// A top-level entry read onto the main class, its values over the main
+    /// class's, its actuator elements written onto the main class's one
+    /// actuator default in order (MuJoCo keeps one per class, each element
+    /// writing it in place: a `<motor gear="5"/>` block's gear survives a
+    /// later `<position kp="10"/>` block, measured).
+    ///
+    /// # Errors
+    ///
+    /// An actuator element its kind refuses (`ActuatorSpec::write`).
+    fn read_onto_main(&mut self, entry: &MjcfDefault) -> Result<()> {
+        let main = self.classes.entry(String::new()).or_default();
+        main.default = Self::merge_defaults(&main.default, entry);
+        write_class_actuators(&mut main.actuator, entry)
     }
 
     /// Apply equality defaults to mutable field references.
@@ -347,193 +371,24 @@ impl DefaultResolver {
         Ok(result)
     }
 
-    /// Apply defaults to an actuator, returning a new actuator with defaults applied.
+    /// The actuator default an actuator starts from, its class's, written by
+    /// the actuator itself, as MuJoCo's reader writes it
+    /// (`ActuatorSpec::write`).
     ///
     /// # Errors
     ///
-    /// [`MjcfError::UnknownClass`] for a class no `<default>` makes.
-    pub fn apply_to_actuator(&self, actuator: &MjcfActuator) -> Result<MjcfActuator> {
-        let mut result = actuator.clone();
-
-        if let Some(defaults) = &self.class(actuator.class.as_deref())?.actuator {
-            // #todo: kp and sensor noise/cutoff use sentinel-value detection
-            // (== default) instead of Option<T>. Explicitly setting kp=1.0,
-            // noise=0.0, or cutoff=0.0 is indistinguishable from "unset" and
-            // will be overwritten by defaults. Migrate these to Option<T> to fix.
-
-            result.gear = over(result.gear, defaults.gear);
-
-            // Control range: apply default if None
-            if result.ctrlrange.is_none() {
-                result.ctrlrange = defaults.ctrlrange;
-            }
-
-            // Force range: apply default if None
-            if result.forcerange.is_none() {
-                result.forcerange = defaults.forcerange;
-            }
-
-            // Control limited: apply default only if not explicitly set on element
-            if result.ctrllimited.is_none()
-                && let Some(ctrllimited) = defaults.ctrllimited
-            {
-                result.ctrllimited = Some(ctrllimited);
-            }
-
-            // Force limited: apply default only if not explicitly set on element
-            if result.forcelimited.is_none()
-                && let Some(forcelimited) = defaults.forcelimited
-            {
-                result.forcelimited = Some(forcelimited);
-            }
-
-            // kp: apply default if at default (1.0)
-            if (result.kp - 1.0).abs() < 1e-10
-                && let Some(kp) = defaults.kp
-            {
-                result.kp = kp;
-            }
-
-            // kv: apply default if not explicitly set
-            if result.kv.is_none()
-                && let Some(kv) = defaults.kv
-            {
-                result.kv = Some(kv);
-            }
-
-            // dampratio: apply default if not explicitly set
-            if result.dampratio.is_none()
-                && let Some(dr) = defaults.dampratio
-            {
-                result.dampratio = Some(dr);
-            }
-            if result.inheritrange.is_none() {
-                result.inheritrange = defaults.inheritrange;
-            }
-
-            // Apply <general>-specific defaults.
-            // These only matter for <general> actuators, but we apply them
-            // unconditionally — the model builder ignores them for shortcut types.
-            if result.gaintype.is_none() {
-                result.gaintype.clone_from(&defaults.gaintype);
-            }
-            if result.biastype.is_none() {
-                result.biastype.clone_from(&defaults.biastype);
-            }
-            if result.dyntype.is_none() {
-                result.dyntype.clone_from(&defaults.dyntype);
-            }
-            result.gainprm = over(result.gainprm, defaults.gainprm);
-            result.biasprm = over(result.biasprm, defaults.biasprm);
-            result.dynprm = over(result.dynprm, defaults.dynprm);
-
-            // Activation parameters
-            if result.group.is_none() {
-                result.group = defaults.group;
-            }
-            if result.actlimited.is_none() {
-                result.actlimited = defaults.actlimited;
-            }
-            if result.actrange.is_none() {
-                result.actrange = defaults.actrange;
-            }
-            if result.actearly.is_none() {
-                result.actearly = defaults.actearly;
-            }
-            if result.lengthrange.is_none() {
-                result.lengthrange = defaults.lengthrange;
-            }
-            if result.nsample.is_none() {
-                result.nsample = defaults.nsample;
-            }
-            if result.interp.is_none() {
-                result.interp.clone_from(&defaults.interp);
-            }
-            if result.delay.is_none() {
-                result.delay = defaults.delay;
-            }
-
-            // Cylinder-specific: sentinel-value detection
-            if (result.area - 1.0).abs() < 1e-10
-                && let Some(area) = defaults.area
-            {
-                result.area = area;
-            }
-            if result.diameter.is_none() {
-                result.diameter = defaults.diameter;
-            }
-            if result.timeconst.is_none() {
-                result.timeconst = defaults.timeconst;
-            }
-            if result.bias == [0.0, 0.0, 0.0]
-                && let Some(bias) = defaults.bias
-            {
-                result.bias = bias;
-            }
-
-            // Muscle-specific: sentinel-value detection
-            if (result.muscle_timeconst.0 - 0.01).abs() < 1e-10
-                && (result.muscle_timeconst.1 - 0.04).abs() < 1e-10
-                && let Some(tc) = defaults.muscle_timeconst
-            {
-                result.muscle_timeconst = tc;
-            }
-            if (result.range.0 - 0.75).abs() < 1e-10
-                && (result.range.1 - 1.05).abs() < 1e-10
-                && let Some(r) = defaults.range
-            {
-                result.range = r;
-            }
-            if (result.force - (-1.0)).abs() < 1e-10
-                && let Some(f) = defaults.force
-            {
-                result.force = f;
-            }
-            if (result.scale - 200.0).abs() < 1e-10
-                && let Some(s) = defaults.scale
-            {
-                result.scale = s;
-            }
-            if (result.lmin - 0.5).abs() < 1e-10
-                && let Some(v) = defaults.lmin
-            {
-                result.lmin = v;
-            }
-            if (result.lmax - 1.6).abs() < 1e-10
-                && let Some(v) = defaults.lmax
-            {
-                result.lmax = v;
-            }
-            if (result.vmax - 1.5).abs() < 1e-10
-                && let Some(v) = defaults.vmax
-            {
-                result.vmax = v;
-            }
-            if (result.fpmax - 1.3).abs() < 1e-10
-                && let Some(v) = defaults.fpmax
-            {
-                result.fpmax = v;
-            }
-            if (result.fvmax - 1.2).abs() < 1e-10
-                && let Some(v) = defaults.fvmax
-            {
-                result.fvmax = v;
-            }
-
-            // Adhesion-specific: sentinel-value detection
-            if (result.gain - 1.0).abs() < 1e-10
-                && let Some(g) = defaults.gain
-            {
-                result.gain = g;
-            }
-            if result.user.is_empty()
-                && let Some(ref user) = defaults.user
-            {
-                result.user.clone_from(user);
-            }
-        }
-
-        Ok(result)
+    /// [`MjcfError::UnknownClass`] for a class no `<default>` makes; a value
+    /// the actuator's kind refuses.
+    pub fn apply_to_actuator(&self, actuator: &MjcfActuator) -> Result<ActuatorSpec> {
+        let key = Self::key(actuator.class.as_deref())?;
+        let mut spec = self
+            .classes
+            .get(key)
+            .ok_or_else(|| MjcfError::unknown_class(key))?
+            .actuator
+            .clone();
+        spec.write(actuator, Writer::Actuator)?;
+        Ok(spec)
     }
 
     /// Apply defaults to a site, returning a new site with defaults applied.
@@ -670,19 +525,8 @@ impl DefaultResolver {
         let mut result = sensor.clone();
 
         if let Some(defaults) = &self.class(sensor.class.as_deref())?.sensor {
-            // Noise: apply default if zero
-            if result.noise == 0.0
-                && let Some(noise) = defaults.noise
-            {
-                result.noise = noise;
-            }
-
-            // Cutoff: apply default if zero
-            if result.cutoff == 0.0
-                && let Some(cutoff) = defaults.cutoff
-            {
-                result.cutoff = cutoff;
-            }
+            result.noise = result.noise.or(defaults.noise);
+            result.cutoff = result.cutoff.or(defaults.cutoff);
 
             // User: apply default if empty
             if result.user.is_empty()
@@ -754,10 +598,8 @@ impl DefaultResolver {
             parent_class: child.parent_class.clone(),
             joint: Self::merge_joint_defaults(parent.joint.as_ref(), child.joint.as_ref()),
             geom: Self::merge_geom_defaults(parent.geom.as_ref(), child.geom.as_ref()),
-            actuator: Self::merge_actuator_defaults(
-                parent.actuator.as_ref(),
-                child.actuator.as_ref(),
-            ),
+            // A class's actuator elements live on as its `Class::actuator`.
+            actuators: Vec::new(),
             tendon: Self::merge_tendon_defaults(parent.tendon.as_ref(), child.tendon.as_ref()),
             sensor: Self::merge_sensor_defaults(parent.sensor.as_ref(), child.sensor.as_ref()),
             mesh: Self::merge_mesh_defaults(parent.mesh.as_ref(), child.mesh.as_ref()),
@@ -847,60 +689,6 @@ impl DefaultResolver {
                     shellinertia: c.shellinertia.or(p.shellinertia),
                 })
             }
-        }
-    }
-
-    fn merge_actuator_defaults(
-        parent: Option<&MjcfActuatorDefaults>,
-        child: Option<&MjcfActuatorDefaults>,
-    ) -> Option<MjcfActuatorDefaults> {
-        match (parent, child) {
-            (None, None) => None,
-            (Some(p), None) => Some(p.clone()),
-            (None, Some(c)) => Some(c.clone()),
-            (Some(p), Some(c)) => Some(MjcfActuatorDefaults {
-                ctrlrange: c.ctrlrange.or(p.ctrlrange),
-                forcerange: c.forcerange.or(p.forcerange),
-                gear: over(c.gear, p.gear),
-                kp: c.kp.or(p.kp),
-                kv: c.kv.or(p.kv),
-                dampratio: c.dampratio.or(p.dampratio),
-                inheritrange: c.inheritrange.or(p.inheritrange),
-                ctrllimited: c.ctrllimited.or(p.ctrllimited),
-                forcelimited: c.forcelimited.or(p.forcelimited),
-                gaintype: c.gaintype.clone().or_else(|| p.gaintype.clone()),
-                biastype: c.biastype.clone().or_else(|| p.biastype.clone()),
-                dyntype: c.dyntype.clone().or_else(|| p.dyntype.clone()),
-                gainprm: over(c.gainprm, p.gainprm),
-                biasprm: over(c.biasprm, p.biasprm),
-                dynprm: over(c.dynprm, p.dynprm),
-                group: c.group.or(p.group),
-                actlimited: c.actlimited.or(p.actlimited),
-                actrange: c.actrange.or(p.actrange),
-                actearly: c.actearly.or(p.actearly),
-                lengthrange: c.lengthrange.or(p.lengthrange),
-                nsample: c.nsample.or(p.nsample),
-                interp: c.interp.clone().or_else(|| p.interp.clone()),
-                delay: c.delay.or(p.delay),
-                // Cylinder-specific
-                area: c.area.or(p.area),
-                diameter: c.diameter.or(p.diameter),
-                timeconst: c.timeconst.or(p.timeconst),
-                bias: c.bias.or(p.bias),
-                // Muscle-specific
-                muscle_timeconst: c.muscle_timeconst.or(p.muscle_timeconst),
-                range: c.range.or(p.range),
-                force: c.force.or(p.force),
-                scale: c.scale.or(p.scale),
-                lmin: c.lmin.or(p.lmin),
-                lmax: c.lmax.or(p.lmax),
-                vmax: c.vmax.or(p.vmax),
-                fpmax: c.fpmax.or(p.fpmax),
-                fvmax: c.fvmax.or(p.fvmax),
-                // Adhesion-specific
-                gain: c.gain.or(p.gain),
-                user: c.user.clone().or_else(|| p.user.clone()),
-            }),
         }
     }
 
@@ -1042,6 +830,24 @@ pub type Alternatives = (
     Option<Vector3<f64>>,
 );
 
+/// `entry`'s actuator elements written onto `spec`, its class's actuator
+/// default, in order, a refusal located at the class.
+fn write_class_actuators(spec: &mut ActuatorSpec, entry: &MjcfDefault) -> Result<()> {
+    let at = || {
+        let name = if entry.class.is_empty() {
+            MAIN
+        } else {
+            &entry.class
+        };
+        Location::named(ElementKind::DefaultClass, name)
+    };
+    for actuator in &entry.actuators {
+        spec.write(actuator, Writer::Class)
+            .map_err(|e| e.with_location_if_unknown(at()))?;
+    }
+    Ok(())
+}
+
 /// A layer's alternative orientation over the one it inherits, as MuJoCo
 /// 3.5.0's reader keeps it: one per element, the last read
 /// (`ReadAlternative`, `xml_base.cc:54-77`, sets the element's `alt.type` at
@@ -1077,7 +883,7 @@ impl Default for DefaultResolver {
     /// The main class alone, empty.
     fn default() -> Self {
         Self {
-            classes: HashMap::from([(String::new(), MjcfDefault::default())]),
+            classes: HashMap::from([(String::new(), Class::default())]),
         }
     }
 }
@@ -1086,7 +892,7 @@ impl Default for DefaultResolver {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::types::MjcfJointType;
+    use crate::types::{MjcfActuatorType, MjcfJointType};
     use approx::assert_relative_eq;
     use nalgebra::Vector4;
 
@@ -1319,12 +1125,13 @@ mod tests {
         let defaults = vec![MjcfDefault {
             class: "motor".to_string(),
             parent_class: Some(String::new()),
-            actuator: Some(MjcfActuatorDefaults {
+            actuators: vec![MjcfActuator {
+                actuator_type: MjcfActuatorType::Position,
                 gear: Some(Prefix::full([100.0, 0.0, 0.0, 0.0, 0.0, 0.0])),
                 ctrlrange: Some((-1.0, 1.0)),
                 kp: Some(50.0),
                 ..Default::default()
-            }),
+            }],
             ..Default::default()
         }];
 
@@ -1332,13 +1139,15 @@ mod tests {
 
         let actuator = MjcfActuator {
             class: Some("motor".to_string()),
+            actuator_type: MjcfActuatorType::Position,
             ..Default::default()
         };
 
         let resolved = resolver.apply_to_actuator(&actuator).unwrap();
         assert_relative_eq!(resolved.gear.unwrap().given()[0], 100.0, epsilon = 1e-10);
         assert_eq!(resolved.ctrlrange, Some((-1.0, 1.0)));
-        assert_relative_eq!(resolved.kp, 50.0, epsilon = 1e-10);
+        assert_eq!(resolved.gainprm[0], Some(50.0));
+        assert_eq!(resolved.biasprm[1], Some(-50.0));
     }
 
     #[test]
@@ -1481,20 +1290,20 @@ mod tests {
         };
 
         let resolved = resolver.apply_to_sensor(&sensor).unwrap();
-        assert_relative_eq!(resolved.noise, 0.01, epsilon = 1e-10);
-        assert_relative_eq!(resolved.cutoff, 100.0, epsilon = 1e-10);
+        assert_eq!(resolved.noise, Some(0.01));
+        assert_eq!(resolved.cutoff, Some(100.0));
         assert_eq!(resolved.user, vec![1.0, 2.0, 3.0]);
 
         // Sensor with explicit noise should keep it
         let sensor_with_noise = MjcfSensor {
             class: Some("noisy".to_string()),
-            noise: 0.05,
+            noise: Some(0.05),
             ..Default::default()
         };
 
         let resolved = resolver.apply_to_sensor(&sensor_with_noise).unwrap();
-        assert_relative_eq!(resolved.noise, 0.05, epsilon = 1e-10); // Kept explicit
-        assert_relative_eq!(resolved.cutoff, 100.0, epsilon = 1e-10); // Got default
+        assert_eq!(resolved.noise, Some(0.05)); // Kept explicit
+        assert_eq!(resolved.cutoff, Some(100.0)); // Got default
     }
 
     #[test]
@@ -1569,8 +1378,8 @@ mod tests {
         };
 
         let resolved = resolver.apply_to_sensor(&sensor).unwrap();
-        assert_relative_eq!(resolved.noise, 0.001, epsilon = 1e-10); // Inherited from root
-        assert_relative_eq!(resolved.cutoff, 10.0, epsilon = 1e-10); // From "filtered"
+        assert_eq!(resolved.noise, Some(0.001)); // Inherited from root
+        assert_eq!(resolved.cutoff, Some(10.0)); // From "filtered"
     }
 
     // ---- T14 (Spec B): Margin parsed from MJCF defaults ----

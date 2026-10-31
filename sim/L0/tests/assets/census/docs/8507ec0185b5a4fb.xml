@@ -1,0 +1,1 @@
+<mujoco><default><default class="c"><general gainprm="1"/><velocity kv="3"/><default class="d"><velocity kv="1"/></default></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle class="d" joint="h"/></actuator></mujoco>

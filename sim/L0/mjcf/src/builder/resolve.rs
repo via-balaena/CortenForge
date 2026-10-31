@@ -5,11 +5,14 @@
 //! (`mjXReader::GetClass`, then the element's own attributes over the
 //! class's), so a frame composes, and fusion moves, the element its class
 //! made, and the elements a `<composite>` makes later take none of the
-//! user's classes (`mjCComposite` builds them from its own default). The
-//! builder reads each element as this pass leaves it and applies no class.
+//! user's classes (`mjCComposite` builds them from its own default). An
+//! actuator stays as written: its class's actuator default, as the actuator
+//! writes it (`DefaultResolver::apply_to_actuator`), is returned for it. The
+//! builder reads each element as this pass leaves it, and each actuator with
+//! the default returned for it; it applies no class.
 
-use super::actuator::check_servo_gains;
 use super::geom::{resolve_geom_fromto, resolve_site_fromto};
+use crate::actuator_spec::ActuatorSpec;
 use crate::defaults::DefaultResolver;
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
@@ -26,35 +29,34 @@ enum Pending<'a> {
 
 /// Every element given its class: the body tree's (`apply_to_body_tree`),
 /// then each mesh, actuator, tendon, sensor, contact pair and equality. An
-/// actuator's own servo gains are checked before its class gives any.
+/// actuator stays as written: its class's actuator default, written by the
+/// actuator (`DefaultResolver::apply_to_actuator`), is returned in its
+/// place, one per actuator in order, for the builder.
 ///
 /// # Errors
 ///
 /// [`MjcfError::UnknownClass`](crate::MjcfError::UnknownClass) for a `class`
-/// or `childclass` no `<default>` makes; an actuator's own servo gains that
-/// `check_servo_gains` refuses; a `fromto` the body tree's pass refuses;
+/// or `childclass` no `<default>` makes; an actuator's value its kind
+/// refuses; a `fromto` the body tree's pass refuses;
 /// [`MjcfError::InvalidModel`](crate::MjcfError::InvalidModel) for an
 /// equality order naming an equality the model does not hold.
-pub fn apply_defaults(mjcf: &mut MjcfModel, resolver: &DefaultResolver) -> Result<()> {
+pub fn apply_defaults(
+    mjcf: &mut MjcfModel,
+    resolver: &DefaultResolver,
+) -> Result<Vec<ActuatorSpec>> {
     apply_to_body_tree(&mut mjcf.worldbody, resolver)?;
     for mesh in &mut mjcf.meshes {
         let at = Location::named(ElementKind::Mesh, &mesh.name);
         *mesh = resolver.apply_to_mesh(mesh).map_err(|e| e.at(at))?;
     }
-    for (i, actuator) in mjcf.actuators.iter_mut().enumerate() {
+    let mut actuators = Vec::with_capacity(mjcf.actuators.len());
+    for (i, actuator) in mjcf.actuators.iter().enumerate() {
         let at = Location::nth(ElementKind::Actuator, Some(&actuator.name), i);
-        // A servo's own gains, before its class gives any (the parser checked
-        // a parsed one; this holds an actuator built in code to it).
-        let own = check_servo_gains(
-            actuator.actuator_type.as_str(),
-            actuator.kv,
-            actuator.dampratio,
-            actuator.timeconst,
+        actuators.push(
+            resolver
+                .apply_to_actuator(actuator)
+                .map_err(|e| e.with_location_if_unknown(at))?,
         );
-        *actuator = resolver
-            .apply_to_actuator(actuator)
-            .and_then(|resolved| own.map(|()| resolved))
-            .map_err(|e| e.with_location_if_unknown(at))?;
     }
     for (i, tendon) in mjcf.tendons.iter_mut().enumerate() {
         let at = Location::nth(ElementKind::Tendon, Some(&tendon.name), i);
@@ -68,7 +70,8 @@ pub fn apply_defaults(mjcf: &mut MjcfModel, resolver: &DefaultResolver) -> Resul
         let at = Location::nth(ElementKind::Pair, pair.name.as_deref(), i);
         *pair = resolver.apply_to_pair(pair).map_err(|e| e.at(at))?;
     }
-    apply_to_equalities(&mut mjcf.equality, resolver)
+    apply_to_equalities(&mut mjcf.equality, resolver)?;
+    Ok(actuators)
 }
 
 /// Each equality given its class, numbered among them all in document order.

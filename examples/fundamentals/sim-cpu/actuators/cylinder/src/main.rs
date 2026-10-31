@@ -2,19 +2,20 @@
 //!
 //! A double-acting pneumatic cylinder on a horizontal rail. Positive pressure
 //! extends the piston; vacuum (negative pressure) retracts it. The cylinder
-//! shortcut maps to `GainType::Fixed(area)`, `BiasType::Affine(b0, b1, b2)`,
-//! `ActuatorDynamics::Filter(tau)`. Force = `area * act + b0 + b1*length +
-//! b2*velocity`. Filter dynamics is Euler-approximated (not FilterExact),
+//! shortcut maps to `GainType::Fixed(area)`, `BiasType::Affine(b0, 0, 0)`,
+//! `ActuatorDynamics::Filter(tau)`. Force = `area * act + b0`: MuJoCo's
+//! cylinder reads only the first of its three `bias` values, and this one
+//! writes none. Filter dynamics is Euler-approximated (not FilterExact),
 //! which is the key code-path difference from example 5.
 //!
 //! Pressure alternates between +1 and -1 every 3 seconds. The activation
-//! filter delays the pressure response (tau=0.5s), and viscous damping
-//! (bias\[2\]) smooths the motion. Joint limits model the end-of-stroke walls.
+//! filter delays the pressure response (tau=0.5s), and the joint's viscous
+//! damping smooths the motion. Joint limits model the end-of-stroke walls.
 //!
 //! Validates:
 //! - Activation state exists (data.na == 1)
 //! - Filter dynamics: act at t ~= tau is ~0.632 (within 5%)
-//! - Force formula: force ~= area*act + b0 + b1*pos + b2*vel (within 2%)
+//! - Force formula: force ~= area*act (within 2%)
 //! - Area from diameter: model.actuator_gainprm\[0\]\[0\] ~= pi/4 * d^2 (within 1e-10)
 //!
 //! Run with: `cargo run -p example-actuator-cylinder --release`
@@ -56,7 +57,7 @@ const MJCF: &str = r#"
     <!-- Moving piston: barrel + rod (housing spawned by Bevy as hollow tube) -->
     <body name="piston" pos="0 0 0">
       <joint name="slide" type="slide" axis="1 0 0" armature="0.01"
-             range="-0.25 0.25" limited="true"/>
+             damping="0.5" range="-0.25 0.25" limited="true"/>
       <inertial pos="0 0 0" mass="1.0" diaginertia="0.001 0.001 0.001"/>
       <geom name="barrel" type="cylinder" size="0.06 0.08" euler="0 1.5708 0"
             rgba="0.5 0.7 0.3 1"/>
@@ -67,7 +68,7 @@ const MJCF: &str = r#"
 
   <actuator>
     <cylinder name="pneumatic" joint="slide" timeconst="0.5" diameter="0.5"
-              bias="0 0 -0.5" ctrlrange="-1 1" ctrllimited="false"/>
+              ctrlrange="-1 1" ctrllimited="false"/>
   </actuator>
 
   <sensor>
@@ -82,7 +83,7 @@ const MJCF: &str = r#"
 const DIAMETER: f64 = 0.5;
 const AREA: f64 = std::f64::consts::PI / 4.0 * DIAMETER * DIAMETER;
 const TAU: f64 = 0.5;
-const BIAS: [f64; 3] = [0.0, 0.0, -0.5]; // no spring, viscous damping only
+const DAMPING: f64 = 0.5; // the joint's viscous damping
 const HALF_PERIOD: f64 = 3.0; // seconds per half-cycle
 
 /// Read `data.act[0]`, returning 0.0 if the vector is empty.
@@ -104,10 +105,7 @@ fn main() {
         2.0 * HALF_PERIOD
     );
     println!("  area = {AREA:.4} m^2 (d = {DIAMETER} m)");
-    println!(
-        "  bias = [{}, {}, {}] (no spring, viscous damping only)",
-        BIAS[0], BIAS[1], BIAS[2]
-    );
+    println!("  joint damping = {DAMPING} (the cylinder writes no bias)");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
@@ -300,8 +298,7 @@ fn cylinder_diagnostics(
         let mut max_force_err_pct = 0.0_f64;
         let mut worst_detail = String::new();
         for &(_t, force, a, p, v) in &val.force_samples {
-            let length = p;
-            let expected_force = AREA * a + BIAS[0] + BIAS[1] * length + BIAS[2] * v;
+            let expected_force = AREA * a;
             if expected_force.abs() > 1e-10 {
                 let err_pct = ((force - expected_force) / expected_force).abs() * 100.0;
                 if err_pct > max_force_err_pct {
@@ -330,7 +327,7 @@ fn cylinder_diagnostics(
                 ),
             },
             Check {
-                name: "Force formula (area*act + bias)",
+                name: "Force formula (area*act)",
                 pass: max_force_err_pct < 2.0,
                 detail: format!(
                     "max err={max_force_err_pct:.4}% ({} samples) worst: {worst_detail}",

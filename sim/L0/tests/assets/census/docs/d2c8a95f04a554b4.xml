@@ -1,0 +1,1 @@
+<mujoco><default><default class="c"><general gaintype="affine" gainprm="0 0 -3"/><damper ctrlrange="0 1"/></default></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><damper class="c" joint="h" kv="2"/></actuator></mujoco>

@@ -1,0 +1,1 @@
+<mujoco><default><muscle timeconst="1 0"/></default><worldbody><body><joint name="h" type="hinge" range="-30 60"/><geom size="0.1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>

@@ -488,11 +488,11 @@ fn t14_adhesion_gain_defaults_cascade() {
 }
 
 // ============================================================================
-// T15: Damper kv defaults cascade → AC14
+// T15: a damper's class kv, which MuJoCo does not take, refused → AC14
 // ============================================================================
 
 #[test]
-fn t15_damper_kv_defaults_cascade() {
+fn t15_a_dampers_class_kv_is_refused() {
     let mjcf = r#"
         <mujoco model="damper_defaults">
             <default>
@@ -510,7 +510,13 @@ fn t15_damper_kv_defaults_cascade() {
         </mujoco>
     "#;
 
-    let model = load_model(mjcf).expect("should load");
-    // AC14: kv=5.0 → damper expansion: gainprm[2] = -kv = -5.0
-    assert_relative_eq!(model.actuator_gainprm[0][2], -5.0, epsilon = 1e-10);
+    // MuJoCo 3.5.0 starts a damper's kv at 0, not its class's (measured: a
+    // class kv 4 builds 0), so the class's kv is refused
+    // (D-DAMPER-CLASS-KV); MuJoCo refuses this document too, for its
+    // control range.
+    let err = load_model(mjcf).expect_err("a damper's class kv");
+    assert!(
+        matches!(&err, sim_mjcf::MjcfError::InvalidValue { attribute, .. } if attribute == "kv"),
+        "{err}"
+    );
 }
