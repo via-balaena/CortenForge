@@ -281,6 +281,34 @@ fn a_primitive_fitted_to_a_mesh_is_not_supported() {
     assert!(missed.is_empty(), "{}", missed.join("\n"));
 }
 
+/// A plane or height field naming a mesh: MuJoCo refuses it, "invalid geom
+/// type in fitting mesh" (`FitGeom` fits neither, `user_mesh.cc:1008-1009`;
+/// measured), and so does sim-mjcf, as MuJoCo does.
+#[test]
+fn a_plane_or_height_field_naming_a_mesh_is_refused_as_mujoco_refuses_it() {
+    let assets = r#"<asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 2 1 0 1 3 0 3 2 1 2 3"/><hfield name="h" nrow="2" ncol="2" size="1 1 1 0.1" elevation="0 0 0 0"/></asset>"#;
+    let mut missed = Vec::new();
+    for geom in [
+        r#"<geom type="plane" mesh="m" size="1 1 1"/>"#,
+        r#"<geom type="plane" mesh="m"/>"#,
+        r#"<geom type="hfield" hfield="h" mesh="m"/>"#,
+    ] {
+        let xml = format!("<mujoco>{assets}<worldbody>{geom}</worldbody></mujoco>");
+        match load_model(&xml) {
+            Err(MjcfError::InvalidValue {
+                element,
+                attribute,
+                reason,
+                ..
+            }) if element == "geom"
+                && attribute == "type"
+                && reason == "invalid geom type in fitting mesh" => {}
+            other => missed.push(format!("{geom}: {other:?}")),
+        }
+    }
+    assert!(missed.is_empty(), "{}", missed.join("\n"));
+}
+
 /// A geom built in code with no size is refused as a document's is, and
 /// one built with its size loads.
 #[test]

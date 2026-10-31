@@ -467,10 +467,13 @@ fn check_sizes(model: &MjcfModel) -> Result<()> {
 /// value, and each of the first `mjGEOMINFO[type]` values of any other type
 /// (`user_objects.h:77`: a sphere 1, a capsule or cylinder 2, an ellipsoid or
 /// box 3, a mesh, height field or SDF none), must be above 0, a place neither
-/// the geom nor its class writes being MuJoCo's 0. MuJoCo first fits a geom
-/// that names a mesh and is not a mesh or SDF to the mesh (`FitGeom`,
-/// `:3739`), replacing its size; sim-mjcf fits none (ledger L337), so such a
-/// geom is refused as not supported (`D-MESH-FIT`). Other numeric fields
+/// the geom nor its class writes being MuJoCo's 0. MuJoCo first fits a
+/// sphere, capsule, cylinder, ellipsoid or box that names a mesh to the mesh
+/// (`FitGeom`, `:3739`), replacing its size, and refuses a plane or height
+/// field that names one ("invalid geom type in fitting mesh",
+/// `user_mesh.cc:1008-1009`); sim-mjcf fits none (ledger L337), so it refuses
+/// the first as not supported (`D-MESH-FIT`) and the second as MuJoCo does.
+/// Other numeric fields
 /// (orientation, friction, density, solver params) are out of scope here;
 /// mass/inertia have separate validation
 /// paths via the inertial check, and the rest are deferred as a follow-up
@@ -486,8 +489,16 @@ fn check_geom_size(geom: &MjcfGeom, at: impl Fn() -> Location) -> Result<()> {
     if !matches!(kind, MjcfGeomType::Mesh | MjcfGeomType::Sdf)
         && geom.mesh.as_deref().is_some_and(|m| !m.is_empty())
     {
+        if matches!(kind, MjcfGeomType::Plane | MjcfGeomType::Hfield) {
+            return Err(MjcfError::invalid_value(
+                "geom",
+                "type",
+                "invalid geom type in fitting mesh",
+            )
+            .at(at()));
+        }
         return Err(MjcfError::unsupported(
-            "a geom of a primitive type fitted to the mesh it names",
+            "a sphere, capsule, cylinder, ellipsoid or box fitted to the mesh it names",
         )
         .at(at()));
     }
