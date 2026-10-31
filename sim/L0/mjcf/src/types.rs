@@ -4612,6 +4612,20 @@ mod tests {
         assert_relative_eq!(sphere.computed_mass(), expected_mass, epsilon = 1e-10);
     }
 
+    /// A place the size does not write is 0 (no class is applied here): a
+    /// box of one value has no volume (L18a's surviving mutant
+    /// `computed_mass_base`).
+    #[test]
+    fn computed_mass_reads_an_unwritten_place_as_zero() {
+        let geom = MjcfGeom {
+            geom_type: Some(MjcfGeomType::Box),
+            size: Prefix::new(&[0.1]),
+            density: Some(1000.0),
+            ..Default::default()
+        };
+        assert_eq!(geom.computed_mass().to_bits(), 0.0_f64.to_bits());
+    }
+
     #[test]
     fn test_geom_explicit_mass() {
         let sphere = MjcfGeom {

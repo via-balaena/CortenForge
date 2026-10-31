@@ -16,7 +16,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use sim_core::GeomType;
-use sim_mjcf::{MjcfError, load_model};
+use sim_mjcf::{
+    MjcfBody, MjcfError, MjcfGeom, MjcfModel, MjcfSite, Prefix, load_model, model_from_mjcf,
+};
 
 /// `(what, document, attribute, MuJoCo's reason)`.
 const REFUSED: &[(&str, &str, &str, &str)] = &[
@@ -169,6 +171,25 @@ fn a_sites_type_and_size_are_mujocos() {
         LOADS.len(),
         differ.join("\n  ")
     );
+}
+
+/// A site built in code with a size that is not finite is refused (a
+/// document's is refused when it is read; L18b's surviving mutant
+/// `site_nonfinite_skipped`).
+#[test]
+fn a_site_built_in_code_with_a_nan_size_is_refused() {
+    let site = MjcfSite {
+        size: Prefix::new(&[f64::NAN]),
+        ..MjcfSite::default()
+    };
+    let mut body = MjcfBody::new("b").with_geom(MjcfGeom::sphere(0.1));
+    body.sites.push(site);
+    match model_from_mjcf(&MjcfModel::new("nan").with_body(body), None) {
+        Err(MjcfError::NonFinite {
+            element, attribute, ..
+        }) => assert_eq!((element.as_str(), attribute.as_str()), ("site", "size")),
+        other => panic!("{other:?}"),
+    }
 }
 
 /// A touch sensor on a site of type sdf: MuJoCo 3.5.0 stops with a fatal
