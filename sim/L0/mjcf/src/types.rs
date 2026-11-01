@@ -1463,39 +1463,6 @@ impl MjcfGeom {
         )
         .map_err(|e| e.on("geom"))
     }
-
-    /// Compute mass from density and volume, the volume from the size as
-    /// written (a place not written is 0; no class is applied). A cylinder's
-    /// volume is taken as a capsule's, and an ellipsoid's, a mesh's, a height
-    /// field's or an SDF's as 0.001 (ledger L351).
-    #[must_use]
-    pub fn computed_mass(&self) -> f64 {
-        if let Some(mass) = self.mass {
-            return mass;
-        }
-
-        let size = self.size.map_or([0.0; 3], |s| s.over([0.0; 3]));
-        let volume = match self.geom_type.unwrap_or(MjcfGeomType::Sphere) {
-            MjcfGeomType::Sphere => {
-                let r = size[0];
-                (4.0 / 3.0) * std::f64::consts::PI * r.powi(3)
-            }
-            MjcfGeomType::Box => {
-                let [x, y, z] = size;
-                8.0 * x * y * z // Full size = 2 * half-extents
-            }
-            MjcfGeomType::Capsule | MjcfGeomType::Cylinder => {
-                let [r, h, _] = size;
-                // Cylinder + 2 hemispheres for capsule
-                std::f64::consts::PI * r.powi(2) * (2.0 * h)
-                    + (4.0 / 3.0) * std::f64::consts::PI * r.powi(3)
-            }
-            MjcfGeomType::Plane => 0.0, // Planes have no volume
-            _ => 0.001,                 // Default small volume for unsupported types
-        };
-
-        self.density.unwrap_or(1000.0) * volume
-    }
 }
 
 // ============================================================================
@@ -4605,49 +4572,6 @@ mod tests {
         assert_eq!(MjcfJointType::Slide.dof(), 1);
         assert_eq!(MjcfJointType::Ball.dof(), 3);
         assert_eq!(MjcfJointType::Free.dof(), 6);
-    }
-
-    #[test]
-    fn test_geom_computed_mass() {
-        let sphere = MjcfGeom {
-            geom_type: Some(MjcfGeomType::Sphere),
-            size: Prefix::new(&[0.1]),
-            density: Some(1000.0),
-            mass: None,
-            ..Default::default()
-        };
-
-        // Volume of sphere = 4/3 * pi * r^3
-        let expected_volume = (4.0 / 3.0) * std::f64::consts::PI * 0.1_f64.powi(3);
-        let expected_mass = 1000.0 * expected_volume;
-        assert_relative_eq!(sphere.computed_mass(), expected_mass, epsilon = 1e-10);
-    }
-
-    /// A place the size does not write is 0 (no class is applied here): a
-    /// box of one value has no volume (L18a's surviving mutant
-    /// `computed_mass_base`).
-    #[test]
-    fn computed_mass_reads_an_unwritten_place_as_zero() {
-        let geom = MjcfGeom {
-            geom_type: Some(MjcfGeomType::Box),
-            size: Prefix::new(&[0.1]),
-            density: Some(1000.0),
-            ..Default::default()
-        };
-        assert_eq!(geom.computed_mass().to_bits(), 0.0_f64.to_bits());
-    }
-
-    #[test]
-    fn test_geom_explicit_mass() {
-        let sphere = MjcfGeom {
-            geom_type: Some(MjcfGeomType::Sphere),
-            size: Prefix::new(&[0.1]),
-            density: Some(1000.0),
-            mass: Some(5.0), // Explicit mass overrides density
-            ..Default::default()
-        };
-
-        assert_relative_eq!(sphere.computed_mass(), 5.0, epsilon = 1e-10);
     }
 
     /// A body's and a geom's `rotation` is the orientation the builder loads,
