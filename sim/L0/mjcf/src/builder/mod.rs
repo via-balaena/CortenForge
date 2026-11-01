@@ -291,17 +291,20 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Finalize user data: resolve nuser, validate, pad
     builder.finalize_user_data(&mjcf)?;
 
-    // MuJoCo 3.5.0's checks of joints and of tendons, after every
-    // check above, so that a document refused before they existed is refused
-    // for the same fault (MuJoCo orders some of them before checks above).
-    // Among themselves in MuJoCo's order: each body's joints, the tendons, the
-    // actuators, the sensors, then the free joint below the world's children,
-    // as MuJoCo's `CopyTree` refuses it.
+    // MuJoCo 3.5.0's checks this crate did not make before RL-6a and RL-6b
+    // (book L19-L21), after every check above, so that a document refused
+    // before they existed is refused for the same fault (MuJoCo orders some
+    // of them before checks above). Among themselves in MuJoCo's order: each
+    // body's joints, the tendons, the actuators, the sensors, then the free
+    // joint below the world's children, as MuJoCo's `CopyTree` refuses it.
+    // An automatic range that does not increase is refused after the
+    // keyframes (`D-AUTO-RANGE`).
     builder.check_joints()?;
     builder.check_tendons()?;
     builder.check_actuators()?;
     builder.check_limit_sensors()?;
     builder.check_free_joints_on_top_level()?;
+    let automatic = builder.automatic_range_fault();
 
     // Build final model
     let mut model = builder.build();
@@ -329,10 +332,15 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         .map(|(i, kf)| (kf.name.clone(), i))
         .collect();
 
-    // The two refusals this crate makes and MuJoCo does not, after the
-    // keyframes.
+    // The refusals this crate makes and MuJoCo does not, after the
+    // keyframes: a slide after a ball, a fixed tendon's negative armature,
+    // an automatic range that does not increase (`D-AUTO-RANGE`, which
+    // MuJoCo leaves unlimited, as every check above has taken it).
     joint::check_ball_then_slide(&model)?;
     tendon::check_fixed_tendon_armature(&model)?;
+    if let Some(error) = automatic {
+        return Err(error);
+    }
 
     Ok(model)
 }
@@ -620,6 +628,9 @@ pub struct ModelBuilder {
     /// Each actuator's first fault in its ranges and muscle parameters, which
     /// `check_actuators` refuses.
     pub(crate) actuator_fault: Vec<Option<limits::ActuatorFault>>,
+    /// Each actuator's first pair whose automatic range does not increase
+    /// (`D-AUTO-RANGE`), refused after the keyframes.
+    pub(crate) actuator_automatic: Vec<Option<limits::Pair>>,
     pub(crate) actuator_actearly: Vec<bool>,
     pub(crate) actuator_cranklength: Vec<f64>,
     pub(crate) actuator_nsample: Vec<i32>,

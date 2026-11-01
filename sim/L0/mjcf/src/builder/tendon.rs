@@ -174,15 +174,18 @@ impl ModelBuilder {
         Location::nth(ElementKind::Tendon, self.tendon_name[t].as_deref(), t)
     }
 
-    /// MuJoCo 3.5.0's checks of a tendon (`mjCTendon::Compile`), tendon by
-    /// tendon: a spatial tendon's negative armature
-    /// (`user_objects.cc:6342-6346`), then armature on a tendon that wraps a
-    /// sphere or a cylinder, whose bias force MuJoCo cannot differentiate
-    /// (`:6389-6393`), then its `limited` and `range` ([`limits::resolve`],
-    /// `:6412-6421`), then a `springlength` whose first value is above its
-    /// second (`:6438-6441`). The caller runs it after every check this crate
-    /// makes before building the model, after the bodies' joints and before
-    /// the free joint's; a keyframe's fault comes after it, in MuJoCo as here.
+    /// MuJoCo 3.5.0's checks of a tendon (`mjCTendon::Compile`) that this
+    /// crate did not make before book L21, tendon by tendon: a spatial
+    /// tendon's negative armature (`user_objects.cc:6342-6346`), then armature
+    /// on a tendon that wraps a sphere or a cylinder, whose bias force MuJoCo
+    /// cannot differentiate (`:6389-6393`), then a range without `limited`
+    /// under `autolimits="false"` (`:6412-6416`). A limited range that does
+    /// not increase and a backwards spring length are refused before the
+    /// model is built, where this crate refused them before (`validation.rs`),
+    /// and an automatic range after the keyframes (`D-AUTO-RANGE`). The
+    /// caller runs it after every check this crate makes before building the
+    /// model, after the bodies' joints and before the free joint's; a
+    /// keyframe's fault comes after it, in MuJoCo as here.
     pub(crate) fn check_tendons(&self) -> Result<()> {
         for t in 0..self.tendon_type.len() {
             let armature = self.tendon_armature[t];
@@ -196,17 +199,8 @@ impl ModelBuilder {
                 )
                 .at(self.tendon_location(t)));
             }
-            if let Some(fault) = self.tendon_limit_fault[t] {
+            if let Some(fault) = self.tendon_limit_fault[t].filter(|&f| f.is_mujocos()) {
                 return Err(fault.error(Pair::Tendon).at(self.tendon_location(t)));
-            }
-            let [low, high] = self.tendon_lengthspring[t];
-            if low > high {
-                return Err(MjcfError::invalid_value(
-                    "tendon",
-                    "springlength",
-                    "invalid springlength in tendon",
-                )
-                .at(self.tendon_location(t)));
             }
         }
         Ok(())

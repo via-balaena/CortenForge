@@ -135,6 +135,7 @@ impl ModelBuilder {
             actuator_actlimited: vec![],
             actuator_actrange: vec![],
             actuator_fault: vec![],
+            actuator_automatic: vec![],
             actuator_actearly: vec![],
             actuator_cranklength: vec![],
             actuator_nsample: vec![],

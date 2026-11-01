@@ -117,6 +117,8 @@ impl ModelBuilder {
         } else {
             (0.0, 0.0) // Unused when actlimited=false
         });
+        self.actuator_automatic
+            .push(limits::automatic_pair(force, ctrl, act));
         self.actuator_fault.push(limits::actuator_fault(
             force,
             ctrl,

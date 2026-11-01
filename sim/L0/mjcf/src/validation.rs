@@ -8,7 +8,7 @@ use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::stack::MAX_BODY_TREE_DEPTH;
 use crate::types::{
     MjcfBody, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfModel, MjcfOption, MjcfTendon, MjcfTendonType,
-    SpatialPathElement,
+    SpatialPathElement, TfAuto,
 };
 
 /// Validation result containing the flattened body tree structure.
@@ -740,7 +740,8 @@ fn validate_spatial_tendon(
 }
 
 /// Validate tendon physical parameters, as the tendon's class leaves them:
-/// frictionloss. A negative stiffness or damping loads, as MuJoCo
+/// frictionloss, a limited range, the spring length. A negative stiffness or
+/// damping loads, as MuJoCo
 /// 3.5.0 loads and applies it (`engine_passive.c:453-473`). A negative
 /// frictionloss is refused (`D-TENDON-FRICTIONLOSS`, stricter): MuJoCo loads
 /// it and makes no constraint row for it (`engine_core_constraint.c:737`).
@@ -751,6 +752,27 @@ fn validate_tendon_params(tendon: &MjcfTendon) -> Result<()> {
             "tendon",
             "frictionloss",
             format!("negative frictionloss {frictionloss}"),
+        ));
+    }
+    // A limited range that does not increase, or none, and a spring length
+    // whose low is above its high, as MuJoCo 3.5.0 refuses them, in its order
+    // (`user_objects.cc:6418-6421`, `:6438-6441`). They stay here, before
+    // the model is built, where this crate checked them before book L21, so a
+    // document it refused for one of them still is.
+    if tendon.limited == Some(TfAuto::True) && !tendon.range.is_some_and(|(lo, hi)| lo < hi) {
+        return Err(MjcfError::invalid_value(
+            "tendon",
+            "range",
+            "invalid limits in tendon",
+        ));
+    }
+    if let Some((low, high)) = tendon.springlength
+        && low > high
+    {
+        return Err(MjcfError::invalid_value(
+            "tendon",
+            "springlength",
+            "invalid springlength in tendon",
         ));
     }
     Ok(())

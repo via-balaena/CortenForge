@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed range="1 0" springlength="2 1"><joint joint="j" coef="1"/></fixed></tendon></mujoco>

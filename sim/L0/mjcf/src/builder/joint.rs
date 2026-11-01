@@ -235,7 +235,7 @@ impl ModelBuilder {
                         Location::nth(ElementKind::Joint, self.jnt_name[j].as_deref(), j)
                             .within_nth(ElementKind::Body, self.body_name[body].as_deref(), body)
                     };
-                if let Some(fault) = self.jnt_limit_fault[j] {
+                if let Some(fault) = self.jnt_limit_fault[j].filter(|&f| f.is_mujocos()) {
                     return Err(fault.error(Pair::Joint(self.jnt_type[j])).at(at()));
                 }
                 if self.jnt_axis_too_small[j] {

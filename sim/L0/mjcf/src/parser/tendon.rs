@@ -161,6 +161,18 @@ pub(super) fn parse_tendon_attrs(
     // B2: Parse springlength (1 or 2 values)
     if let Some(sl) = a.prefix::<2>("springlength")? {
         tendon.springlength = springlength(sl.given());
+        // The element's own, which no class replaces, refused where this
+        // crate refused it before book L21; a class's once applied
+        // (`validation.rs`).
+        if let Some((low, high)) = tendon.springlength
+            && low > high
+        {
+            return Err(MjcfError::invalid_value(
+                "tendon",
+                "springlength",
+                "invalid springlength in tendon",
+            ));
+        }
     }
 
     tendon.width = a.real("width")?;
@@ -188,9 +200,10 @@ pub(super) fn parse_tendon_attrs(
 /// A tendon's `springlength` from its values: one is both ends, two are low
 /// and high, none is unset, as MuJoCo 3.5.0 reads it
 /// (`xml_native_reader.cc:2269-2272`). A negative value is a length, as
-/// MuJoCo takes it, and `-1 -1` asks for the tendon's length at `qpos0`, as
-/// MuJoCo makes it (`engine_setconst.c:1080-1082`); a low above its high is
-/// refused once the tendon's class is applied (`check_tendons`).
+/// MuJoCo takes it, and `-1 -1` asks for the tendon's length at
+/// `qpos_spring`, as MuJoCo makes it (`engine_setconst.c:1069-1084`). A low
+/// above its high is refused by the caller, and a class's once applied
+/// (`validation.rs`).
 pub(super) fn springlength(parts: &[f64]) -> Option<(f64, f64)> {
     match parts {
         [] => None,

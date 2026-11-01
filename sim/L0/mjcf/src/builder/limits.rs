@@ -11,7 +11,7 @@
 
 use sim_core::MjJointType;
 
-use crate::error::MjcfError;
+use crate::error::{ElementKind, Location, MjcfError};
 use crate::types::TfAuto;
 
 /// Which pair: whose `limited` and `range`, for the words of its errors.
@@ -71,7 +71,8 @@ pub enum LimitFault {
     /// `limited` unwritten or `auto`, and a range other than `0 0` whose
     /// first bound is not below its second, which MuJoCo leaves unlimited:
     /// refused (`D-AUTO-RANGE`, stricter; the parity rule's decision to
-    /// refuse an automatic backwards range, 01-decisions).
+    /// refuse an automatic backwards range, 01-decisions) after the
+    /// keyframes, the pair taken as unlimited by every check before.
     AutomaticNotIncreasing,
     /// A limited range whose first bound is not below its second, or no range
     /// (MuJoCo's `0 0`); not a ball joint's.
@@ -81,6 +82,13 @@ pub enum LimitFault {
 }
 
 impl LimitFault {
+    /// Whether MuJoCo makes this refusal: all but `D-AUTO-RANGE`'s, which is
+    /// named after the keyframes, as this crate's other refusals MuJoCo does
+    /// not make are.
+    pub fn is_mujocos(self) -> bool {
+        self != Self::AutomaticNotIncreasing
+    }
+
     /// The error for this fault in `pair`, with MuJoCo's words.
     pub fn error(self, pair: Pair) -> MjcfError {
         let (entity, prefix) = (pair.entity(), pair.prefix());
@@ -178,12 +186,13 @@ impl ActuatorFault {
     }
 }
 
-/// An actuator's first fault: each pair's `checklimited`, force, control
-/// then activation (`:6866-6877`); then their other faults, in the same
-/// order (`:6880-6888`, and `D-AUTO-RANGE`); then a limited activation with
-/// no dynamics (`:6889-6891`); then the parameters of a muscle gain, then of
-/// a muscle bias (`:6908-6944`), each `[range0, range1, force, scale, lmin,
-/// lmax, vmax, fpmax, fvmax]`.
+/// An actuator's first fault MuJoCo makes: each pair's `checklimited`,
+/// force, control then activation (`:6868-6880`); then a limited range that
+/// does not increase, in the same order (`:6882-6891`); then a limited
+/// activation with no dynamics (`:6892-6894`); then the parameters of a
+/// muscle gain, then of a muscle bias (`:6914-6945`), each `[range0, range1,
+/// force, scale, lmin, lmax, vmax, fpmax, fvmax]`. An automatic range that
+/// does not increase is not among them (`D-AUTO-RANGE`, [`automatic_pair`]).
 pub fn actuator_fault(
     force: Limit,
     ctrl: Limit,
@@ -196,7 +205,9 @@ pub fn actuator_fault(
         pairs.iter().find_map(|&(pair, limit)| {
             limit
                 .fault
-                .filter(|&f| (f == LimitFault::RangeWithoutLimited) == checklimited)
+                .filter(|&f| {
+                    f.is_mujocos() && (f == LimitFault::RangeWithoutLimited) == checklimited
+                })
                 .map(|f| ActuatorFault::Limit(pair, f))
         })
     };
@@ -218,6 +229,57 @@ pub fn actuator_fault(
         };
         Some(ActuatorFault::Muscle(attribute, words))
     })
+}
+
+impl super::ModelBuilder {
+    /// The first automatic range that does not increase (`D-AUTO-RANGE`):
+    /// a joint's, in the order they were built, then a tendon's, then an
+    /// actuator's, located as the element.
+    pub fn automatic_range_fault(&self) -> Option<MjcfError> {
+        let automatic = Some(LimitFault::AutomaticNotIncreasing);
+        let joint = (0..self.jnt_type.len()).find(|&j| self.jnt_limit_fault[j] == automatic);
+        if let Some(j) = joint {
+            let body = self.jnt_body[j];
+            let at = Location::nth(ElementKind::Joint, self.jnt_name[j].as_deref(), j).within_nth(
+                ElementKind::Body,
+                self.body_name[body].as_deref(),
+                body,
+            );
+            return Some(
+                LimitFault::AutomaticNotIncreasing
+                    .error(Pair::Joint(self.jnt_type[j]))
+                    .at(at),
+            );
+        }
+        let tendon = (0..self.tendon_type.len()).find(|&t| self.tendon_limit_fault[t] == automatic);
+        if let Some(t) = tendon {
+            let at = Location::nth(ElementKind::Tendon, self.tendon_name[t].as_deref(), t);
+            return Some(
+                LimitFault::AutomaticNotIncreasing
+                    .error(Pair::Tendon)
+                    .at(at),
+            );
+        }
+        self.actuator_automatic
+            .iter()
+            .enumerate()
+            .find_map(|(i, pair)| {
+                pair.map(|pair| {
+                    let at =
+                        Location::nth(ElementKind::Actuator, self.actuator_name[i].as_deref(), i);
+                    LimitFault::AutomaticNotIncreasing.error(pair).at(at)
+                })
+            })
+    }
+}
+
+/// The first of an actuator's pairs, force, control then activation, whose
+/// automatic range does not increase (`D-AUTO-RANGE`).
+pub fn automatic_pair(force: Limit, ctrl: Limit, act: Limit) -> Option<Pair> {
+    [(Pair::Force, force), (Pair::Ctrl, ctrl), (Pair::Act, act)]
+        .into_iter()
+        .find(|(_, limit)| limit.fault == Some(LimitFault::AutomaticNotIncreasing))
+        .map(|(pair, _)| pair)
 }
 
 #[cfg(test)]
