@@ -8,8 +8,8 @@
 //! Every document below was loaded by MuJoCo 3.5.0 on the census's unfused
 //! oracle (2026-11-01); each expects MuJoCo's `body_mass`, bit for bit (a sum
 //! of products and quotients of the written numbers and pi: no library call
-//! to differ between platforms), and, where MuJoCo's `body_inertia` is 0 in
-//! every place, that inertia.
+//! to differ between platforms), and MuJoCo's `body_inertia` within a
+//! relative 1e-12, exactly where it is 0.
 
 // The values are MuJoCo's, printed to the last digit.
 #![allow(clippy::unreadable_literal)]
@@ -394,6 +394,136 @@ const CASES: &[Case] = &[
                 5.696754678509493e-06,
                 6.702064327658226e-07,
             ],
+        ],
+    ),
+    // s_plane_static
+    (
+        r#"<mujoco><worldbody><body name="floor" pos="0 0 0"><geom type="plane" size="1 1 0.1" shellinertia="true"/></body></worldbody></mujoco>"#,
+        &[0.0, 0.0],
+        &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+    ),
+    // s_plane_static_mass
+    (
+        r#"<mujoco><worldbody><body name="floor" pos="0 0 0"><geom type="plane" size="1 1 0.1" mass="2" shellinertia="true"/></body></worldbody></mujoco>"#,
+        &[0.0, 0.0],
+        &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+    ),
+    // s_plane_class
+    (
+        r#"<mujoco><default><geom shellinertia="true"/></default><worldbody><body name="floor" pos="0 0 0"><geom type="plane" size="1 1 0.1"/></body></worldbody></mujoco>"#,
+        &[0.0, 0.0],
+        &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+    ),
+    // s_hfield_density
+    (
+        r#"<mujoco><asset><hfield name="h" size="1 1 1 0.5" nrow="2" ncol="2" elevation="0 0.5 1 0.25"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="hfield" hfield="h" shellinertia="true"/></body></worldbody></mujoco>"#,
+        &[0.0, 16000.0],
+        &[
+            [0.0, 0.0, 0.0],
+            [10666.666666666666, 10666.666666666666, 16000.0],
+        ],
+    ),
+    // s_hfield_mass
+    (
+        r#"<mujoco><asset><hfield name="h" size="1 1 1 0.5" nrow="2" ncol="2" elevation="0 0.5 1 0.25"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="hfield" hfield="h" mass="3" shellinertia="true"/></body></worldbody></mujoco>"#,
+        &[0.0, 3.0],
+        &[[0.0, 0.0, 0.0], [2.0, 2.0, 3.0]],
+    ),
+    // s_sphere
+    (
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="sphere" size="0.13" shellinertia="true"/></body></worldbody></mujoco>"#,
+        &[0.0, 212.37166338267002],
+        &[
+            [0.0, 0.0, 0.0],
+            [2.3927207407780826, 2.3927207407780826, 2.3927207407780826],
+        ],
+    ),
+    // s_capsule
+    (
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="capsule" size="0.03 0.17" shellinertia="true"/></body></worldbody></mujoco>"#,
+        &[0.0, 75.39822368615503],
+        &[
+            [0.0, 0.0, 0.0],
+            [1.037542389774565, 1.037542389774565, 0.06446548125166254],
+        ],
+    ),
+    // s_cylinder
+    (
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="cylinder" size="0.07 0.21" shellinertia="true"/></body></worldbody></mujoco>"#,
+        &[0.0, 215.51325603625983],
+        &[
+            [0.0, 0.0, 0.0],
+            [4.563493196567801, 4.563493196567801, 0.9805853149649825],
+        ],
+    ),
+    // s_box
+    (
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="box" size="0.13 0.07 0.29" shellinertia="true"/></body></worldbody></mujoco>"#,
+        &[0.0, 536.8],
+        &[
+            [0.0, 0.0, 0.0],
+            [20.991946666666664, 23.983626666666666, 6.715680000000001],
+        ],
+    ),
+    // s_box_mass
+    (
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="box" size="0.13 0.07 0.29" mass="1.3" shellinertia="true"/></body></worldbody></mujoco>"#,
+        &[0.0, 1.3],
+        &[
+            [0.0, 0.0, 0.0],
+            [
+                0.050837426726279195,
+                0.05808255340288128,
+                0.016263755588673625,
+            ],
+        ],
+    ),
+    // s_sphere_orders
+    (
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="sphere" size="0.01" shellinertia="true"/></body></worldbody></mujoco>"#,
+        &[0.0, 1.2566370614359175],
+        &[
+            [0.0, 0.0, 0.0],
+            [
+                8.377580409572783e-05,
+                8.377580409572783e-05,
+                8.377580409572783e-05,
+            ],
+        ],
+    ),
+    // s_capsule_orders
+    (
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="capsule" size="0.01 0.01" shellinertia="true"/></body></worldbody></mujoco>"#,
+        &[0.0, 2.513274122871835],
+        &[
+            [0.0, 0.0, 0.0],
+            [
+                0.00043982297150257113,
+                0.00043982297150257113,
+                0.00020943951023931956,
+            ],
+        ],
+    ),
+    // s_cylinder_orders
+    (
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="cylinder" size="0.02 0.01" shellinertia="true"/></body></worldbody></mujoco>"#,
+        &[0.0, 5.02654824574367],
+        &[
+            [0.0, 0.0, 0.0],
+            [
+                0.0010890854532444618,
+                0.0010890854532444618,
+                0.0015079644737231008,
+            ],
+        ],
+    ),
+    // s_box_orders
+    (
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="box" size="0.01 0.02 0.04" shellinertia="true"/></body></worldbody></mujoco>"#,
+        &[0.0, 11.2],
+        &[
+            [0.0, 0.0, 0.0],
+            [0.010026666666666666, 0.00848, 0.003146666666666667],
         ],
     ),
 ];
