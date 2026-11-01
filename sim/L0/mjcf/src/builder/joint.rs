@@ -270,9 +270,8 @@ impl ModelBuilder {
 
 /// A slide after a ball on one body of the built `model`, which MuJoCo 3.5.0
 /// loads, refused as not supported (`D-BALL-THEN-SLIDE`, a decision of the
-/// parity rule's, 01-decisions). The caller runs it last, once the keyframes
-/// are resolved, as MuJoCo compiles them after every other check: a document
-/// MuJoCo refuses is refused for MuJoCo's fault.
+/// parity rule's, 01-decisions). The caller runs it once the keyframes are
+/// resolved.
 pub fn check_ball_then_slide(model: &Model) -> Result<()> {
     for body in 1..model.nbody {
         let start = model.body_jnt_adr[body];

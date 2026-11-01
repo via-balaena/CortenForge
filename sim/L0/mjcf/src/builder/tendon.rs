@@ -200,8 +200,7 @@ impl ModelBuilder {
 /// (`D-TENDON-ARMATURE-NEGATIVE`): MuJoCo 3.5.0's check of the sign sits in
 /// the spatial path's branch (`user_objects.cc:6342-6346`), so it loads a fixed
 /// tendon's and makes an indefinite mass matrix of it, silently. The caller
-/// runs it last, once the keyframes are resolved, as MuJoCo compiles them after
-/// every other check.
+/// runs it once the keyframes are resolved.
 pub fn check_fixed_tendon_armature(model: &Model) -> Result<()> {
     match (0..model.ntendon)
         .find(|&t| model.tendon_type[t] == TendonType::Fixed && model.tendon_armature[t] < 0.0)

@@ -342,8 +342,8 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         .map(|(i, kf)| (kf.name.clone(), i))
         .collect();
 
-    // The two refusals this crate makes and MuJoCo does not, after every check
-    // MuJoCo makes, the keyframes' last.
+    // The two refusals this crate makes and MuJoCo does not, after the
+    // keyframes.
     joint::check_ball_then_slide(&model)?;
     tendon::check_fixed_tendon_armature(&model)?;
 

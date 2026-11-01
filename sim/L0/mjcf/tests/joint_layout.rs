@@ -2,7 +2,7 @@
 //! L216).
 //!
 //! MuJoCo checks a body's joints once it has compiled its geoms and joints
-//! (`mjCBody::Compile`, `user_objects.cc:2517-2535`): at most 6 degrees of
+//! (`mjCBody::Compile`, `user_objects.cc:2517-2537`): at most 6 degrees of
 //! freedom ("more than 6 dofs", so a free joint is its body's only joint),
 //! then no ball or hinge after a ball ("ball followed by rotation"). Only
 //! when it copies the tree into its model, after it has compiled the bodies,
@@ -10,8 +10,8 @@
 //! child of the world, once frames are dissolved and static bodies fused
 //! ("free joint can only be used on top level", `user_model.cc:2725-2727`),
 //! so a document with both faults is refused for the first. A slide after a
-//! ball, which MuJoCo loads, sim-mjcf refuses as not supported, after every
-//! check MuJoCo makes (`D-BALL-THEN-SLIDE`).
+//! ball, which MuJoCo loads, sim-mjcf refuses as not supported
+//! (`D-BALL-THEN-SLIDE`).
 //!
 //! Every document, reason and degree-of-freedom count below was measured on
 //! the census's unfused oracle (2026-10-31).

@@ -5,10 +5,10 @@
 //! layout, a tendon's armature, a free joint below the world's children) run
 //! after every check this crate makes before building the model, so that a
 //! document it refused before is refused for the same fault, as MuJoCo
-//! refuses it here; a keyframe's fault comes after them, as in MuJoCo, which
-//! compiles keyframes last. The two that MuJoCo does not make (a slide after
-//! a ball, a fixed tendon's negative armature) run after the keyframes, last
-//! of all. Where MuJoCo orders a new refusal before a check this crate makes
+//! refuses it here; a keyframe's fault comes after them, as in MuJoCo. The
+//! two that MuJoCo does not make (a slide after a ball, a fixed tendon's
+//! negative armature) run after the keyframes, which this crate resolves
+//! once the model is built. Where MuJoCo orders a new refusal before a check this crate makes
 //! later, this crate names the later one, as it did before.
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
