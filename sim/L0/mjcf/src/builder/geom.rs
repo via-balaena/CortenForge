@@ -952,12 +952,10 @@ fn legendre_pd(n: usize, x: f64) -> (f64, f64) {
 /// (ledger L354); the caller replaces a height field's with its asset's.
 pub fn geom_size_to_vec3(size: [f64; 3], geom_type: GeomType) -> Vector3<f64> {
     match geom_type {
-        // The radius in each place, as before (MuJoCo keeps the other two as
-        // resolved; the census compares the radius only).
-        GeomType::Sphere => Vector3::new(size[0], size[0], size[0]),
-        // As resolved, as MuJoCo keeps it (a capsule's or cylinder's third
-        // value too).
-        GeomType::Box
+        // As resolved, as MuJoCo keeps it (a sphere's places after its
+        // radius, a capsule's or cylinder's third value too).
+        GeomType::Sphere
+        | GeomType::Box
         | GeomType::Capsule
         | GeomType::Cylinder
         | GeomType::Ellipsoid
@@ -987,6 +985,39 @@ mod tests {
                 [got.x, got.y, got.z].map(f64::to_bits),
                 mujoco.map(f64::to_bits),
                 "plane size=\"{size}\": {got:?}"
+            );
+        }
+    }
+
+    /// A sphere's size as resolved, as MuJoCo 3.5.0 keeps it (`geom_size`,
+    /// measured on the S28 oracle; ledger L352): the radius, then whatever the
+    /// element or its class writes after it, 0 where neither does.
+    #[test]
+    fn a_spheres_size_is_kept_as_resolved() {
+        for (class, size, mujoco) in [
+            ("", r#"size="0.1""#, [0.1, 0.0, 0.0]),
+            ("", r#"size="0.1 0.2""#, [0.1, 0.2, 0.0]),
+            ("", r#"size="0.1 0.2 0.3""#, [0.1, 0.2, 0.3]),
+            (
+                r#"<default><geom size="0.3 0.4 0.5"/></default>"#,
+                r#"size="0.1""#,
+                [0.1, 0.4, 0.5],
+            ),
+            (
+                r#"<default><geom size="0.3 0.4 0.5"/></default>"#,
+                "",
+                [0.3, 0.4, 0.5],
+            ),
+        ] {
+            let model = crate::builder::load_model(&format!(
+                r#"<mujoco>{class}<worldbody><geom type="sphere" {size}/></worldbody></mujoco>"#
+            ))
+            .expect("loads");
+            let got = model.geom_size[0];
+            assert_eq!(
+                [got.x, got.y, got.z].map(f64::to_bits),
+                mujoco.map(f64::to_bits),
+                "{class} {size}: {got:?}"
             );
         }
     }
