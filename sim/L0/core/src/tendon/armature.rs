@@ -13,7 +13,7 @@ use crate::linalg::mju_dot;
 use crate::types::{Data, ENABLE_SLEEP, Model, WrapType};
 
 /// Each tendon's `armature · Jᵀ·J` added to the mass matrix on the matrix's
-/// pattern, as MuJoCo's `mj_tendonArmature` (`engine_core_smooth.c:1745-1803`)
+/// pattern, as MuJoCo's `mj_tendonArmature` (`engine_core_smooth.c:1745-1808`)
 /// adds it after `mj_crb`: a dof's row holds the dof and the dofs it descends
 /// from, or the diagonal alone for a simple dof, so a term between dofs of
 /// different branches is dropped. A tendon without armature adds nothing; a
@@ -43,7 +43,7 @@ pub fn mj_tendon_armature(model: &Model, data: &mut Data) {
 }
 
 /// `v` made unit, its length returned, as MuJoCo's `mju_normalize3`
-/// (`engine_util_blas.c:120-133`): times `1/length`; below mjMINVAL, x.
+/// (`engine_util_blas.c:120-135`): times `1/length`; below mjMINVAL, x.
 fn normalize3(v: &mut Vector3<f64>) -> f64 {
     let norm = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if norm < MJ_MINVAL {
@@ -56,7 +56,7 @@ fn normalize3(v: &mut Vector3<f64>) -> f64 {
 }
 
 /// `res += scale · (jac2 − jac1)ᵀ·v` for 3×nv Jacobians, as MuJoCo's
-/// `mju_sub`, `mju_mulMatTVec` (`engine_util_blas.c:793-801`: row by row, a
+/// `mju_sub`, `mju_mulMatTVec` (`engine_util_blas.c:793-802`: row by row, a
 /// zero entry of `v` skipped) and `mju_addToScl` sum it.
 fn add_scaled_difference_t_vec(
     res: &mut DVector<f64>,
@@ -79,7 +79,7 @@ fn add_scaled_difference_t_vec(
 }
 
 /// The time derivative of tendon `t`'s Jacobian, as MuJoCo's `mj_tendonDot`
-/// (`engine_core_smooth.c:1128-1244`): 0 for a fixed tendon; for a spatial
+/// (`engine_core_smooth.c:1131-1246`): 0 for a fixed tendon; for a spatial
 /// one, each straight segment between sites on different bodies adds, divided
 /// by the pulley divisor before it, `(J̇₂ − J̇₁)ᵀ·d + (J₂ − J₁)ᵀ·ḋ`, `d` the
 /// unit direction from the first site to the second and `ḋ` its rate.
@@ -136,7 +136,7 @@ fn mj_tendon_dot(model: &Model, data: &Data, t: usize) -> DVector<f64> {
 }
 
 /// Each tendon's bias force `armature · (J̇ · qvel) · J` added to
-/// `qfrc_bias`, as MuJoCo's `mj_tendonBias` (`engine_core_smooth.c:2686-2738`)
+/// `qfrc_bias`, as MuJoCo's `mj_tendonBias` (`engine_core_smooth.c:2687-2738`)
 /// adds it after `mj_rne`: a tendon without armature adds nothing; a sleeping
 /// one is skipped while some tree sleeps.
 pub fn mj_tendon_bias(model: &Model, data: &mut Data) {

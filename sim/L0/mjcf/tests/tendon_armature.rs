@@ -1,9 +1,9 @@
 //! A tendon's armature as MuJoCo 3.5.0 reads and applies it (ledger L164).
 //!
 //! MuJoCo adds `armature · Jᵀ·J` to the mass matrix on the matrix's pattern
-//! after `mj_crb` (`mj_tendonArmature`, `engine_core_smooth.c:1745-1803`), so
+//! after `mj_crb` (`mj_tendonArmature`, `engine_core_smooth.c:1745-1808`), so
 //! a term between dofs of two trees is dropped, and `armature · (J̇ · qvel)`
-//! times `J` to the bias force after `mj_rne` (`mj_tendonBias`, `:2686`),
+//! times `J` to the bias force after `mj_rne` (`mj_tendonBias`, `:2687`),
 //! which the inverse dynamics' sum carries; both skip a sleeping tendon. Its
 //! compiler makes every body that a tendon with armature passes over through
 //! a site or a wrapped geom not simple (`FinalizeSimple`,
@@ -13,7 +13,7 @@
 //!
 //! Every document and value below was measured on the census's unfused
 //! oracle (2026-10-31): the matrices and forces after `mj_forward` and then
-//! `mj_inverse`, and in the sleep case after a reset and each step. They are
+//! `mj_inverse`, and in the sleep cases after a reset and each step. They are
 //! compared bit for bit: the arithmetic is MuJoCo's, in its order, a square
 //! root its only library call.
 

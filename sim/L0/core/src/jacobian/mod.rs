@@ -54,7 +54,7 @@ pub fn mj_jac(
 /// The time derivatives of [`mj_jac`]'s Jacobians: MuJoCo 3.5.0's `mj_jacDot`.
 ///
 /// `(jacp, jacr)`, 3×nv each, of a world-frame point attached to `body_id`
-/// (`engine_core_util.c:577-639`), from the velocity stage's `cdof_dot` and
+/// (`engine_core_util.c:577-646`), from the velocity stage's `cdof_dot` and
 /// `cvel`.
 ///
 /// For each dof on the chain from the last one moving the body to the root,
