@@ -15,11 +15,6 @@ use crate::keywords;
 use crate::types::{MjcfSensor, MjcfSensorType};
 
 impl ModelBuilder {
-    /// Process sensor definitions from MJCF.
-    ///
-    /// Converts `MjcfSensor` objects into the 17 pipeline sensor arrays.
-    /// Must be called AFTER all bodies, joints, tendons, and actuators are processed
-    /// (requires name→id lookups for object resolution).
     /// MuJoCo 3.5.0's check of a limit sensor (`mjCSensor::Compile`,
     /// `user_objects.cc:7442-7468`), sensor by sensor: a joint limit force on
     /// a joint that is not limited, or a tendon limit force on a tendon that
@@ -46,6 +41,11 @@ impl ModelBuilder {
         Ok(())
     }
 
+    /// Process sensor definitions from MJCF.
+    ///
+    /// Converts `MjcfSensor` objects into the 17 pipeline sensor arrays.
+    /// Must be called AFTER all bodies, joints, tendons, and actuators are processed
+    /// (requires name→id lookups for object resolution).
     pub(crate) fn process_sensors(&mut self, sensors: &[MjcfSensor]) -> Result<()> {
         let mut adr = 0usize;
         for (i, mjcf_sensor) in sensors.iter().enumerate() {
