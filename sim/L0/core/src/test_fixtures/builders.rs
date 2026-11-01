@@ -166,7 +166,6 @@ fn add_scalar_joint(
     model.jnt_stiffness.push(stiffness);
     model.jnt_springref.push(springref);
     model.jnt_damping.push(damping);
-    model.jnt_armature.push(0.0);
     model.jnt_solref.push(DEFAULT_SOLREF);
     model.jnt_solimp.push(DEFAULT_SOLIMP);
     model.jnt_name.push(Some(name.to_string()));
@@ -298,7 +297,6 @@ pub fn add_ball_joint(model: &mut Model, body_id: usize, name: &str) -> usize {
     model.jnt_stiffness.push(0.0);
     model.jnt_springref.push(0.0);
     model.jnt_damping.push(0.0);
-    model.jnt_armature.push(0.0);
     model.jnt_solref.push(DEFAULT_SOLREF);
     model.jnt_solimp.push(DEFAULT_SOLIMP);
     model.jnt_name.push(Some(name.to_string()));
@@ -370,7 +368,6 @@ pub fn add_freejoint(model: &mut Model, body_id: usize, name: &str) -> usize {
     model.jnt_stiffness.push(0.0);
     model.jnt_springref.push(0.0);
     model.jnt_damping.push(0.0);
-    model.jnt_armature.push(0.0);
     model.jnt_solref.push(DEFAULT_SOLREF);
     model.jnt_solimp.push(DEFAULT_SOLIMP);
     model.jnt_name.push(Some(name.to_string()));

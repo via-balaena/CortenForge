@@ -726,7 +726,6 @@ mod spec_b_margin_tests {
         model.jnt_springref = vec![0.0];
         model.qpos_spring = vec![0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("hinge".into())];
@@ -839,7 +838,6 @@ mod spec_b_margin_tests {
         model.jnt_springref = vec![0.0];
         model.qpos_spring = vec![1.0, 0.0, 0.0, 0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("ball".into())];
@@ -956,7 +954,6 @@ mod dt23_friction_solref_tests {
         model.jnt_springref = vec![0.0];
         model.qpos_spring = vec![0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("hinge".into())];
@@ -1019,7 +1016,6 @@ mod dt23_friction_solref_tests {
         model.jnt_springref = vec![0.0];
         model.qpos_spring = vec![1.0, 0.0, 0.0, 0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("ball".into())];
@@ -1083,7 +1079,6 @@ mod dt23_friction_solref_tests {
         model.jnt_springref = vec![0.0];
         model.qpos_spring = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("free".into())];
@@ -1386,7 +1381,6 @@ mod dt33_tendon_margin_tests {
         model.jnt_springref = vec![0.0];
         model.qpos_spring = vec![0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("hinge".into())];
@@ -1650,7 +1644,6 @@ mod dt33_tendon_margin_tests {
         model.jnt_springref = vec![0.0];
         model.qpos_spring = vec![0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("hinge".into())];

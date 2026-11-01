@@ -1501,7 +1501,8 @@ the CPU reference files, implement, validate against CPU, commit. Use
 - Velocity FK: uses `cdof × qvel` instead of per-joint-type branching.
   Mathematically equivalent, eliminates all branching, more GPU-friendly.
 - `body_cvel`: 2×vec4 (32 bytes/body) not 6×f32 (24 bytes) — vec4 alignment.
-- Armature pre-combined at upload: `dofs[i].armature = jnt_armature + dof_armature`.
+- Armature at upload: `dofs[i].armature = dof_armature[i]` (`model_buffers.rs`). This session summed
+  it with `jnt_armature`, which counted a loaded armature twice (fixed in #1020; `jnt_armature` is gone).
 
 **Constraints:** WGSL storage pointers cannot be passed as function arguments.
 

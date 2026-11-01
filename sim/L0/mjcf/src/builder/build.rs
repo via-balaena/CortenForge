@@ -173,7 +173,6 @@ impl ModelBuilder {
             jnt_stiffness: self.jnt_stiffness,
             jnt_springref: self.jnt_springref,
             jnt_damping: self.jnt_damping,
-            jnt_armature: self.jnt_armature,
             jnt_solref: self.jnt_solref,
             jnt_solimp: self.jnt_solimp,
             jnt_name: self.jnt_name,

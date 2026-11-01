@@ -500,7 +500,6 @@ pub struct ModelBuilder {
     pub(crate) jnt_stiffness: Vec<f64>,
     pub(crate) jnt_springref: Vec<f64>,
     pub(crate) jnt_damping: Vec<f64>,
-    pub(crate) jnt_armature: Vec<f64>,
     pub(crate) jnt_solref: Vec<[f64; 2]>,
     pub(crate) jnt_solimp: Vec<[f64; 5]>,
     pub(crate) jnt_name: Vec<Option<String>>,

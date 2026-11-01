@@ -556,7 +556,6 @@ impl ModelBuilder {
                 // The flex's damping as each slide's (MuJoCo's flex damping
                 // acts only through its elasticity and bending).
                 self.jnt_damping.push(flex.damping);
-                self.jnt_armature.push(0.0);
                 // The defaults of a joint written with none of these (`joint.rs`).
                 self.jnt_solref.push(DEFAULT_SOLREF);
                 self.jnt_solimp.push(DEFAULT_SOLIMP);

@@ -129,7 +129,6 @@ impl ModelBuilder {
         };
         self.jnt_springref.push(spring_ref_converted);
         self.jnt_damping.push(joint.damping.unwrap_or(0.0));
-        self.jnt_armature.push(joint.armature.unwrap_or(0.0));
         self.jnt_solref
             .push(written_over(joint.solref_limit, DEFAULT_SOLREF));
         self.jnt_solimp

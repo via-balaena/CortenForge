@@ -680,11 +680,6 @@ fn diagnose_sdf_sphere_gap() {
                 m2.jnt_stiffness.get(j).copied().unwrap_or(0.0),
             ),
             (
-                "jnt_armature",
-                m1.jnt_armature.get(j).copied().unwrap_or(0.0),
-                m2.jnt_armature.get(j).copied().unwrap_or(0.0),
-            ),
-            (
                 "jnt_damping",
                 m1.jnt_damping.get(j).copied().unwrap_or(0.0),
                 m2.jnt_damping.get(j).copied().unwrap_or(0.0),
@@ -1155,11 +1150,6 @@ fn diagnose_sdf_sphere_gap() {
                 format!("{p}.damping"),
                 vec![pa.jnt_damping[j]],
                 vec![pb.jnt_damping[j]]
-            );
-            ins!(
-                format!("{p}.armature"),
-                vec![pa.jnt_armature[j]],
-                vec![pb.jnt_armature[j]]
             );
             ins!(
                 format!("{p}.solref"),

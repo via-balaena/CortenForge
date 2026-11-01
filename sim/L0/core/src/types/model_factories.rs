@@ -109,7 +109,6 @@ impl Model {
             model.jnt_stiffness.push(0.0);
             model.jnt_springref.push(0.0);
             model.jnt_damping.push(0.0);
-            model.jnt_armature.push(0.0);
             model.jnt_solref.push(DEFAULT_SOLREF);
             model.jnt_solimp.push(DEFAULT_SOLIMP);
             model.jnt_name.push(Some(format!("hinge_{i}")));
@@ -231,7 +230,6 @@ impl Model {
             model.jnt_stiffness.push(0.0);
             model.jnt_springref.push(0.0);
             model.jnt_damping.push(0.0);
-            model.jnt_armature.push(0.0);
             model.jnt_solref.push(DEFAULT_SOLREF);
             model.jnt_solimp.push(DEFAULT_SOLIMP);
             model.jnt_name.push(Some(name.to_string()));
@@ -319,7 +317,6 @@ impl Model {
         model.jnt_stiffness.push(0.0);
         model.jnt_springref.push(0.0);
         model.jnt_damping.push(0.0);
-        model.jnt_armature.push(0.0);
         model.jnt_solref.push(DEFAULT_SOLREF);
         model.jnt_solimp.push(DEFAULT_SOLIMP);
         model.jnt_name.push(Some("ball".to_string()));
@@ -400,7 +397,6 @@ impl Model {
         model.jnt_stiffness.push(0.0);
         model.jnt_springref.push(0.0);
         model.jnt_damping.push(0.0);
-        model.jnt_armature.push(0.0);
         model.jnt_solref.push(DEFAULT_SOLREF);
         model.jnt_solimp.push(DEFAULT_SOLIMP);
         model.jnt_name.push(Some("free".to_string()));

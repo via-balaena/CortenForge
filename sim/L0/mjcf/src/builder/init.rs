@@ -53,7 +53,6 @@ impl ModelBuilder {
             jnt_stiffness: vec![],
             jnt_springref: vec![],
             jnt_damping: vec![],
-            jnt_armature: vec![],
             jnt_solref: vec![],
             jnt_solimp: vec![],
             jnt_name: vec![],
