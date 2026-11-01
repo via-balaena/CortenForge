@@ -130,6 +130,18 @@ const REFUSED: &[(&str, &str, &str, &str)] = &[
         "free joint can only be used on top level",
         "b",
     ),
+    (
+        "two nested free",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint type="hinge"/><geom type="sphere" size="0.1"/><body name="x" pos="0 0 0.5"><joint type="hinge"/><geom type="sphere" size="0.1"/><body name="y" pos="0 0 0.5"><freejoint/><geom type="sphere" size="0.1"/></body></body><body name="z" pos="0.5 0 0"><freejoint/><geom type="sphere" size="0.1"/></body></body></worldbody></mujoco>"#,
+        "free joint can only be used on top level",
+        "y",
+    ),
+    (
+        "two sibling free",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint type="hinge"/><geom type="sphere" size="0.1"/><body name="p" pos="0 0 0.5"><freejoint/><geom type="sphere" size="0.1"/></body><body name="q" pos="0.5 0 0"><freejoint/><geom type="sphere" size="0.1"/></body></body></worldbody></mujoco>"#,
+        "free joint can only be used on top level",
+        "p",
+    ),
 ];
 
 const LOADS: &[(&str, &str, usize)] = &[

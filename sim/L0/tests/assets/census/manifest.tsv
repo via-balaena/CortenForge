@@ -2566,3 +2566,8 @@ db5791e2c7a7c79a	sim/L0/mjcf/tests/refusal_order.rs:55
 76794a247b027646	sim/L0/mjcf/tests/refusal_order.rs:92
 8fd0f64a2cce6644	sim/L0/mjcf/tests/refusal_order.rs:110
 fcecb51444186f35	sim/L0/mjcf/tests/refusal_order.rs:98
+0ff5fc199fa25e77	sim/L0/mjcf/tests/joint_layout.rs:141
+589418f6fa84fb2e	sim/L0/mjcf/tests/tendon_armature.rs:838
+596c74108beeb11a	sim/L0/mjcf/tests/joint_layout.rs:135
+65985d7a24d32f9e	sim/L0/mjcf/tests/tendon_armature.rs:913
+f14f1c51eb471bb5	sim/L0/mjcf/tests/tendon_armature.rs:882

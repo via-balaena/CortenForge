@@ -833,82 +833,171 @@ const CASES: &[Case] = &[
             },
         ],
     },
+    Case {
+        name: "same body sites",
+        xml: r#"<mujoco><worldbody><site name="s0" pos="0.1 0 1.2"/><body name="b1" pos="0 0 1"><joint name="j1" type="hinge" axis="0 1 0"/><inertial pos="0 0 -0.15" mass="0.5" diaginertia="0.004 0.004 0.0002"/><site name="s1" pos="0.05 0 -0.1"/><site name="s1b" pos="-0.04 0.02 -0.25"/><body name="b2" pos="0 0 -0.3"><joint name="j2" type="hinge" axis="0 1 0"/><inertial pos="0 0 -0.15" mass="0.5" diaginertia="0.004 0.004 0.0002"/><site name="s2" pos="0.05 0 -0.2"/></body></body></worldbody><tendon><spatial name="t" armature="0.3"><site site="s0"/><site site="s1"/><site site="s1b"/><site site="s2"/></spatial></tendon></mujoco>"#,
+        body_simple: &[0, 0, 0],
+        dof_simplenum: &[0, 0],
+        states: &[
+            State {
+                qpos: &[0x3fd3333333333333, 0xbfd999999999999a],
+                qvel: &[0x3fe999999999999a, 0xbfe0000000000000],
+                qm: &[
+                    0x3fbe19657c09b34a,
+                    0x3fa2688f6a1dfce7,
+                    0x3fa2688f6a1dfce7,
+                    0x3f8f3bb902fe74c3,
+                ],
+                qfrc_bias: &[0x3fe257f61e49a6a5, 0xbfb43ba9cbb75c10],
+                qacc: &[0xc0372625dc94a92a, 0x404de0eb2ef01b36],
+                qfrc_inverse: &[0xbcb8000000000000, 0x0000000000000000],
+            },
+            State {
+                qpos: &[0xbfe3333333333333, 0x3feccccccccccccd],
+                qvel: &[0xbfd3333333333333, 0x3ff8000000000000],
+                qm: &[
+                    0x3fbb3acf1ea05311,
+                    0x3f9c4341e3f74525,
+                    0x3f9c4341e3f74525,
+                    0x3f909023b69f7b62,
+                ],
+                qfrc_bias: &[0xbff0df8887a22e48, 0x3fcc2bec8e8a7411],
+                qacc: &[0x4038211306799391, 0xc04b63e29d8b6f1e],
+                qfrc_inverse: &[0x0000000000000000, 0x3c80000000000000],
+            },
+        ],
+    },
 ];
 
-/// The sleep case: a fixed tendon with armature on a tree that starts asleep beside an awake one.
-const SLEEP_XML: &str = r#"<mujoco><option><flag sleep="enable"/></option><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><inertial pos="0.15 0 0" mass="0.5" diaginertia="0.0002 0.004 0.004"/></body><body name="c" pos="0.5 0 1" sleep="init"><joint name="k" type="slide" axis="1 0 0"/><joint name="k2" type="hinge" axis="0 0 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.002 0.002 0.002"/></body></worldbody><tendon><fixed name="t" armature="0.6"><joint joint="k" coef="1"/><joint joint="k2" coef="0.5"/></fixed></tendon></mujoco>"#;
+/// One snapshot of a sleep case, every value as its bits.
+struct SleepStep {
+    /// The mass matrix, row by row.
+    qm: &'static [u64],
+    qacc: &'static [u64],
+    /// MuJoCo's per-tree sleep state: below 0 awake, 0 or above asleep.
+    tree_asleep: &'static [i32],
+}
 
-/// `(qM row-major, qacc)` after the reset and a forward pass, then after each of four steps.
-const SLEEP: &[(&[u64], &[u64])] = &[
+/// `(what, document, MuJoCo's snapshots after the reset and a forward pass,
+/// then after each of four steps)`. Two trees, a hinge each that gravity
+/// loads; the second starts asleep and stays asleep, its acceleration 0 (6.77
+/// with sleep disabled, measured). In the first, a tendon with armature on
+/// each tree: the sleeping tree's rows keep what they took once. In the
+/// second, one tendon over both hinges, awake as the first tree is: MuJoCo
+/// adds its armature to the sleeping tree's diagonal again at each step
+/// (0.514, 0.759, 1.004, …), as its sleeping rows are not cleared.
+const SLEEPS: &[(&str, &str, &[SleepStep])] = &[
     (
+        "sleep two trees",
+        r#"<mujoco><option><flag sleep="enable"/></option><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><inertial pos="0.15 0 0" mass="0.5" diaginertia="0.0002 0.004 0.004"/></body><body name="c" pos="1 0 1" sleep="init"><joint name="jc" type="hinge" axis="0 1 0" ref="0"/><inertial pos="0.15 0 0" mass="0.8" diaginertia="0.0003 0.006 0.006"/></body></worldbody><tendon><fixed name="ta" armature="0.4"><joint joint="ja" coef="1"/></fixed><fixed name="tc" armature="0.6"><joint joint="jc" coef="0.5"/></fixed></tendon></mujoco>"#,
         &[
-            0x3f8f3b645a1cac08,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x3ff999999999999a,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x3fc374bc6a7ef9db,
+            SleepStep {
+                qm: &[
+                    0x3fda9374bc6a7efa,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x3fc645a1cac08312,
+                ],
+                qacc: &[0x3ffc596455b16592, 0x0000000000000000],
+                tree_asleep: &[-10, 1],
+            },
+            SleepStep {
+                qm: &[
+                    0x3fda9374bc6a7efa,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x3fc645a1cac08312,
+                ],
+                qacc: &[0x3ffc596455b16592, 0x0000000000000000],
+                tree_asleep: &[-9, 1],
+            },
+            SleepStep {
+                qm: &[
+                    0x3fda9374bc6a7efa,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x3fc645a1cac08312,
+                ],
+                qacc: &[0x3ffc596455ae56bb, 0x0000000000000000],
+                tree_asleep: &[-11, 1],
+            },
+            SleepStep {
+                qm: &[
+                    0x3fda9374bc6a7efa,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x3fc645a1cac08312,
+                ],
+                qacc: &[0x3ffc59645595e009, 0x0000000000000000],
+                tree_asleep: &[-11, 1],
+            },
+            SleepStep {
+                qm: &[
+                    0x3fda9374bc6a7efa,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x3fc645a1cac08312,
+                ],
+                qacc: &[0x3ffc596455434f6b, 0x0000000000000000],
+                tree_asleep: &[-11, 1],
+            },
         ],
-        &[0x40481f79b4758219, 0x0000000000000000, 0x0000000000000000],
     ),
     (
+        "sleep cross tree",
+        r#"<mujoco><option><flag sleep="enable"/></option><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><inertial pos="0.15 0 0" mass="0.5" diaginertia="0.0002 0.004 0.004"/></body><body name="c" pos="1 0 1" sleep="init"><joint name="jc" type="hinge" axis="0 1 0" ref="0"/><inertial pos="0.15 0 0" mass="0.8" diaginertia="0.0003 0.006 0.006"/></body></worldbody><tendon><fixed name="t" armature="0.5"><joint joint="ja" coef="1"/><joint joint="jc" coef="-0.7"/></fixed></tendon><keyframe><key qpos="0.2 0.7"/></keyframe></mujoco>"#,
         &[
-            0x3f8f3b645a1cac08,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x3ff999999999999a,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x3fc374bc6a7ef9db,
+            SleepStep {
+                qm: &[
+                    0x3fe07ced916872b0,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x3fe072b020c49ba5,
+                ],
+                qacc: &[0x3ff6d8df94ae649d, 0x0000000000000000],
+                tree_asleep: &[-10, 1],
+            },
+            SleepStep {
+                qm: &[
+                    0x3fe07ced916872b0,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x3fe849ba5e353f7c,
+                ],
+                qacc: &[0x3ff6d8df94ae649d, 0x0000000000000000],
+                tree_asleep: &[-9, 1],
+            },
+            SleepStep {
+                qm: &[
+                    0x3fe07ced916872b0,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x3ff010624dd2f1a9,
+                ],
+                qacc: &[0x3ff6d8df94accad5, 0x0000000000000000],
+                tree_asleep: &[-11, 1],
+            },
+            SleepStep {
+                qm: &[
+                    0x3fe07ced916872b0,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x3ff3fbe76c8b4394,
+                ],
+                qacc: &[0x3ff6d8df949ffca0, 0x0000000000000000],
+                tree_asleep: &[-11, 1],
+            },
+            SleepStep {
+                qm: &[
+                    0x3fe07ced916872b0,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x3ff7e76c8b43957f,
+                ],
+                qacc: &[0x3ff6d8df9474c4ad, 0x0000000000000000],
+                tree_asleep: &[-11, 1],
+            },
         ],
-        &[0x40481f79b4758219, 0x0000000000000000, 0x0000000000000000],
-    ),
-    (
-        &[
-            0x3f8f3b645a1cac08,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x3ff999999999999a,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x3fc374bc6a7ef9db,
-        ],
-        &[0x40481f79acec33bd, 0x0000000000000000, 0x0000000000000000],
-    ),
-    (
-        &[
-            0x3f8f3b645a1cac09,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x3ff999999999999a,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x3fc374bc6a7ef9db,
-        ],
-        &[0x40481f7970a1c110, 0x0000000000000000, 0x0000000000000000],
-    ),
-    (
-        &[
-            0x3f8f3b645a1cac06,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x3ff999999999999a,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x0000000000000000,
-            0x3fc374bc6a7ef9db,
-        ],
-        &[0x40481f78a5268070, 0x0000000000000000, 0x0000000000000000],
     ),
 ];
 
@@ -969,26 +1058,32 @@ fn a_tendons_armature_is_mujocos() {
     assert!(differ.is_empty(), "{}", differ.join("\n"));
 }
 
-/// The tendon's tree starts asleep; while it sleeps its rows of the mass
-/// matrix keep the armature they took once, awake, and the step adds none.
+/// A tendon's armature on a sleeping tree, and across a sleeping and an
+/// awake tree, step by step as MuJoCo's: the mass matrix and the
+/// accelerations bit for bit, and which trees sleep.
 #[test]
-fn a_sleeping_tendons_armature_is_added_once() {
-    let model = load_model(SLEEP_XML).unwrap();
-    let mut data = model.make_data();
-    data.forward(&model).unwrap();
+fn a_sleeping_trees_tendon_armature_is_mujocos() {
     let mut differ = Vec::new();
-    for (k, &(qm, qacc)) in SLEEP.iter().enumerate() {
-        if k > 0 {
-            data.step(&model).unwrap();
-        }
-        if mass_matrix(&model, &data) != qm || bits(data.qacc.iter().copied()) != qacc {
-            differ.push(format!(
-                "after {k} steps: qM {:?} qacc {:?} (MuJoCo {:?} {:?})",
-                floats(&mass_matrix(&model, &data)),
-                data.qacc.as_slice(),
-                floats(qm),
-                floats(qacc)
-            ));
+    for &(what, xml, steps) in SLEEPS {
+        let model = load_model(xml).unwrap();
+        let mut data = model.make_data();
+        data.forward(&model).unwrap();
+        for (k, step) in steps.iter().enumerate() {
+            if k > 0 {
+                data.step(&model).unwrap();
+            }
+            let got = (mass_matrix(&model, &data), bits(data.qacc.iter().copied()));
+            if got.0 != step.qm || got.1 != step.qacc || data.tree_asleep != step.tree_asleep {
+                differ.push(format!(
+                    "{what}, after {k} steps: qM {:?} qacc {:?} asleep {:?} (MuJoCo {:?} {:?} {:?})",
+                    floats(&got.0),
+                    floats(&got.1),
+                    data.tree_asleep,
+                    floats(step.qm),
+                    floats(step.qacc),
+                    step.tree_asleep
+                ));
+            }
         }
     }
     assert!(differ.is_empty(), "{}", differ.join("\n"));

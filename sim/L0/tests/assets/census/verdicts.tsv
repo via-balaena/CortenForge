@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1497
+# agree_floor 1500
 001bc4149d608b24	agree
 00308b83da9d8bab	agree
 0032a4ca7e233aec	agree
@@ -159,6 +159,7 @@
 0f7327704479234a	agree
 0f8aac1594db7c84	agree
 0f9f409038b8258d	agree
+0ff5fc199fa25e77	both-refuse
 1056aab9f4b9c918	agree
 1063629777fba373	mj-refuses
 106a5628ac7df292	mj-refuses
@@ -874,6 +875,7 @@
 5846074f48552d40	both-refuse
 585af6160b77e820	agree
 586fe774f0b95b8d	mj-refuses
+589418f6fa84fb2e	agree
 58b61e09a4b212cf	model:neq
 58ce5bdb0d56fe65	both-refuse
 58dc62c91ee0d7ea	both-refuse
@@ -885,6 +887,7 @@
 591a6aa1d68feca8	agree
 593f408c2e6db347	agree
 5956b628a8608a01	agree
+596c74108beeb11a	both-refuse
 5978fb2b317c7ab4	agree
 598db96ca1862935	agree
 59d7b5c6959cac6b	both-refuse
@@ -1000,6 +1003,7 @@
 655c2c898eefd92e	agree
 657e6aa46bd1af69	agree
 6594c42e913ed1f9	e1:t0:sensordata	divergence=D-STATIC-ACCELEROMETER
+65985d7a24d32f9e	agree
 65a44b6db75502b3	agree
 65baf2131e0b0694	both-refuse
 65bde75f4bf2b35e	both-refuse
@@ -2315,6 +2319,7 @@ f0e4ece0c7e4c77e	agree
 f0e84a95d1b11d94	agree
 f1174cb2e12069ae	agree
 f1216738fbf3c326	agree
+f14f1c51eb471bb5	agree
 f166b7c0e0e73910	agree
 f167302c4e01db4c	agree
 f167a2de87206ede	ours-refused	divergence=D-DAMPER-CLASS-KV
