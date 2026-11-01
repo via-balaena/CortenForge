@@ -8,9 +8,10 @@
 //!
 //! [`resolve`] decides whether a pair limits and finds its first fault; the
 //! builder records the fault and names it later (book L21, ledger L363): a
-//! fault this crate found before L21 where it found it, MuJoCo's other faults
-//! after every check this crate makes before building the model, in MuJoCo's
-//! order, and `D-AUTO-RANGE`'s after the keyframes.
+//! limited tendon's range that does not increase where this crate refused it
+//! before L21 (`validation.rs`), MuJoCo's other faults after every check this
+//! crate makes before building the model, in MuJoCo's order, and
+//! `D-AUTO-RANGE`'s after the keyframes.
 
 use sim_core::MjJointType;
 
@@ -160,7 +161,7 @@ pub fn resolve(
 }
 
 /// An actuator's first fault, in MuJoCo 3.5.0's order
-/// (`mjCActuator::Compile`, `user_objects.cc:6866-6944`).
+/// (`mjCActuator::Compile`, `user_objects.cc:6868-6945`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActuatorFault {
     /// A fault of one of its three pairs.

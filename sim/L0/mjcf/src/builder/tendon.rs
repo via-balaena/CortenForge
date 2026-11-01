@@ -175,14 +175,15 @@ impl ModelBuilder {
     }
 
     /// MuJoCo 3.5.0's checks of a tendon (`mjCTendon::Compile`) that this
-    /// crate did not make before book L21, tendon by tendon: a spatial
+    /// crate did not make before RL-6a and RL-6b (book L19-L21), tendon by
+    /// tendon: a spatial
     /// tendon's negative armature (`user_objects.cc:6342-6346`), then armature
     /// on a tendon that wraps a sphere or a cylinder, whose bias force MuJoCo
     /// cannot differentiate (`:6389-6393`), then a range without `limited`
     /// under `autolimits="false"` (`:6412-6416`). A limited range that does
     /// not increase and a backwards spring length are refused before the
-    /// model is built, where this crate refused them before (`validation.rs`),
-    /// and an automatic range after the keyframes (`D-AUTO-RANGE`). The
+    /// model is built (`validation.rs`; an element's spring length at
+    /// parse), and an automatic range after the keyframes (`D-AUTO-RANGE`). The
     /// caller runs it after every check this crate makes before building the
     /// model, after the bodies' joints and before the free joint's; a
     /// keyframe's fault comes after it, in MuJoCo as here.

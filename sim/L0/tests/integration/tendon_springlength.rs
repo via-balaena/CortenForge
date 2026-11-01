@@ -5,7 +5,7 @@
 //! - Single-value and two-value springlength parsing (AC1, AC2)
 //! - Auto-compute sentinel resolution (AC3, AC3b)
 //! - Sentinel vs explicit zero (AC4)
-//! - Validation: low > high refused, negative loads, NaN refused (AC5, AC5b–d)
+//! - Validation: low > high refused, negative loads (AC5, AC5b, AC5d); NaN (AC5c)
 //! - Default class support: apply, override, two-value, nested (AC6–AC8, AC8b)
 //! - Deadband physics: in-band zero, above/below restoring, classical (AC9–AC12)
 //! - Spatial tendon: explicit and auto-compute (AC13, AC13b)

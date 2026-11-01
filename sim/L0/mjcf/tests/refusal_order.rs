@@ -12,8 +12,10 @@
 //! once the model is built, and so does RL-6b's third, an automatic range
 //! that does not increase (`D-AUTO-RANGE`), which MuJoCo leaves unlimited, as
 //! every check before it takes it. RL-6b's limit checks MuJoCo makes run with
-//! RL-6a's, in MuJoCo's order; those this crate made before (a limited
-//! tendon's range, a backwards spring length) stay where it made them. Where
+//! RL-6a's, in MuJoCo's order; a limited tendon's range and an element's
+//! backwards spring length stay where this crate checked them, and a class's
+//! spring length is checked once the class is applied, after the actuators'
+//! references (ledger L353 holds the orders this leaves unlike MuJoCo's). Where
 //! MuJoCo orders a new refusal before a check this crate makes later, this
 //! crate names the later one, as it did before.
 //!
@@ -302,9 +304,9 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "automatic backwards tendon range then its limit sensor",
-        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" /><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><tendon><fixed name="t" range="1 -1"><joint joint="j" coef="1"/></fixed></tendon><sensor><jointlimitfrc joint="j"/></sensor></mujoco>"#,
-        "joint must be limited in sensor",
-        "joint must be limited in sensor (sensor #0)",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><tendon><fixed name="t" range="1 -1"><joint joint="j" coef="1"/></fixed></tendon><sensor><tendonlimitfrc tendon="t"/></sensor></mujoco>"#,
+        "tendon must be limited in sensor",
+        "tendon must be limited in sensor (sensor #0)",
     ),
     (
         "automatic backwards range then seven dofs",

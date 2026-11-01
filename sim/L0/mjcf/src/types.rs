@@ -449,7 +449,8 @@ pub struct MjcfCompiler {
     pub assetdir: Option<String>,
     /// Whether a `limited`-style attribute left unwritten or `auto` may be
     /// decided by its range (MuJoCo's `autolimits`): with it off, a range
-    /// other than `0 0` written without its `limited` is refused ([`TfAuto`]).
+    /// other than `0 0` written without its `limited`, or with `auto`, is
+    /// refused ([`TfAuto`]).
     pub autolimits: bool,
     /// Controls inertia computation from geoms.
     pub inertiafromgeom: InertiaFromGeom,

@@ -918,8 +918,10 @@ fn a_range_degree_conversion_makes_empty_loads_and_make_data_refuses_it() {
 
 /// An actuator on a fixed tendon over an unlimited hinge has the length range
 /// MuJoCo 3.5.0 gives it, `0 0` (measured, with no range and with
-/// `limited="false" range="-90 90"`): an unlimited joint's range, kept as
-/// written, adds nothing to the tendon's.
+/// `limited="false" range="-90 90"`). MuJoCo computes none for an actuator
+/// that is not a muscle (`engine_setconst.c:1157-1161`); this crate's
+/// estimate (ledger L37) counts limited joints only, so an unlimited joint's
+/// range, kept as written, adds nothing to it.
 #[test]
 fn an_unlimited_joint_adds_nothing_to_a_fixed_tendons_length_range() {
     for joint in [

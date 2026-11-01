@@ -756,9 +756,11 @@ fn validate_tendon_params(tendon: &MjcfTendon) -> Result<()> {
     }
     // A limited range that does not increase, or none, and a spring length
     // whose low is above its high, as MuJoCo 3.5.0 refuses them, in its order
-    // (`user_objects.cc:6418-6421`, `:6438-6441`). They stay here, before
-    // the model is built, where this crate checked them before book L21, so a
-    // document it refused for one of them still is.
+    // (`user_objects.cc:6418-6421`, `:6438-6441`): the range where this
+    // crate checked it before book L21, a spring length a class gives once
+    // the class is applied, after the actuators' references (main refused a
+    // class's at parse, used or not; an element's own is still refused at
+    // parse). Ledger L353 holds the orders this leaves unlike MuJoCo's.
     if tendon.limited == Some(TfAuto::True) && !tendon.range.is_some_and(|(lo, hi)| lo < hi) {
         return Err(MjcfError::invalid_value(
             "tendon",

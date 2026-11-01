@@ -33,9 +33,10 @@ impl Model {
         }
 
         // --- Phase 1: Compute actuator_lengthrange from limits ---
-        // This applies to all actuator types (not just muscles) — limit-based
-        // lengthrange is unconditional. (MuJoCo's mj_setLengthRange mode filtering
-        // only applies to the simulation-based fallback, not the limit copy.)
+        // This applies to all actuator types (not just muscles). MuJoCo's
+        // `mj_setLengthRange` skips an actuator its mode filter excludes, a
+        // non-muscle by default, before it copies a limit
+        // (`engine_setconst.c:1157-1172`): this copy is ledger L37's.
         for i in 0..self.nu {
             let gear = self.actuator_gear[i][0];
 
@@ -90,8 +91,8 @@ impl Model {
                             // Fixed tendon length = Σ coef_i * q_i, so extremes come
                             // from each limited joint at its range limit (sign-aware);
                             // an unlimited joint's range bounds nothing, and an MJCF
-                            // one keeps it as written (degrees, or 0 0), as MuJoCo
-                            // stores it, so it adds nothing.
+                            // one keeps it as written (or 0 0), as MuJoCo stores it,
+                            // so it adds nothing.
                             let adr = self.tendon_adr[tid];
                             let num = self.tendon_num[tid];
                             let (mut lmin, mut lmax) = (0.0, 0.0);
