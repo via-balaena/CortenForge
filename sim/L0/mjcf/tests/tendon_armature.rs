@@ -1039,8 +1039,10 @@ fn armature_on_a_tendon_that_wraps_a_geom_is_refused() {
 
 /// A model given armature on a tendon that wraps a geom after loading, which
 /// MuJoCo's compiler would have refused: the wrapped geom's body is not
-/// simple, as `FinalizeSimple` reads the path, and no `Data` is made for it,
-/// as MuJoCo's forward pass cannot take it (`mj_tendonDot` stops).
+/// simple, as `FinalizeSimple` reads the path, and no `Data` is made for it
+/// nor its derived fields recomputed, as MuJoCo's forward pass cannot take
+/// it (`mj_tendonDot` stops; measured on the oracle: `FatalError` in
+/// `mj_forward`).
 #[test]
 fn a_built_model_with_armature_on_a_wrapping_tendon() {
     let mut model = load_model(&WRAP.replace(r#" armature="0.2""#, "")).unwrap();
@@ -1050,8 +1052,36 @@ fn a_built_model_with_armature_on_a_wrapping_tendon() {
     model.tendon_armature[0] = 0.2;
     model.compute_simple_bodies();
     assert_eq!(model.body_simple[wrapped], 0);
-    assert!(matches!(
+    let refusal = sim_core::TendonError::ArmatureWrapsGeom { tendon: 0 };
+    assert_eq!(
         model.try_make_data().err(),
-        Some(sim_core::MakeDataError::Unsupported { feature }) if feature.contains("wraps a geom")
-    ));
+        Some(sim_core::MakeDataError::Tendon(refusal))
+    );
+    assert_eq!(
+        model.recompute_derived(),
+        Err(sim_core::ModelError::Tendon(refusal))
+    );
+}
+
+/// A model built in code that fills its tendons but not `tendon_armature`
+/// (written before the field existed) has no armature: its derived fields
+/// recompute, it makes its `Data`, steps, and moves as the same model with
+/// zero armature does.
+#[test]
+fn a_built_model_without_tendon_armature_has_none() {
+    let model = load_model(CASES[0].xml.replace(r#" armature="0.7""#, "").as_str()).unwrap();
+    assert!(model.tendon_armature.iter().all(|&a| a == 0.0));
+    let mut empty = model.clone();
+    empty.tendon_armature.clear();
+    empty.recompute_derived().unwrap();
+    let (mut with, mut without) = (model.make_data(), empty.make_data());
+    for _ in 0..5 {
+        with.step(&model).unwrap();
+        without.step(&empty).unwrap();
+    }
+    assert_eq!(
+        bits(with.qpos.iter().copied()),
+        bits(without.qpos.iter().copied())
+    );
+    assert_eq!(empty.check_tendons(), Ok(()));
 }

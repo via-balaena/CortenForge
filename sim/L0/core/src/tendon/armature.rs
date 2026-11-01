@@ -24,7 +24,7 @@ pub fn mj_tendon_armature(model: &Model, data: &mut Data) {
         if sleep_filter && crate::island::tendon_asleep(model, data, t) {
             continue;
         }
-        let armature = model.tendon_armature[t];
+        let armature = model.tendon_armature.get(t).copied().unwrap_or(0.0);
         if armature == 0.0 {
             continue;
         }
@@ -145,7 +145,7 @@ pub fn mj_tendon_bias(model: &Model, data: &mut Data) {
         if sleep_filter && crate::island::tendon_asleep(model, data, t) {
             continue;
         }
-        let armature = model.tendon_armature[t];
+        let armature = model.tendon_armature.get(t).copied().unwrap_or(0.0);
         if armature == 0.0 {
             continue;
         }

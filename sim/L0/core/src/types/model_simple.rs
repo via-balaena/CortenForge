@@ -131,7 +131,7 @@ impl Model {
         // a fixed tendon's path names no body (`FinalizeSimple`,
         // `user_model.cc:3922-3939`).
         for tendon in 0..self.ntendon {
-            if self.tendon_armature[tendon] == 0.0 {
+            if self.tendon_armature.get(tendon).is_none_or(|&a| a == 0.0) {
                 continue;
             }
             let path = self.tendon_adr[tendon]..self.tendon_adr[tendon] + self.tendon_num[tendon];

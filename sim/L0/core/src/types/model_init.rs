@@ -12,18 +12,13 @@ use super::body_wrench::BodyWrench;
 use super::enums::{
     ActuatorDynamics, ActuatorError, DISABLE_NATIVECCD, ENABLE_SLEEP, EqualityType, Integrator,
     JacobianType, JointLayoutError, MakeDataError, MjJointType, MjSensorType, RangeError,
-    ResetError, SleepPolicy, SleepState, SolverType, StepError, WrapType,
+    ResetError, SleepPolicy, SleepState, SolverType, StepError, TendonError, WrapType,
 };
 use super::model::Model;
 
 /// What [`Model::try_make_data`] names when it refuses [`DISABLE_NATIVECCD`].
 const NATIVECCD_DISABLED: &str =
     "DISABLE_NATIVECCD: MuJoCo's libccd convex collision is not ported";
-
-/// What [`Model::try_make_data`] names when it refuses a tendon with armature
-/// that wraps a geom.
-const TENDON_ARMATURE_GEOM_WRAP: &str = "armature on a tendon that wraps a geom: \
-     MuJoCo's mj_tendonDot does not differentiate geom wrapping";
 
 // Types from dynamics module (Phase 7 extraction)
 use crate::dynamics::SpatialVector;
@@ -692,6 +687,7 @@ impl Model {
     /// [`MakeDataError::JointLayout`] ([`Self::check_joint_layout`]),
     /// [`MakeDataError::Range`] ([`Self::check_ranges`]),
     /// [`MakeDataError::Actuator`] ([`Self::check_actuators`]),
+    /// [`MakeDataError::Tendon`] ([`Self::check_tendons`]),
     /// the history buffers' refusals ([`MakeDataError::InvalidTimestep`],
     /// [`MakeDataError::DelayedUserSensor`]), [`MakeDataError::PluginInit`]
     /// if a plugin's `init` returns an error, or the reset's refusal of the
@@ -699,10 +695,7 @@ impl Model {
     /// [`MakeDataError::InitForward`]); [`MakeDataError::Unsupported`] with
     /// [`DISABLE_NATIVECCD`] set, under which MuJoCo collides convex pairs
     /// with libccd, which sim-core does not port (a flag set after this call
-    /// is not checked), or for a tendon with armature that wraps a geom,
-    /// whose bias force MuJoCo 3.5.0 does not compute (`mj_tendonDot` stops,
-    /// "geom wrapping not supported", `engine_core_smooth.c:1186-1188`; its
-    /// compiler refuses such a tendon).
+    /// is not checked).
     ///
     /// # Panics
     /// As [`Self::check_joint_layout`] says.
@@ -710,18 +703,10 @@ impl Model {
         self.check_joint_layout()?;
         self.check_ranges()?;
         self.check_actuators()?;
+        self.check_tendons()?;
         if self.disableflags & DISABLE_NATIVECCD != 0 {
             return Err(MakeDataError::Unsupported {
                 feature: NATIVECCD_DISABLED,
-            });
-        }
-        let wraps_a_geom = |t: usize| {
-            let path = self.tendon_adr[t]..self.tendon_adr[t] + self.tendon_num[t];
-            self.wrap_type[path].contains(&WrapType::Geom)
-        };
-        if (0..self.ntendon).any(|t| self.tendon_armature[t] != 0.0 && wraps_a_geom(t)) {
-            return Err(MakeDataError::Unsupported {
-                feature: TENDON_ARMATURE_GEOM_WRAP,
             });
         }
         if let Some(refusal) = self.history_refusal() {
@@ -797,6 +782,27 @@ impl Model {
                     act_num,
                     na: self.na,
                 });
+            }
+        }
+        Ok(())
+    }
+
+    /// Check each tendon: a tendon with armature does not wrap a sphere or a
+    /// cylinder, whose armature's bias force MuJoCo 3.5.0's forward pass
+    /// cannot compute (`mj_tendonDot` stops, "geom wrapping not supported",
+    /// `engine_core_smooth.c:1188-1190`); its compiler refuses such a tendon
+    /// (`user_objects.cc:6389-6393`). A model built without `tendon_armature`
+    /// has no armature.
+    ///
+    /// # Errors
+    /// The first [`TendonError`] found.
+    pub fn check_tendons(&self) -> Result<(), TendonError> {
+        for tendon in 0..self.ntendon {
+            let path = self.tendon_adr[tendon]..self.tendon_adr[tendon] + self.tendon_num[tendon];
+            if self.tendon_armature.get(tendon).is_some_and(|&a| a != 0.0)
+                && self.wrap_type[path].contains(&WrapType::Geom)
+            {
+                return Err(TendonError::ArmatureWrapsGeom { tendon });
             }
         }
         Ok(())
