@@ -50,7 +50,7 @@ use crate::defaults::DefaultResolver;
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
     MeshInertia, MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfJacobianType, MjcfKeyframe,
-    MjcfModel, MjcfOption, MjcfSolverType, Prefix, TfAuto,
+    MjcfModel, MjcfOption, MjcfSolverType, Prefix,
 };
 
 use self::compiler::{apply_discardvisual, apply_fusestatic};
@@ -74,22 +74,6 @@ pub const DEFAULT_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
 /// false` keeps `base`'s values past the ones written.
 fn written_over<const N: usize>(written: Option<Prefix<N>>, base: [f64; N]) -> [f64; N] {
     written.map_or(base, |written| written.over(base))
-}
-
-/// Whether an MJCF range makes an automatic limit: `0 0` does not, as MuJoCo
-/// leaves it unlimited (`islimited`, `user_objects.cc:184-189`).
-fn has_range(range: Option<(f64, f64)>) -> bool {
-    range.is_some_and(|(lo, hi)| lo != 0.0 || hi != 0.0)
-}
-
-/// Whether a `limited`-style attribute limits: as written, or, for `auto` or
-/// nothing written, when `autolimits` is on and the range makes a limit.
-fn is_limited(written: Option<TfAuto>, autolimits: bool, range: Option<(f64, f64)>) -> bool {
-    match written {
-        Some(TfAuto::True) => true,
-        Some(TfAuto::False) => false,
-        Some(TfAuto::Auto) | None => autolimits && has_range(range),
-    }
 }
 
 // Resolve an `MjcfKeyframe` into a `Keyframe` with model-validated dimensions.
@@ -310,11 +294,12 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // MuJoCo 3.5.0's checks of joints and of tendons, after every
     // check above, so that a document refused before they existed is refused
     // for the same fault (MuJoCo orders some of them before checks above).
-    // Among themselves in MuJoCo's order: each body's joints, the tendons, then
-    // the free joint below the world's children, as MuJoCo's `CopyTree`
-    // refuses it.
+    // Among themselves in MuJoCo's order: each body's joints, the tendons, the
+    // actuators, then the free joint below the world's children, as MuJoCo's
+    // `CopyTree` refuses it.
     builder.check_joints()?;
     builder.check_tendons()?;
+    builder.check_actuators()?;
     builder.check_free_joints_on_top_level()?;
 
     // Build final model
@@ -631,6 +616,9 @@ pub struct ModelBuilder {
     pub(crate) actuator_acc0: Vec<f64>,
     pub(crate) actuator_actlimited: Vec<bool>,
     pub(crate) actuator_actrange: Vec<(f64, f64)>,
+    /// Each actuator's first fault in its ranges and muscle parameters, which
+    /// `check_actuators` refuses.
+    pub(crate) actuator_fault: Vec<Option<limits::ActuatorFault>>,
     pub(crate) actuator_actearly: Vec<bool>,
     pub(crate) actuator_cranklength: Vec<f64>,
     pub(crate) actuator_nsample: Vec<i32>,

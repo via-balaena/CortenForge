@@ -465,7 +465,7 @@ mod tests {
         model.actuator_biasprm = vec![[0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2]];
         model.actuator_lengthrange = vec![(0.0, 0.0)]; // will be computed
         model.actuator_acc0 = vec![0.0]; // will be computed
-        // Muscle default: actlimited=true, actrange=[0,1] (§34 S5)
+        // An activation limited to [0, 1].
         model.actuator_actlimited = vec![true];
         model.actuator_actrange = vec![(0.0, 1.0)];
         model.actuator_actearly = vec![false];

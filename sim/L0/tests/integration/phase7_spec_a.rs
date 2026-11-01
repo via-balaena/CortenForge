@@ -477,11 +477,13 @@ fn t14_adhesion_gain_defaults_cascade() {
                 </body>
             </worldbody>
             <actuator>
-                <adhesion body="b1"/>
+                <adhesion body="b1" ctrlrange="0 1"/>
             </actuator>
         </mujoco>
     "#;
 
+    // An adhesion's control is limited, so it needs a range: with none MuJoCo
+    // 3.5.0 refuses it ("invalid control range for actuator", book L21).
     let model = load_model(mjcf).expect("should load");
     // AC13: gain → gainprm[0] for adhesion actuator
     assert_relative_eq!(model.actuator_gainprm[0][0], 0.5, epsilon = 1e-10);

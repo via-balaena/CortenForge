@@ -21,6 +21,12 @@ pub enum Pair {
     Joint(MjJointType),
     /// A tendon's `limited` and `range`.
     Tendon,
+    /// An actuator's `ctrllimited` and `ctrlrange`.
+    Ctrl,
+    /// An actuator's `forcelimited` and `forcerange`.
+    Force,
+    /// An actuator's `actlimited` and `actrange`.
+    Act,
 }
 
 impl Pair {
@@ -29,6 +35,7 @@ impl Pair {
         match self {
             Self::Joint(_) => "joint",
             Self::Tendon => "tendon",
+            Self::Ctrl | Self::Force | Self::Act => "actuator",
         }
     }
 
@@ -36,6 +43,9 @@ impl Pair {
     fn prefix(self) -> &'static str {
         match self {
             Self::Joint(_) | Self::Tendon => "",
+            Self::Ctrl => "ctrl",
+            Self::Force => "force",
+            Self::Act => "act",
         }
     }
 
@@ -45,6 +55,9 @@ impl Pair {
         match self {
             Self::Joint(_) => "range[0] should be smaller than range[1] in joint",
             Self::Tendon => "invalid limits in tendon",
+            Self::Ctrl => "invalid control range for actuator",
+            Self::Force => "invalid force range for actuator",
+            Self::Act => "invalid actrange for actuator",
         }
     }
 }
@@ -135,6 +148,78 @@ pub fn resolve(
     Limit { limited, fault }
 }
 
+/// An actuator's first fault, in MuJoCo 3.5.0's order
+/// (`mjCActuator::Compile`, `user_objects.cc:6866-6944`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActuatorFault {
+    /// A fault of one of its three pairs.
+    Limit(Pair, LimitFault),
+    /// A limited activation and no dynamics.
+    ActivationWithoutDynamics,
+    /// A muscle gain's or bias's parameters (`gainprm` or `biasprm`), with
+    /// MuJoCo's words.
+    Muscle(&'static str, &'static str),
+}
+
+impl ActuatorFault {
+    /// The error for this fault, with MuJoCo's words.
+    pub fn error(self) -> MjcfError {
+        match self {
+            Self::Limit(pair, fault) => fault.error(pair),
+            Self::ActivationWithoutDynamics => MjcfError::invalid_value(
+                "actuator",
+                "actrange",
+                "actrange specified but dyntype is 'none' in actuator",
+            ),
+            Self::Muscle(attribute, words) => {
+                MjcfError::invalid_value("actuator", attribute, words)
+            }
+        }
+    }
+}
+
+/// An actuator's first fault: each pair's `checklimited`, force, control
+/// then activation (`:6866-6877`); then their other faults, in the same
+/// order (`:6880-6888`, and `D-AUTO-RANGE`); then a limited activation with
+/// no dynamics (`:6889-6891`); then the parameters of a muscle gain, then of
+/// a muscle bias (`:6908-6944`), each `[range0, range1, force, scale, lmin,
+/// lmax, vmax, fpmax, fvmax]`.
+pub fn actuator_fault(
+    force: Limit,
+    ctrl: Limit,
+    act: Limit,
+    dynamics: bool,
+    muscle: [Option<(&'static str, &[f64; 9])>; 2],
+) -> Option<ActuatorFault> {
+    let pairs = [(Pair::Force, force), (Pair::Ctrl, ctrl), (Pair::Act, act)];
+    let fault_of = |checklimited: bool| {
+        pairs.iter().find_map(|&(pair, limit)| {
+            limit
+                .fault
+                .filter(|&f| (f == LimitFault::RangeWithoutLimited) == checklimited)
+                .map(|f| ActuatorFault::Limit(pair, f))
+        })
+    };
+    if let Some(fault) = fault_of(true).or_else(|| fault_of(false)) {
+        return Some(fault);
+    }
+    if act.limited && !dynamics {
+        return Some(ActuatorFault::ActivationWithoutDynamics);
+    }
+    muscle.into_iter().flatten().find_map(|(attribute, prm)| {
+        let words = if prm[0] >= prm[1] {
+            "range[0]<range[1] required in muscle"
+        } else if prm[4] >= 1.0 || prm[5] <= 1.0 {
+            "lmin<1<lmax required in muscle"
+        } else if prm[3] <= 0.0 || prm[6] <= 0.0 || prm[7] <= 0.0 || prm[8] <= 0.0 {
+            "positive scale, vmax, fpmax, fvmax required in muscle"
+        } else {
+            return None;
+        };
+        Some(ActuatorFault::Muscle(attribute, words))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{LimitFault, Pair, resolve};
@@ -154,7 +239,7 @@ mod tests {
         let (t, f, a) = (Some(TfAuto::True), Some(TfAuto::False), Some(TfAuto::Auto));
         let free = Pair::Joint(MjJointType::Free);
         #[rustfmt::skip]
-        let cases: [(Pair, Option<TfAuto>, Option<(f64, f64)>, bool, bool, Option<LimitFault>); 21] = [
+        let cases: [(Pair, Option<TfAuto>, Option<(f64, f64)>, bool, bool, Option<LimitFault>); 22] = [
             (HINGE, t, Some((1.0, -1.0)), true, true, Some(NotIncreasing)),
             (HINGE, t, None, true, true, Some(NotIncreasing)),
             (HINGE, t, Some((-1.0, 1.0)), false, true, None),
@@ -176,6 +261,7 @@ mod tests {
             (Pair::Tendon, t, None, true, true, Some(NotIncreasing)),
             (Pair::Tendon, None, Some((1.0, 0.0)), true, false, Some(AutomaticNotIncreasing)),
             (Pair::Tendon, None, Some((-0.5, 0.5)), false, true, Some(RangeWithoutLimited)),
+            (Pair::Ctrl, t, None, true, true, Some(NotIncreasing)),
         ];
         for (i, (pair, written, range, autolimits, limited, fault)) in cases.into_iter().enumerate()
         {
@@ -192,6 +278,21 @@ mod tests {
             checklimited.contains("joint has `range` but not `limited`"),
             "{checklimited}"
         );
+        let ctrl = LimitFault::RangeWithoutLimited
+            .error(Pair::Ctrl)
+            .to_string();
+        assert!(
+            ctrl.contains("actuator has `ctrlrange` but not `ctrllimited`"),
+            "{ctrl}"
+        );
+        for (pair, words) in [
+            (Pair::Ctrl, "invalid control range for actuator"),
+            (Pair::Force, "invalid force range for actuator"),
+            (Pair::Act, "invalid actrange for actuator"),
+        ] {
+            let error = LimitFault::NotIncreasing.error(pair).to_string();
+            assert!(error.contains(words), "{error}");
+        }
         let hinge = LimitFault::NotIncreasing.error(HINGE).to_string();
         assert!(
             hinge.contains("range[0] should be smaller than range[1] in joint"),

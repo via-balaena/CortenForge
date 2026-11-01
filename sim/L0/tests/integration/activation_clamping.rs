@@ -3,7 +3,7 @@
 //! Tests cover:
 //! - AC1: Integrator clamping to actrange
 //! - AC2: Unbounded without actlimited
-//! - AC3: Muscle default [0,1] clamping
+//! - AC3: a muscle's activation is not limited unless written, as MuJoCo's
 //! - AC4: Muscle override with custom actrange
 //! - AC5: FilterExact integration + actlimited
 //! - AC6: actearly force prediction (one-step-earlier response)
@@ -65,7 +65,7 @@ fn build_integrator_model(actlimited: bool, actrange: (f64, f64), actearly: bool
 fn build_muscle_model(actrange_override: Option<(f64, f64)>) -> Model {
     let actlimited_attr = match actrange_override {
         Some(range) => format!(r#"actlimited="true" actrange="{} {}""#, range.0, range.1),
-        None => String::new(), // muscle default: actlimited=true, actrange=[0,1]
+        None => String::new(), // MuJoCo's: no activation limit
     };
     let mjcf = format!(
         r#"<mujoco>
@@ -206,45 +206,17 @@ fn test_integrator_unbounded_without_actlimited() {
 }
 
 // ============================================================================
-// AC3: Muscle default [0, 1] clamping
+// AC3: a muscle's activation is not limited unless written
 // ============================================================================
 
+/// A `<muscle>` with no activation limit written has none, as MuJoCo 3.5.0
+/// builds one (`actuator_actlimited` 0, measured on a muscle on a limited
+/// hinge, `tests/limits.rs`; A5-Q6).
 #[test]
 fn test_muscle_default_actrange() {
     let model = build_muscle_model(None);
-
-    // Verify model builder applied muscle defaults
-    assert!(
-        model.actuator_actlimited[0],
-        "Muscle should default to actlimited=true"
-    );
-    assert_eq!(
-        model.actuator_actrange[0],
-        (0.0, 1.0),
-        "Muscle should default to actrange=[0,1]"
-    );
-}
-
-#[test]
-fn test_muscle_clamped_to_default_range() {
-    let model = build_muscle_model(None);
-    let mut data = model.make_data();
-    data.ctrl[0] = 1.0;
-
-    for _ in 0..500 {
-        data.step(&model).expect("step failed");
-    }
-
-    assert!(
-        data.act[0] <= 1.0 + 1e-12,
-        "Muscle activation should be clamped to [0,1], got {}",
-        data.act[0]
-    );
-    assert!(
-        data.act[0] >= -1e-12,
-        "Muscle activation should be >= 0, got {}",
-        data.act[0]
-    );
+    assert!(!model.actuator_actlimited[0]);
+    assert_eq!(model.actuator_actrange[0], (0.0, 0.0));
 }
 
 // ============================================================================

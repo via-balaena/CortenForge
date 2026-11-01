@@ -1,0 +1,1 @@
+<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><geom type="sphere" size="0.1"/></body></worldbody><actuator><adhesion body="b" gain="1"/></actuator></mujoco>

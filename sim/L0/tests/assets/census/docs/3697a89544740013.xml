@@ -1,0 +1,1 @@
+<mujoco><compiler angle="radian"/><default><default class="c"><damper kv="4"/></default></default><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><actuator><motor class="c" joint="j"/></actuator></mujoco>

@@ -12,10 +12,11 @@ use sim_core::{
 use tracing::warn;
 
 use super::ModelBuilder;
+use super::limits::{self, Pair};
 use crate::actuator_spec::{ActuatorSpec, DEFAULT_DYNPRM, DEFAULT_GAINPRM};
-use crate::error::{ElementKind, MjcfError, Result};
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::keywords;
-use crate::types::{MjcfActuator, MjcfActuatorType};
+use crate::types::{MjcfActuator, TfAuto};
 
 /// MuJoCo's default `gear` (`user_init.c` `mjs_defaultActuator`).
 const DEFAULT_GEAR: [f64; 6] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
@@ -60,13 +61,15 @@ impl ModelBuilder {
         } else {
             None
         };
-        let (ctrlrange, actrange) = match inherited {
+        let (ctrlrange, mut actrange) = match inherited {
             Some(Inherited::Ctrl(range)) => (Some(range), spec.actrange),
             Some(Inherited::Act(range)) => (spec.ctrlrange, Some(range)),
             None => (spec.ctrlrange, spec.actrange),
         };
         let autolimits = self.compiler.autolimits;
-        let ctrllimited = super::is_limited(spec.ctrllimited, autolimits, ctrlrange);
+        let ctrl = limits::resolve(Pair::Ctrl, spec.ctrllimited, ctrlrange, autolimits);
+        let force = limits::resolve(Pair::Force, spec.forcelimited, spec.forcerange, autolimits);
+        let mut act = limits::resolve(Pair::Act, spec.actlimited, actrange, autolimits);
 
         self.actuator_trntype.push(trntype);
         self.actuator_dyntype.push(dyntype);
@@ -77,30 +80,53 @@ impl ModelBuilder {
                 .map_or(DEFAULT_GEAR, |gear| gear.over(DEFAULT_GEAR)),
         );
 
-        // Gate ctrlrange/forcerange on ctrllimited/forcelimited (MuJoCo semantics).
-        // When limited=false, range is effectively unbounded regardless of attribute value.
-        self.actuator_ctrlrange.push(if ctrllimited {
-            ctrlrange.unwrap_or((-1.0, 1.0))
+        // A limited control or force range as written, `0 0` when none
+        // (refused by `check_actuators`, as MuJoCo refuses it); an unlimited
+        // one unbounded, which the forward pass clamps to.
+        let unbounded = (f64::NEG_INFINITY, f64::INFINITY);
+        self.actuator_ctrlrange.push(if ctrl.limited {
+            ctrlrange.unwrap_or((0.0, 0.0))
         } else {
-            (f64::NEG_INFINITY, f64::INFINITY)
+            unbounded
         });
-        let forcelimited = super::is_limited(spec.forcelimited, autolimits, spec.forcerange);
-        self.actuator_forcerange.push(if forcelimited {
-            spec.forcerange
-                .unwrap_or((f64::NEG_INFINITY, f64::INFINITY))
+        self.actuator_forcerange.push(if force.limited {
+            spec.forcerange.unwrap_or((0.0, 0.0))
         } else {
-            (f64::NEG_INFINITY, f64::INFINITY)
+            unbounded
         });
 
-        // §34: Activation clamping — actlimited / actrange / actearly, the same
-        // autolimits pattern as ctrllimited/forcelimited.
-        let actlimited = super::is_limited(spec.actlimited, autolimits, actrange);
-        self.actuator_actlimited.push(actlimited);
-        self.actuator_actrange.push(if actlimited {
+        // A Hill or Millard muscle's activation (CortenForge's) is limited to
+        // (0, 1) when neither its `actlimited` nor its `actrange` is written
+        // (`auto` as unwritten); a MuJoCo `<muscle>`'s is not, as MuJoCo
+        // leaves it (A5-Q6).
+        if matches!(
+            dyntype,
+            ActuatorDynamics::HillMuscle | ActuatorDynamics::MillardMuscle
+        ) && matches!(spec.actlimited, None | Some(TfAuto::Auto))
+            && actrange.is_none()
+        {
+            act = limits::Limit {
+                limited: true,
+                fault: None,
+            };
+            actrange = Some((0.0, 1.0));
+        }
+        self.actuator_actlimited.push(act.limited);
+        self.actuator_actrange.push(if act.limited {
             actrange.unwrap_or((0.0, 0.0))
         } else {
             (0.0, 0.0) // Unused when actlimited=false
         });
+        self.actuator_fault.push(limits::actuator_fault(
+            force,
+            ctrl,
+            act,
+            dyntype != ActuatorDynamics::None,
+            [
+                (gaintype == GainType::Muscle).then_some(("gainprm", &gainprm)),
+                (biastype == BiasType::Muscle).then_some(("biasprm", &biasprm)),
+            ],
+        ));
         self.actuator_actearly.push(spec.actearly.unwrap_or(false));
         self.actuator_cranklength.push(cranklength);
 
@@ -127,19 +153,6 @@ impl ModelBuilder {
         self.actuator_delay.push(delay);
         self.actuator_user_raw
             .push(spec.user.clone().unwrap_or_default());
-
-        // §34 S5: Muscle default actrange [0, 1] when actlimited is not set. MuJoCo
-        // leaves a <muscle> unlimited.
-        // Hill/Millard (CortenForge extensions) use the same default: activation ∈ [0, 1].
-        if (actuator.actuator_type == MjcfActuatorType::Muscle
-            || dyntype == ActuatorDynamics::HillMuscle
-            || dyntype == ActuatorDynamics::MillardMuscle)
-            && spec.actlimited.is_none()
-        {
-            let idx = self.actuator_actlimited.len() - 1;
-            self.actuator_actlimited[idx] = true;
-            self.actuator_actrange[idx] = (0.0, 1.0);
-        }
 
         self.actuator_name.push(if actuator.name.is_empty() {
             None
@@ -345,6 +358,21 @@ impl ModelBuilder {
                  (joint, tendon, site, body, jointinparent, or cranksite)",
             ))
         }
+    }
+
+    /// MuJoCo 3.5.0's checks of an actuator's ranges and muscle parameters
+    /// (`mjCActuator::Compile`, [`limits::actuator_fault`]), actuator by
+    /// actuator. The caller runs it after every check this crate makes before
+    /// building the model, after the tendons' and before the free joint's; a
+    /// keyframe's fault comes after it, in MuJoCo as here.
+    pub(crate) fn check_actuators(&self) -> Result<()> {
+        for (i, fault) in self.actuator_fault.iter().enumerate() {
+            if let Some(fault) = fault {
+                let at = Location::nth(ElementKind::Actuator, self.actuator_name[i].as_deref(), i);
+                return Err(fault.error().at(at));
+            }
+        }
+        Ok(())
     }
 
     /// A position servo's range taken from its target, as MuJoCo 3.5.0's
@@ -721,13 +749,17 @@ mod tests {
         assert_eq!(m_gen.actuator_act_num[0], m_pos.actuator_act_num[0]);
     }
 
-    /// Criterion 5: Muscle via `<general>` matches `<muscle>` shortcut.
+    /// Criterion 5: Muscle via `<general>` matches `<muscle>` shortcut, which
+    /// gives its bias the gain's parameters: a muscle bias with none written
+    /// (all 0) is refused, as MuJoCo 3.5.0 refuses it ("range[0]<range[1]
+    /// required in muscle", measured).
     #[test]
     fn test_general_muscle_equivalence() {
         let general_xml = general_actuator_model(
             r#"<general joint="j" gaintype="muscle" biastype="muscle"
                        dyntype="muscle"
                        gainprm="0.75 1.05 -1 200 0.5 1.6 1.5 0.6 1.4"
+                       biasprm="0.75 1.05 -1 200 0.5 1.6 1.5 0.6 1.4"
                        dynprm="0.01 0.04 0"/>"#,
         );
         let muscle_xml = general_actuator_model(
@@ -1124,6 +1156,45 @@ mod tests {
         assert_eq!(model.actuator_biastype[0], BiasType::MillardMuscle);
     }
 
+    /// A Hill or Millard muscle's activation (CortenForge's) is limited to
+    /// (0, 1) when neither `actlimited` (or `auto`) nor `actrange` is
+    /// written; a written range, or `actlimited="false"`, is kept.
+    #[test]
+    fn a_hill_or_millard_activation_defaults_to_zero_one() {
+        let act = |actuator: &str| {
+            let model = load_model(&general_actuator_model(actuator)).expect(actuator);
+            (model.actuator_actlimited[0], model.actuator_actrange[0])
+        };
+        for (actuator, expected) in [
+            (
+                r#"<general joint="j" dyntype="hillmuscle"/>"#,
+                (true, (0.0, 1.0)),
+            ),
+            (
+                r#"<general joint="j" dyntype="hillmuscle" actlimited="auto"/>"#,
+                (true, (0.0, 1.0)),
+            ),
+            (
+                r#"<general joint="j" dyntype="hillmuscle" actrange="0 0.5"/>"#,
+                (true, (0.0, 0.5)),
+            ),
+            (
+                r#"<general joint="j" dyntype="hillmuscle" actlimited="false"/>"#,
+                (false, (0.0, 0.0)),
+            ),
+            (
+                r#"<general joint="j" dyntype="millardmuscle"/>"#,
+                (true, (0.0, 1.0)),
+            ),
+            (
+                r#"<general joint="j" dyntype="millardmuscle" actrange="0.1 0.9"/>"#,
+                (true, (0.1, 0.9)),
+            ),
+        ] {
+            assert_eq!(act(actuator), expected, "{actuator}");
+        }
+    }
+
     /// An `<intvelocity>`'s compiled fields, as MuJoCo 3.5.0's (measured on
     /// the oracle): integrator dynamics, position's gain and bias, the
     /// actuator's default `dynprm`, an activation range always applied.
@@ -1166,15 +1237,18 @@ mod tests {
         .expect("loads");
         assert_eq!(classed.actuator_gainprm[0][0], 7.0);
         assert_eq!(classed.actuator_biasprm[0][1], -7.0);
-        // With no activation range MuJoCo refuses it ("invalid actrange for
-        // actuator"); sim-mjcf refuses it when the `Data` is made
-        // (D-MODEL-CHECKS).
+        // With no activation range it is refused, as MuJoCo refuses it
+        // ("invalid actrange for actuator"; ledger L331).
         let no_range = load_model(
             r#"<mujoco><worldbody><body><joint name="j" type="hinge"/><geom size="0.1"/></body></worldbody>
 <actuator><intvelocity joint="j" kp="10"/></actuator></mujoco>"#,
         )
-        .expect("loads");
-        assert!(no_range.try_make_data().is_err());
+        .expect_err("an intvelocity with no actrange is refused")
+        .to_string();
+        assert!(
+            no_range.contains("invalid actrange for actuator"),
+            "{no_range}"
+        );
     }
 
     /// A servo's own `kv`, `dampratio` and `timeconst` refused as MuJoCo

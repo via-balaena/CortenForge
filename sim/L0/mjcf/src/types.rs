@@ -2815,11 +2815,9 @@ pub struct MjcfActuator {
     pub ctrlrange: Option<(f64, f64)>,
     /// Force range [lower, upper].
     pub forcerange: Option<(f64, f64)>,
-    /// Whether control is clamped to range. `None`, as `Auto`, leaves it
-    /// to `autolimits` and the range.
+    /// Whether control is clamped to range; `None` as `Auto` ([`TfAuto`]).
     pub ctrllimited: Option<TfAuto>,
-    /// Whether force is clamped to range. `None`, as `Auto`, leaves it
-    /// to `autolimits` and the range.
+    /// Whether force is clamped to range; `None` as `Auto` ([`TfAuto`]).
     pub forcelimited: Option<TfAuto>,
     /// Position gain (for position and intvelocity actuators). `None`
     /// means not written (MuJoCo's 1).
