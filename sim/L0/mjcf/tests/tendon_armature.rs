@@ -14,8 +14,9 @@
 //! Every document and value below was measured on the census's unfused
 //! oracle (2026-10-31): the matrices and forces after `mj_forward` and then
 //! `mj_inverse`, and in the sleep cases after a reset and each step. They are
-//! compared bit for bit: the arithmetic is MuJoCo's, in its order, a square
-//! root its only library call.
+//! compared bit for bit on macOS arm64, where the oracle ran, and within a
+//! bound elsewhere (`is_mujocos`): a hinge's turn calls the platform's `sin`
+//! and `cos`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 // The values are bit patterns, written as MuJoCo's values' raw bits.
@@ -1009,6 +1010,20 @@ fn bits(values: impl IntoIterator<Item = f64>) -> Vec<u64> {
     values.into_iter().map(f64::to_bits).collect()
 }
 
+/// Whether the values `got` are MuJoCo's `want`, each as its bits: bit for
+/// bit on macOS arm64, where the oracle ran; elsewhere each within
+/// 1e-12 · max(1, |MuJoCo's|). A `NaN` is never within it.
+fn is_mujocos(got: &[u64], want: &[u64]) -> bool {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        return got == want;
+    }
+    got.len() == want.len()
+        && got.iter().zip(want).all(|(&a, &b)| {
+            let (a, b) = (f64::from_bits(a), f64::from_bits(b));
+            (a - b).abs() <= 1e-12 * b.abs().max(1.0)
+        })
+}
+
 fn mass_matrix(model: &sim_core::Model, data: &sim_core::Data) -> Vec<u64> {
     bits((0..model.nv * model.nv).map(|k| data.qM[(k / model.nv, k % model.nv)]))
 }
@@ -1031,7 +1046,7 @@ fn a_tendons_armature_is_mujocos() {
             data.qvel.copy_from_slice(&floats(state.qvel));
             data.forward(&model).unwrap();
             let mut check = |what: &str, got: Vec<u64>, want: &[u64]| {
-                if got != want {
+                if !is_mujocos(&got, want) {
                     differ.push(format!(
                         "{} state {s}: {what} {:?} (MuJoCo {:?})",
                         case.name,
@@ -1060,7 +1075,7 @@ fn a_tendons_armature_is_mujocos() {
 
 /// A tendon's armature on a sleeping tree, and across a sleeping and an
 /// awake tree, step by step as MuJoCo's: the mass matrix and the
-/// accelerations bit for bit, and which trees sleep.
+/// accelerations (`is_mujocos`), and which trees sleep.
 #[test]
 fn a_sleeping_trees_tendon_armature_is_mujocos() {
     let mut differ = Vec::new();
@@ -1073,7 +1088,10 @@ fn a_sleeping_trees_tendon_armature_is_mujocos() {
                 data.step(&model).unwrap();
             }
             let got = (mass_matrix(&model, &data), bits(data.qacc.iter().copied()));
-            if got.0 != step.qm || got.1 != step.qacc || data.tree_asleep != step.tree_asleep {
+            if !is_mujocos(&got.0, step.qm)
+                || !is_mujocos(&got.1, step.qacc)
+                || data.tree_asleep != step.tree_asleep
+            {
                 differ.push(format!(
                     "{what}, after {k} steps: qM {:?} qacc {:?} asleep {:?} (MuJoCo {:?} {:?} {:?})",
                     floats(&got.0),
