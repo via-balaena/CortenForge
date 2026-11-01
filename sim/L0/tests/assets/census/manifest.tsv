@@ -2548,3 +2548,6 @@ a8ab5d1b22562991	sim/L0/mjcf/tests/tendon_armature.rs:287
 b30cd38d92d48c53	sim/L0/mjcf/tests/tendon_armature.rs:142
 c4eaff6562932eaa	sim/L0/mjcf/tests/tendon_armature.rs:110
 f7b03338af7f1e3f	sim/L0/mjcf/tests/tendon_armature.rs:382
+25c0e10bacc7fbfc	sim/L0/mjcf/tests/tendon_armature.rs:804
+3f10fd80bd48de40	sim/L0/mjcf/tests/joint_axis.rs:101
+fed34f3c266df9a2	sim/L0/mjcf/tests/joint_axis.rs:111

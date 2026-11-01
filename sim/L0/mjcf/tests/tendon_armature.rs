@@ -799,6 +799,40 @@ const CASES: &[Case] = &[
             },
         ],
     },
+    Case {
+        name: "pulley chain",
+        xml: r#"<mujoco><worldbody><site name="s0" pos="0.1 0 1.2"/><body name="b1" pos="0 0 1"><joint name="j1" type="hinge" axis="0 1 0"/><inertial pos="0 0 -0.15" mass="0.5" diaginertia="0.004 0.004 0.0002"/><site name="s1" pos="0.05 0 -0.1"/><body name="b2" pos="0 0 -0.3"><joint name="j2" type="hinge" axis="0 1 0"/><inertial pos="0 0 -0.15" mass="0.5" diaginertia="0.004 0.004 0.0002"/><site name="s2" pos="0.05 0 -0.2"/></body></body></worldbody><tendon><spatial name="t" armature="0.25"><site site="s0"/><site site="s1"/><pulley divisor="2"/><site site="s0"/><site site="s2"/></spatial></tendon></mujoco>"#,
+        body_simple: &[0, 0, 0],
+        dof_simplenum: &[0, 0],
+        states: &[
+            State {
+                qpos: &[0x3fd3333333333333, 0xbfd999999999999a],
+                qvel: &[0x3fe999999999999a, 0xbfe0000000000000],
+                qm: &[
+                    0x3fbe535e927a740d,
+                    0x3fa2ed38887954d1,
+                    0x3fa2ed38887954d1,
+                    0x3f904866e93f7dd0,
+                ],
+                qfrc_bias: &[0x3fe2509b0572a24d, 0xbfb4855d19030a90],
+                qacc: &[0xc03753e5b9508692, 0x404da2cff53c284f],
+                qfrc_inverse: &[0x3ca0000000000000, 0x0000000000000000],
+            },
+            State {
+                qpos: &[0xbfe3333333333333, 0x3feccccccccccccd],
+                qvel: &[0xbfd3333333333333, 0x3ff8000000000000],
+                qm: &[
+                    0x3fbc105376bf7096,
+                    0x3f9d586b343c4902,
+                    0x3f9d586b343c4902,
+                    0x3f8f57ed1a4a5eda,
+                ],
+                qfrc_bias: &[0xbff0ee74121dd1ce, 0x3fcc19c7a81cfdae],
+                qacc: &[0x403a4148cbfd94d2, 0xc04fc0ef079c5106],
+                qfrc_inverse: &[0x0000000000000000, 0xbc90000000000000],
+            },
+        ],
+    },
 ];
 
 /// The sleep case: a fixed tendon with armature on a tree that starts asleep beside an awake one.

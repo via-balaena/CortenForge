@@ -97,9 +97,19 @@ const LOADS: &[(&str, &str, [f64; 3])] = &[
         ],
     ),
     (
+        "hinge axis unwritten",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+        [0.0, 0.0, 1.0],
+    ),
+    (
         "hinge axis xy",
         r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="3 4 0"/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
         [0.6, 0.8, 0.0],
+    ),
+    (
+        "slide axis unwritten",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="slide"/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+        [0.0, 0.0, 1.0],
     ),
 ];
 
