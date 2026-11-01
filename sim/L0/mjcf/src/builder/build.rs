@@ -696,15 +696,15 @@ mod tests {
         )
         .expect("loads");
         assert!(one_zero_bound.jnt_limited[0]);
+        // An automatic range that does not increase, which MuJoCo leaves
+        // unlimited, is refused at load (`D-AUTO-RANGE`).
         let empty = load_model(
             r#"<mujoco><worldbody><body><joint type="hinge" axis="0 1 0" range="1 1"/>
 <geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
         )
-        .expect("loads");
-        assert!(matches!(
-            empty.try_make_data().err(),
-            Some(sim_core::MakeDataError::Range(_))
-        ));
+        .expect_err("an automatic empty range is refused")
+        .to_string();
+        assert!(empty.contains("an automatic `limited` needs"), "{empty}");
     }
 
     #[test]

@@ -6,6 +6,7 @@
 use nalgebra::{UnitQuaternion, Vector3};
 use sim_core::{MjJointType, Model};
 
+use super::limits::{self, Pair};
 use super::orientation::{MJ_EPS, normvec};
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
 use crate::error::{ElementKind, Location, MjcfError, Result};
@@ -85,29 +86,27 @@ impl ModelBuilder {
         self.jnt_pos.push(joint.pos.unwrap_or_else(Vector3::zeros));
         self.jnt_axis.push(axis);
         self.jnt_axis_too_small.push(axis_too_small);
-        // Autolimits: infer limited from range presence when no explicit value.
-        let limited = super::is_limited(joint.limited, self.compiler.autolimits, joint.range);
-        self.jnt_limited.push(limited);
+        let limit = limits::resolve(
+            Pair::Joint(jnt_type),
+            joint.limited,
+            joint.range,
+            self.compiler.autolimits,
+        );
+        self.jnt_limited.push(limit.limited);
+        self.jnt_limit_fault.push(limit.fault);
 
-        // Angle conversion: hinge and ball joint range/ref/springref are angle-valued.
-        // When compiler.angle == Degree (default), convert to radians.
-        // Slide and Free joints are not angle-valued — never convert.
+        // A hinge's and a ball's range are angles: converted from degrees
+        // when the compiler reads degrees (the default) and the joint is
+        // limited; otherwise stored as written, `0 0` when none, as MuJoCo
+        // stores it (`user_objects.cc:2916-2924`).
         let deg2rad = std::f64::consts::PI / 180.0;
         let is_angle_joint = matches!(jnt_type, MjJointType::Hinge | MjJointType::Ball);
         let convert = is_angle_joint && self.compiler.angle == AngleUnit::Degree;
-
-        let range = joint
-            .range
-            .unwrap_or((-std::f64::consts::PI, std::f64::consts::PI));
-        self.jnt_range.push(if convert {
-            (range.0 * deg2rad, range.1 * deg2rad)
+        let (lo, hi) = joint.range.unwrap_or((0.0, 0.0));
+        self.jnt_range.push(if convert && limit.limited {
+            (lo * deg2rad, hi * deg2rad)
         } else {
-            range
-        });
-        self.jnt_range_compiled.push(match joint.range {
-            Some((lo, hi)) if convert && limited => (lo * deg2rad, hi * deg2rad),
-            Some(range) => range,
-            None => (0.0, 0.0),
+            (lo, hi)
         });
         self.jnt_stiffness.push(joint.stiffness.unwrap_or(0.0));
 
@@ -217,22 +216,33 @@ impl ModelBuilder {
     }
 
     /// MuJoCo 3.5.0's checks of each body's joints, body by body in its
-    /// order, as `mjCJoint::Compile` and `mjCBody::Compile` make them: a
-    /// hinge's or a slide's axis too small to make unit
-    /// (`user_objects.cc:2957-2960`), then more than 6 degrees of freedom,
-    /// then a ball or a hinge after a ball (`:2522-2537`). The caller runs it
-    /// after every check this crate makes before building the model, so that
-    /// a document it refused before these checks existed is refused for the
-    /// same fault, unless that fault is a keyframe's: MuJoCo compiles
-    /// keyframes after these checks, and this crate resolves them after
-    /// building the model.
+    /// order, as `mjCJoint::Compile` and `mjCBody::Compile` make them: joint
+    /// by joint, its `limited` and `range` ([`limits::resolve`],
+    /// `user_objects.cc:2895-2914`), then a hinge's or a slide's axis too
+    /// small to make unit (`:2957-2960`); then the body's more than 6 degrees
+    /// of freedom, then a ball or a hinge after a ball (`:2522-2537`). The
+    /// caller runs it after every check this crate makes before building the
+    /// model, so that a document it refused before these checks existed is
+    /// refused for the same fault, unless that fault is a keyframe's: MuJoCo
+    /// compiles keyframes after these checks, and this crate resolves them
+    /// after building the model.
     pub(crate) fn check_joints(&self) -> Result<()> {
         for body in 1..self.body_parent.len() {
             let joints = self.body_joints(body);
-            if let Some(j) = joints.clone().find(|&j| self.jnt_axis_too_small[j]) {
-                let at = Location::nth(ElementKind::Joint, self.jnt_name[j].as_deref(), j)
-                    .within_nth(ElementKind::Body, self.body_name[body].as_deref(), body);
-                return Err(MjcfError::invalid_value("joint", "axis", "axis too small").at(at));
+            for j in joints.clone() {
+                let at =
+                    || {
+                        Location::nth(ElementKind::Joint, self.jnt_name[j].as_deref(), j)
+                            .within_nth(ElementKind::Body, self.body_name[body].as_deref(), body)
+                    };
+                if let Some(fault) = self.jnt_limit_fault[j] {
+                    return Err(fault.error(Pair::Joint(self.jnt_type[j])).at(at()));
+                }
+                if self.jnt_axis_too_small[j] {
+                    return Err(
+                        MjcfError::invalid_value("joint", "axis", "axis too small").at(at())
+                    );
+                }
             }
             let kinds = &self.jnt_type[joints];
             if kinds.iter().map(|j| j.nv()).sum::<usize>() > 6 {
@@ -749,8 +759,9 @@ mod tests {
 
     #[test]
     fn test_autolimits_false_requires_explicit_limited() {
-        // With autolimits=false, range without limited -> limited=false.
-        let model = load_model(
+        // With autolimits=false, a range without `limited` is refused, as
+        // MuJoCo 3.5.0's `checklimited` refuses it (`user_objects.cc:171-181`).
+        let error = load_model(
             r#"
             <mujoco model="no_autolimits">
                 <compiler angle="radian" autolimits="false"/>
@@ -763,11 +774,11 @@ mod tests {
             </mujoco>
             "#,
         )
-        .expect("should load");
-
+        .expect_err("a range without limited is refused")
+        .to_string();
         assert!(
-            !model.jnt_limited[0],
-            "autolimits=false should not infer limited"
+            error.contains("joint has `range` but not `limited`"),
+            "{error}"
         );
     }
 

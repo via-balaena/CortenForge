@@ -194,7 +194,10 @@ pub struct Model {
     pub jnt_axis: Vec<Vector3<f64>>,
     /// Whether joint has limits.
     pub jnt_limited: Vec<bool>,
-    /// Joint limits [min, max].
+    /// Joint limits [min, max] (a limited ball's: 0 and its largest angle). A
+    /// joint that is not limited keeps the range it was given: from MJCF, as
+    /// written, in degrees if the compiler reads them, `(0, 0)` when none, as
+    /// MuJoCo stores it.
     pub jnt_range: Vec<(f64, f64)>,
     /// Spring stiffness coefficient (N/rad for hinge, N/m for slide).
     /// Applied as: τ = -stiffness * (q - springref)

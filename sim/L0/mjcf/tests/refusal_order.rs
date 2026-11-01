@@ -1,5 +1,6 @@
 //! Which fault a document with two is refused for, where RL-6a's refusals
-//! meet the ones this crate made before (book L19, L20; ledger L164).
+//! meet the ones this crate made before (book L19, L20; ledger L164), and
+//! where RL-6b's limit checks meet both (book L21; ledger L363).
 //!
 //! RL-6a's refusals that MuJoCo 3.5.0 makes (a joint's axis, a body's joint
 //! layout, a tendon's armature, a free joint below the world's children) run
@@ -14,7 +15,9 @@
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle (2026-10-31), for the fault its expected error names. Eleven are the
 //! RL-6a review's first round, three its fix-diff pass's (a keyframe's fault),
-//! and four set the new checks against each other.
+//! and four set the new checks against each other; the rest are RL-6b's, each
+//! a limit's fault beside another, and MuJoCo checks a joint's limit in the
+//! joint's compile, before its axis and its body's degrees of freedom.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -129,6 +132,54 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="z" type="hinge" axis="0 0 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><keyframe><key qpos="0 0"/></keyframe></mujoco>"#,
         "axis too small in joint",
         "invalid axis on <joint>: axis too small (joint 'z' in body 'a')",
+    ),
+    (
+        "zero axis then backwards range",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="z" type="hinge" axis="0 0 0" limited="true" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        "range[0] should be smaller than range[1] in joint",
+        "invalid range on <joint>: range[0] should be smaller than range[1] in joint (joint 'z' in body 'a')",
+    ),
+    (
+        "backwards range then nested free",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0" limited="true" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><body name="b" pos="0 0 -0.3"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></body></worldbody></mujoco>"#,
+        "range[0] should be smaller than range[1] in joint",
+        "invalid range on <joint>: range[0] should be smaller than range[1] in joint (joint 'h' in body 'a')",
+    ),
+    (
+        "backwards joint range then spatial negative armature",
+        r#"<mujoco><worldbody><site name="s0" pos="0 0 1.2"/><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" limited="true" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><tendon><spatial armature="-0.1"><site site="s0"/><site site="s1"/></spatial></tendon></mujoco>"#,
+        "range[0] should be smaller than range[1] in joint",
+        "invalid range on <joint>: range[0] should be smaller than range[1] in joint (joint 'j' in body 'b')",
+    ),
+    (
+        "backwards range then ball slide",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="b" type="ball"/><joint name="s" type="slide" axis="1 0 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body><body name="c" pos="1 0 1"><joint name="k" type="hinge" axis="0 1 0" limited="true" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        "range[0] should be smaller than range[1] in joint",
+        "invalid range on <joint>: range[0] should be smaller than range[1] in joint (joint 'k' in body 'c')",
+    ),
+    (
+        "range without limited then backwards ctrlrange",
+        r#"<mujoco><compiler angle="radian" autolimits="false"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><actuator><motor joint="j" ctrllimited="true" ctrlrange="1 -1"/></actuator></mujoco>"#,
+        "joint has `range` but not `limited`. set the autolimits=\"true\" compiler option, specify `limited` explicitly (\"true\" or \"false\"), or remove the `range` attribute.",
+        "invalid range on <joint>: joint has `range` but not `limited`. set the autolimits=\"true\" compiler option, specify `limited` explicitly (\"true\" or \"false\"), or remove the `range` attribute. (joint 'j' in body 'b')",
+    ),
+    (
+        "backwards range then seven dofs",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="h0" type="hinge" axis="0 1 0" limited="true" range="1 -1"/><joint name="h1" type="hinge" axis="0 1 0"/><joint name="h2" type="hinge" axis="0 1 0"/><joint name="h3" type="hinge" axis="0 1 0"/><joint name="h4" type="hinge" axis="0 1 0"/><joint name="h5" type="hinge" axis="0 1 0"/><joint name="h6" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        "range[0] should be smaller than range[1] in joint",
+        "invalid range on <joint>: range[0] should be smaller than range[1] in joint (joint 'h0' in body 'a')",
+    ),
+    (
+        "zero axis then next joint backwards",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="z" type="hinge" axis="0 0 0"/><joint name="j" type="hinge" axis="0 1 0" limited="true" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'z' in body 'b')",
+    ),
+    (
+        "seven dofs then later backwards range",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="h0" type="hinge" axis="0 1 0"/><joint name="h1" type="hinge" axis="0 1 0"/><joint name="h2" type="hinge" axis="0 1 0"/><joint name="h3" type="hinge" axis="0 1 0"/><joint name="h4" type="hinge" axis="0 1 0"/><joint name="h5" type="hinge" axis="0 1 0"/><joint name="h6" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body><body name="c" pos="1 0 1"><joint name="k" type="hinge" axis="0 1 0" limited="true" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        "more than 6 dofs in body 'a'",
+        "more than 6 dofs (body 'a')",
     ),
 ];
 

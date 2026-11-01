@@ -21,6 +21,7 @@ pub mod frame;
 pub mod geom;
 mod init;
 pub mod joint;
+mod limits;
 pub mod mass;
 pub mod mesh;
 pub mod orientation;
@@ -505,12 +506,13 @@ pub struct ModelBuilder {
     /// `check_joints` refuses.
     pub(crate) jnt_axis_too_small: Vec<bool>,
     pub(crate) jnt_limited: Vec<bool>,
+    /// Each joint's first `limited`/`range` fault, which `check_joints`
+    /// refuses.
+    pub(crate) jnt_limit_fault: Vec<Option<limits::LimitFault>>,
+    /// Each joint's range as MuJoCo compiles it: `0 0` when unwritten, and in
+    /// radians only for a limited hinge or ball in degrees
+    /// (`user_objects.cc:2906-2924`).
     pub(crate) jnt_range: Vec<(f64, f64)>,
-    /// Each joint's range as MuJoCo compiles it, which `jnt_range` does not
-    /// hold for every joint: `0 0` when unwritten, and in radians only for a
-    /// limited hinge or ball in degrees (`user_objects.cc:2906-2924`). Read
-    /// by `inheritrange`.
-    pub(crate) jnt_range_compiled: Vec<(f64, f64)>,
     pub(crate) jnt_stiffness: Vec<f64>,
     pub(crate) jnt_springref: Vec<f64>,
     pub(crate) jnt_damping: Vec<f64>,

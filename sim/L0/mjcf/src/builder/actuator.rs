@@ -349,7 +349,7 @@ impl ModelBuilder {
 
     /// A position servo's range taken from its target, as MuJoCo 3.5.0's
     /// `mjCActuator::Compile` takes it (`user_objects.cc:6824-6866`): the
-    /// target's range as MuJoCo compiles it (`jnt_range_compiled`,
+    /// target's range as MuJoCo compiles it (`jnt_range`,
     /// `tendon_range_compiled`: a limited hinge's in radians, an unlimited
     /// one's as written), `inheritrange` times its
     /// half-width about its middle, as the control range of an actuator with
@@ -385,7 +385,7 @@ impl ModelBuilder {
                         "inheritrange can only be used with hinge and slide joints",
                     ));
                 }
-                (&actuator.joint, self.jnt_range_compiled[target])
+                (&actuator.joint, self.jnt_range[target])
             }
             ActuatorTransmission::Tendon => (&actuator.tendon, self.tendon_range_compiled[target]),
             _ => {

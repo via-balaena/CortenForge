@@ -50,7 +50,7 @@ impl ModelBuilder {
             jnt_axis_too_small: vec![],
             jnt_limited: vec![],
             jnt_range: vec![],
-            jnt_range_compiled: vec![],
+            jnt_limit_fault: vec![],
             jnt_stiffness: vec![],
             jnt_springref: vec![],
             jnt_damping: vec![],

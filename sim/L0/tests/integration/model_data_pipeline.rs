@@ -626,12 +626,12 @@ fn an_auto_reset_recaptures_energy_initial() {
     assert_eq!(data.energy_initial, at_reset.total_energy());
 }
 
-/// A model with a range `try_make_data` refuses still loads, with a muscle and
-/// a spatial tendon whose derivations would build a `Data`: building skips
-/// those derivations, and making its `Data` refuses it.
+/// A limited joint with no range between its bounds, beside a muscle and a
+/// spatial tendon whose derivations build a `Data`, is refused at load, as
+/// MuJoCo 3.5.0 refuses it, before any derivation runs (book L21).
 #[test]
-fn derivation_loads_a_model_try_make_data_refuses() {
-    let model = load_model(
+fn derivation_never_sees_a_joint_range_try_make_data_refuses() {
+    let error = load_model(
         r#"<mujoco model="derivation">
   <worldbody>
     <body name="a" pos="0 0 1">
@@ -656,14 +656,11 @@ fn derivation_loads_a_model_try_make_data_refuses() {
   </actuator>
 </mujoco>"#,
     )
-    .expect("building the model runs no try_make_data check");
-    let refused = model.try_make_data().err();
+    .expect_err("a limited joint's range 0 0 is refused")
+    .to_string();
     assert!(
-        matches!(
-            &refused,
-            Some(sim_core::MakeDataError::Range(e)) if e.field == "jnt_range" && e.index == 0
-        ),
-        "{refused:?}"
+        error.contains("range[0] should be smaller than range[1] in joint"),
+        "{error}"
     );
 }
 

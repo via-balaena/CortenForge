@@ -1,0 +1,319 @@
+//! A joint's `limited` and `range` as MuJoCo 3.5.0 resolves and checks them
+//! (book L21; ledger L1, L69, L349; `builder/limits.rs`).
+//!
+//! Every document below was loaded by MuJoCo 3.5.0 on the census's unfused
+//! oracle (2026-11-01): each refusal expects MuJoCo's words; each load,
+//! MuJoCo's `jnt_limited` and `jnt_range` bit for bit (a range is the written
+//! one, or, limited in degrees, times `pi/180`: one multiplication, so no
+//! library call to differ between platforms). An automatic range that does
+//! not increase, which MuJoCo leaves unlimited, is refused (`D-AUTO-RANGE`).
+
+// The values are MuJoCo's, printed to the last digit; some are fractions of pi.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreadable_literal,
+    clippy::approx_constant
+)]
+
+use sim_mjcf::load_model;
+
+/// What loading a document gives.
+enum Expect {
+    /// MuJoCo refuses it, with these words.
+    Refused(&'static str),
+    /// MuJoCo leaves the automatic range unlimited; refused (`D-AUTO-RANGE`).
+    Automatic,
+    /// MuJoCo loads it with these joints.
+    Joints {
+        limited: &'static [bool],
+        range: &'static [(f64, f64)],
+    },
+}
+
+/// `(name, document, expected)`, generated from the oracle's results.
+const JOINTS: &[(&str, &str, Expect)] = &[
+    (
+        "j_ball_auto_0_60",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="ball" range="0 60"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[true],
+            range: &[(0.0_f64, 1.0471975511965976_f64)],
+        },
+    ),
+    (
+        "j_ball_auto_0_m10",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="ball" range="0 -10"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Automatic,
+    ),
+    (
+        "j_ball_auto_0_m1_rad",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="ball" range="0 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Automatic,
+    ),
+    (
+        "j_ball_auto_45_0",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="ball" range="45 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Automatic,
+    ),
+    (
+        "j_ball_auto_zero",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="ball" range="0 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[false],
+            range: &[(0.0_f64, 0.0_f64)],
+        },
+    ),
+    (
+        "j_ball_true_0_m10",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="ball" limited="true" range="0 -10"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[true],
+            range: &[(0.0_f64, -0.17453292519943295_f64)],
+        },
+    ),
+    (
+        "j_ball_true_45_0",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="ball" limited="true" range="45 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Refused("range[0] should be 0 in ball joint"),
+    ),
+    (
+        "j_ball_true_norange",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="ball" limited="true"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[true],
+            range: &[(0.0_f64, 0.0_f64)],
+        },
+    ),
+    (
+        "j_ball_true_zero",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="ball" limited="true" range="0 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[true],
+            range: &[(0.0_f64, 0.0_f64)],
+        },
+    ),
+    (
+        "j_class_backwards_true",
+        r#"<mujoco><default><joint range="1 -1"/></default><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" limited="true"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Refused("range[0] should be smaller than range[1] in joint"),
+    ),
+    (
+        "j_class_true_backwards",
+        r#"<mujoco><default><joint limited="true"/></default><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Refused("range[0] should be smaller than range[1] in joint"),
+    ),
+    (
+        "j_free_auto_range",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="free" range="0 0.5"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[false],
+            range: &[(0.0_f64, 0.5_f64)],
+        },
+    ),
+    (
+        "j_free_backwards",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="free" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[false],
+            range: &[(1.0_f64, -1.0_f64)],
+        },
+    ),
+    (
+        "j_free_class_range",
+        r#"<mujoco><default><joint range="0 0.5"/></default><worldbody><body name="b" pos="0 0 1"><joint name="j" type="free"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[false],
+            range: &[(0.0_f64, 0.5_f64)],
+        },
+    ),
+    (
+        "j_free_noauto_range",
+        r#"<mujoco><compiler autolimits="false"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="free" range="0 0.5"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[false],
+            range: &[(0.0_f64, 0.5_f64)],
+        },
+    ),
+    (
+        "j_free_true_range",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="free" limited="true" range="0 0.5"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[false],
+            range: &[(0.0_f64, 0.5_f64)],
+        },
+    ),
+    (
+        "j_hinge_auto_backwards",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Automatic,
+    ),
+    (
+        "j_hinge_auto_deg",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-90 90"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[true],
+            range: &[(-1.5707963267948966_f64, 1.5707963267948966_f64)],
+        },
+    ),
+    (
+        "j_hinge_auto_equal",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Automatic,
+    ),
+    (
+        "j_hinge_auto_rad",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[true],
+            range: &[(-1.0_f64, 1.0_f64)],
+        },
+    ),
+    (
+        "j_hinge_auto_zero",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="0 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[false],
+            range: &[(0.0_f64, 0.0_f64)],
+        },
+    ),
+    (
+        "j_hinge_false_backwards",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" limited="false" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[false],
+            range: &[(1.0_f64, -1.0_f64)],
+        },
+    ),
+    (
+        "j_hinge_false_range_deg",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" limited="false" range="-90 90"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[false],
+            range: &[(-90.0_f64, 90.0_f64)],
+        },
+    ),
+    (
+        "j_hinge_none",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[false],
+            range: &[(0.0_f64, 0.0_f64)],
+        },
+    ),
+    (
+        "j_hinge_true_backwards",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" limited="true" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Refused("range[0] should be smaller than range[1] in joint"),
+    ),
+    (
+        "j_hinge_true_norange",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" limited="true"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Refused("range[0] should be smaller than range[1] in joint"),
+    ),
+    (
+        "j_hinge_true_zero",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" limited="true" range="0 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Refused("range[0] should be smaller than range[1] in joint"),
+    ),
+    (
+        "j_noauto_backwards",
+        r#"<mujoco><compiler autolimits="false"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Refused(
+            "joint has `range` but not `limited`. set the autolimits=\"true\" compiler option, specify `limited` explicitly (\"true\" or \"false\"), or remove the `range` attribute.",
+        ),
+    ),
+    (
+        "j_noauto_false",
+        r#"<mujoco><compiler autolimits="false"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" limited="false" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[false],
+            range: &[(-1.0_f64, 1.0_f64)],
+        },
+    ),
+    (
+        "j_noauto_range",
+        r#"<mujoco><compiler autolimits="false"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Refused(
+            "joint has `range` but not `limited`. set the autolimits=\"true\" compiler option, specify `limited` explicitly (\"true\" or \"false\"), or remove the `range` attribute.",
+        ),
+    ),
+    (
+        "j_noauto_true",
+        r#"<mujoco><compiler autolimits="false"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" limited="true" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[true],
+            range: &[(-0.017453292519943295_f64, 0.017453292519943295_f64)],
+        },
+    ),
+    (
+        "j_noauto_written_auto",
+        r#"<mujoco><compiler autolimits="false"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" limited="auto" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Refused(
+            "joint has `range` but not `limited`. set the autolimits=\"true\" compiler option, specify `limited` explicitly (\"true\" or \"false\"), or remove the `range` attribute.",
+        ),
+    ),
+    (
+        "j_noauto_zero",
+        r#"<mujoco><compiler autolimits="false"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="0 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Joints {
+            limited: &[false],
+            range: &[(0.0_f64, 0.0_f64)],
+        },
+    ),
+    (
+        "j_slide_true_backwards",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="slide" axis="1 0 0" limited="true" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Refused("range[0] should be smaller than range[1] in joint"),
+    ),
+    (
+        "j_slide_true_norange",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="slide" axis="1 0 0" limited="true"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Refused("range[0] should be smaller than range[1] in joint"),
+    ),
+];
+
+/// Each document loads, or is refused, as `expected` says.
+fn check(cases: &[(&str, &str, Expect)]) {
+    for (name, xml, expected) in cases {
+        let loaded = load_model(xml);
+        match expected {
+            Expect::Refused(words) => {
+                let error = loaded.err().map(|e| e.to_string()).unwrap_or_default();
+                assert!(
+                    error.contains(words),
+                    "{name}: expected '{words}', got '{error}'"
+                );
+            }
+            Expect::Automatic => {
+                let error = loaded.err().map(|e| e.to_string()).unwrap_or_default();
+                assert!(
+                    error.contains("an automatic `") && error.contains("limited` needs"),
+                    "{name}: expected the automatic range refused, got '{error}'"
+                );
+            }
+            Expect::Joints { limited, range } => {
+                let model = loaded.unwrap_or_else(|e| panic!("{name}: {e}"));
+                assert_eq!(model.jnt_limited, *limited, "{name}: jnt_limited");
+                let bits = |r: &[(f64, f64)]| -> Vec<(u64, u64)> {
+                    r.iter().map(|(a, b)| (a.to_bits(), b.to_bits())).collect()
+                };
+                assert_eq!(
+                    bits(&model.jnt_range),
+                    bits(range),
+                    "{name}: jnt_range {:?}",
+                    model.jnt_range
+                );
+                model
+                    .try_make_data()
+                    .unwrap_or_else(|e| panic!("{name}: make_data {e}"));
+            }
+        }
+    }
+}
+
+#[test]
+fn each_joint_limit_is_mujocos() {
+    check(JOINTS);
+}
