@@ -677,25 +677,45 @@ fn no_census_document_loads_a_range_try_make_data_refuses() {
         .find_map(|l| l.strip_prefix("# agree_floor "))
         .and_then(|n| n.trim().parse().ok())
         .expect("agree floor");
-    let (mut loaded, mut refused) = (0usize, Vec::new());
+    // The documents the registry's D-MODEL-CHECKS names load and are refused
+    // by `check_ranges`, as that row says; every other one that loads passes.
+    let registered: std::collections::HashSet<&str> = verdicts
+        .lines()
+        .filter(|l| l.ends_with("\tdivergence=D-MODEL-CHECKS"))
+        .filter_map(|l| l.split('\t').next())
+        .collect();
+    let (mut loaded, mut wrong) = (0usize, Vec::new());
     for entry in std::fs::read_dir(census.join("docs")).expect("census docs") {
         let path = entry.expect("entry").path();
         if path.extension().is_none_or(|e| e != "xml") {
             continue;
         }
+        let id = path.file_stem().and_then(|s| s.to_str()).expect("an id");
         let xml = std::fs::read_to_string(&path).expect("read");
-        if let Ok(model) = load_model(&xml) {
-            loaded += 1;
-            if let Err(e) = model.check_ranges() {
-                refused.push(format!("{}: {e:?}", path.display()));
-            }
+        // `None`: refused at load; `Some(passes)`: loads, and whether
+        // `check_ranges` passes.
+        let ranges = load_model(&xml)
+            .ok()
+            .map(|model| model.check_ranges().is_ok());
+        loaded += usize::from(ranges.is_some());
+        let expected = if registered.contains(id) {
+            Some(false)
+        } else {
+            ranges.map(|_| true)
+        };
+        if ranges != expected {
+            wrong.push(format!(
+                "{}: check_ranges passes {ranges:?}",
+                path.display()
+            ));
         }
     }
     assert!(
         loaded >= floor,
         "{loaded} documents load, the agree floor is {floor}"
     );
-    assert!(refused.is_empty(), "{}", refused.join("\n"));
+    assert!(!registered.is_empty(), "no D-MODEL-CHECKS document");
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 /// A clone keeps the baseline it was cloned with.

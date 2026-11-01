@@ -2722,3 +2722,8 @@ ecca903a0be1635f	sim/L0/mjcf/tests/refusal_order.rs:287
 f08003347ea2f707	sim/L0/mjcf/tests/refusal_order.rs:358
 f92cb20398502e6d	sim/L0/mjcf/tests/refusal_order.rs:281
 ff7231e625784cb9	sim/L0/mjcf/tests/refusal_order.rs:317
+2b8c83bd774a7651	sim/L0/mjcf/tests/limits.rs:110
+4494a2b675ac805c	sim/L0/mjcf/tests/limits.rs:901
+5ba0e922ed9105b5	sim/L0/mjcf/tests/limits.rs:512
+7edb38282ceaf0f3	sim/L0/mjcf/tests/limits.rs:521
+df5e053b64aeead9	sim/L0/mjcf/tests/limits.rs:566

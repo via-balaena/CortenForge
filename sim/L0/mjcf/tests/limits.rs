@@ -9,11 +9,13 @@
 //! MuJoCo's `jnt_limited` and `jnt_range`, or `tendon_limited`,
 //! `tendon_range` and `tendon_lengthspring`, or an actuator's limited ranges,
 //! bit for bit (an unlimited control or force range, which MuJoCo stores as
-//! written, is unbounded here; a range is the
-//! written one, or, limited in degrees, times `pi/180`; a spring length is
-//! the written one or the tendon's length at `qpos0`, of joints at 0: no
-//! library call to differ between platforms). An automatic range that does
-//! not increase, which MuJoCo leaves unlimited, is refused (`D-AUTO-RANGE`).
+//! written, is unbounded here, and an unlimited activation range `0 0`; a
+//! range is the written one, or, limited in degrees, times `pi/180`; a spring
+//! length is the written one or the tendon's length at `qpos_spring`, a
+//! written joint position times 1: no library call to differ between
+//! platforms). An automatic range that does not increase, which MuJoCo
+//! leaves unlimited, is refused (`D-AUTO-RANGE`), with the words of its
+//! pair.
 
 // The values are MuJoCo's, printed to the last digit; some are fractions of pi.
 #![allow(
@@ -30,8 +32,9 @@ use sim_mjcf::load_model;
 enum Expect {
     /// MuJoCo refuses it, with these words.
     Refused(&'static str),
-    /// MuJoCo leaves the automatic range unlimited; refused (`D-AUTO-RANGE`).
-    Automatic,
+    /// MuJoCo leaves the automatic range unlimited; refused (`D-AUTO-RANGE`)
+    /// with these words.
+    Automatic(&'static str),
     /// MuJoCo loads it with these joints.
     Joints {
         limited: &'static [bool],
@@ -69,17 +72,17 @@ const JOINTS: &[(&str, &str, Expect)] = &[
     (
         "j_ball_auto_0_m10",
         r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="ball" range="0 -10"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
-        Expect::Automatic,
+        Expect::Automatic("an automatic `limited` needs `range`"),
     ),
     (
         "j_ball_auto_0_m1_rad",
         r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="ball" range="0 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
-        Expect::Automatic,
+        Expect::Automatic("an automatic `limited` needs `range`"),
     ),
     (
         "j_ball_auto_45_0",
         r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="ball" range="45 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
-        Expect::Automatic,
+        Expect::Automatic("an automatic `limited` needs `range`"),
     ),
     (
         "j_ball_auto_zero",
@@ -100,6 +103,11 @@ const JOINTS: &[(&str, &str, Expect)] = &[
     (
         "j_ball_true_45_0",
         r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="ball" limited="true" range="45 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        Expect::Refused("range[0] should be 0 in ball joint"),
+    ),
+    (
+        "j_ball_true_neg_lower",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="ball" limited="true" range="-10 30"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
         Expect::Refused("range[0] should be 0 in ball joint"),
     ),
     (
@@ -171,7 +179,7 @@ const JOINTS: &[(&str, &str, Expect)] = &[
     (
         "j_hinge_auto_backwards",
         r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
-        Expect::Automatic,
+        Expect::Automatic("an automatic `limited` needs `range`"),
     ),
     (
         "j_hinge_auto_deg",
@@ -184,7 +192,7 @@ const JOINTS: &[(&str, &str, Expect)] = &[
     (
         "j_hinge_auto_equal",
         r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
-        Expect::Automatic,
+        Expect::Automatic("an automatic `limited` needs `range`"),
     ),
     (
         "j_hinge_auto_rad",
@@ -310,11 +318,11 @@ fn check(cases: &[(&str, &str, Expect)]) {
                     "{name}: expected '{words}', got '{error}'"
                 );
             }
-            Expect::Automatic => {
+            Expect::Automatic(words) => {
                 let error = loaded.err().map(|e| e.to_string()).unwrap_or_default();
                 assert!(
-                    error.contains("an automatic `") && error.contains("limited` needs"),
-                    "{name}: expected the automatic range refused, got '{error}'"
+                    error.contains(words),
+                    "{name}: expected '{words}', got '{error}'"
                 );
             }
             Expect::Joints { limited, range } => {
@@ -396,12 +404,12 @@ const TENDONS: &[(&str, &str, Expect)] = &[
     (
         "t_fixed_auto_backwards",
         r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" range="1 0"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
-        Expect::Automatic,
+        Expect::Automatic("an automatic `limited` needs `range`"),
     ),
     (
         "t_fixed_auto_equal",
         r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" range="1 1"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
-        Expect::Automatic,
+        Expect::Automatic("an automatic `limited` needs `range`"),
     ),
     (
         "t_fixed_auto_ok",
@@ -473,7 +481,7 @@ const TENDONS: &[(&str, &str, Expect)] = &[
     (
         "t_spatial_auto_backwards",
         r#"<mujoco><worldbody><site name="s0" pos="0 0 1.2"/><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><tendon><spatial name="t" range="1 -1"><site site="s0"/><site site="s1"/></spatial></tendon></mujoco>"#,
-        Expect::Automatic,
+        Expect::Automatic("an automatic `limited` needs `range`"),
     ),
     (
         "t_spatial_spring_neg",
@@ -498,6 +506,24 @@ const TENDONS: &[(&str, &str, Expect)] = &[
         "t_spring_class_backwards",
         r#"<mujoco><compiler angle="radian"/><default><tendon springlength="0.7 0.3"/></default><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" ><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
         Expect::Refused("invalid springlength in tendon"),
+    ),
+    (
+        "t_spring_class_backwards_overridden",
+        r#"<mujoco><compiler angle="radian"/><default><tendon springlength="0.7 0.3"/></default><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" springlength="0.1 0.2"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
+        Expect::Tendons {
+            limited: &[false],
+            range: &[(0.0_f64, 0.0_f64)],
+            lengthspring: &[[0.1_f64, 0.2_f64]],
+        },
+    ),
+    (
+        "t_spring_class_backwards_unused",
+        r#"<mujoco><compiler angle="radian"/><default><default class="c"><tendon springlength="0.7 0.3"/></default></default><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
+        Expect::Tendons {
+            limited: &[false],
+            range: &[(0.0_f64, 0.0_f64)],
+            lengthspring: &[[0.0_f64, 0.0_f64]],
+        },
     ),
     (
         "t_spring_class_neg",
@@ -536,6 +562,15 @@ const TENDONS: &[(&str, &str, Expect)] = &[
         },
     ),
     (
+        "t_spring_m1_springref",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1" springref="0.3"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" springlength="-1 -1"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
+        Expect::Tendons {
+            limited: &[false],
+            range: &[(0.0_f64, 0.0_f64)],
+            lengthspring: &[[0.3_f64, 0.3_f64]],
+        },
+    ),
+    (
         "t_spring_neg",
         r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" springlength="-0.5"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
         Expect::Tendons {
@@ -564,7 +599,7 @@ const ACTUATORS: &[(&str, &str, Expect)] = &[
     (
         "a_act_auto_backwards",
         r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><actuator><general joint="j" dyntype="integrator" actrange="1 -1"/></actuator></mujoco>"#,
-        Expect::Automatic,
+        Expect::Automatic("an automatic `actlimited` needs `actrange`"),
     ),
     (
         "a_act_auto_dyn_none",
@@ -599,12 +634,12 @@ const ACTUATORS: &[(&str, &str, Expect)] = &[
     (
         "a_ctrl_auto_backwards",
         r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><actuator><motor joint="j" ctrlrange="1 -1"/></actuator></mujoco>"#,
-        Expect::Automatic,
+        Expect::Automatic("an automatic `ctrllimited` needs `ctrlrange`"),
     ),
     (
         "a_ctrl_auto_equal",
         r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><actuator><motor joint="j" ctrlrange="1 1"/></actuator></mujoco>"#,
-        Expect::Automatic,
+        Expect::Automatic("an automatic `ctrllimited` needs `ctrlrange`"),
     ),
     (
         "a_ctrl_auto_zero",
@@ -647,7 +682,7 @@ const ACTUATORS: &[(&str, &str, Expect)] = &[
     (
         "a_force_auto_backwards",
         r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><actuator><motor joint="j" forcerange="1 -1"/></actuator></mujoco>"#,
-        Expect::Automatic,
+        Expect::Automatic("an automatic `forcelimited` needs `forcerange`"),
     ),
     (
         "a_force_true_backwards",
@@ -713,7 +748,7 @@ const ACTUATORS: &[(&str, &str, Expect)] = &[
     (
         "a_position_auto_backwards",
         r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><actuator><position joint="j" kp="1" ctrlrange="1 -1"/></actuator></mujoco>"#,
-        Expect::Automatic,
+        Expect::Automatic("an automatic `ctrllimited` needs `ctrlrange`"),
     ),
 ];
 
@@ -853,4 +888,48 @@ const SENSORS: &[(&str, &str, Expect)] = &[
 #[test]
 fn each_limit_sensor_check_is_mujocos() {
     check(SENSORS);
+}
+
+/// A limited hinge range in degrees whose two bounds become one value in
+/// radians loads, as MuJoCo 3.5.0 loads it (it checks the range before it
+/// converts it; measured: `jnt_limited` 1, both bounds 0.523598775598299),
+/// and `try_make_data` refuses it (registry D-MODEL-CHECKS): a parsed route to
+/// `build.rs`'s derivation guard.
+#[test]
+fn a_range_degree_conversion_makes_empty_loads_and_make_data_refuses_it() {
+    let model = load_model(
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" limited="true" range="30.000000000000007 30.00000000000001"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+    )
+    .expect("loads, as MuJoCo loads it");
+    assert!(model.jnt_limited[0]);
+    let (lo, hi) = model.jnt_range[0];
+    assert_eq!(
+        (lo.to_bits(), hi.to_bits()),
+        (
+            0.523598775598299_f64.to_bits(),
+            0.523598775598299_f64.to_bits()
+        )
+    );
+    assert!(matches!(
+        model.try_make_data().err(),
+        Some(sim_core::MakeDataError::Range(_))
+    ));
+}
+
+/// An actuator on a fixed tendon over an unlimited hinge has the length range
+/// MuJoCo 3.5.0 gives it, `0 0` (measured, with no range and with
+/// `limited="false" range="-90 90"`): an unlimited joint's range, kept as
+/// written, adds nothing to the tendon's.
+#[test]
+fn an_unlimited_joint_adds_nothing_to_a_fixed_tendons_length_range() {
+    for joint in [
+        r#"<joint name="j" type="hinge" axis="0 1 0"/>"#,
+        r#"<joint name="j" type="hinge" axis="0 1 0" limited="false" range="-90 90"/>"#,
+    ] {
+        let model = load_model(&format!(
+            r#"<mujoco><worldbody><body name="b" pos="0 0 1">{joint}<inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t"><joint joint="j" coef="1"/></fixed></tendon><actuator><motor tendon="t"/></actuator></mujoco>"#
+        ))
+        .expect(joint);
+        assert_eq!(model.actuator_lengthrange[0], (0.0, 0.0), "{joint}");
+    }
 }

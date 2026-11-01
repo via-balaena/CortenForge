@@ -97,13 +97,15 @@ impl ModelBuilder {
 
         // A Hill or Millard muscle's activation (CortenForge's) is limited to
         // (0, 1) when neither its `actlimited` nor its `actrange` is written
-        // (`auto` as unwritten); a MuJoCo `<muscle>`'s is not, as MuJoCo
-        // leaves it (A5-Q6).
+        // (`auto` as unwritten, `0 0` as no range, as MuJoCo reads one); a
+        // MuJoCo `<muscle>`'s is not, as MuJoCo leaves it (A5-Q6).
+        #[allow(clippy::float_cmp)] // MuJoCo's test: a range of exactly 0 0 is none.
+        let no_actrange = actrange.is_none_or(|(lo, hi)| lo == 0.0 && hi == 0.0);
         if matches!(
             dyntype,
             ActuatorDynamics::HillMuscle | ActuatorDynamics::MillardMuscle
         ) && matches!(spec.actlimited, None | Some(TfAuto::Auto))
-            && actrange.is_none()
+            && no_actrange
         {
             act = limits::Limit {
                 limited: true,
@@ -1159,8 +1161,8 @@ mod tests {
     }
 
     /// A Hill or Millard muscle's activation (CortenForge's) is limited to
-    /// (0, 1) when neither `actlimited` (or `auto`) nor `actrange` is
-    /// written; a written range, or `actlimited="false"`, is kept.
+    /// (0, 1) when neither `actlimited` (or `auto`) nor `actrange` (or `0 0`)
+    /// is written; a written range, or `actlimited="false"`, is kept.
     #[test]
     fn a_hill_or_millard_activation_defaults_to_zero_one() {
         let act = |actuator: &str| {
@@ -1179,6 +1181,10 @@ mod tests {
             (
                 r#"<general joint="j" dyntype="hillmuscle" actrange="0 0.5"/>"#,
                 (true, (0.0, 0.5)),
+            ),
+            (
+                r#"<general joint="j" dyntype="hillmuscle" actrange="0 0"/>"#,
+                (true, (0.0, 1.0)),
             ),
             (
                 r#"<general joint="j" dyntype="hillmuscle" actlimited="false"/>"#,

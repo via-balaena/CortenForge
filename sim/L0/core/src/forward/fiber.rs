@@ -88,15 +88,19 @@ impl Model {
                             }
                             // For unlimited fixed tendons: estimate from joint ranges.
                             // Fixed tendon length = Σ coef_i * q_i, so extremes come
-                            // from each joint at its range limit (sign-aware).
+                            // from each limited joint at its range limit (sign-aware);
+                            // an unlimited joint's range bounds nothing, and an MJCF
+                            // one keeps it as written (degrees, or 0 0), as MuJoCo
+                            // stores it, so it adds nothing.
                             let adr = self.tendon_adr[tid];
                             let num = self.tendon_num[tid];
                             let (mut lmin, mut lmax) = (0.0, 0.0);
                             for w in adr..(adr + num) {
                                 let dof = self.wrap_objid[w];
                                 let coef = self.wrap_prm[w];
-                                if let Some(jid) =
-                                    (0..self.njnt).find(|&j| self.jnt_dof_adr[j] == dof)
+                                if let Some(jid) = (0..self.njnt)
+                                    .find(|&j| self.jnt_dof_adr[j] == dof)
+                                    .filter(|&j| self.jnt_limited[j])
                                 {
                                     let (qlo, qhi) = self.jnt_range[jid];
                                     if coef >= 0.0 {

@@ -5,7 +5,7 @@
 //! - Single-value and two-value springlength parsing (AC1, AC2)
 //! - Auto-compute sentinel resolution (AC3, AC3b)
 //! - Sentinel vs explicit zero (AC4)
-//! - Validation: low > high, negative, NaN, two-value negative (AC5, AC5b–d)
+//! - Validation: low > high refused, negative loads, NaN refused (AC5, AC5b–d)
 //! - Default class support: apply, override, two-value, nested (AC6–AC8, AC8b)
 //! - Deadband physics: in-band zero, above/below restoring, classical (AC9–AC12)
 //! - Spatial tendon: explicit and auto-compute (AC13, AC13b)
@@ -262,9 +262,10 @@ fn test_ac5c_nan_springlength_rejected() {
     }
 }
 
-/// AC5d — Validation: two-value with one negative is rejected (B2 validation).
+/// AC5d — a two-value springlength whose low is above its high is refused
+/// with MuJoCo 3.5.0's words, a negative high among them (ledger L55).
 #[test]
-fn test_ac5d_two_value_one_negative_rejected() {
+fn test_ac5d_two_value_low_above_high_rejected() {
     let mjcf = r#"
         <mujoco>
           <compiler angle="radian"/>
@@ -282,8 +283,8 @@ fn test_ac5d_two_value_one_negative_rejected() {
         </mujoco>
     "#;
 
-    let result = load_model(mjcf);
-    assert!(result.is_err());
+    let error = load_model(mjcf).expect_err("low above high").to_string();
+    assert!(error.contains("invalid springlength in tendon"), "{error}");
 }
 
 // ============================================================================

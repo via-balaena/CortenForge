@@ -591,9 +591,9 @@ mod tests {
     /// A backwards motor range beside a muscle, whose length range is found by
     /// simulating the model (a backwards clamp panics in `f64::clamp`), is
     /// refused at load, as MuJoCo refuses it ("invalid control range for
-    /// actuator", measured), before the derivations run (book L21).
+    /// actuator", measured; book L21).
     #[test]
-    fn a_backwards_range_is_refused_before_the_derivations() {
+    fn a_backwards_ctrlrange_beside_a_muscle_is_refused_at_load() {
         let error = load_model(
             r#"<mujoco><worldbody><body><joint name="j" type="hinge" axis="0 1 0"/>
 <geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05"/><site name="a" pos="0.1 0 0"/></body>
