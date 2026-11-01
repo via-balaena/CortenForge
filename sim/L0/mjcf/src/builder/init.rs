@@ -47,6 +47,7 @@ impl ModelBuilder {
             jnt_dof_adr: vec![],
             jnt_pos: vec![],
             jnt_axis: vec![],
+            jnt_axis_too_small: vec![],
             jnt_limited: vec![],
             jnt_range: vec![],
             jnt_range_compiled: vec![],

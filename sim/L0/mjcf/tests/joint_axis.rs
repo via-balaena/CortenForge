@@ -1,12 +1,14 @@
 //! A joint's axis as MuJoCo 3.5.0 compiles it (book L20).
 //!
-//! `mjCJoint::Compile` (`user_objects.cc:2946-2960`) sets a ball's or a free
-//! joint's axis to (0, 0, 1) before anything else, whatever is written;
-//! another joint's axis it turns by the joint's frame and makes unit with
-//! `mjuu_normvec`, which returns 0 where the squared norm is below mjEPS
-//! (1e-14), and then refuses the joint: "axis too small in joint". It does
-//! that before it counts the body's degrees of freedom, so a body of seven
-//! hinges, one of them with a zero axis, is refused for the axis.
+//! `mjCJoint::Compile` (`user_objects.cc:2946-2960`), once it has checked the
+//! joint's user data, springdamper and ranges (`:2884-2944`), sets a ball's
+//! or a free joint's axis to (0, 0, 1), whatever is written; another joint's
+//! axis it turns by the joint's frame and makes unit with `mjuu_normvec`,
+//! which returns 0 where the squared norm is below mjEPS (1e-14), and then
+//! refuses the joint: "axis too small in joint". Its body counts the degrees
+//! of freedom after its joints, so a body of seven hinges, one of them with a
+//! zero axis, is refused for the axis. Where this crate checks the axis
+//! among its other checks: `tests/refusal_order.rs`.
 //!
 //! Every document, axis and reason below was measured on the census's
 //! unfused oracle (2026-10-31). The axes take a square root and divisions

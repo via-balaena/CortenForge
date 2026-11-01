@@ -547,6 +547,7 @@ impl ModelBuilder {
                 self.jnt_dof_adr.push(dof_idx);
                 self.jnt_pos.push(Vector3::zeros());
                 self.jnt_axis.push(*axis);
+                self.jnt_axis_too_small.push(false);
                 self.jnt_limited.push(false);
                 self.jnt_range
                     .push((-std::f64::consts::PI, std::f64::consts::PI));

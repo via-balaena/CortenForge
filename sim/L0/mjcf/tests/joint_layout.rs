@@ -5,12 +5,13 @@
 //! (`mjCBody::Compile`, `user_objects.cc:2517-2535`): at most 6 degrees of
 //! freedom ("more than 6 dofs", so a free joint is its body's only joint),
 //! then no ball or hinge after a ball ("ball followed by rotation"). Only
-//! when it copies the tree into its model, after every other compiler check,
-//! does it require a free joint's body to be a child of the world, once
-//! frames are dissolved and static bodies fused ("free joint can only be
-//! used on top level", `user_model.cc:2725-2727`), so a document with both
-//! faults is refused for the first. A slide after a ball, which MuJoCo
-//! loads, sim-mjcf refuses as not supported (`D-BALL-THEN-SLIDE`).
+//! when it copies the tree into its model, after it has compiled the bodies,
+//! the tendons and the actuators, does it require a free joint's body to be a
+//! child of the world, once frames are dissolved and static bodies fused
+//! ("free joint can only be used on top level", `user_model.cc:2725-2727`),
+//! so a document with both faults is refused for the first. A slide after a
+//! ball, which MuJoCo loads, sim-mjcf refuses as not supported, after every
+//! check MuJoCo makes (`D-BALL-THEN-SLIDE`).
 //!
 //! Every document, reason and degree-of-freedom count below was measured on
 //! the census's unfused oracle (2026-10-31).
@@ -202,9 +203,9 @@ fn a_joint_layout_mujoco_loads_loads() {
     assert!(missed.is_empty(), "{}", missed.join("\n"));
 }
 
-/// MuJoCo loads a slide after a ball (nq 5, nv 4, measured); sim-core turns
-/// a ball about its body's final orientation, which a later joint on the
-/// body would move, so sim-mjcf refuses it as not supported.
+/// MuJoCo loads a slide after a ball (nq 5, nv 4, measured); sim-mjcf
+/// refuses it as not supported, as the parity rule's decisions decided
+/// (01-decisions; `D-BALL-THEN-SLIDE`).
 #[test]
 fn a_slide_after_a_ball_is_not_supported() {
     let xml = r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint type="ball"/><joint type="slide"/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#;

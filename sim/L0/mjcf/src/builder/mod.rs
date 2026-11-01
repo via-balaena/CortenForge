@@ -306,9 +306,18 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Finalize user data: resolve nuser, validate, pad
     builder.finalize_user_data(&mjcf)?;
 
-    // A free joint below the world's children, refused after every other
-    // check, as MuJoCo refuses it when it copies its tree.
+    // MuJoCo 3.5.0's checks of joints and of tendon armature, after every
+    // check above, so that a document refused before they existed is refused
+    // for the same fault (where MuJoCo orders them among the others: ledger
+    // L353). Among themselves in MuJoCo's order: each body's joints, the
+    // tendons, then the free joint below the world's children, as MuJoCo's
+    // `CopyTree` refuses it. Last, the two this crate makes and MuJoCo does
+    // not.
+    builder.check_joints()?;
+    builder.check_tendon_armature()?;
     builder.check_free_joints_on_top_level()?;
+    builder.check_ball_then_slide()?;
+    builder.check_fixed_tendon_armature()?;
 
     // Build final model
     let mut model = builder.build();
@@ -490,6 +499,9 @@ pub struct ModelBuilder {
     pub(crate) jnt_dof_adr: Vec<usize>,
     pub(crate) jnt_pos: Vec<Vector3<f64>>,
     pub(crate) jnt_axis: Vec<Vector3<f64>>,
+    /// Whether each joint's written axis was too small to make unit, which
+    /// `check_joints` refuses.
+    pub(crate) jnt_axis_too_small: Vec<bool>,
     pub(crate) jnt_limited: Vec<bool>,
     pub(crate) jnt_range: Vec<(f64, f64)>,
     /// Each joint's range as MuJoCo compiles it, which `jnt_range` does not

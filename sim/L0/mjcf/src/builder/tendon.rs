@@ -32,8 +32,7 @@ impl ModelBuilder {
             self.tendon_limited.push(tendon_limited);
             self.tendon_stiffness.push(tendon.stiffness.unwrap_or(0.0));
             self.tendon_damping.push(tendon.damping.unwrap_or(0.0));
-            let armature = tendon.armature.unwrap_or(0.0);
-            self.tendon_armature.push(armature);
+            self.tendon_armature.push(tendon.armature.unwrap_or(0.0));
             self.tendon_frictionloss
                 .push(tendon.frictionloss.unwrap_or(0.0));
             self.tendon_solref_fri
@@ -140,14 +139,6 @@ impl ModelBuilder {
                                     ))
                                     .at(at()));
                                 }
-                                // MuJoCo cannot differentiate a wrap for the
-                                // armature's bias force (`user_objects.cc:6389`).
-                                if armature > 0.0 {
-                                    return Err(MjcfError::invalid_model(
-                                        "geom wrapping not supported by tendon armature",
-                                    )
-                                    .at(at()));
-                                }
                                 let ss_id = if let Some(ss) = sidesite {
                                     *self.site_name_to_id.get(ss.as_str()).ok_or_else(|| {
                                         MjcfError::undefined(ElementKind::Site, ss).at(at())
@@ -171,19 +162,54 @@ impl ModelBuilder {
                 }
             }
             self.tendon_num.push(self.wrap_type.len() - wrap_start);
-            // MuJoCo refuses a spatial tendon's negative armature
-            // (`user_objects.cc:6342`) but, its check sitting in the spatial
-            // path's branch, adds a fixed tendon's to the mass matrix; this
-            // refuses both (`D-TENDON-ARMATURE-NEGATIVE`).
-            if armature < 0.0 {
-                return Err(MjcfError::invalid_value(
-                    "tendon",
-                    "armature",
-                    "tendon armature cannot be negative",
+        }
+        Ok(())
+    }
+
+    /// Where tendon `t` is, for an error.
+    fn tendon_location(&self, t: usize) -> Location {
+        Location::nth(ElementKind::Tendon, self.tendon_name[t].as_deref(), t)
+    }
+
+    /// MuJoCo 3.5.0's checks of a tendon's armature (`mjCTendon::Compile`),
+    /// tendon by tendon: a spatial tendon's negative armature
+    /// (`user_objects.cc:6342-6346`), then armature on a tendon that wraps a
+    /// sphere or a cylinder, whose bias force MuJoCo cannot differentiate
+    /// (`:6389-6393`). The caller runs it after every check this crate makes
+    /// otherwise and after the bodies' joints, before the free joint's.
+    pub(crate) fn check_tendon_armature(&self) -> Result<()> {
+        for t in 0..self.tendon_type.len() {
+            let armature = self.tendon_armature[t];
+            if self.tendon_type[t] == TendonType::Spatial && armature < 0.0 {
+                return Err(negative_armature().at(self.tendon_location(t)));
+            }
+            let path = self.tendon_adr[t]..self.tendon_adr[t] + self.tendon_num[t];
+            if armature > 0.0 && self.wrap_type[path].contains(&WrapType::Geom) {
+                return Err(MjcfError::invalid_model(
+                    "geom wrapping not supported by tendon armature",
                 )
-                .at(at()));
+                .at(self.tendon_location(t)));
             }
         }
         Ok(())
     }
+
+    /// A fixed tendon's negative armature, refused (`D-TENDON-ARMATURE-NEGATIVE`):
+    /// MuJoCo 3.5.0's check of the sign sits in the spatial path's branch
+    /// (`user_objects.cc:6342-6346`), so it loads a fixed tendon's and makes
+    /// an indefinite mass matrix of it, silently. The caller runs it after
+    /// every check MuJoCo makes.
+    pub(crate) fn check_fixed_tendon_armature(&self) -> Result<()> {
+        match (0..self.tendon_type.len())
+            .find(|&t| self.tendon_type[t] == TendonType::Fixed && self.tendon_armature[t] < 0.0)
+        {
+            Some(t) => Err(negative_armature().at(self.tendon_location(t))),
+            None => Ok(()),
+        }
+    }
+}
+
+/// MuJoCo's refusal of a negative tendon armature.
+fn negative_armature() -> MjcfError {
+    MjcfError::invalid_value("tendon", "armature", "tendon armature cannot be negative")
 }
