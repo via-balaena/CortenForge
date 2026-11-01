@@ -98,8 +98,11 @@ impl<'de, const N: usize> Deserialize<'de> for Prefix<N> {
 }
 
 /// MuJoCo's `false | true | auto` keyword (`TFAuto_map`,
-/// `xml_native_reader.cc`), for a `limited`-style attribute: `Auto` leaves
-/// the limit to `<compiler autolimits>` and whether a range is given.
+/// `xml_native_reader.cc`), for a `limited`-style attribute.
+///
+/// `Auto`, as an unwritten one, limits when the range increases, and under
+/// `<compiler autolimits="false"/>` a range other than `0 0` beside it is
+/// refused (`builder/limits.rs`, MuJoCo's `islimited` and `checklimited`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum TfAuto {
@@ -444,7 +447,10 @@ pub struct MjcfCompiler {
     pub texturedir: Option<String>,
     /// Fallback directory for all asset files.
     pub assetdir: Option<String>,
-    /// Automatically infer `limited` from `range` presence.
+    /// Whether a `limited`-style attribute left unwritten or `auto` may be
+    /// decided by its range (MuJoCo's `autolimits`): with it off, a range
+    /// other than `0 0` written without its `limited`, or with `auto`, is
+    /// refused ([`TfAuto`]).
     pub autolimits: bool,
     /// Controls inertia computation from geoms.
     pub inertiafromgeom: InertiaFromGeom,
@@ -1557,8 +1563,7 @@ pub struct MjcfJoint {
     pub pos: Option<Vector3<f64>>,
     /// Joint axis (for hinge and slide).
     pub axis: Option<Vector3<f64>>,
-    /// Whether position limits are enabled. `None`, as `Auto`, leaves it
-    /// to `autolimits` and the range.
+    /// Whether position limits are enabled; `None` as `Auto` ([`TfAuto`]).
     pub limited: Option<TfAuto>,
     /// Position limit range [lower, upper].
     pub range: Option<(f64, f64)>,
@@ -2813,11 +2818,9 @@ pub struct MjcfActuator {
     pub ctrlrange: Option<(f64, f64)>,
     /// Force range [lower, upper].
     pub forcerange: Option<(f64, f64)>,
-    /// Whether control is clamped to range. `None`, as `Auto`, leaves it
-    /// to `autolimits` and the range.
+    /// Whether control is clamped to range; `None` as `Auto` ([`TfAuto`]).
     pub ctrllimited: Option<TfAuto>,
-    /// Whether force is clamped to range. `None`, as `Auto`, leaves it
-    /// to `autolimits` and the range.
+    /// Whether force is clamped to range; `None` as `Auto` ([`TfAuto`]).
     pub forcelimited: Option<TfAuto>,
     /// Position gain (for position and intvelocity actuators). `None`
     /// means not written (MuJoCo's 1).
@@ -2836,7 +2839,8 @@ pub struct MjcfActuator {
     pub inheritrange: Option<f64>,
     /// Visualization group (0–5).
     pub group: Option<i32>,
-    /// Whether activation is clamped to actrange.
+    /// Whether activation is clamped to actrange; `None` as `Auto`
+    /// ([`TfAuto`]).
     pub actlimited: Option<TfAuto>,
     /// Activation clamping range [lower, upper].
     pub actrange: Option<(f64, f64)>,
@@ -3154,8 +3158,7 @@ pub struct MjcfTendon {
     pub tendon_type: MjcfTendonType,
     /// Range limits [lower, upper] for tendon length.
     pub range: Option<(f64, f64)>,
-    /// Whether range limits are enabled. `None`, as `Auto`, leaves it
-    /// to `autolimits` and the range.
+    /// Whether range limits are enabled; `None` as `Auto` ([`TfAuto`]).
     pub limited: Option<TfAuto>,
     /// Stiffness coefficient.
     pub stiffness: Option<f64>,

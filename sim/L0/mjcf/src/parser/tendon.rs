@@ -160,7 +160,19 @@ pub(super) fn parse_tendon_attrs(
 
     // B2: Parse springlength (1 or 2 values)
     if let Some(sl) = a.prefix::<2>("springlength")? {
-        tendon.springlength = springlength(sl.given())?; // S2
+        tendon.springlength = springlength(sl.given());
+        // The element's own, which no class replaces, refused where this
+        // crate refused it before book L21; a class's once applied
+        // (`validation.rs`).
+        if let Some((low, high)) = tendon.springlength
+            && low > high
+        {
+            return Err(MjcfError::invalid_value(
+                "tendon",
+                "springlength",
+                "invalid springlength in tendon",
+            ));
+        }
     }
 
     tendon.width = a.real("width")?;
@@ -185,29 +197,17 @@ pub(super) fn parse_tendon_attrs(
     Ok(tendon)
 }
 
-/// A tendon's `springlength` from its values: one is both ends (S2), two are
-/// low and high (S4), none is unset. Each must be finite and non-negative.
-pub(super) fn springlength(parts: &[f64]) -> Result<Option<(f64, f64)>> {
-    let (low, high) = match parts {
-        [] => return Ok(None),
-        [v] => (*v, *v),
-        [low, high, ..] => (*low, *high),
-    };
-    for v in [low, high] {
-        if v < 0.0 {
-            return Err(MjcfError::invalid_value(
-                "tendon",
-                "springlength",
-                format!("value ({v}) must be >= 0"),
-            ));
-        }
+/// A tendon's `springlength` from its values: one is both ends, two are low
+/// and high, none is unset, as MuJoCo 3.5.0 reads it
+/// (`xml_native_reader.cc:2269-2272`). A negative value is a length, as
+/// MuJoCo takes it, and `-1 -1` asks for the tendon's length at
+/// `qpos_spring`, as MuJoCo makes it (`engine_setconst.c:1069-1084`). A low
+/// above its high is refused by the caller, and a class's once applied
+/// (`validation.rs`).
+pub(super) fn springlength(parts: &[f64]) -> Option<(f64, f64)> {
+    match parts {
+        [] => None,
+        [v] => Some((*v, *v)),
+        [low, high, ..] => Some((*low, *high)),
     }
-    if low > high {
-        return Err(MjcfError::invalid_value(
-            "tendon",
-            "springlength",
-            format!("low ({low}) must be <= high ({high})"),
-        ));
-    }
-    Ok(Some((low, high)))
 }

@@ -1,5 +1,6 @@
 //! Which fault a document with two is refused for, where RL-6a's refusals
-//! meet the ones this crate made before (book L19, L20; ledger L164).
+//! meet the ones this crate made before (book L19, L20; ledger L164), and
+//! where RL-6b's limit checks meet both (book L21; ledger L363).
 //!
 //! RL-6a's refusals that MuJoCo 3.5.0 makes (a joint's axis, a body's joint
 //! layout, a tendon's armature, a free joint below the world's children) run
@@ -8,13 +9,22 @@
 //! refuses it here; a keyframe's fault comes after them, as in MuJoCo. The
 //! two that MuJoCo does not make (a slide after a ball, a fixed tendon's
 //! negative armature) run after the keyframes, which this crate resolves
-//! once the model is built. Where MuJoCo orders a new refusal before a check this crate makes
-//! later, this crate names the later one, as it did before.
+//! once the model is built, and so does RL-6b's third, an automatic range
+//! that does not increase (`D-AUTO-RANGE`), which MuJoCo leaves unlimited, as
+//! every check before it takes it. RL-6b's limit checks MuJoCo makes run with
+//! RL-6a's, in MuJoCo's order; a limited tendon's range and an element's
+//! backwards spring length stay where this crate checked them, and a class's
+//! spring length is checked once the class is applied, after the actuators'
+//! references (ledger L353 holds the orders this leaves unlike MuJoCo's). Where
+//! MuJoCo orders a new refusal before a check this crate makes later, this
+//! crate names the later one, as it did before.
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
-//! oracle (2026-10-31), for the fault its expected error names. Eleven are the
-//! RL-6a review's first round, three its fix-diff pass's (a keyframe's fault),
-//! and four set the new checks against each other.
+//! oracle, for the fault its expected error names (RL-6a's measured
+//! 2026-10-31, RL-6b's 2026-11-01). Eleven are the RL-6a review's first
+//! round, three its fix-diff pass's (a keyframe's fault), and four set the
+//! new checks against each other; the rest are RL-6b's, each a limit's fault
+//! beside another.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -129,6 +139,242 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="z" type="hinge" axis="0 0 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><keyframe><key qpos="0 0"/></keyframe></mujoco>"#,
         "axis too small in joint",
         "invalid axis on <joint>: axis too small (joint 'z' in body 'a')",
+    ),
+    (
+        "zero axis then backwards range",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="z" type="hinge" axis="0 0 0" limited="true" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        "range[0] should be smaller than range[1] in joint",
+        "invalid range on <joint>: range[0] should be smaller than range[1] in joint (joint 'z' in body 'a')",
+    ),
+    (
+        "backwards range then nested free",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0" limited="true" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><body name="b" pos="0 0 -0.3"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></body></worldbody></mujoco>"#,
+        "range[0] should be smaller than range[1] in joint",
+        "invalid range on <joint>: range[0] should be smaller than range[1] in joint (joint 'h' in body 'a')",
+    ),
+    (
+        "backwards joint range then spatial negative armature",
+        r#"<mujoco><worldbody><site name="s0" pos="0 0 1.2"/><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" limited="true" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><tendon><spatial armature="-0.1"><site site="s0"/><site site="s1"/></spatial></tendon></mujoco>"#,
+        "range[0] should be smaller than range[1] in joint",
+        "invalid range on <joint>: range[0] should be smaller than range[1] in joint (joint 'j' in body 'b')",
+    ),
+    (
+        "backwards range then ball slide",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="b" type="ball"/><joint name="s" type="slide" axis="1 0 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body><body name="c" pos="1 0 1"><joint name="k" type="hinge" axis="0 1 0" limited="true" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        "range[0] should be smaller than range[1] in joint",
+        "invalid range on <joint>: range[0] should be smaller than range[1] in joint (joint 'k' in body 'c')",
+    ),
+    (
+        "range without limited then backwards ctrlrange",
+        r#"<mujoco><compiler angle="radian" autolimits="false"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><actuator><motor joint="j" ctrllimited="true" ctrlrange="1 -1"/></actuator></mujoco>"#,
+        "joint has `range` but not `limited`. set the autolimits=\"true\" compiler option, specify `limited` explicitly (\"true\" or \"false\"), or remove the `range` attribute.",
+        "invalid range on <joint>: joint has `range` but not `limited`. set the autolimits=\"true\" compiler option, specify `limited` explicitly (\"true\" or \"false\"), or remove the `range` attribute. (joint 'j' in body 'b')",
+    ),
+    (
+        "backwards range then seven dofs",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="h0" type="hinge" axis="0 1 0" limited="true" range="1 -1"/><joint name="h1" type="hinge" axis="0 1 0"/><joint name="h2" type="hinge" axis="0 1 0"/><joint name="h3" type="hinge" axis="0 1 0"/><joint name="h4" type="hinge" axis="0 1 0"/><joint name="h5" type="hinge" axis="0 1 0"/><joint name="h6" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        "range[0] should be smaller than range[1] in joint",
+        "invalid range on <joint>: range[0] should be smaller than range[1] in joint (joint 'h0' in body 'a')",
+    ),
+    (
+        "zero axis then next joint backwards",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="z" type="hinge" axis="0 0 0"/><joint name="j" type="hinge" axis="0 1 0" limited="true" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'z' in body 'b')",
+    ),
+    (
+        "seven dofs then later backwards range",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="h0" type="hinge" axis="0 1 0"/><joint name="h1" type="hinge" axis="0 1 0"/><joint name="h2" type="hinge" axis="0 1 0"/><joint name="h3" type="hinge" axis="0 1 0"/><joint name="h4" type="hinge" axis="0 1 0"/><joint name="h5" type="hinge" axis="0 1 0"/><joint name="h6" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body><body name="c" pos="1 0 1"><joint name="k" type="hinge" axis="0 1 0" limited="true" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        "more than 6 dofs in body 'a'",
+        "more than 6 dofs (body 'a')",
+    ),
+    (
+        "backwards tendon range then backwards ctrlrange",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" limited="true" range="1 -1"><joint joint="j" coef="1"/></fixed></tendon><actuator><motor joint="j" ctrllimited="true" ctrlrange="1 -1"/></actuator></mujoco>"#,
+        "invalid limits in tendon",
+        "invalid range on <tendon>: invalid limits in tendon (tendon 't')",
+    ),
+    (
+        "fixed negative armature then backwards tendon range",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" armature="-0.1" limited="true" range="1 -1"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
+        "invalid limits in tendon",
+        "invalid range on <tendon>: invalid limits in tendon (tendon 't')",
+    ),
+    (
+        "backwards ctrlrange then fixed negative armature",
+        r#"<mujoco><worldbody><site name="s0" pos="0.1 0 1.2"/><body name="b1" pos="0 0 1"><joint name="j1" type="hinge" axis="0 1 0"/><inertial pos="0 0 -0.15" mass="0.5" diaginertia="0.004 0.004 0.0002"/><site name="s1" pos="0.05 0 -0.1"/><body name="b2" pos="0 0 -0.3"><joint name="j2" type="hinge" axis="0 1 0"/><inertial pos="0 0 -0.15" mass="0.5" diaginertia="0.004 0.004 0.0002"/><site name="s2" pos="0.05 0 -0.2"/></body></body><body name="wb" pos="0.1 0 0.9"><geom name="w" type="sphere" size="0.04"/></body></worldbody><tendon><fixed armature="-0.1"><joint joint="j1" coef="1"/></fixed></tendon><actuator><motor joint="j1" ctrllimited="true" ctrlrange="1 -1"/></actuator></mujoco>"#,
+        "invalid control range for actuator",
+        "invalid ctrlrange on <actuator>: invalid control range for actuator (actuator #0)",
+    ),
+    (
+        "backwards ctrlrange then backwards actrange",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><actuator><general joint="j" dyntype="integrator" ctrllimited="true" ctrlrange="1 -1" actlimited="true" actrange="1 -1"/></actuator></mujoco>"#,
+        "invalid control range for actuator",
+        "invalid ctrlrange on <actuator>: invalid control range for actuator (actuator #0)",
+    ),
+    (
+        "backwards ctrlrange then bad keyframe qpos",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><actuator><motor joint="j" ctrllimited="true" ctrlrange="1 -1"/></actuator><keyframe><key qpos="1 2"/></keyframe></mujoco>"#,
+        "invalid control range for actuator",
+        "invalid ctrlrange on <actuator>: invalid control range for actuator (actuator #0)",
+    ),
+    (
+        "backwards forcerange then backwards ctrlrange",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><actuator><motor joint="j" ctrllimited="true" ctrlrange="1 -1" forcelimited="true" forcerange="1 -1"/></actuator></mujoco>"#,
+        "invalid force range for actuator",
+        "invalid forcerange on <actuator>: invalid force range for actuator (actuator #0)",
+    ),
+    (
+        "backwards ctrlrange then limit sensor on an unlimited joint",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><actuator><motor joint="j" ctrllimited="true" ctrlrange="1 -1"/></actuator><sensor><jointlimitfrc joint="j"/></sensor></mujoco>"#,
+        "invalid control range for actuator",
+        "invalid ctrlrange on <actuator>: invalid control range for actuator (actuator #0)",
+    ),
+    (
+        "backwards forcerange then ctrlrange without ctrllimited",
+        r#"<mujoco><compiler angle="radian" autolimits="false"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" limited="true" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><actuator><motor joint="j" forcelimited="true" forcerange="1 -1" ctrlrange="-1 1"/></actuator></mujoco>"#,
+        "actuator has `ctrlrange` but not `ctrllimited`. set the autolimits=\"true\" compiler option, specify `ctrllimited` explicitly (\"true\" or \"false\"), or remove the `ctrlrange` attribute.",
+        "invalid ctrlrange on <actuator>: actuator has `ctrlrange` but not `ctrllimited`. set the autolimits=\"true\" compiler option, specify `ctrllimited` explicitly (\"true\" or \"false\"), or remove the `ctrlrange` attribute. (actuator #0)",
+    ),
+    (
+        "limit sensor on an unlimited joint then nested free",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="a" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><body name="c" pos="0 0 -0.3"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></body></worldbody><sensor><jointlimitfrc joint="j"/></sensor></mujoco>"#,
+        "joint must be limited in sensor",
+        "joint must be limited in sensor (sensor #0)",
+    ),
+    (
+        "backwards tendon range then a sensor's missing joint",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" /><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><tendon><fixed name="t" limited="true" range="1 -1"><joint joint="j" coef="1"/></fixed></tendon><sensor><jointpos joint="nope"/></sensor></mujoco>"#,
+        "invalid limits in tendon",
+        "invalid range on <tendon>: invalid limits in tendon (tendon 't')",
+    ),
+    (
+        "backwards springlength then a sensor's missing joint",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" /><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><tendon><fixed name="t" springlength="0.7 0.3"><joint joint="j" coef="1"/></fixed></tendon><sensor><jointpos joint="nope"/></sensor></mujoco>"#,
+        "invalid springlength in tendon",
+        "invalid springlength on <tendon>: invalid springlength in tendon (line 1: tendon > fixed 't')",
+    ),
+    (
+        "backwards tendon range then inheritrange on a ball",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" /><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body><body name="c" pos="1 0 1"><joint name="k" type="ball"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" limited="true" range="1 -1"><joint joint="j" coef="1"/></fixed></tendon><actuator><position joint="k" kp="1" inheritrange="1"/></actuator></mujoco>"#,
+        "invalid limits in tendon",
+        "invalid range on <tendon>: invalid limits in tendon (tendon 't')",
+    ),
+    (
+        "backwards springlength then an actuator's missing joint",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" /><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><tendon><fixed name="t" springlength="0.7 0.3"><joint joint="j" coef="1"/></fixed></tendon><actuator><motor joint="nope"/></actuator></mujoco>"#,
+        "invalid springlength in tendon",
+        "invalid springlength on <tendon>: invalid springlength in tendon (line 1: tendon > fixed 't')",
+    ),
+    (
+        "limited tendon with no range then a sensor's missing joint",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" /><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><tendon><fixed name="t" limited="true"><joint joint="j" coef="1"/></fixed></tendon><sensor><jointpos joint="nope"/></sensor></mujoco>"#,
+        "invalid limits in tendon",
+        "invalid range on <tendon>: invalid limits in tendon (tendon 't')",
+    ),
+    (
+        "class's backwards springlength then a sensor's missing joint",
+        r#"<mujoco><compiler angle="radian"/><default><tendon springlength="0.7 0.3"/></default><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" /><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><tendon><fixed name="t"><joint joint="j" coef="1"/></fixed></tendon><sensor><jointpos joint="nope"/></sensor></mujoco>"#,
+        "invalid springlength in tendon",
+        "invalid springlength on <tendon>: invalid springlength in tendon (tendon 't')",
+    ),
+    (
+        "automatic backwards range then zero axis",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="a" pos="0 0 1"><joint name="z" type="hinge" axis="0 0 0" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'z' in body 'a')",
+    ),
+    (
+        "automatic backwards range then backwards ctrlrange",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><actuator><motor joint="j" ctrllimited="true" ctrlrange="1 -1"/></actuator></mujoco>"#,
+        "invalid control range for actuator",
+        "invalid ctrlrange on <actuator>: invalid control range for actuator (actuator #0)",
+    ),
+    (
+        "automatic backwards range then bad keyframe qpos",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><keyframe><key qpos="1 2"/></keyframe></mujoco>"#,
+        "keyframe '': invalid qpos size, expected 1, got 2",
+        "invalid qpos on <key>: length 2 does not match 1 (key #0)",
+    ),
+    (
+        "automatic backwards forcerange then backwards ctrlrange, one actuator",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" /><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><actuator><motor joint="j" forcerange="1 -1" ctrllimited="true" ctrlrange="1 -1"/></actuator></mujoco>"#,
+        "invalid control range for actuator",
+        "invalid ctrlrange on <actuator>: invalid control range for actuator (actuator #0)",
+    ),
+    (
+        "automatic backwards tendon range then its limit sensor",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><tendon><fixed name="t" range="1 -1"><joint joint="j" coef="1"/></fixed></tendon><sensor><tendonlimitfrc tendon="t"/></sensor></mujoco>"#,
+        "tendon must be limited in sensor",
+        "tendon must be limited in sensor (sensor #0)",
+    ),
+    (
+        "automatic backwards range then seven dofs",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="a" pos="0 0 1"><joint name="h0" type="hinge" axis="0 1 0" range="1 -1"/><joint name="h1" type="hinge" axis="0 1 0"/><joint name="h2" type="hinge" axis="0 1 0"/><joint name="h3" type="hinge" axis="0 1 0"/><joint name="h4" type="hinge" axis="0 1 0"/><joint name="h5" type="hinge" axis="0 1 0"/><joint name="h6" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        "more than 6 dofs in body 'a'",
+        "more than 6 dofs (body 'a')",
+    ),
+    (
+        "automatic ball range then ball followed by hinge",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="b" type="ball" range="0 -10"/><joint name="h" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        "ball followed by rotation in body 'a'",
+        "ball followed by rotation (body 'a')",
+    ),
+    (
+        "automatic backwards range and zero axis, one hinge",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="z" type="hinge" axis="0 0 0" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>
+"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'z' in body 'a')",
+    ),
+    (
+        "automatic backwards range then a limited backwards one",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="hinge" axis="0 1 0" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body><body name="c" pos="1 0 1"><joint name="j2" type="hinge" axis="0 1 0" limited="true" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>
+"#,
+        "range[0] should be smaller than range[1] in joint",
+        "invalid range on <joint>: range[0] should be smaller than range[1] in joint (joint 'j2' in body 'c')",
+    ),
+    (
+        "automatic backwards forcerange beside a limited backwards ctrlrange",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><actuator><motor joint="j" forcerange="1 -1" ctrllimited="true" ctrlrange="1 -1"/></actuator></mujoco>
+"#,
+        "invalid control range for actuator",
+        "invalid ctrlrange on <actuator>: invalid control range for actuator (actuator #0)",
+    ),
+    (
+        "automatic backwards joint range then backwards tendon range",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="a" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed limited="true" range="1 -1"><joint joint="j" coef="1"/></fixed></tendon></mujoco>
+"#,
+        "invalid limits in tendon",
+        "invalid range on <tendon>: invalid limits in tendon (tendon #0)",
+    ),
+    (
+        "automatic backwards tendon range and backwards springlength",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed range="1 0" springlength="2 1"><joint joint="j" coef="1"/></fixed></tendon></mujoco>
+"#,
+        "invalid springlength in tendon",
+        "invalid springlength on <tendon>: invalid springlength in tendon (line 1: tendon > fixed)",
+    ),
+    (
+        "automatic backwards range then nested free",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="a" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><body name="b" pos="0 0 -0.3"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></body></worldbody></mujoco>
+"#,
+        "free joint can only be used on top level",
+        "free joint can only be used on top level (body 'b')",
+    ),
+    (
+        "automatic backwards range then its limit sensor",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="a" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><sensor><jointlimitfrc joint="h"/></sensor></mujoco>
+"#,
+        "joint must be limited in sensor",
+        "joint must be limited in sensor (sensor #0)",
+    ),
+    (
+        "automatic backwards range then limited backwards ctrlrange",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="a" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><actuator><motor joint="h" ctrllimited="true" ctrlrange="1 -1"/></actuator></mujoco>
+"#,
+        "invalid control range for actuator",
+        "invalid ctrlrange on <actuator>: invalid control range for actuator (actuator #0)",
     ),
 ];
 

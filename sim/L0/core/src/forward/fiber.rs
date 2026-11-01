@@ -33,9 +33,10 @@ impl Model {
         }
 
         // --- Phase 1: Compute actuator_lengthrange from limits ---
-        // This applies to all actuator types (not just muscles) — limit-based
-        // lengthrange is unconditional. (MuJoCo's mj_setLengthRange mode filtering
-        // only applies to the simulation-based fallback, not the limit copy.)
+        // This applies to all actuator types (not just muscles). MuJoCo's
+        // `mj_setLengthRange` skips an actuator its mode filter excludes, a
+        // non-muscle by default, before it copies a limit
+        // (`engine_setconst.c:1157-1172`): this copy is ledger L37's.
         for i in 0..self.nu {
             let gear = self.actuator_gear[i][0];
 
@@ -88,15 +89,19 @@ impl Model {
                             }
                             // For unlimited fixed tendons: estimate from joint ranges.
                             // Fixed tendon length = Σ coef_i * q_i, so extremes come
-                            // from each joint at its range limit (sign-aware).
+                            // from each limited joint at its range limit (sign-aware);
+                            // an unlimited joint's range bounds nothing, and an MJCF
+                            // one keeps it as written (or 0 0), as MuJoCo stores it,
+                            // so it adds nothing.
                             let adr = self.tendon_adr[tid];
                             let num = self.tendon_num[tid];
                             let (mut lmin, mut lmax) = (0.0, 0.0);
                             for w in adr..(adr + num) {
                                 let dof = self.wrap_objid[w];
                                 let coef = self.wrap_prm[w];
-                                if let Some(jid) =
-                                    (0..self.njnt).find(|&j| self.jnt_dof_adr[j] == dof)
+                                if let Some(jid) = (0..self.njnt)
+                                    .find(|&j| self.jnt_dof_adr[j] == dof)
+                                    .filter(|&j| self.jnt_limited[j])
                                 {
                                     let (qlo, qhi) = self.jnt_range[jid];
                                     if coef >= 0.0 {
@@ -465,7 +470,7 @@ mod tests {
         model.actuator_biasprm = vec![[0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2]];
         model.actuator_lengthrange = vec![(0.0, 0.0)]; // will be computed
         model.actuator_acc0 = vec![0.0]; // will be computed
-        // Muscle default: actlimited=true, actrange=[0,1] (§34 S5)
+        // An activation limited to [0, 1].
         model.actuator_actlimited = vec![true];
         model.actuator_actrange = vec![(0.0, 1.0)];
         model.actuator_actearly = vec![false];

@@ -2,11 +2,12 @@
 //!
 //! Converts MJCF `<tendon>` elements (fixed and spatial) into Model
 //! tendon/wrap arrays. Handles joint resolution for fixed tendons,
-//! site/geom/pulley resolution for spatial tendons, and autolimits.
+//! site/geom/pulley resolution for spatial tendons, and their limits.
 
 use sim_core::{GeomType, MjJointType, Model, TendonType, WrapType};
 use tracing::warn;
 
+use super::limits::{self, Pair};
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{MjcfTendon, MjcfTendonType, SpatialPathElement};
@@ -22,14 +23,16 @@ impl ModelBuilder {
                 MjcfTendonType::Fixed => TendonType::Fixed,
                 MjcfTendonType::Spatial => TendonType::Spatial,
             });
-            self.tendon_range
-                .push(tendon.range.unwrap_or((-f64::MAX, f64::MAX)));
-            self.tendon_range_compiled
-                .push(tendon.range.unwrap_or((0.0, 0.0)));
-            // Autolimits: infer limited from range presence.
-            let tendon_limited =
-                super::is_limited(tendon.limited, self.compiler.autolimits, tendon.range);
-            self.tendon_limited.push(tendon_limited);
+            // The range as written, `0 0` when none, as MuJoCo stores it.
+            self.tendon_range.push(tendon.range.unwrap_or((0.0, 0.0)));
+            let limit = limits::resolve(
+                Pair::Tendon,
+                tendon.limited,
+                tendon.range,
+                self.compiler.autolimits,
+            );
+            self.tendon_limited.push(limit.limited);
+            self.tendon_limit_fault.push(limit.fault);
             self.tendon_stiffness.push(tendon.stiffness.unwrap_or(0.0));
             self.tendon_damping.push(tendon.damping.unwrap_or(0.0));
             self.tendon_armature.push(tendon.armature.unwrap_or(0.0));
@@ -171,14 +174,20 @@ impl ModelBuilder {
         Location::nth(ElementKind::Tendon, self.tendon_name[t].as_deref(), t)
     }
 
-    /// MuJoCo 3.5.0's checks of a tendon's armature (`mjCTendon::Compile`),
-    /// tendon by tendon: a spatial tendon's negative armature
-    /// (`user_objects.cc:6342-6346`), then armature on a tendon that wraps a
-    /// sphere or a cylinder, whose bias force MuJoCo cannot differentiate
-    /// (`:6389-6393`). The caller runs it after every check this crate makes
-    /// before building the model, after the bodies' joints and before the free
-    /// joint's; a keyframe's fault comes after it, in MuJoCo as here.
-    pub(crate) fn check_tendon_armature(&self) -> Result<()> {
+    /// MuJoCo 3.5.0's checks of a tendon (`mjCTendon::Compile`) that this
+    /// crate did not make before RL-6a and RL-6b (book L19-L21), tendon by
+    /// tendon: a spatial
+    /// tendon's negative armature (`user_objects.cc:6342-6346`), then armature
+    /// on a tendon that wraps a sphere or a cylinder, whose bias force MuJoCo
+    /// cannot differentiate (`:6389-6393`), then a range without `limited`
+    /// under `autolimits="false"` (`:6412-6416`). A limited range that does
+    /// not increase and a backwards spring length are refused before the
+    /// model is built (`validation.rs`; an element's spring length at
+    /// parse), and an automatic range after the keyframes (`D-AUTO-RANGE`). The
+    /// caller runs it after every check this crate makes before building the
+    /// model, after the bodies' joints and before the free joint's; a
+    /// keyframe's fault comes after it, in MuJoCo as here.
+    pub(crate) fn check_tendons(&self) -> Result<()> {
         for t in 0..self.tendon_type.len() {
             let armature = self.tendon_armature[t];
             if self.tendon_type[t] == TendonType::Spatial && armature < 0.0 {
@@ -190,6 +199,9 @@ impl ModelBuilder {
                     "geom wrapping not supported by tendon armature",
                 )
                 .at(self.tendon_location(t)));
+            }
+            if let Some(fault) = self.tendon_limit_fault[t].filter(|&f| f.is_mujocos()) {
+                return Err(fault.error(Pair::Tendon).at(self.tendon_location(t)));
             }
         }
         Ok(())

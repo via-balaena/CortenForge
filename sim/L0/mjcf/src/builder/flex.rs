@@ -549,9 +549,8 @@ impl ModelBuilder {
                 self.jnt_axis.push(*axis);
                 self.jnt_axis_too_small.push(false);
                 self.jnt_limited.push(false);
-                self.jnt_range
-                    .push((-std::f64::consts::PI, std::f64::consts::PI));
-                self.jnt_range_compiled.push((0.0, 0.0));
+                self.jnt_limit_fault.push(None);
+                self.jnt_range.push((0.0, 0.0));
                 self.jnt_stiffness.push(0.0);
                 self.jnt_springref.push(0.0);
                 // The flex's damping as each slide's (MuJoCo's flex damping

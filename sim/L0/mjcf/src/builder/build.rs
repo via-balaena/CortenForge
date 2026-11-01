@@ -46,7 +46,14 @@ impl ModelBuilder {
         // the pipeline on it (a muscle's length range is simulated), so a
         // joint layout or a range `try_make_data` refuses skips them: a slide
         // after a ball, which the loader refuses once the keyframes are
-        // resolved, and a range, which making the model's `Data` refuses.
+        // resolved, and a range `check_ranges` refuses that the loader passes,
+        // as MuJoCo loads it (registry D-MODEL-CHECKS): a limited range in
+        // degrees whose bounds become one value in radians, an intvelocity's
+        // `inheritrange` whose activation range overflows to an infinite
+        // bound (an infinite control range passes `check_ranges`), and a
+        // caller-built
+        // `MjcfModel`'s infinite bound, which the parser refuses in a
+        // document.
         if model.check_joint_layout().is_ok() && model.check_ranges().is_ok() {
             model.compute_dof_m0();
             model.compute_spatial_tendon_length0();
@@ -585,25 +592,25 @@ mod tests {
     use crate::builder::load_model;
     use sim_core::{ActuatorTransmission, MjJointType};
 
-    /// A range `try_make_data` refuses also skips the derivations: a muscle's
-    /// length range is found by simulating the model, and a backwards motor
-    /// range beside it made that simulation panic in `f64::clamp` while
-    /// loading. MuJoCo refuses the model at load ("invalid control range for
-    /// actuator", measured), as Rigid-loading's L21 will.
+    /// A backwards motor range beside a muscle, whose length range is found by
+    /// simulating the model (a backwards clamp panics in `f64::clamp`), is
+    /// refused at load, as MuJoCo refuses it ("invalid control range for
+    /// actuator", measured; book L21).
     #[test]
-    fn a_backwards_range_loads_and_make_data_refuses_it() {
-        let model = load_model(
+    fn a_backwards_ctrlrange_beside_a_muscle_is_refused_at_load() {
+        let error = load_model(
             r#"<mujoco><worldbody><body><joint name="j" type="hinge" axis="0 1 0"/>
 <geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05"/><site name="a" pos="0.1 0 0"/></body>
 <site name="b" pos="0.3 0 0.2"/></worldbody>
 <tendon><spatial name="t"><site site="a"/><site site="b"/></spatial></tendon>
 <actuator><muscle tendon="t"/><motor joint="j" ctrllimited="true" ctrlrange="1 -1"/></actuator></mujoco>"#,
         )
-        .expect("loads");
-        assert!(matches!(
-            model.try_make_data().err(),
-            Some(sim_core::MakeDataError::Range(_))
-        ));
+        .expect_err("a backwards limited ctrlrange is refused")
+        .to_string();
+        assert!(
+            error.contains("invalid control range for actuator"),
+            "{error}"
+        );
     }
 
     /// An explicit `sleep="auto"` is the default, as in MuJoCo, which sets a
@@ -669,8 +676,8 @@ mod tests {
     /// A range of "0 0" makes no automatic limit: MuJoCo 3.5.0 leaves each of
     /// these unlimited (measured; `islimited`, `user_objects.cc:184-189`) and
     /// the model makes its `Data`. A nonzero automatic hinge range with
-    /// lo >= hi is refused when the `Data` is made (registry `D-MODEL-CHECKS`,
-    /// 11-settled A5-Q2).
+    /// lo >= hi is refused at load (registry `D-AUTO-RANGE`, 11-settled
+    /// A5-Q2).
     #[test]
     fn an_automatic_zero_range_is_no_range() {
         let model = load_model(
@@ -696,15 +703,15 @@ mod tests {
         )
         .expect("loads");
         assert!(one_zero_bound.jnt_limited[0]);
+        // An automatic range that does not increase, which MuJoCo leaves
+        // unlimited, is refused at load (`D-AUTO-RANGE`).
         let empty = load_model(
             r#"<mujoco><worldbody><body><joint type="hinge" axis="0 1 0" range="1 1"/>
 <geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
         )
-        .expect("loads");
-        assert!(matches!(
-            empty.try_make_data().err(),
-            Some(sim_core::MakeDataError::Range(_))
-        ));
+        .expect_err("an automatic empty range is refused")
+        .to_string();
+        assert!(empty.contains("an automatic `limited` needs"), "{empty}");
     }
 
     #[test]

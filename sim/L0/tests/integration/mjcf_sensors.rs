@@ -215,14 +215,16 @@ fn test_actuatorpos_sensor() {
 // Edge cases
 // ============================================================================
 
-/// JointLimitFrc sensor is now supported — verify it wires correctly.
+/// JointLimitFrc sensor is now supported — verify it wires correctly. Its
+/// joint is limited: on an unlimited one MuJoCo 3.5.0 refuses the sensor
+/// ("joint must be limited in sensor", book L21).
 #[test]
 fn test_joint_limit_frc_sensor() {
     let mjcf = r#"
         <mujoco model="jlf_test">
             <worldbody>
                 <body name="b1" pos="0 0 0">
-                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <joint name="j1" type="hinge" axis="0 1 0" range="-30 30"/>
                     <geom type="sphere" size="0.1" mass="1.0"/>
                 </body>
             </worldbody>

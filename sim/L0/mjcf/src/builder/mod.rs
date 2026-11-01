@@ -21,6 +21,7 @@ pub mod frame;
 pub mod geom;
 mod init;
 pub mod joint;
+mod limits;
 pub mod mass;
 pub mod mesh;
 pub mod orientation;
@@ -49,7 +50,7 @@ use crate::defaults::DefaultResolver;
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
     MeshInertia, MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfJacobianType, MjcfKeyframe,
-    MjcfModel, MjcfOption, MjcfSolverType, Prefix, TfAuto,
+    MjcfModel, MjcfOption, MjcfSolverType, Prefix,
 };
 
 use self::compiler::{apply_discardvisual, apply_fusestatic};
@@ -73,22 +74,6 @@ pub const DEFAULT_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
 /// false` keeps `base`'s values past the ones written.
 fn written_over<const N: usize>(written: Option<Prefix<N>>, base: [f64; N]) -> [f64; N] {
     written.map_or(base, |written| written.over(base))
-}
-
-/// Whether an MJCF range makes an automatic limit: `0 0` does not, as MuJoCo
-/// leaves it unlimited (`islimited`, `user_objects.cc:184-189`).
-fn has_range(range: Option<(f64, f64)>) -> bool {
-    range.is_some_and(|(lo, hi)| lo != 0.0 || hi != 0.0)
-}
-
-/// Whether a `limited`-style attribute limits: as written, or, for `auto` or
-/// nothing written, when `autolimits` is on and the range makes a limit.
-fn is_limited(written: Option<TfAuto>, autolimits: bool, range: Option<(f64, f64)>) -> bool {
-    match written {
-        Some(TfAuto::True) => true,
-        Some(TfAuto::False) => false,
-        Some(TfAuto::Auto) | None => autolimits && has_range(range),
-    }
 }
 
 // Resolve an `MjcfKeyframe` into a `Keyframe` with model-validated dimensions.
@@ -306,15 +291,20 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Finalize user data: resolve nuser, validate, pad
     builder.finalize_user_data(&mjcf)?;
 
-    // MuJoCo 3.5.0's checks of joints and of tendon armature, after every
-    // check above, so that a document refused before they existed is refused
-    // for the same fault (MuJoCo orders some of them before checks above).
-    // Among themselves in MuJoCo's order: each body's joints, the tendons, then
-    // the free joint below the world's children, as MuJoCo's `CopyTree`
-    // refuses it.
+    // MuJoCo 3.5.0's checks this crate did not make before RL-6a and RL-6b
+    // (book L19-L21), after every check above, so that a document refused
+    // before they existed is refused for the same fault (MuJoCo orders some
+    // of them before checks above). Among themselves in MuJoCo's order: each
+    // body's joints, the tendons, the actuators, the sensors, then the free
+    // joint below the world's children, as MuJoCo's `CopyTree` refuses it.
+    // An automatic range that does not increase is refused after the
+    // keyframes (`D-AUTO-RANGE`).
     builder.check_joints()?;
-    builder.check_tendon_armature()?;
+    builder.check_tendons()?;
+    builder.check_actuators()?;
+    builder.check_limit_sensors()?;
     builder.check_free_joints_on_top_level()?;
+    let automatic = builder.automatic_range_fault();
 
     // Build final model
     let mut model = builder.build();
@@ -342,10 +332,15 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         .map(|(i, kf)| (kf.name.clone(), i))
         .collect();
 
-    // The two refusals this crate makes and MuJoCo does not, after the
-    // keyframes.
+    // The refusals this crate makes and MuJoCo does not, after the
+    // keyframes: a slide after a ball, a fixed tendon's negative armature,
+    // an automatic range that does not increase (`D-AUTO-RANGE`, which
+    // MuJoCo leaves unlimited, as every check above has taken it).
     joint::check_ball_then_slide(&model)?;
     tendon::check_fixed_tendon_armature(&model)?;
+    if let Some(error) = automatic {
+        return Err(error);
+    }
 
     Ok(model)
 }
@@ -505,12 +500,13 @@ pub struct ModelBuilder {
     /// `check_joints` refuses.
     pub(crate) jnt_axis_too_small: Vec<bool>,
     pub(crate) jnt_limited: Vec<bool>,
+    /// Each joint's first `limited`/`range` fault, which `check_joints`
+    /// refuses.
+    pub(crate) jnt_limit_fault: Vec<Option<limits::LimitFault>>,
+    /// Each joint's range as MuJoCo compiles it: `0 0` when unwritten, and in
+    /// radians only for a limited hinge or ball in degrees
+    /// (`user_objects.cc:2906-2924`).
     pub(crate) jnt_range: Vec<(f64, f64)>,
-    /// Each joint's range as MuJoCo compiles it, which `jnt_range` does not
-    /// hold for every joint: `0 0` when unwritten, and in radians only for a
-    /// limited hinge or ball in degrees (`user_objects.cc:2906-2924`). Read
-    /// by `inheritrange`.
-    pub(crate) jnt_range_compiled: Vec<(f64, f64)>,
     pub(crate) jnt_stiffness: Vec<f64>,
     pub(crate) jnt_springref: Vec<f64>,
     pub(crate) jnt_damping: Vec<f64>,
@@ -629,6 +625,12 @@ pub struct ModelBuilder {
     pub(crate) actuator_acc0: Vec<f64>,
     pub(crate) actuator_actlimited: Vec<bool>,
     pub(crate) actuator_actrange: Vec<(f64, f64)>,
+    /// Each actuator's first fault in its ranges and muscle parameters, which
+    /// `check_actuators` refuses.
+    pub(crate) actuator_fault: Vec<Option<limits::ActuatorFault>>,
+    /// Each actuator's first pair whose automatic range does not increase
+    /// (`D-AUTO-RANGE`), refused after the keyframes.
+    pub(crate) actuator_automatic: Vec<Option<limits::Pair>>,
     pub(crate) actuator_actearly: Vec<bool>,
     pub(crate) actuator_cranklength: Vec<f64>,
     pub(crate) actuator_nsample: Vec<i32>,
@@ -697,11 +699,12 @@ pub struct ModelBuilder {
     // Tendon arrays (populated by process_tendons)
     pub(crate) tendon_name_to_id: HashMap<String, usize>,
     pub(crate) tendon_type: Vec<TendonType>,
+    /// Each tendon's range as MuJoCo compiles it: `0 0` when unwritten.
     pub(crate) tendon_range: Vec<(f64, f64)>,
-    /// Each tendon's range as MuJoCo compiles it: `0 0` when unwritten (read
-    /// by `inheritrange`).
-    pub(crate) tendon_range_compiled: Vec<(f64, f64)>,
     pub(crate) tendon_limited: Vec<bool>,
+    /// Each tendon's first `limited`/`range` fault, which `check_tendons`
+    /// refuses.
+    pub(crate) tendon_limit_fault: Vec<Option<limits::LimitFault>>,
     pub(crate) tendon_stiffness: Vec<f64>,
     pub(crate) tendon_damping: Vec<f64>,
     pub(crate) tendon_armature: Vec<f64>,

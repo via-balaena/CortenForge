@@ -470,9 +470,9 @@ fn check_9_motor_vs_limit() -> (u32, u32) {
 
 fn check_10_zero_width_range_refused() -> (u32, u32) {
     // MuJoCo refuses a limited hinge whose range is not lower < upper
-    // ("range[0] should be smaller than range[1] in joint"); sim-core refuses
-    // it when it makes the model's Data. Refused at load counts too.
-    let refused = sim_mjcf::load_model(MODEL_LOCKED).map_or(true, |m| m.try_make_data().is_err());
+    // ("range[0] should be smaller than range[1] in joint"), and sim-mjcf
+    // refuses it at load.
+    let refused = sim_mjcf::load_model(MODEL_LOCKED).is_err();
     let p = check(
         "Zero-width range is refused",
         refused,

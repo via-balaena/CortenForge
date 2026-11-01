@@ -194,7 +194,10 @@ pub struct Model {
     pub jnt_axis: Vec<Vector3<f64>>,
     /// Whether joint has limits.
     pub jnt_limited: Vec<bool>,
-    /// Joint limits [min, max].
+    /// Joint limits [min, max] (a limited ball's: 0 and the second bound). A
+    /// joint that is not limited keeps the range it was given: from MJCF, as
+    /// written (a hinge's or a ball's in degrees if the compiler reads them),
+    /// `(0, 0)` when none, as MuJoCo stores it.
     pub jnt_range: Vec<(f64, f64)>,
     /// Spring stiffness coefficient (N/rad for hinge, N/m for slide).
     /// Applied as: τ = -stiffness * (q - springref)
@@ -829,7 +832,9 @@ pub struct Model {
     pub ntendon: usize,
     /// Number of wrap objects across all tendons.
     pub nwrap: usize,
-    /// Tendon path length limits [min, max]. Limited if min < max.
+    /// Tendon path length limits [min, max], read where `tendon_limited`. A
+    /// tendon that is not limited keeps the range it was given: from MJCF, as
+    /// written, `(0, 0)` when none, as MuJoCo stores it.
     pub tendon_range: Vec<(f64, f64)>,
     /// Whether tendon has length limits.
     pub tendon_limited: Vec<bool>,

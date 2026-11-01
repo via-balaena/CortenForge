@@ -1,0 +1,1 @@
+<mujoco><worldbody><site name="s0" pos="0 0 1.2"/><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><tendon><spatial name="t" armature="-0.1" limited="true" range="1 -1"><site site="s0"/><site site="s1"/></spatial></tendon></mujoco>

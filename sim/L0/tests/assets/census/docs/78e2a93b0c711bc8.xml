@@ -1,0 +1,1 @@
+<mujoco><compiler angle="radian" autolimits="false"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" limited="true" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" range="-0.5 0.5"><joint joint="j" coef="1"/></fixed></tendon></mujoco>

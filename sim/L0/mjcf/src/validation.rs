@@ -740,7 +740,8 @@ fn validate_spatial_tendon(
 }
 
 /// Validate tendon physical parameters, as the tendon's class leaves them:
-/// frictionloss, range. A negative stiffness or damping loads, as MuJoCo
+/// frictionloss, a limited range, the spring length. A negative stiffness or
+/// damping loads, as MuJoCo
 /// 3.5.0 loads and applies it (`engine_passive.c:453-473`). A negative
 /// frictionloss is refused (`D-TENDON-FRICTIONLOSS`, stricter): MuJoCo loads
 /// it and makes no constraint row for it (`engine_core_constraint.c:737`).
@@ -753,22 +754,28 @@ fn validate_tendon_params(tendon: &MjcfTendon) -> Result<()> {
             format!("negative frictionloss {frictionloss}"),
         ));
     }
-    if tendon.limited == Some(TfAuto::True) {
-        if let Some((min, max)) = tendon.range {
-            if min >= max {
-                return Err(MjcfError::invalid_value(
-                    "tendon",
-                    "range",
-                    format!("invalid range [{min}, {max}]"),
-                ));
-            }
-        } else {
-            return Err(MjcfError::invalid_value(
-                "tendon",
-                "range",
-                "the tendon is limited but has no range",
-            ));
-        }
+    // A limited range that does not increase, or none, and a spring length
+    // whose low is above its high, as MuJoCo 3.5.0 refuses them, in its order
+    // (`user_objects.cc:6418-6421`, `:6438-6441`): the range where this
+    // crate checked it before book L21, a spring length a class gives once
+    // the class is applied, after the actuators' references (main refused a
+    // class's at parse, used or not; an element's own is still refused at
+    // parse). Ledger L353 holds the orders this leaves unlike MuJoCo's.
+    if tendon.limited == Some(TfAuto::True) && !tendon.range.is_some_and(|(lo, hi)| lo < hi) {
+        return Err(MjcfError::invalid_value(
+            "tendon",
+            "range",
+            "invalid limits in tendon",
+        ));
+    }
+    if let Some((low, high)) = tendon.springlength
+        && low > high
+    {
+        return Err(MjcfError::invalid_value(
+            "tendon",
+            "springlength",
+            "invalid springlength in tendon",
+        ));
     }
     Ok(())
 }
