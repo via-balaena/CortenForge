@@ -44,8 +44,9 @@ impl ModelBuilder {
 
         // Tendon and actuator derived parameters. These build a `Data` and run
         // the pipeline on it (a muscle's length range is simulated), so a
-        // joint layout or a range `try_make_data` refuses skips them: the
-        // model loads, and making its `Data` refuses it.
+        // joint layout or a range `try_make_data` refuses skips them: a slide
+        // after a ball, which the loader refuses once the keyframes are
+        // resolved, and a range, which making the model's `Data` refuses.
         if model.check_joint_layout().is_ok() && model.check_ranges().is_ok() {
             model.compute_dof_m0();
             model.compute_spatial_tendon_length0();
@@ -172,7 +173,6 @@ impl ModelBuilder {
             jnt_stiffness: self.jnt_stiffness,
             jnt_springref: self.jnt_springref,
             jnt_damping: self.jnt_damping,
-            jnt_armature: self.jnt_armature,
             jnt_solref: self.jnt_solref,
             jnt_solimp: self.jnt_solimp,
             jnt_name: self.jnt_name,
@@ -404,6 +404,7 @@ impl ModelBuilder {
             tendon_limited: self.tendon_limited,
             tendon_stiffness: self.tendon_stiffness,
             tendon_damping: self.tendon_damping,
+            tendon_armature: self.tendon_armature,
             tendon_frictionloss: self.tendon_frictionloss,
             tendon_solref_fri: self.tendon_solref_fri,
             tendon_solimp_fri: self.tendon_solimp_fri,
@@ -583,30 +584,6 @@ fn apply_explicit_sleep_policies(model: &mut Model, body_sleep_policy: &[Option<
 mod tests {
     use crate::builder::load_model;
     use sim_core::{ActuatorTransmission, MjJointType};
-
-    /// A joint layout `try_make_data` refuses still loads (the derivations
-    /// skip it) and is refused when its `Data` is made. The motor and the
-    /// tendon give the actuator and tendon derivations work to skip.
-    #[test]
-    fn a_bad_joint_layout_loads_and_make_data_refuses_it() {
-        let model = load_model(
-            r#"<mujoco><worldbody><body>
-                <joint type="ball"/>
-                <joint name="h" type="hinge" axis="0 1 0"/>
-                <geom type="sphere" size="0.1"/>
-                <site name="a" pos="0.1 0 0"/>
-            </body><site name="b" pos="0.3 0 0.2"/></worldbody>
-            <tendon><spatial><site site="a"/><site site="b"/></spatial></tendon>
-            <actuator><motor joint="h"/></actuator></mujoco>"#,
-        )
-        .expect("loads");
-        assert!(matches!(
-            model.try_make_data().err(),
-            Some(sim_core::MakeDataError::JointLayout(
-                sim_core::JointLayoutError::BallNotLast { body: 1, joint: 0 }
-            ))
-        ));
-    }
 
     /// A range `try_make_data` refuses also skips the derivations: a muscle's
     /// length range is found by simulating the model, and a backwards motor

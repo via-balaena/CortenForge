@@ -433,7 +433,6 @@ mod tests {
         model.jnt_springref = vec![0.0];
         model.qpos_spring = vec![0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("hinge".to_string())];
@@ -605,7 +604,6 @@ mod tests {
         model.jnt_springref = vec![0.0];
         model.qpos_spring = vec![0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("hinge".to_string())];
@@ -905,7 +903,6 @@ mod tests {
         model.jnt_springref = vec![0.0];
         model.qpos_spring = vec![0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("hinge".to_string())];
@@ -1247,7 +1244,6 @@ mod tests {
         model.jnt_springref = vec![0.0; 2];
         model.qpos_spring = vec![0.0; 2];
         model.jnt_damping = vec![0.0; 2];
-        model.jnt_armature = vec![0.0; 2];
         model.jnt_solref = vec![[0.02, 1.0]; 2];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]; 2];
         model.jnt_name = vec![Some("hinge0".to_string()), Some("hinge1".to_string())];
@@ -1412,7 +1408,6 @@ mod tests {
         model.jnt_springref = vec![0.0];
         model.qpos_spring = vec![0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("slide".to_string())];
@@ -1538,7 +1533,6 @@ mod tests {
         model.jnt_springref = vec![0.0];
         model.qpos_spring = vec![0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("hinge".to_string())];

@@ -14,7 +14,8 @@ use super::validation::MAX_VAL;
 impl Model {
     /// Recompute every field derived from the model's primary fields, in the
     /// order building a model computes them, after [`Self::check_joint_layout`],
-    /// [`Self::check_ranges`] and [`Self::check_actuators`]: the
+    /// [`Self::check_ranges`], [`Self::check_actuators`] and
+    /// [`Self::check_tendons`]: the
     /// equivalent of MuJoCo's `mj_setConst` (3.5.0 `engine_setconst.c:1089-1101`)
     /// plus the muscle length-range simulation, which `mj_setConst` leaves out
     /// (`:1088`). The factories and the test fixtures' `finalize` run it; call
@@ -24,11 +25,11 @@ impl Model {
     /// |---|---|---|
     /// | `jnt_stiffness`, `jnt_damping` (hinge, slide), `dof_damping` (ball, free), `qpos_spring` | `implicit_stiffness`, `implicit_damping`, `implicit_springref` | [`Self::compute_implicit_params`] |
     /// | the body and joint tree (`body_parent`, `body_jnt_*`, `body_dof_*`) | `body_ancestor_joints`, `body_ancestor_mask`, `body_weldid` | [`Self::compute_ancestors`] |
-    /// | body, inertial, joint, geom and site frames, joint types | `body_sameframe`, `geom_sameframe`, `site_sameframe`, `body_simple`, `dof_simplenum` | [`Self::compute_simple_bodies`] |
+    /// | body, inertial, joint, geom and site frames, joint types, `tendon_armature` | `body_sameframe`, `geom_sameframe`, `site_sameframe`, `body_simple`, `dof_simplenum` | [`Self::compute_simple_bodies`] |
     /// | `dof_parent`, `dof_simplenum` | the mass matrix's pattern and the implicit integrator's (`M_*`, `D_*`), so the lengths of `Data::qLD_data`, `Data::qH` and `Data::qLU`: make a new `Data` | [`Self::compute_dof_patterns`] |
     /// | masses, inertias, `dof_armature`, body poses, `qpos0`, joint axes | `dof_M0`, a simple dof's row of the mass matrix (at every state): first, as what follows builds the mass matrix at `qpos0` | [`Self::compute_dof_m0`] |
-    /// | masses, inertias, body poses, `qpos0`, joint axes, flex equalities | `body_subtreemass`, `body_invweight0`, `dof_invweight0`, `tendon_invweight0`, `flex_edgeequality`, `flexedge_invweight0`, `stat_meaninertia` | [`Self::compute_invweight0`], [`Self::compute_stat_meaninertia`] |
-    /// | gears, transmissions, joint and tendon ranges, masses | `actuator_lengthrange`, `actuator_acc0` | [`Self::compute_actuator_params`] |
+    /// | masses, inertias, body poses, `qpos0`, joint axes, flex equalities, `tendon_armature` | `body_subtreemass`, `body_invweight0`, `dof_invweight0`, `tendon_invweight0`, `flex_edgeequality`, `flexedge_invweight0`, `stat_meaninertia` | [`Self::compute_invweight0`], [`Self::compute_stat_meaninertia`] |
+    /// | gears, transmissions, joint and tendon ranges, masses, `tendon_armature` | `actuator_lengthrange`, `actuator_acc0` | [`Self::compute_actuator_params`] |
     /// | spatial tendon geometry, `qpos0`, `qpos_spring` | spatial `tendon_length0`, `tendon_lengthspring` | [`Self::compute_spatial_tendon_length0`] |
     /// | fixed tendon wraps, `qpos0`, `qpos_spring` | fixed `tendon_length0`, `tendon_lengthspring` | [`Self::compute_fixed_tendon_lengths`] |
     /// | `geom_size`, `geom_type`, mesh, height field or SDF data | `geom_rbound`, `geom_aabb` | [`Self::compute_geom_bounding_radii`] |
@@ -53,12 +54,13 @@ impl Model {
     /// above it.
     ///
     /// # Errors
-    /// The [`ModelError`] `check_joint_layout`, `check_ranges` or
-    /// `check_actuators` finds; the model is then unchanged.
+    /// The [`ModelError`] `check_joint_layout`, `check_ranges`,
+    /// `check_actuators` or `check_tendons` finds; the model is then unchanged.
     pub fn recompute_derived(&mut self) -> Result<(), ModelError> {
         self.check_joint_layout()?;
         self.check_ranges()?;
         self.check_actuators()?;
+        self.check_tendons()?;
         // MuJoCo setFixed (engine_setconst.c:98-103).
         self.ngravcomp = self.body_gravcomp.iter().filter(|&&gc| gc > 0.0).count();
         // Before the derivations below, which make a `Data` sized by `nhistory`.

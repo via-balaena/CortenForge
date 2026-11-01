@@ -30,7 +30,6 @@ pub fn short_arrays(m: &Model) -> (Vec<String>, Vec<&'static str>) {
     check("jnt_stiffness", m.jnt_stiffness.len(), m.njnt);
     check("jnt_springref", m.jnt_springref.len(), m.njnt);
     check("jnt_damping", m.jnt_damping.len(), m.njnt);
-    check("jnt_armature", m.jnt_armature.len(), m.njnt);
     check("jnt_solref", m.jnt_solref.len(), m.njnt);
     check("jnt_solimp", m.jnt_solimp.len(), m.njnt);
     check("jnt_name", m.jnt_name.len(), m.njnt);
@@ -126,6 +125,7 @@ pub fn short_arrays(m: &Model) -> (Vec<String>, Vec<&'static str>) {
     check("tendon_limited", m.tendon_limited.len(), m.ntendon);
     check("tendon_stiffness", m.tendon_stiffness.len(), m.ntendon);
     check("tendon_damping", m.tendon_damping.len(), m.ntendon);
+    check("tendon_armature", m.tendon_armature.len(), m.ntendon);
     check(
         "tendon_lengthspring",
         m.tendon_lengthspring.len(),

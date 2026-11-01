@@ -626,42 +626,29 @@ const ARMATURE_CHAIN: &str = r#"
 "#;
 
 /// A loaded model's armature counts once on the GPU, as on the CPU, which
-/// adds `dof_armature` to the mass matrix's diagonal (MuJoCo's `mj_crb`). The
-/// loader writes a joint's armature into both `jnt_armature` and
-/// `dof_armature` (asserted), so adding the two doubles it; with the joint's
-/// copy cleared the CPU's matrix keeps its armature, and so must the GPU's.
+/// adds `dof_armature`, MuJoCo's only armature field, to the mass matrix's
+/// diagonal (`mj_crb`).
 #[test]
 fn gpu_loaded_armature_counts_once() {
     let ctx = gpu_or_skip!();
-    let loaded = sim_mjcf::load_model(ARMATURE_CHAIN).expect("the chain loads");
-    for dof in 0..loaded.nv {
-        let armature = loaded.dof_armature[dof];
-        assert!(armature > 0.0, "dof {dof} carries armature");
-        assert_eq!(
-            loaded.jnt_armature[loaded.dof_jnt[dof]], armature,
-            "the loader wrote dof {dof}'s armature into both arrays"
-        );
-    }
-    let mut dof_only = loaded.clone();
-    dof_only.jnt_armature.fill(0.0);
-    // One model at a time: two in an array would pass clippy's stack limit.
-    let check = |name, model| {
-        let case = ConformanceCase {
-            name,
-            model,
-            qpos: vec![0.3, -0.4],
-            qvel: vec![0.8, -0.5],
-        };
-        let (_, fails) = case_against_cpu(&ctx, &case);
-        assert!(
-            fails.is_empty(),
-            "GPU↔CPU on a chain with armature: {} divergence(s):\n  {}",
-            fails.len(),
-            fails.join("\n  ")
-        );
+    let model = sim_mjcf::load_model(ARMATURE_CHAIN).expect("the chain loads");
+    assert!(
+        model.dof_armature.iter().all(|&armature| armature > 0.0),
+        "every dof carries armature"
+    );
+    let case = ConformanceCase {
+        name: "armature_chain",
+        model,
+        qpos: vec![0.3, -0.4],
+        qvel: vec![0.8, -0.5],
     };
-    check("armature_chain", loaded);
-    check("dof_armature_only", dof_only);
+    let (_, fails) = case_against_cpu(&ctx, &case);
+    assert!(
+        fails.is_empty(),
+        "GPU↔CPU on a chain with armature: {} divergence(s):\n  {}",
+        fails.len(),
+        fails.join("\n  ")
+    );
 }
 
 /// Route a single case's new failures through the known-divergence allowlist.

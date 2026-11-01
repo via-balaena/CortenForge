@@ -3161,6 +3161,11 @@ pub struct MjcfTendon {
     pub stiffness: Option<f64>,
     /// Damping coefficient.
     pub damping: Option<f64>,
+    /// Armature, an inertia along the tendon (MuJoCo's `tendon_armature`; 0
+    /// unwritten). Read on the element only: a class's `armature` is dropped
+    /// here, where MuJoCo's `<default>` schema has none and refuses the
+    /// document.
+    pub armature: Option<f64>,
     /// Friction loss.
     pub frictionloss: Option<f64>,
     /// Tendon width for visualization.
@@ -3204,6 +3209,7 @@ impl Default for MjcfTendon {
             limited: None,
             stiffness: None,
             damping: None,
+            armature: None,
             frictionloss: None,
             width: None,
             rgba: None,

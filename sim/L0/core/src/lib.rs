@@ -263,6 +263,7 @@ pub use types::{
     SolverStat,
     SolverType,
     StepError,
+    TendonError,
     TendonType,
     Warning,
     WarningStat,

@@ -230,7 +230,6 @@ mod spec_b_tests {
         model.jnt_stiffness = vec![stiffness];
         model.jnt_springref = vec![0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("ball".into())];
@@ -293,7 +292,6 @@ mod spec_b_tests {
         model.jnt_stiffness = vec![stiffness];
         model.jnt_springref = vec![0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("free".into())];
@@ -356,7 +354,6 @@ mod spec_b_tests {
         model.jnt_stiffness = vec![stiffness];
         model.jnt_springref = vec![0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("hinge".into())];
@@ -786,7 +783,6 @@ mod spec_b_tests {
         model.jnt_stiffness = vec![1.0, 2.0];
         model.jnt_springref = vec![0.0, 0.0];
         model.jnt_damping = vec![0.0, 0.0];
-        model.jnt_armature = vec![0.0, 0.0];
         model.jnt_solref = vec![[0.02, 1.0]; 2];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]; 2];
         model.jnt_name = vec![Some("free".into()), Some("hinge".into())];
@@ -855,6 +851,7 @@ mod spec_b_tests {
         model.tendon_stiffness = vec![10.0];
         model.tendon_lengthspring = vec![[0.5, 0.5]]; // classical spring, rest=0.5
         model.tendon_damping = vec![0.0];
+        model.tendon_armature = vec![0.0];
         model.tendon_frictionloss = vec![0.0];
         model.tendon_limited = vec![false];
         model.tendon_range = vec![(0.0, 0.0)];
@@ -907,6 +904,7 @@ mod spec_b_tests {
         model.tendon_stiffness = vec![20.0];
         model.tendon_lengthspring = vec![[0.3, 0.7]]; // deadband [0.3, 0.7]
         model.tendon_damping = vec![0.0];
+        model.tendon_armature = vec![0.0];
         model.tendon_frictionloss = vec![0.0];
         model.tendon_limited = vec![false];
         model.tendon_range = vec![(0.0, 0.0)];
@@ -971,6 +969,7 @@ mod spec_b_tests {
         model.tendon_stiffness = vec![0.0]; // zero stiffness
         model.tendon_lengthspring = vec![[0.5, 0.5]];
         model.tendon_damping = vec![0.0];
+        model.tendon_armature = vec![0.0];
         model.tendon_frictionloss = vec![0.0];
         model.tendon_limited = vec![false];
         model.tendon_range = vec![(0.0, 0.0)];

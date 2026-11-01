@@ -306,6 +306,16 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Finalize user data: resolve nuser, validate, pad
     builder.finalize_user_data(&mjcf)?;
 
+    // MuJoCo 3.5.0's checks of joints and of tendon armature, after every
+    // check above, so that a document refused before they existed is refused
+    // for the same fault (MuJoCo orders some of them before checks above).
+    // Among themselves in MuJoCo's order: each body's joints, the tendons, then
+    // the free joint below the world's children, as MuJoCo's `CopyTree`
+    // refuses it.
+    builder.check_joints()?;
+    builder.check_tendon_armature()?;
+    builder.check_free_joints_on_top_level()?;
+
     // Build final model
     let mut model = builder.build();
 
@@ -331,6 +341,11 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         .filter(|(_, kf)| !kf.name.is_empty())
         .map(|(i, kf)| (kf.name.clone(), i))
         .collect();
+
+    // The two refusals this crate makes and MuJoCo does not, after the
+    // keyframes.
+    joint::check_ball_then_slide(&model)?;
+    tendon::check_fixed_tendon_armature(&model)?;
 
     Ok(model)
 }
@@ -486,6 +501,9 @@ pub struct ModelBuilder {
     pub(crate) jnt_dof_adr: Vec<usize>,
     pub(crate) jnt_pos: Vec<Vector3<f64>>,
     pub(crate) jnt_axis: Vec<Vector3<f64>>,
+    /// Whether each joint's written axis was too small to make unit, which
+    /// `check_joints` refuses.
+    pub(crate) jnt_axis_too_small: Vec<bool>,
     pub(crate) jnt_limited: Vec<bool>,
     pub(crate) jnt_range: Vec<(f64, f64)>,
     /// Each joint's range as MuJoCo compiles it, which `jnt_range` does not
@@ -496,7 +514,6 @@ pub struct ModelBuilder {
     pub(crate) jnt_stiffness: Vec<f64>,
     pub(crate) jnt_springref: Vec<f64>,
     pub(crate) jnt_damping: Vec<f64>,
-    pub(crate) jnt_armature: Vec<f64>,
     pub(crate) jnt_solref: Vec<[f64; 2]>,
     pub(crate) jnt_solimp: Vec<[f64; 5]>,
     pub(crate) jnt_name: Vec<Option<String>>,
@@ -687,6 +704,7 @@ pub struct ModelBuilder {
     pub(crate) tendon_limited: Vec<bool>,
     pub(crate) tendon_stiffness: Vec<f64>,
     pub(crate) tendon_damping: Vec<f64>,
+    pub(crate) tendon_armature: Vec<f64>,
     pub(crate) tendon_frictionloss: Vec<f64>,
     pub(crate) tendon_solref_fri: Vec<[f64; 2]>,
     pub(crate) tendon_solimp_fri: Vec<[f64; 5]>,

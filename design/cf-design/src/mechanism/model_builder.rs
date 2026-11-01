@@ -575,7 +575,6 @@ fn generate(
                 model.jnt_stiffness.push(joint.stiffness().unwrap_or(0.0));
                 model.jnt_springref.push(0.0);
                 model.jnt_damping.push(joint.damping().unwrap_or(0.0));
-                model.jnt_armature.push(0.0);
                 model.jnt_solref.push([0.02, 1.0]);
                 model.jnt_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
                 model.jnt_name.push(Some(joint.name().to_string()));
@@ -807,6 +806,7 @@ fn generate(
             .tendon_stiffness
             .push(tendon.stiffness().unwrap_or(0.0));
         model.tendon_damping.push(tendon.damping().unwrap_or(0.0));
+        model.tendon_armature.push(0.0);
         model.tendon_frictionloss.push(0.0);
         model.tendon_solref_fri.push([0.02, 1.0]);
         model.tendon_solimp_fri.push([0.9, 0.95, 0.001, 0.5, 2.0]);

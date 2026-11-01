@@ -53,7 +53,6 @@ fn make_sensor_test_model() -> Model {
     model.jnt_springref.push(0.0);
     model.qpos_spring.push(0.0);
     model.jnt_damping.push(0.0);
-    model.jnt_armature.push(0.0);
     model.jnt_solref.push([0.02, 1.0]);
     model.jnt_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
     model.jnt_name.push(Some("hinge".to_string()));
@@ -977,7 +976,6 @@ fn test_accelerometer_in_free_fall_reads_zero() {
         .qpos_spring
         .extend_from_slice(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
     model.jnt_damping.push(0.0);
-    model.jnt_armature.push(0.0);
     model.jnt_solref.push([0.02, 1.0]);
     model.jnt_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
     model.jnt_name.push(Some("free".to_string()));
@@ -1096,7 +1094,6 @@ fn make_ball_joint_model() -> Model {
     model.jnt_springref.push(0.0);
     model.qpos_spring.extend_from_slice(&[1.0, 0.0, 0.0, 0.0]);
     model.jnt_damping.push(0.0);
-    model.jnt_armature.push(0.0);
     model.jnt_solref.push([0.02, 1.0]);
     model.jnt_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
     model.jnt_name.push(Some("ball".to_string()));

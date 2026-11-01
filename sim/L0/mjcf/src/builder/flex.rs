@@ -547,6 +547,7 @@ impl ModelBuilder {
                 self.jnt_dof_adr.push(dof_idx);
                 self.jnt_pos.push(Vector3::zeros());
                 self.jnt_axis.push(*axis);
+                self.jnt_axis_too_small.push(false);
                 self.jnt_limited.push(false);
                 self.jnt_range
                     .push((-std::f64::consts::PI, std::f64::consts::PI));
@@ -556,7 +557,6 @@ impl ModelBuilder {
                 // The flex's damping as each slide's (MuJoCo's flex damping
                 // acts only through its elasticity and bending).
                 self.jnt_damping.push(flex.damping);
-                self.jnt_armature.push(0.0);
                 // The defaults of a joint written with none of these (`joint.rs`).
                 self.jnt_solref.push(DEFAULT_SOLREF);
                 self.jnt_solimp.push(DEFAULT_SOLIMP);

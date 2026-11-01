@@ -58,6 +58,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
 ///
+/// 13 since Rigid-loading PR RL-6a: `MjcfTendon` took `armature`.
 /// 12 since Rigid-loading PR RL-5c: `MjcfGeom`'s `size` optional, a prefix of
 /// up to three, and `MjcfGeomDefaults` took `size`.
 /// 11 since Rigid-loading PR RL-5b: `MjcfActuator`'s `kp`, `area`, `bias`,
@@ -75,7 +76,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// one below mjMINVAL is refused (Rigid-loading PR RL-3b): a version-6 file
 /// holds 0.0 there for a flexcomp that did not write it. 6 since `MjcfFlex`
 /// took `vertex_bodies` (Rigid-loading L10).
-pub const MJB_VERSION: u32 = 12;
+pub const MJB_VERSION: u32 = 13;
 
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;

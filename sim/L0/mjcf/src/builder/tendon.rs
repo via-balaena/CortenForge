@@ -4,7 +4,7 @@
 //! tendon/wrap arrays. Handles joint resolution for fixed tendons,
 //! site/geom/pulley resolution for spatial tendons, and autolimits.
 
-use sim_core::{GeomType, MjJointType, TendonType, WrapType};
+use sim_core::{GeomType, MjJointType, Model, TendonType, WrapType};
 use tracing::warn;
 
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
@@ -32,6 +32,7 @@ impl ModelBuilder {
             self.tendon_limited.push(tendon_limited);
             self.tendon_stiffness.push(tendon.stiffness.unwrap_or(0.0));
             self.tendon_damping.push(tendon.damping.unwrap_or(0.0));
+            self.tendon_armature.push(tendon.armature.unwrap_or(0.0));
             self.tendon_frictionloss
                 .push(tendon.frictionloss.unwrap_or(0.0));
             self.tendon_solref_fri
@@ -164,4 +165,56 @@ impl ModelBuilder {
         }
         Ok(())
     }
+
+    /// Where tendon `t` is, for an error.
+    fn tendon_location(&self, t: usize) -> Location {
+        Location::nth(ElementKind::Tendon, self.tendon_name[t].as_deref(), t)
+    }
+
+    /// MuJoCo 3.5.0's checks of a tendon's armature (`mjCTendon::Compile`),
+    /// tendon by tendon: a spatial tendon's negative armature
+    /// (`user_objects.cc:6342-6346`), then armature on a tendon that wraps a
+    /// sphere or a cylinder, whose bias force MuJoCo cannot differentiate
+    /// (`:6389-6393`). The caller runs it after every check this crate makes
+    /// before building the model, after the bodies' joints and before the free
+    /// joint's; a keyframe's fault comes after it, in MuJoCo as here.
+    pub(crate) fn check_tendon_armature(&self) -> Result<()> {
+        for t in 0..self.tendon_type.len() {
+            let armature = self.tendon_armature[t];
+            if self.tendon_type[t] == TendonType::Spatial && armature < 0.0 {
+                return Err(negative_armature().at(self.tendon_location(t)));
+            }
+            let path = self.tendon_adr[t]..self.tendon_adr[t] + self.tendon_num[t];
+            if armature > 0.0 && self.wrap_type[path].contains(&WrapType::Geom) {
+                return Err(MjcfError::invalid_model(
+                    "geom wrapping not supported by tendon armature",
+                )
+                .at(self.tendon_location(t)));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A fixed tendon's negative armature in the built `model`, refused
+/// (`D-TENDON-ARMATURE-NEGATIVE`): MuJoCo 3.5.0's check of the sign sits in
+/// the spatial path's branch (`user_objects.cc:6342-6346`), so it loads a fixed
+/// tendon's and makes an indefinite mass matrix of it, silently. The caller
+/// runs it once the keyframes are resolved.
+pub fn check_fixed_tendon_armature(model: &Model) -> Result<()> {
+    match (0..model.ntendon)
+        .find(|&t| model.tendon_type[t] == TendonType::Fixed && model.tendon_armature[t] < 0.0)
+    {
+        Some(t) => Err(negative_armature().at(Location::nth(
+            ElementKind::Tendon,
+            model.tendon_name[t].as_deref(),
+            t,
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// MuJoCo's refusal of a negative tendon armature.
+fn negative_armature() -> MjcfError {
+    MjcfError::invalid_value("tendon", "armature", "tendon armature cannot be negative")
 }

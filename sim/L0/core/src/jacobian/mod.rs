@@ -11,7 +11,8 @@ mod position;
 
 pub use position::{mj_differentiate_pos, mj_integrate_pos_explicit};
 
-use crate::types::{Data, Model};
+use crate::dynamics::spatial::{mju_transform_spatial, spatial_cross_motion};
+use crate::types::{Data, MjJointType, Model};
 use nalgebra::{DMatrix, DVector, Vector3};
 
 /// The translational (`jacp`) and rotational (`jacr`) Jacobians, 3×nv each,
@@ -44,6 +45,60 @@ pub fn mj_jac(
         for k in 0..3 {
             jacr[(k, i)] = c[k];
             jacp[(k, i)] = c[3 + k] + tmp[k];
+        }
+        dof = model.dof_parent[i];
+    }
+    (jacp, jacr)
+}
+
+/// The time derivatives of [`mj_jac`]'s Jacobians: MuJoCo 3.5.0's `mj_jacDot`.
+///
+/// `(jacp, jacr)`, 3×nv each, of a world-frame point attached to `body_id`
+/// (`engine_core_util.c:577-646`), from the velocity stage's `cdof_dot` and
+/// `cvel`.
+///
+/// For each dof on the chain from the last one moving the body to the root,
+/// `jacr` is the dof's `cdof_dot` angular part, a ball's or a free joint's
+/// rotational dof taking `cvel ×ₘ cdof` of its body instead, and `jacp` its
+/// linear part plus `cdof_dot` angular × (`point` − the tree's subtree centre
+/// of mass) plus `cdof` angular × the point's linear velocity.
+#[must_use]
+#[allow(clippy::similar_names)] // jacp/jacr are canonical MuJoCo names
+pub fn mj_jac_dot(
+    model: &Model,
+    data: &Data,
+    body_id: usize,
+    point: &Vector3<f64>,
+) -> (DMatrix<f64>, DMatrix<f64>) {
+    let mut jacp = DMatrix::zeros(3, model.nv);
+    let mut jacr = DMatrix::zeros(3, model.nv);
+    let com = data.subtree_com[model.body_rootid[body_id]];
+    let offset = point - com;
+    let pvel = mju_transform_spatial(&data.cvel[body_id], false, point, &com, None);
+    let pvel_lin = Vector3::new(pvel[3], pvel[4], pvel[5]);
+    let body = model.body_weldid[body_id];
+    if body == 0 {
+        return (jacp, jacr);
+    }
+    let mut dof = Some(model.body_dof_adr[body] + model.body_dof_num[body] - 1);
+    while let Some(i) = dof {
+        let jnt = model.dof_jnt[i];
+        let is_quat = match model.jnt_type[jnt] {
+            MjJointType::Ball => true,
+            MjJointType::Free => i >= model.jnt_dof_adr[jnt] + 3,
+            MjJointType::Hinge | MjJointType::Slide => false,
+        };
+        let cdof = &data.cdof[i];
+        let cdof_dot = if is_quat {
+            spatial_cross_motion(data.cvel[model.dof_body[i]], *cdof)
+        } else {
+            data.cdof_dot[i]
+        };
+        let tmp1 = Vector3::new(cdof_dot[0], cdof_dot[1], cdof_dot[2]).cross(&offset);
+        let tmp2 = Vector3::new(cdof[0], cdof[1], cdof[2]).cross(&pvel_lin);
+        for k in 0..3 {
+            jacr[(k, i)] += cdof_dot[k];
+            jacp[(k, i)] += cdof_dot[3 + k] + tmp1[k] + tmp2[k];
         }
         dof = model.dof_parent[i];
     }
@@ -258,7 +313,6 @@ mod jac_site_tests {
             _ => vec![0.0], // Hinge / Slide
         };
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("j1".to_string())];
@@ -460,7 +514,6 @@ mod mj_jac_tests {
             _ => vec![0.0], // Hinge / Slide
         };
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("j1".to_string())];
@@ -576,7 +629,6 @@ mod mj_jac_tests {
         model.jnt_springref = vec![0.0];
         model.qpos_spring = vec![1.0, 0.0, 0.0, 0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("j1".to_string())];
@@ -689,7 +741,6 @@ mod mj_jac_tests {
         model.jnt_springref = vec![0.0];
         model.qpos_spring = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
         model.jnt_damping = vec![0.0];
-        model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("j1".to_string())];
@@ -926,7 +977,6 @@ mod mj_jac_tests {
         // Free(7) + Hinge(1) + Hinge(1) = 9 qpos_spring entries
         model.qpos_spring = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         model.jnt_damping = vec![0.0; 3];
-        model.jnt_armature = vec![0.0; 3];
         model.jnt_solref = vec![[0.02, 1.0]; 3];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]; 3];
         model.jnt_name = vec![
@@ -1069,7 +1119,6 @@ mod mj_jac_tests {
         // Free(7) + Ball(4) = 11 qpos_spring entries
         model.qpos_spring = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
         model.jnt_damping = vec![0.0; 2];
-        model.jnt_armature = vec![0.0; 2];
         model.jnt_solref = vec![[0.02, 1.0]; 2];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]; 2];
         model.jnt_name = vec![Some("j_free".to_string()), Some("j_ball".to_string())];
@@ -1220,7 +1269,6 @@ mod mj_jac_tests {
         model.jnt_springref = vec![0.0; 2];
         model.qpos_spring = vec![0.0; 2];
         model.jnt_damping = vec![0.0; 2];
-        model.jnt_armature = vec![0.0; 2];
         model.jnt_solref = vec![[0.02, 1.0]; 2];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]; 2];
         model.jnt_name = vec![Some("j1".to_string()), Some("j2".to_string())];

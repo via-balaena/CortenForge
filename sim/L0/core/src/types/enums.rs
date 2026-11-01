@@ -1223,6 +1223,8 @@ pub enum MakeDataError {
     /// An actuator's plugin, activation count or activation addresses
     /// ([`Model::check_actuators`](crate::Model::check_actuators)).
     Actuator(ActuatorError),
+    /// A tendon ([`Model::check_tendons`](crate::Model::check_tendons)).
+    Tendon(TendonError),
     /// The model sets a flag for a part of MuJoCo sim-core does not port.
     Unsupported {
         /// The flag and what it would take.
@@ -1248,6 +1250,7 @@ impl std::fmt::Display for MakeDataError {
             } => f.write_str(&init_sleep(*marked, *slept, *tree, *root_body)),
             Self::InitForward(e) => write!(f, "{INIT_FORWARD}: {e}"),
             Self::Actuator(e) => write!(f, "{e}"),
+            Self::Tendon(e) => write!(f, "{e}"),
             Self::Unsupported { feature } => write!(f, "unsupported: {feature}"),
         }
     }
@@ -1260,6 +1263,7 @@ impl std::error::Error for MakeDataError {
             Self::Range(e) => Some(e),
             Self::InitForward(e) => Some(e),
             Self::Actuator(e) => Some(e),
+            Self::Tendon(e) => Some(e),
             Self::PluginInit { .. }
             | Self::InvalidTimestep
             | Self::DelayedUserSensor { .. }
@@ -1284,6 +1288,12 @@ impl From<RangeError> for MakeDataError {
 impl From<ActuatorError> for MakeDataError {
     fn from(e: ActuatorError) -> Self {
         Self::Actuator(e)
+    }
+}
+
+impl From<TendonError> for MakeDataError {
+    fn from(e: TendonError) -> Self {
+        Self::Tendon(e)
     }
 }
 
@@ -1386,6 +1396,8 @@ pub enum ModelError {
     Range(RangeError),
     /// [`Model::check_actuators`](crate::Model::check_actuators)'s error.
     Actuator(ActuatorError),
+    /// [`Model::check_tendons`](crate::Model::check_tendons)'s error.
+    Tendon(TendonError),
 }
 
 impl std::fmt::Display for ModelError {
@@ -1394,6 +1406,7 @@ impl std::fmt::Display for ModelError {
             Self::JointLayout(e) => write!(f, "{e}"),
             Self::Range(e) => write!(f, "{e}"),
             Self::Actuator(e) => write!(f, "{e}"),
+            Self::Tendon(e) => write!(f, "{e}"),
         }
     }
 }
@@ -1404,6 +1417,7 @@ impl std::error::Error for ModelError {
             Self::JointLayout(e) => Some(e),
             Self::Range(e) => Some(e),
             Self::Actuator(e) => Some(e),
+            Self::Tendon(e) => Some(e),
         }
     }
 }
@@ -1423,6 +1437,12 @@ impl From<RangeError> for ModelError {
 impl From<ActuatorError> for ModelError {
     fn from(e: ActuatorError) -> Self {
         Self::Actuator(e)
+    }
+}
+
+impl From<TendonError> for ModelError {
+    fn from(e: TendonError) -> Self {
+        Self::Tendon(e)
     }
 }
 
@@ -1556,6 +1576,35 @@ impl std::fmt::Display for ActuatorError {
 }
 
 impl std::error::Error for ActuatorError {}
+
+/// A tendon [`Model::check_tendons`](crate::Model::check_tendons) refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TendonError {
+    /// Tendon `tendon` has armature and wraps a sphere or a cylinder: MuJoCo
+    /// 3.5.0's forward pass cannot compute its armature's bias force
+    /// (`mj_tendonDot` stops, "geom wrapping not supported",
+    /// `engine_core_smooth.c:1188-1190`), and its compiler refuses such a
+    /// tendon (`user_objects.cc:6389-6393`).
+    ArmatureWrapsGeom {
+        /// The tendon.
+        tendon: usize,
+    },
+}
+
+impl std::fmt::Display for TendonError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::ArmatureWrapsGeom { tendon } => write!(
+                f,
+                "tendon {tendon} has armature and wraps a geom, whose bias force MuJoCo's \
+                 mj_tendonDot does not compute"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TendonError {}
 
 /// Bending model for dim=2 flex bodies.
 ///

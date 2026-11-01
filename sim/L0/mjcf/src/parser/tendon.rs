@@ -155,6 +155,7 @@ pub(super) fn parse_tendon_attrs(
 
     tendon.stiffness = a.real("stiffness")?;
     tendon.damping = a.real("damping")?;
+    tendon.armature = a.real("armature")?;
     tendon.frictionloss = a.real("frictionloss")?;
 
     // B2: Parse springlength (1 or 2 values)

@@ -82,7 +82,7 @@ fn test_nested_class_inheritance() {
     let model = load_model(mjcf).expect("should load");
     // "arm" inherits damping=0.5 from "robot", adds armature=0.01
     assert_relative_eq!(model.jnt_damping[0], 0.5, epsilon = 1e-10);
-    assert_relative_eq!(model.jnt_armature[0], 0.01, epsilon = 1e-10);
+    assert_relative_eq!(model.dof_armature[0], 0.01, epsilon = 1e-10);
 }
 
 /// Criterion 4: Geom friction defaults apply.

@@ -12,7 +12,7 @@ use super::body_wrench::BodyWrench;
 use super::enums::{
     ActuatorDynamics, ActuatorError, DISABLE_NATIVECCD, ENABLE_SLEEP, EqualityType, Integrator,
     JacobianType, JointLayoutError, MakeDataError, MjJointType, MjSensorType, RangeError,
-    ResetError, SleepPolicy, SleepState, SolverType, StepError,
+    ResetError, SleepPolicy, SleepState, SolverType, StepError, TendonError, WrapType,
 };
 use super::model::Model;
 
@@ -193,7 +193,6 @@ impl Model {
             jnt_stiffness: vec![],
             jnt_springref: vec![],
             jnt_damping: vec![],
-            jnt_armature: vec![],
             jnt_solref: vec![],
             jnt_solimp: vec![],
             jnt_name: vec![],
@@ -412,6 +411,7 @@ impl Model {
             tendon_limited: vec![],
             tendon_stiffness: vec![],
             tendon_damping: vec![],
+            tendon_armature: vec![],
             tendon_lengthspring: vec![],
             tendon_length0: vec![],
             tendon_num: vec![],
@@ -687,6 +687,7 @@ impl Model {
     /// [`MakeDataError::JointLayout`] ([`Self::check_joint_layout`]),
     /// [`MakeDataError::Range`] ([`Self::check_ranges`]),
     /// [`MakeDataError::Actuator`] ([`Self::check_actuators`]),
+    /// [`MakeDataError::Tendon`] ([`Self::check_tendons`]),
     /// the history buffers' refusals ([`MakeDataError::InvalidTimestep`],
     /// [`MakeDataError::DelayedUserSensor`]), [`MakeDataError::PluginInit`]
     /// if a plugin's `init` returns an error, or the reset's refusal of the
@@ -702,6 +703,7 @@ impl Model {
         self.check_joint_layout()?;
         self.check_ranges()?;
         self.check_actuators()?;
+        self.check_tendons()?;
         if self.disableflags & DISABLE_NATIVECCD != 0 {
             return Err(MakeDataError::Unsupported {
                 feature: NATIVECCD_DISABLED,
@@ -780,6 +782,27 @@ impl Model {
                     act_num,
                     na: self.na,
                 });
+            }
+        }
+        Ok(())
+    }
+
+    /// Check each tendon: a tendon with armature does not wrap a sphere or a
+    /// cylinder, whose armature's bias force MuJoCo 3.5.0's forward pass
+    /// cannot compute (`mj_tendonDot` stops, "geom wrapping not supported",
+    /// `engine_core_smooth.c:1188-1190`); its compiler refuses such a tendon
+    /// (`user_objects.cc:6389-6393`). A model built without `tendon_armature`
+    /// has no armature.
+    ///
+    /// # Errors
+    /// The first [`TendonError`] found.
+    pub fn check_tendons(&self) -> Result<(), TendonError> {
+        for tendon in 0..self.ntendon {
+            let path = self.tendon_adr[tendon]..self.tendon_adr[tendon] + self.tendon_num[tendon];
+            if self.tendon_armature.get(tendon).is_some_and(|&a| a != 0.0)
+                && self.wrap_type[path].contains(&WrapType::Geom)
+            {
+                return Err(TendonError::ArmatureWrapsGeom { tendon });
             }
         }
         Ok(())

@@ -4,12 +4,11 @@
 //! including angle conversion, limit handling, and kinematic tree linkage.
 
 use nalgebra::{UnitQuaternion, Vector3};
-use sim_core::MjJointType;
-use tracing::warn;
+use sim_core::{MjJointType, Model};
 
 use super::orientation::{MJ_EPS, normvec};
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
-use crate::error::Result;
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{AngleUnit, MjcfJoint, MjcfJointType};
 
 impl ModelBuilder {
@@ -54,6 +53,25 @@ impl ModelBuilder {
             MjcfJointType::Free => MjJointType::Free,
         };
 
+        // The axis as MuJoCo's `mjCJoint::Compile` makes it
+        // (`user_objects.cc:2946-2960`): a ball's or a free joint's is z,
+        // whatever is written; another's is made unit by `normvec`, which
+        // returns 0 where its squared norm is below mjEPS. MuJoCo refuses that
+        // one ("axis too small in joint"); here it is kept as z and refused by
+        // `check_joints`, after the checks this crate makes before it.
+        let (axis, axis_too_small) = match jnt_type {
+            MjJointType::Ball | MjJointType::Free => (Vector3::z(), false),
+            MjJointType::Hinge | MjJointType::Slide => {
+                let written = joint.axis.unwrap_or_else(Vector3::z);
+                let mut unit = [written.x, written.y, written.z];
+                if normvec(&mut unit) < MJ_EPS {
+                    (Vector3::z(), true)
+                } else {
+                    (Vector3::from(unit), false)
+                }
+            }
+        };
+
         let nq = jnt_type.nq();
         let nv = jnt_type.nv();
         let qpos_adr = self.nq;
@@ -65,23 +83,8 @@ impl ModelBuilder {
         self.jnt_qpos_adr.push(qpos_adr);
         self.jnt_dof_adr.push(dof_adr);
         self.jnt_pos.push(joint.pos.unwrap_or_else(Vector3::zeros));
-        // The written axis made unit once, as MuJoCo's `normvec`
-        // (`mjCJoint::Compile`, `user_objects.cc:2957-2960`). One too small to
-        // make unit falls back to z; MuJoCo refuses a hinge's or a slide's
-        // ("axis too small in joint") and sets a ball's or a free joint's to z
-        // before it looks (the Rigid-loading book's L20).
-        let raw_axis = joint.axis.unwrap_or_else(Vector3::z);
-        let mut unit = [raw_axis.x, raw_axis.y, raw_axis.z];
-        let axis = if normvec(&mut unit) >= MJ_EPS {
-            Vector3::from(unit)
-        } else {
-            warn!(
-                joint_name = ?joint.name,
-                "Joint axis is zero or near-zero, defaulting to Z-axis"
-            );
-            Vector3::z()
-        };
         self.jnt_axis.push(axis);
+        self.jnt_axis_too_small.push(axis_too_small);
         // Autolimits: infer limited from range presence when no explicit value.
         let limited = super::is_limited(joint.limited, self.compiler.autolimits, joint.range);
         self.jnt_limited.push(limited);
@@ -120,7 +123,6 @@ impl ModelBuilder {
         };
         self.jnt_springref.push(spring_ref_converted);
         self.jnt_damping.push(joint.damping.unwrap_or(0.0));
-        self.jnt_armature.push(joint.armature.unwrap_or(0.0));
         self.jnt_solref
             .push(written_over(joint.solref_limit, DEFAULT_SOLREF));
         self.jnt_solimp
@@ -202,6 +204,96 @@ impl ModelBuilder {
 
         Ok(jnt_id)
     }
+
+    /// The joints of a body, as a range of joint indices.
+    fn body_joints(&self, body: usize) -> std::ops::Range<usize> {
+        let start = self.body_jnt_adr[body];
+        start..start + self.body_jnt_num[body]
+    }
+
+    /// Where body `body` is, for an error.
+    fn body_location(&self, body: usize) -> Location {
+        Location::nth(ElementKind::Body, self.body_name[body].as_deref(), body)
+    }
+
+    /// MuJoCo 3.5.0's checks of each body's joints, body by body in its
+    /// order, as `mjCJoint::Compile` and `mjCBody::Compile` make them: a
+    /// hinge's or a slide's axis too small to make unit
+    /// (`user_objects.cc:2957-2960`), then more than 6 degrees of freedom,
+    /// then a ball or a hinge after a ball (`:2522-2537`). The caller runs it
+    /// after every check this crate makes before building the model, so that
+    /// a document it refused before these checks existed is refused for the
+    /// same fault, unless that fault is a keyframe's: MuJoCo compiles
+    /// keyframes after these checks, and this crate resolves them after
+    /// building the model.
+    pub(crate) fn check_joints(&self) -> Result<()> {
+        for body in 1..self.body_parent.len() {
+            let joints = self.body_joints(body);
+            if let Some(j) = joints.clone().find(|&j| self.jnt_axis_too_small[j]) {
+                let at = Location::nth(ElementKind::Joint, self.jnt_name[j].as_deref(), j)
+                    .within_nth(ElementKind::Body, self.body_name[body].as_deref(), body);
+                return Err(MjcfError::invalid_value("joint", "axis", "axis too small").at(at));
+            }
+            let kinds = &self.jnt_type[joints];
+            if kinds.iter().map(|j| j.nv()).sum::<usize>() > 6 {
+                return Err(
+                    MjcfError::invalid_model("more than 6 dofs").at(self.body_location(body))
+                );
+            }
+            if after_ball(kinds, &[MjJointType::Ball, MjJointType::Hinge]) {
+                return Err(MjcfError::invalid_model("ball followed by rotation")
+                    .at(self.body_location(body)));
+            }
+        }
+        Ok(())
+    }
+
+    /// MuJoCo 3.5.0's rule for a free joint, which it applies as it copies its
+    /// tree into its model (`CopyTree`, `user_model.cc:2725-2727`), after it
+    /// has compiled the bodies, the tendons and the actuators: a free joint's
+    /// body is a child of the world, frames being dissolved and static bodies
+    /// fused by then. Bodies are checked in order, as MuJoCo checks them.
+    pub(crate) fn check_free_joints_on_top_level(&self) -> Result<()> {
+        let nested = (1..self.body_parent.len()).find(|&b| {
+            self.body_parent[b] != 0
+                && self.jnt_type[self.body_joints(b)].contains(&MjJointType::Free)
+        });
+        match nested {
+            Some(b) => Err(
+                MjcfError::invalid_model("free joint can only be used on top level")
+                    .at(self.body_location(b)),
+            ),
+            None => Ok(()),
+        }
+    }
+}
+
+/// A slide after a ball on one body of the built `model`, which MuJoCo 3.5.0
+/// loads, refused as not supported (`D-BALL-THEN-SLIDE`, a decision of the
+/// parity rule's, 01-decisions). The caller runs it once the keyframes are
+/// resolved.
+pub fn check_ball_then_slide(model: &Model) -> Result<()> {
+    for body in 1..model.nbody {
+        let start = model.body_jnt_adr[body];
+        let joints = &model.jnt_type[start..start + model.body_jnt_num[body]];
+        if after_ball(joints, &[MjJointType::Slide]) {
+            return Err(
+                MjcfError::unsupported("a slide joint after a ball joint on one body").at(
+                    Location::nth(ElementKind::Body, model.body_name[body].as_deref(), body),
+                ),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Whether a joint of one of `kinds` follows a ball among a body's `joints`.
+fn after_ball(joints: &[MjJointType], kinds: &[MjJointType]) -> bool {
+    joints
+        .iter()
+        .skip_while(|&&j| j != MjJointType::Ball)
+        .skip(1)
+        .any(|j| kinds.contains(j))
 }
 
 #[cfg(test)]

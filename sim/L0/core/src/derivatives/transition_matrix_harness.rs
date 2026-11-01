@@ -366,6 +366,7 @@ fn fixed_tendon_chain(damping: f64, integ: Integrator) -> Model {
     m.tendon_type.push(TendonType::Fixed);
     m.tendon_stiffness.push(0.0); // only damping triggers the velocity-block gap
     m.tendon_damping.push(damping);
+    m.tendon_armature.push(0.0);
     m.tendon_lengthspring.push([0.0, 0.0]);
     m.tendon_length0.push(0.0);
     m.tendon_limited.push(false);

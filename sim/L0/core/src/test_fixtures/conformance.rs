@@ -80,6 +80,7 @@ fn add_spatial_tendon(model: &mut Model, site0: usize, site1: usize, stiffness: 
     model.tendon_type.push(TendonType::Spatial);
     model.tendon_stiffness.push(stiffness);
     model.tendon_damping.push(0.0);
+    model.tendon_armature.push(0.0);
     model.tendon_lengthspring.push([0.0, 0.0]);
     model.tendon_length0.push(0.0);
     model.tendon_limited.push(false);
