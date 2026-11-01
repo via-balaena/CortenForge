@@ -1295,6 +1295,32 @@ mod tests {
                 Some([0.5, 0.25, 0.3, 0.1]),
                 [0.078125, 0.265625, 0.3125],
             ),
+            // v_capsule_orders
+            (
+                MjcfGeomType::Capsule,
+                &[0.03, 0.13],
+                None,
+                None,
+                None,
+                [
+                    0.006589522006831126,
+                    0.006589522006831126,
+                    0.00037152474721352893,
+                ],
+            ),
+            // v_ellipsoid_orders
+            (
+                MjcfGeomType::Ellipsoid,
+                &[0.01, 0.01, 0.04],
+                None,
+                None,
+                None,
+                [
+                    5.696754678509493e-06,
+                    5.696754678509493e-06,
+                    6.702064327658226e-07,
+                ],
+            ),
         ];
         let mut wrong = Vec::new();
         for &(geom_type, size, mass, density, hfield, mujoco) in rows {

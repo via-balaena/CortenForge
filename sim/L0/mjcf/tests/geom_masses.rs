@@ -370,6 +370,32 @@ const CASES: &[Case] = &[
         &[0.0, 2.5],
         &[[0.0, 0.0, 0.0], [0.025000000000000005, 0.05, 0.065]],
     ),
+    // v_capsule_orders
+    (
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="capsule" size="0.03 0.13"/></body></worldbody></mujoco>"#,
+        &[0.0, 0.8482300164692441],
+        &[
+            [0.0, 0.0, 0.0],
+            [
+                0.006589522006831126,
+                0.006589522006831126,
+                0.00037152474721352893,
+            ],
+        ],
+    ),
+    // v_ellipsoid_orders
+    (
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="ellipsoid" size="0.01 0.01 0.04"/></body></worldbody></mujoco>"#,
+        &[0.0, 0.016755160819145565],
+        &[
+            [0.0, 0.0, 0.0],
+            [
+                5.696754678509493e-06,
+                5.696754678509493e-06,
+                6.702064327658226e-07,
+            ],
+        ],
+    ),
 ];
 
 /// Each document's `body_mass` is MuJoCo's, bit for bit.

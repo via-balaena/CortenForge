@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="ellipsoid" size="0.01 0.01 0.04"/></body></worldbody></mujoco>
