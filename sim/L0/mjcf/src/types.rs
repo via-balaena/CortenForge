@@ -447,7 +447,9 @@ pub struct MjcfCompiler {
     pub texturedir: Option<String>,
     /// Fallback directory for all asset files.
     pub assetdir: Option<String>,
-    /// Automatically infer `limited` from `range` presence.
+    /// Whether a `limited`-style attribute left unwritten or `auto` may be
+    /// decided by its range (MuJoCo's `autolimits`): with it off, a range
+    /// other than `0 0` written without its `limited` is refused ([`TfAuto`]).
     pub autolimits: bool,
     /// Controls inertia computation from geoms.
     pub inertiafromgeom: InertiaFromGeom,
@@ -2836,7 +2838,8 @@ pub struct MjcfActuator {
     pub inheritrange: Option<f64>,
     /// Visualization group (0–5).
     pub group: Option<i32>,
-    /// Whether activation is clamped to actrange.
+    /// Whether activation is clamped to actrange; `None` as `Auto`
+    /// ([`TfAuto`]).
     pub actlimited: Option<TfAuto>,
     /// Activation clamping range [lower, upper].
     pub actrange: Option<(f64, f64)>,

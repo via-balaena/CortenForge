@@ -46,10 +46,12 @@ impl ModelBuilder {
         // the pipeline on it (a muscle's length range is simulated), so a
         // joint layout or a range `try_make_data` refuses skips them: a slide
         // after a ball, which the loader refuses once the keyframes are
-        // resolved, and a range, which no parsed document brings here (the
-        // loader refuses each limit `check_ranges` would, book L21) but a
-        // caller-built `MjcfModel` can: an infinite bound, which only the
-        // parser refuses (11-settled A5-Q9: the builder guards such input).
+        // resolved, and a range `check_ranges` refuses that the loader passes,
+        // as MuJoCo loads it (registry D-MODEL-CHECKS): a limited range in
+        // degrees whose bounds become one value in radians, an `inheritrange`
+        // whose range overflows to an infinite bound, and a caller-built
+        // `MjcfModel`'s infinite bound, which the parser refuses in a
+        // document.
         if model.check_joint_layout().is_ok() && model.check_ranges().is_ok() {
             model.compute_dof_m0();
             model.compute_spatial_tendon_length0();

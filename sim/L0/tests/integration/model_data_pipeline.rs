@@ -664,12 +664,12 @@ fn derivation_never_sees_a_joint_range_try_make_data_refuses() {
     );
 }
 
-/// Every census document the loader takes passes `Model::check_ranges`: the
-/// loader refuses each limit `try_make_data` would refuse (book L21), so the
-/// derivations, which build a `Data`, never meet one. At least as many
-/// documents load as the census counts agreeing with MuJoCo.
+/// Every census document the loader takes passes `Model::check_ranges` (book
+/// L21), but those the registry's D-MODEL-CHECKS names, which load and which
+/// it refuses (the routes are listed at `build.rs`'s derivation guard). At
+/// least as many documents load as the census counts agreeing with MuJoCo.
 #[test]
-fn no_census_document_loads_a_range_try_make_data_refuses() {
+fn census_documents_that_load_pass_check_ranges_but_d_model_checks_ones() {
     let census = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/census");
     let verdicts = std::fs::read_to_string(census.join("verdicts.tsv")).expect("verdicts");
     let floor: usize = verdicts

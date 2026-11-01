@@ -211,7 +211,8 @@ fn test_integrator_unbounded_without_actlimited() {
 
 /// A `<muscle>` with no activation limit written has none, as MuJoCo 3.5.0
 /// builds one (`actuator_actlimited` 0, measured on a muscle on a limited
-/// hinge, `tests/limits.rs`; A5-Q6).
+/// hinge, `tests/limits.rs`; A5-Q6). This fixture's hinge is not limited, so
+/// MuJoCo refuses it for its length range (book L44).
 #[test]
 fn test_muscle_default_actrange() {
     let model = build_muscle_model(None);

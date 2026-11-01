@@ -1,13 +1,16 @@
-//! One rule for every `limited` and `range` pair: a joint's, a tendon's, and
-//! an actuator's control, force and activation ranges, as MuJoCo 3.5.0
-//! resolves and checks them (`user_objects.cc`: `islimited` `:184-189`,
-//! `checklimited` `:171-181`, the joint's checks `:2895-2924`, the tendon's
-//! `:6412-6421`, the actuator's `:6866-6890`).
+//! One rule for a joint's, a tendon's and an actuator's control, force and
+//! activation `limited` and `range`, as MuJoCo 3.5.0 resolves and checks them
+//! (`user_objects.cc`: `islimited` `:184-189`, `checklimited` `:171-181`, the
+//! joint's checks `:2895-2924`, the tendon's `:6412-6421`, the actuator's
+//! `:6868-6894`). A joint's and a tendon's `actuatorfrclimited` and
+//! `actuatorfrcrange`, which this crate does not read, are not among them
+//! (ledger L315).
 //!
 //! [`resolve`] decides whether a pair limits and finds its first fault; the
-//! builder records the fault and names it later, in MuJoCo's order among the
-//! checks MuJoCo makes and this crate made after the others before (book
-//! L21, ledger L363).
+//! builder records the fault and names it later (book L21, ledger L363): a
+//! fault this crate found before L21 where it found it, MuJoCo's other faults
+//! after every check this crate makes before building the model, in MuJoCo's
+//! order, and `D-AUTO-RANGE`'s after the keyframes.
 
 use sim_core::MjJointType;
 
@@ -101,7 +104,7 @@ impl LimitFault {
             ),
             Self::AutomaticNotIncreasing => format!(
                 "an automatic `{prefix}limited` needs `{prefix}range` with range[0] < range[1] \
-                 (MuJoCo leaves it unlimited); write `{prefix}limited`, or a range that increases"
+                 (MuJoCo leaves it unlimited, D-AUTO-RANGE)"
             ),
             Self::NotIncreasing => pair.not_increasing().to_owned(),
             Self::BallLowerNotZero => "range[0] should be 0 in ball joint".to_owned(),
