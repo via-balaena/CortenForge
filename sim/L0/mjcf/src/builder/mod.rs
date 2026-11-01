@@ -295,11 +295,12 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // check above, so that a document refused before they existed is refused
     // for the same fault (MuJoCo orders some of them before checks above).
     // Among themselves in MuJoCo's order: each body's joints, the tendons, the
-    // actuators, then the free joint below the world's children, as MuJoCo's
-    // `CopyTree` refuses it.
+    // actuators, the sensors, then the free joint below the world's children,
+    // as MuJoCo's `CopyTree` refuses it.
     builder.check_joints()?;
     builder.check_tendons()?;
     builder.check_actuators()?;
+    builder.check_limit_sensors()?;
     builder.check_free_joints_on_top_level()?;
 
     // Build final model

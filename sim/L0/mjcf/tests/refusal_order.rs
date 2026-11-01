@@ -253,6 +253,12 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "actuator has `ctrlrange` but not `ctrllimited`. set the autolimits=\"true\" compiler option, specify `ctrllimited` explicitly (\"true\" or \"false\"), or remove the `ctrlrange` attribute.",
         "invalid ctrlrange on <actuator>: actuator has `ctrlrange` but not `ctrllimited`. set the autolimits=\"true\" compiler option, specify `ctrllimited` explicitly (\"true\" or \"false\"), or remove the `ctrlrange` attribute. (actuator #0)",
     ),
+    (
+        "limit sensor on an unlimited joint then nested free",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="a" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><body name="c" pos="0 0 -0.3"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></body></worldbody><sensor><jointlimitfrc joint="j"/></sensor></mujoco>"#,
+        "joint must be limited in sensor",
+        "joint must be limited in sensor (sensor #0)",
+    ),
 ];
 
 #[test]

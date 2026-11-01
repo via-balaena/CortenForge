@@ -2693,3 +2693,11 @@ ece59f33387d308d	sim/L0/mjcf/tests/limits.rs:634
 f18c95e82cef4700	sim/L0/mjcf/tests/limits.rs:605
 facb8001df1c97be	sim/L0/mjcf/tests/limits.rs:707
 427bd0e5b09a8899	sim/L0/mjcf/tests/refusal_order.rs:252
+112be229201bffaa	sim/L0/mjcf/tests/limits.rs:827
+244b781aba23cffc	sim/L0/mjcf/tests/limits.rs:848
+3fdefc33e851efac	sim/L0/tests/integration/mjcf_sensors.rs:223
+4b6b8d1889965849	sim/L0/mjcf/tests/limits.rs:840
+c4e2064700e20743	sim/L0/mjcf/tests/refusal_order.rs:258
+c79afafc6b27824f	sim/L0/mjcf/tests/limits.rs:814
+ebb0b8417151181a	sim/L0/mjcf/tests/limits.rs:822
+f4bc7267b17749eb	sim/L0/mjcf/tests/limits.rs:835

@@ -20,6 +20,32 @@ impl ModelBuilder {
     /// Converts `MjcfSensor` objects into the 17 pipeline sensor arrays.
     /// Must be called AFTER all bodies, joints, tendons, and actuators are processed
     /// (requires name→id lookups for object resolution).
+    /// MuJoCo 3.5.0's check of a limit sensor (`mjCSensor::Compile`,
+    /// `user_objects.cc:7442-7468`), sensor by sensor: a joint limit force on
+    /// a joint that is not limited, or a tendon limit force on a tendon that
+    /// is not, refused (book L21, U01). The caller runs it after every check
+    /// this crate makes before building the model, after the actuators' and
+    /// before the free joint's, as MuJoCo compiles sensors after actuators.
+    pub(crate) fn check_limit_sensors(&self) -> Result<()> {
+        for (i, (&kind, &id)) in self.sensor_type.iter().zip(&self.sensor_objid).enumerate() {
+            let words = match kind {
+                MjSensorType::JointLimitFrc if !self.jnt_limited[id] => {
+                    "joint must be limited in sensor"
+                }
+                MjSensorType::TendonLimitFrc if !self.tendon_limited[id] => {
+                    "tendon must be limited in sensor"
+                }
+                _ => continue,
+            };
+            return Err(MjcfError::invalid_model(words).at(Location::nth(
+                ElementKind::Sensor,
+                self.sensor_name_list[i].as_deref(),
+                i,
+            )));
+        }
+        Ok(())
+    }
+
     pub(crate) fn process_sensors(&mut self, sensors: &[MjcfSensor]) -> Result<()> {
         let mut adr = 0usize;
         for (i, mjcf_sensor) in sensors.iter().enumerate() {

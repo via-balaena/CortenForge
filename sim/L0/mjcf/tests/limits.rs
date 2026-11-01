@@ -1,7 +1,8 @@
 //! A joint's and a tendon's `limited` and `range`, a tendon's
-//! `springlength`, an actuator's control, force and activation limits and a
-//! muscle's parameters, as MuJoCo 3.5.0 resolves and checks them (book L21;
-//! ledger L1, L55, L69, L272, L331, L349, L350; `builder/limits.rs`).
+//! `springlength`, an actuator's control, force and activation limits, a
+//! muscle's parameters, and the limit of a limit sensor's joint or tendon, as
+//! MuJoCo 3.5.0 resolves and checks them (book L21, U01; ledger L1, L55, L69,
+//! L272, L331, L349, L350; `builder/limits.rs`).
 //!
 //! Every document below was loaded by MuJoCo 3.5.0 on the census's unfused
 //! oracle (2026-11-01): each refusal expects MuJoCo's words; each load,
@@ -805,4 +806,51 @@ fn each_actuator_limit_is_mujocos() {
 #[test]
 fn each_muscle_parameter_check_is_mujocos() {
     check(MUSCLES);
+}
+
+const SENSORS: &[(&str, &str, Expect)] = &[
+    (
+        "s_jlf_ball_true_norange",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="ball" limited="true"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><sensor><jointlimitfrc joint="j"/></sensor></mujoco>"#,
+        Expect::Joints {
+            limited: &[true],
+            range: &[(0.0_f64, 0.0_f64)],
+        },
+    ),
+    (
+        "s_jlf_free_true",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="free" limited="true" range="0 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><sensor><jointlimitfrc joint="j"/></sensor></mujoco>"#,
+        Expect::Refused("joint must be limited in sensor"),
+    ),
+    (
+        "s_jlf_limited",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-30 30"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><sensor><jointlimitfrc joint="j"/></sensor></mujoco>"#,
+        Expect::Joints {
+            limited: &[true],
+            range: &[(-0.5235987755982988_f64, 0.5235987755982988_f64)],
+        },
+    ),
+    (
+        "s_jlf_unlimited",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><sensor><jointlimitfrc joint="j"/></sensor></mujoco>"#,
+        Expect::Refused("joint must be limited in sensor"),
+    ),
+    (
+        "s_tlf_limited",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" range="-0.5 0.5"><joint joint="j" coef="1"/></fixed></tendon><sensor><tendonlimitfrc tendon="t"/></sensor></mujoco>"#,
+        Expect::Joints {
+            limited: &[true],
+            range: &[(-1.0_f64, 1.0_f64)],
+        },
+    ),
+    (
+        "s_tlf_unlimited",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" ><joint joint="j" coef="1"/></fixed></tendon><sensor><tendonlimitfrc tendon="t"/></sensor></mujoco>"#,
+        Expect::Refused("tendon must be limited in sensor"),
+    ),
+];
+
+#[test]
+fn each_limit_sensor_check_is_mujocos() {
+    check(SENSORS);
 }
