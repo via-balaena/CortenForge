@@ -3164,7 +3164,7 @@ pub struct MjcfTendon {
     /// Armature, an inertia along the tendon (MuJoCo's `tendon_armature`; 0
     /// unwritten). Read on the element only: a class's `armature` is dropped
     /// here, where MuJoCo's `<default>` schema has none and refuses the
-    /// document (ledger L315).
+    /// document.
     pub armature: Option<f64>,
     /// Friction loss.
     pub frictionloss: Option<f64>,

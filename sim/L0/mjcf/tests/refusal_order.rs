@@ -3,17 +3,18 @@
 //!
 //! RL-6a's refusals that MuJoCo 3.5.0 makes (a joint's axis, a body's joint
 //! layout, a tendon's armature, a free joint below the world's children) run
-//! after every check this crate makes otherwise, so that a document it refused
-//! before is refused for the same fault, as MuJoCo refuses it here; and the
-//! two that MuJoCo does not make (a slide after a ball, a fixed tendon's
-//! negative armature) run last, after every check MuJoCo makes. Where MuJoCo
-//! orders a new refusal before a check this crate makes later, this crate
-//! names the later one, as it did before (the order as a whole: ledger L353).
+//! after every check this crate makes before building the model, so that a
+//! document it refused before is refused for the same fault, as MuJoCo
+//! refuses it here; a keyframe's fault comes after them, as in MuJoCo, which
+//! compiles keyframes last. The two that MuJoCo does not make (a slide after
+//! a ball, a fixed tendon's negative armature) run after the keyframes, last
+//! of all. Where MuJoCo orders a new refusal before a check this crate makes
+//! later, this crate names the later one, as it did before.
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
-//! oracle (2026-10-31), for the fault its expected error names. The first
-//! eleven are the RL-6a review's (round 1); the last four set the new checks
-//! against each other.
+//! oracle (2026-10-31), for the fault its expected error names. Eleven are the
+//! RL-6a review's first round, three its fix-diff pass's (a keyframe's fault),
+//! and four set the new checks against each other.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -110,6 +111,24 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><worldbody><site name="s0" pos="0 0 2"/><body name="b" pos="0 0 1"><joint type="ball"/><joint type="slide"/><geom type="sphere" size="0.1"/><site name="s1"/></body></worldbody><tendon><spatial name="t" armature="-0.1"><site site="s0"/><site site="s1"/></spatial></tendon></mujoco>"#,
         "tendon 't' (id = 0): tendon armature cannot be negative",
         "invalid armature on <tendon>: tendon armature cannot be negative (tendon 't')",
+    ),
+    (
+        "fixed negative then bad keyframe qpos",
+        r#"<mujoco><worldbody><site name="s0" pos="0.1 0 1.2"/><body name="b1" pos="0 0 1"><joint name="j1" type="hinge" axis="0 1 0"/><inertial pos="0 0 -0.15" mass="0.5" diaginertia="0.004 0.004 0.0002"/><site name="s1" pos="0.05 0 -0.1"/><body name="b2" pos="0 0 -0.3"><joint name="j2" type="hinge" axis="0 1 0"/><inertial pos="0 0 -0.15" mass="0.5" diaginertia="0.004 0.004 0.0002"/><site name="s2" pos="0.05 0 -0.2"/></body></body><body name="wb" pos="0.1 0 0.9"><geom name="w" type="sphere" size="0.04"/></body></worldbody><tendon><fixed armature="-0.1"><joint joint="j1" coef="1"/></fixed></tendon><keyframe><key qpos="0 0 0"/></keyframe></mujoco>"#,
+        "keyframe '': invalid qpos size, expected 2, got 3",
+        "invalid qpos on <key>: length 3 does not match 2 (key #0)",
+    ),
+    (
+        "ball slide then bad keyframe ctrl",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint type="ball"/><joint type="slide" axis="1 0 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><keyframe><key ctrl="1"/></keyframe></mujoco>"#,
+        "keyframe 0: invalid ctrl size, expected length 0",
+        "invalid ctrl on <key>: length 1 does not match 0 (key #0)",
+    ),
+    (
+        "zero axis then bad keyframe qpos",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="z" type="hinge" axis="0 0 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><keyframe><key qpos="0 0"/></keyframe></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'z' in body 'a')",
     ),
 ];
 

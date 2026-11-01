@@ -2571,3 +2571,7 @@ fcecb51444186f35	sim/L0/mjcf/tests/refusal_order.rs:98
 596c74108beeb11a	sim/L0/mjcf/tests/joint_layout.rs:135
 65985d7a24d32f9e	sim/L0/mjcf/tests/tendon_armature.rs:913
 f14f1c51eb471bb5	sim/L0/mjcf/tests/tendon_armature.rs:882
+6816239c7dc7149e	sim/L0/mjcf/tests/refusal_order.rs:117
+79ca1b151ea116fd	sim/L0/mjcf/tests/refusal_order.rs:123
+b58ff26592d30f95	sim/L0/mjcf/tests/refusal_order.rs:129
+d743cf4702e34daf	sim/L0/mjcf/tests/tendon_armature.rs:948

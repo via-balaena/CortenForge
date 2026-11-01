@@ -308,16 +308,13 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
 
     // MuJoCo 3.5.0's checks of joints and of tendon armature, after every
     // check above, so that a document refused before they existed is refused
-    // for the same fault (where MuJoCo orders them among the others: ledger
-    // L353). Among themselves in MuJoCo's order: each body's joints, the
-    // tendons, then the free joint below the world's children, as MuJoCo's
-    // `CopyTree` refuses it. Last, the two this crate makes and MuJoCo does
-    // not.
+    // for the same fault (MuJoCo orders some of them before checks above).
+    // Among themselves in MuJoCo's order: each body's joints, the tendons, then
+    // the free joint below the world's children, as MuJoCo's `CopyTree`
+    // refuses it.
     builder.check_joints()?;
     builder.check_tendon_armature()?;
     builder.check_free_joints_on_top_level()?;
-    builder.check_ball_then_slide()?;
-    builder.check_fixed_tendon_armature()?;
 
     // Build final model
     let mut model = builder.build();
@@ -344,6 +341,11 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         .filter(|(_, kf)| !kf.name.is_empty())
         .map(|(i, kf)| (kf.name.clone(), i))
         .collect();
+
+    // The two refusals this crate makes and MuJoCo does not, after every check
+    // MuJoCo makes, the keyframes' last.
+    joint::check_ball_then_slide(&model)?;
+    tendon::check_fixed_tendon_armature(&model)?;
 
     Ok(model)
 }

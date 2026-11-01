@@ -4,7 +4,7 @@
 //! including angle conversion, limit handling, and kinematic tree linkage.
 
 use nalgebra::{UnitQuaternion, Vector3};
-use sim_core::MjJointType;
+use sim_core::{MjJointType, Model};
 
 use super::orientation::{MJ_EPS, normvec};
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
@@ -221,8 +221,11 @@ impl ModelBuilder {
     /// hinge's or a slide's axis too small to make unit
     /// (`user_objects.cc:2957-2960`), then more than 6 degrees of freedom,
     /// then a ball or a hinge after a ball (`:2522-2537`). The caller runs it
-    /// after every check this crate makes otherwise, so that a document it
-    /// refused before these checks existed is refused for the same fault.
+    /// after every check this crate makes before building the model, so that
+    /// a document it refused before these checks existed is refused for the
+    /// same fault, unless that fault is a keyframe's: MuJoCo compiles
+    /// keyframes after these checks, and this crate resolves them after
+    /// building the model.
     pub(crate) fn check_joints(&self) -> Result<()> {
         for body in 1..self.body_parent.len() {
             let joints = self.body_joints(body);
@@ -240,25 +243,6 @@ impl ModelBuilder {
             if after_ball(kinds, &[MjJointType::Ball, MjJointType::Hinge]) {
                 return Err(MjcfError::invalid_model("ball followed by rotation")
                     .at(self.body_location(body)));
-            }
-        }
-        Ok(())
-    }
-
-    /// A slide after a ball on one body, which MuJoCo 3.5.0 loads, refused as
-    /// not supported (`D-BALL-THEN-SLIDE`, a decision of the parity rule's,
-    /// 01-decisions). The caller runs it after every check MuJoCo makes, so a
-    /// document MuJoCo refuses is refused for MuJoCo's fault.
-    pub(crate) fn check_ball_then_slide(&self) -> Result<()> {
-        for body in 1..self.body_parent.len() {
-            if after_ball(
-                &self.jnt_type[self.body_joints(body)],
-                &[MjJointType::Slide],
-            ) {
-                return Err(
-                    MjcfError::unsupported("a slide joint after a ball joint on one body")
-                        .at(self.body_location(body)),
-                );
             }
         }
         Ok(())
@@ -282,6 +266,26 @@ impl ModelBuilder {
             None => Ok(()),
         }
     }
+}
+
+/// A slide after a ball on one body of the built `model`, which MuJoCo 3.5.0
+/// loads, refused as not supported (`D-BALL-THEN-SLIDE`, a decision of the
+/// parity rule's, 01-decisions). The caller runs it last, once the keyframes
+/// are resolved, as MuJoCo compiles them after every other check: a document
+/// MuJoCo refuses is refused for MuJoCo's fault.
+pub fn check_ball_then_slide(model: &Model) -> Result<()> {
+    for body in 1..model.nbody {
+        let start = model.body_jnt_adr[body];
+        let joints = &model.jnt_type[start..start + model.body_jnt_num[body]];
+        if after_ball(joints, &[MjJointType::Slide]) {
+            return Err(
+                MjcfError::unsupported("a slide joint after a ball joint on one body").at(
+                    Location::nth(ElementKind::Body, model.body_name[body].as_deref(), body),
+                ),
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Whether a joint of one of `kinds` follows a ball among a body's `joints`.

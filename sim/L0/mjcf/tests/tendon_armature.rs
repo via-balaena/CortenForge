@@ -881,7 +881,7 @@ struct SleepStep {
 /// `(what, document, MuJoCo's snapshots after the reset and a forward pass,
 /// then after each of four steps)`. Two trees, a hinge each that gravity
 /// loads; the second starts asleep and stays asleep, its acceleration 0 (6.77
-/// with sleep disabled, measured). In the first, a tendon with armature on
+/// and 4.38 with sleep disabled, measured). In the first, a tendon with armature on
 /// each tree: the sleeping tree's rows keep what they took once. In the
 /// second, one tendon over both hinges, awake as the first tree is: MuJoCo
 /// adds its armature to the sleeping tree's diagonal again at each step
@@ -945,7 +945,7 @@ const SLEEPS: &[(&str, &str, &[SleepStep])] = &[
     ),
     (
         "sleep cross tree",
-        r#"<mujoco><option><flag sleep="enable"/></option><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><inertial pos="0.15 0 0" mass="0.5" diaginertia="0.0002 0.004 0.004"/></body><body name="c" pos="1 0 1" sleep="init"><joint name="jc" type="hinge" axis="0 1 0" ref="0"/><inertial pos="0.15 0 0" mass="0.8" diaginertia="0.0003 0.006 0.006"/></body></worldbody><tendon><fixed name="t" armature="0.5"><joint joint="ja" coef="1"/><joint joint="jc" coef="-0.7"/></fixed></tendon><keyframe><key qpos="0.2 0.7"/></keyframe></mujoco>"#,
+        r#"<mujoco><option><flag sleep="enable"/></option><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><inertial pos="0.15 0 0" mass="0.5" diaginertia="0.0002 0.004 0.004"/></body><body name="c" pos="1 0 1" sleep="init"><joint name="jc" type="hinge" axis="0 1 0" ref="0"/><inertial pos="0.15 0 0" mass="0.8" diaginertia="0.0003 0.006 0.006"/></body></worldbody><tendon><fixed name="t" armature="0.5"><joint joint="ja" coef="1"/><joint joint="jc" coef="-0.7"/></fixed></tendon></mujoco>"#,
         &[
             SleepStep {
                 qm: &[

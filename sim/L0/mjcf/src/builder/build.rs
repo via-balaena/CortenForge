@@ -44,10 +44,10 @@ impl ModelBuilder {
 
         // Tendon and actuator derived parameters. These build a `Data` and run
         // the pipeline on it (a muscle's length range is simulated), so a
-        // range `try_make_data` refuses skips them: the model loads, and
-        // making its `Data` refuses it. Every joint layout it refuses the
-        // loader has refused (`check_body_joints`).
-        if model.check_ranges().is_ok() {
+        // joint layout or a range `try_make_data` refuses skips them: a slide
+        // after a ball, which the loader refuses once the keyframes are
+        // resolved, and a range, which making the model's `Data` refuses.
+        if model.check_joint_layout().is_ok() && model.check_ranges().is_ok() {
             model.compute_dof_m0();
             model.compute_spatial_tendon_length0();
             model.compute_actuator_params();
@@ -61,7 +61,7 @@ impl ModelBuilder {
         model.compute_flex_topology();
         // A flex's hierarchy bounds its elements at qpos0, which a `Data`
         // gives, as the derivations above.
-        if model.check_ranges().is_ok() {
+        if model.check_joint_layout().is_ok() && model.check_ranges().is_ok() {
             model.compute_flex_bvhs();
         }
         model.compute_fixed_tendon_lengths();

@@ -4,7 +4,7 @@
 //! tendon/wrap arrays. Handles joint resolution for fixed tendons,
 //! site/geom/pulley resolution for spatial tendons, and autolimits.
 
-use sim_core::{GeomType, MjJointType, TendonType, WrapType};
+use sim_core::{GeomType, MjJointType, Model, TendonType, WrapType};
 use tracing::warn;
 
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
@@ -176,7 +176,8 @@ impl ModelBuilder {
     /// (`user_objects.cc:6342-6346`), then armature on a tendon that wraps a
     /// sphere or a cylinder, whose bias force MuJoCo cannot differentiate
     /// (`:6389-6393`). The caller runs it after every check this crate makes
-    /// otherwise and after the bodies' joints, before the free joint's.
+    /// before building the model, after the bodies' joints and before the free
+    /// joint's; a keyframe's fault comes after it, in MuJoCo as here.
     pub(crate) fn check_tendon_armature(&self) -> Result<()> {
         for t in 0..self.tendon_type.len() {
             let armature = self.tendon_armature[t];
@@ -193,19 +194,24 @@ impl ModelBuilder {
         }
         Ok(())
     }
+}
 
-    /// A fixed tendon's negative armature, refused (`D-TENDON-ARMATURE-NEGATIVE`):
-    /// MuJoCo 3.5.0's check of the sign sits in the spatial path's branch
-    /// (`user_objects.cc:6342-6346`), so it loads a fixed tendon's and makes
-    /// an indefinite mass matrix of it, silently. The caller runs it after
-    /// every check MuJoCo makes.
-    pub(crate) fn check_fixed_tendon_armature(&self) -> Result<()> {
-        match (0..self.tendon_type.len())
-            .find(|&t| self.tendon_type[t] == TendonType::Fixed && self.tendon_armature[t] < 0.0)
-        {
-            Some(t) => Err(negative_armature().at(self.tendon_location(t))),
-            None => Ok(()),
-        }
+/// A fixed tendon's negative armature in the built `model`, refused
+/// (`D-TENDON-ARMATURE-NEGATIVE`): MuJoCo 3.5.0's check of the sign sits in
+/// the spatial path's branch (`user_objects.cc:6342-6346`), so it loads a fixed
+/// tendon's and makes an indefinite mass matrix of it, silently. The caller
+/// runs it last, once the keyframes are resolved, as MuJoCo compiles them after
+/// every other check.
+pub fn check_fixed_tendon_armature(model: &Model) -> Result<()> {
+    match (0..model.ntendon)
+        .find(|&t| model.tendon_type[t] == TendonType::Fixed && model.tendon_armature[t] < 0.0)
+    {
+        Some(t) => Err(negative_armature().at(Location::nth(
+            ElementKind::Tendon,
+            model.tendon_name[t].as_deref(),
+            t,
+        ))),
+        None => Ok(()),
     }
 }
 
