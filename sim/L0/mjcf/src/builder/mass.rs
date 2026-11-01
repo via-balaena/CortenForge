@@ -151,12 +151,16 @@ pub fn check_replaced_full_inertia(inertial: Option<&MjcfInertial>) -> Result<()
 /// the body (registry row D-INERTIA-NONFINITE).
 ///
 /// Mesh inertia is computed once per geom and cached across the mass and
-/// inertia passes (avoids O(3n) calls to `compute_mesh_inertia`).
+/// inertia passes (avoids O(3n) calls to `compute_mesh_inertia`); a height
+/// field geom's mass and inertia read its asset's sizes (`hfield_size`, by
+/// `hfield_lookup`).
 pub fn compute_inertia_from_geoms(
     geoms: &[MjcfGeom],
     mesh_lookup: &HashMap<String, usize>,
     mesh_data: &[Arc<TriangleMeshData>],
     mesh_inertia_modes: &[MeshInertia],
+    hfield_lookup: &HashMap<String, usize>,
+    hfield_size: &[[f64; 4]],
 ) -> Result<(f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>)> {
     if geoms.is_empty() {
         // No geoms: zero mass/inertia (matches MuJoCo).
@@ -191,6 +195,16 @@ pub fn compute_inertia_from_geoms(
             })
         })
         .collect();
+    let hfields: Vec<Option<&[f64; 4]>> = geoms
+        .iter()
+        .map(|geom| {
+            let id = geom
+                .hfield
+                .as_ref()
+                .and_then(|name| hfield_lookup.get(name))?;
+            hfield_size.get(*id)
+        })
+        .collect();
 
     let mut total_mass = 0.0;
     let mut com = Vector3::zeros();
@@ -199,8 +213,8 @@ pub fn compute_inertia_from_geoms(
     // For mesh geoms, the effective center of mass in the body frame is
     // `geom.pos + R * mesh_com` (mesh COM is in mesh-local coordinates).
     // For primitive geoms, the local COM is at the geom origin: `geom.pos`.
-    for (geom, props) in geoms.iter().zip(mesh_props.iter()) {
-        let geom_mass = compute_geom_mass(geom, props.as_ref());
+    for ((geom, props), &hfield) in geoms.iter().zip(mesh_props.iter()).zip(&hfields) {
+        let geom_mass = compute_geom_mass(geom, props.as_ref(), hfield);
         let effective_pos = geom_effective_com(geom, props.as_ref());
         total_mass += geom_mass;
         com += effective_pos * geom_mass;
@@ -212,9 +226,9 @@ pub fn compute_inertia_from_geoms(
 
     // Second pass: accumulate full 3×3 inertia tensor about COM
     let mut inertia_tensor = Matrix3::zeros();
-    for (geom, props) in geoms.iter().zip(mesh_props.iter()) {
-        let geom_mass = compute_geom_mass(geom, props.as_ref());
-        let geom_inertia = compute_geom_inertia(geom, props.as_ref());
+    for ((geom, props), &hfield) in geoms.iter().zip(mesh_props.iter()).zip(&hfields) {
+        let geom_mass = compute_geom_mass(geom, props.as_ref(), hfield);
+        let geom_inertia = compute_geom_inertia(geom, props.as_ref(), hfield);
 
         // 1. Rotate local inertia to body frame: I_rot = R * I_local * Rᵀ
         let q = geom.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0));

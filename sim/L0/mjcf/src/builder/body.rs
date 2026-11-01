@@ -271,6 +271,8 @@ impl ModelBuilder {
                     &self.mesh_name_to_id,
                     &self.mesh_data,
                     &self.mesh_inertia_modes,
+                    &self.hfield_name_to_id,
+                    &self.hfield_size,
                 )
             }
             InertiaFromGeom::Auto => {
@@ -282,6 +284,8 @@ impl ModelBuilder {
                         &self.mesh_name_to_id,
                         &self.mesh_data,
                         &self.mesh_inertia_modes,
+                        &self.hfield_name_to_id,
+                        &self.hfield_size,
                     )
                 }
             }
