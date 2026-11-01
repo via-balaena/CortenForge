@@ -181,6 +181,42 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "more than 6 dofs in body 'a'",
         "more than 6 dofs (body 'a')",
     ),
+    (
+        "backwards joint range then backwards tendon range",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body><body name="c" pos="1 0 1"><joint name="k" type="hinge" axis="0 1 0" limited="true" range="1 -1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" limited="true" range="1 -1"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
+        "range[0] should be smaller than range[1] in joint",
+        "invalid range on <joint>: range[0] should be smaller than range[1] in joint (joint 'k' in body 'c')",
+    ),
+    (
+        "spatial negative armature then backwards tendon range",
+        r#"<mujoco><worldbody><site name="s0" pos="0 0 1.2"/><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><tendon><spatial armature="-0.1" limited="true" range="1 -1"><site site="s0"/><site site="s1"/></spatial></tendon></mujoco>"#,
+        "tendon '' (id = 0): tendon armature cannot be negative",
+        "invalid armature on <tendon>: tendon armature cannot be negative (tendon #0)",
+    ),
+    (
+        "spatial negative armature then backwards range, named",
+        r#"<mujoco><worldbody><site name="s0" pos="0 0 1.2"/><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1" pos="0.1 0 0"/></body></worldbody><tendon><spatial name="t" armature="-0.1" limited="true" range="1 -1"><site site="s0"/><site site="s1"/></spatial></tendon></mujoco>"#,
+        "tendon 't' (id = 0): tendon armature cannot be negative",
+        "invalid armature on <tendon>: tendon armature cannot be negative (tendon 't')",
+    ),
+    (
+        "backwards tendon range then backwards springlength",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" limited="true" range="1 -1" springlength="0.7 0.3"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
+        "invalid limits in tendon",
+        "invalid range on <tendon>: invalid limits in tendon (tendon 't')",
+    ),
+    (
+        "backwards tendon range then backwards ctrlrange",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" limited="true" range="1 -1"><joint joint="j" coef="1"/></fixed></tendon><actuator><motor joint="j" ctrllimited="true" ctrlrange="1 -1"/></actuator></mujoco>"#,
+        "invalid limits in tendon",
+        "invalid range on <tendon>: invalid limits in tendon (tendon 't')",
+    ),
+    (
+        "fixed negative armature then backwards tendon range",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" range="-1 1"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" armature="-0.1" limited="true" range="1 -1"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
+        "invalid limits in tendon",
+        "invalid range on <tendon>: invalid limits in tendon (tendon 't')",
+    ),
 ];
 
 #[test]

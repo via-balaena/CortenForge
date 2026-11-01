@@ -19,6 +19,8 @@ use crate::types::TfAuto;
 pub enum Pair {
     /// A joint's `limited` and `range`, of its kind.
     Joint(MjJointType),
+    /// A tendon's `limited` and `range`.
+    Tendon,
 }
 
 impl Pair {
@@ -26,13 +28,14 @@ impl Pair {
     fn entity(self) -> &'static str {
         match self {
             Self::Joint(_) => "joint",
+            Self::Tendon => "tendon",
         }
     }
 
     /// The prefix of the pair's two attributes (`ctrl` for `ctrllimited`).
     fn prefix(self) -> &'static str {
         match self {
-            Self::Joint(_) => "",
+            Self::Joint(_) | Self::Tendon => "",
         }
     }
 
@@ -41,6 +44,7 @@ impl Pair {
     fn not_increasing(self) -> &'static str {
         match self {
             Self::Joint(_) => "range[0] should be smaller than range[1] in joint",
+            Self::Tendon => "invalid limits in tendon",
         }
     }
 }
@@ -150,7 +154,7 @@ mod tests {
         let (t, f, a) = (Some(TfAuto::True), Some(TfAuto::False), Some(TfAuto::Auto));
         let free = Pair::Joint(MjJointType::Free);
         #[rustfmt::skip]
-        let cases: [(Pair, Option<TfAuto>, Option<(f64, f64)>, bool, bool, Option<LimitFault>); 18] = [
+        let cases: [(Pair, Option<TfAuto>, Option<(f64, f64)>, bool, bool, Option<LimitFault>); 21] = [
             (HINGE, t, Some((1.0, -1.0)), true, true, Some(NotIncreasing)),
             (HINGE, t, None, true, true, Some(NotIncreasing)),
             (HINGE, t, Some((-1.0, 1.0)), false, true, None),
@@ -169,6 +173,9 @@ mod tests {
             (BALL, None, Some((0.0, -10.0)), true, false, Some(AutomaticNotIncreasing)),
             (BALL, None, Some((0.0, 60.0)), true, true, None),
             (free, t, Some((1.0, -1.0)), false, false, None),
+            (Pair::Tendon, t, None, true, true, Some(NotIncreasing)),
+            (Pair::Tendon, None, Some((1.0, 0.0)), true, false, Some(AutomaticNotIncreasing)),
+            (Pair::Tendon, None, Some((-0.5, 0.5)), false, true, Some(RangeWithoutLimited)),
         ];
         for (i, (pair, written, range, autolimits, limited, fault)) in cases.into_iter().enumerate()
         {
@@ -190,6 +197,8 @@ mod tests {
             hinge.contains("range[0] should be smaller than range[1] in joint"),
             "{hinge}"
         );
+        let tendon = LimitFault::NotIncreasing.error(Pair::Tendon).to_string();
+        assert!(tendon.contains("invalid limits in tendon"), "{tendon}");
         let ball = LimitFault::BallLowerNotZero.error(BALL).to_string();
         assert!(
             ball.contains("range[0] should be 0 in ball joint"),

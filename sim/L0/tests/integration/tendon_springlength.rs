@@ -193,9 +193,10 @@ fn test_ac5_low_greater_than_high_rejected() {
     );
 }
 
-/// AC5b — Validation: negative springlength is rejected (B2 validation).
+/// AC5b — a negative springlength loads, kept as written, as MuJoCo 3.5.0
+/// loads and keeps it (ledger L55).
 #[test]
-fn test_ac5b_negative_springlength_rejected() {
+fn test_ac5b_negative_springlength_loads() {
     let mjcf = r#"
         <mujoco>
           <compiler angle="radian"/>
@@ -213,8 +214,8 @@ fn test_ac5b_negative_springlength_rejected() {
         </mujoco>
     "#;
 
-    let result = load_model(mjcf);
-    assert!(result.is_err());
+    let model = load_model(mjcf).expect("a negative springlength loads");
+    assert_eq!(model.tendon_lengthspring[0], [-0.5, -0.5]);
 }
 
 /// AC5c — Validation: NaN springlength is rejected (B2 validation).

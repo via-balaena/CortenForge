@@ -307,14 +307,14 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Finalize user data: resolve nuser, validate, pad
     builder.finalize_user_data(&mjcf)?;
 
-    // MuJoCo 3.5.0's checks of joints and of tendon armature, after every
+    // MuJoCo 3.5.0's checks of joints and of tendons, after every
     // check above, so that a document refused before they existed is refused
     // for the same fault (MuJoCo orders some of them before checks above).
     // Among themselves in MuJoCo's order: each body's joints, the tendons, then
     // the free joint below the world's children, as MuJoCo's `CopyTree`
     // refuses it.
     builder.check_joints()?;
-    builder.check_tendon_armature()?;
+    builder.check_tendons()?;
     builder.check_free_joints_on_top_level()?;
 
     // Build final model
@@ -699,11 +699,12 @@ pub struct ModelBuilder {
     // Tendon arrays (populated by process_tendons)
     pub(crate) tendon_name_to_id: HashMap<String, usize>,
     pub(crate) tendon_type: Vec<TendonType>,
+    /// Each tendon's range as MuJoCo compiles it: `0 0` when unwritten.
     pub(crate) tendon_range: Vec<(f64, f64)>,
-    /// Each tendon's range as MuJoCo compiles it: `0 0` when unwritten (read
-    /// by `inheritrange`).
-    pub(crate) tendon_range_compiled: Vec<(f64, f64)>,
     pub(crate) tendon_limited: Vec<bool>,
+    /// Each tendon's first `limited`/`range` fault, which `check_tendons`
+    /// refuses.
+    pub(crate) tendon_limit_fault: Vec<Option<limits::LimitFault>>,
     pub(crate) tendon_stiffness: Vec<f64>,
     pub(crate) tendon_damping: Vec<f64>,
     pub(crate) tendon_armature: Vec<f64>,

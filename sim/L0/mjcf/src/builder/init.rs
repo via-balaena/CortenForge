@@ -191,7 +191,7 @@ impl ModelBuilder {
             tendon_name_to_id: HashMap::new(),
             tendon_type: vec![],
             tendon_range: vec![],
-            tendon_range_compiled: vec![],
+            tendon_limit_fault: vec![],
             tendon_limited: vec![],
             tendon_stiffness: vec![],
             tendon_damping: vec![],

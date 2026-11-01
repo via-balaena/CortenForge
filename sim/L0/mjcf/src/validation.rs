@@ -8,7 +8,7 @@ use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::stack::MAX_BODY_TREE_DEPTH;
 use crate::types::{
     MjcfBody, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfModel, MjcfOption, MjcfTendon, MjcfTendonType,
-    SpatialPathElement, TfAuto,
+    SpatialPathElement,
 };
 
 /// Validation result containing the flattened body tree structure.
@@ -740,7 +740,7 @@ fn validate_spatial_tendon(
 }
 
 /// Validate tendon physical parameters, as the tendon's class leaves them:
-/// frictionloss, range. A negative stiffness or damping loads, as MuJoCo
+/// frictionloss. A negative stiffness or damping loads, as MuJoCo
 /// 3.5.0 loads and applies it (`engine_passive.c:453-473`). A negative
 /// frictionloss is refused (`D-TENDON-FRICTIONLOSS`, stricter): MuJoCo loads
 /// it and makes no constraint row for it (`engine_core_constraint.c:737`).
@@ -752,23 +752,6 @@ fn validate_tendon_params(tendon: &MjcfTendon) -> Result<()> {
             "frictionloss",
             format!("negative frictionloss {frictionloss}"),
         ));
-    }
-    if tendon.limited == Some(TfAuto::True) {
-        if let Some((min, max)) = tendon.range {
-            if min >= max {
-                return Err(MjcfError::invalid_value(
-                    "tendon",
-                    "range",
-                    format!("invalid range [{min}, {max}]"),
-                ));
-            }
-        } else {
-            return Err(MjcfError::invalid_value(
-                "tendon",
-                "range",
-                "the tendon is limited but has no range",
-            ));
-        }
     }
     Ok(())
 }

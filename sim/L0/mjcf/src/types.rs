@@ -98,8 +98,11 @@ impl<'de, const N: usize> Deserialize<'de> for Prefix<N> {
 }
 
 /// MuJoCo's `false | true | auto` keyword (`TFAuto_map`,
-/// `xml_native_reader.cc`), for a `limited`-style attribute: `Auto` leaves
-/// the limit to `<compiler autolimits>` and whether a range is given.
+/// `xml_native_reader.cc`), for a `limited`-style attribute.
+///
+/// `Auto`, as an unwritten one, limits when the range increases, and under
+/// `<compiler autolimits="false"/>` a range other than `0 0` beside it is
+/// refused (`builder/limits.rs`, MuJoCo's `islimited` and `checklimited`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum TfAuto {
@@ -1557,8 +1560,7 @@ pub struct MjcfJoint {
     pub pos: Option<Vector3<f64>>,
     /// Joint axis (for hinge and slide).
     pub axis: Option<Vector3<f64>>,
-    /// Whether position limits are enabled. `None`, as `Auto`, leaves it
-    /// to `autolimits` and the range.
+    /// Whether position limits are enabled; `None` as `Auto` ([`TfAuto`]).
     pub limited: Option<TfAuto>,
     /// Position limit range [lower, upper].
     pub range: Option<(f64, f64)>,
@@ -3154,8 +3156,7 @@ pub struct MjcfTendon {
     pub tendon_type: MjcfTendonType,
     /// Range limits [lower, upper] for tendon length.
     pub range: Option<(f64, f64)>,
-    /// Whether range limits are enabled. `None`, as `Auto`, leaves it
-    /// to `autolimits` and the range.
+    /// Whether range limits are enabled; `None` as `Auto` ([`TfAuto`]).
     pub limited: Option<TfAuto>,
     /// Stiffness coefficient.
     pub stiffness: Option<f64>,

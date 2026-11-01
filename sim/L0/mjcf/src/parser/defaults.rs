@@ -212,7 +212,7 @@ pub(super) fn parse_tendon_defaults(e: &BytesStart) -> Result<MjcfTendonDefaults
 
     // B3: Parse springlength in defaults
     if let Some(sl) = a.prefix::<2>("springlength")? {
-        defaults.springlength = super::tendon::springlength(sl.given())?;
+        defaults.springlength = super::tendon::springlength(sl.given());
     }
 
     defaults.width = a.real("width")?;
