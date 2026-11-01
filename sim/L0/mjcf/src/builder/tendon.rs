@@ -32,6 +32,8 @@ impl ModelBuilder {
             self.tendon_limited.push(tendon_limited);
             self.tendon_stiffness.push(tendon.stiffness.unwrap_or(0.0));
             self.tendon_damping.push(tendon.damping.unwrap_or(0.0));
+            let armature = tendon.armature.unwrap_or(0.0);
+            self.tendon_armature.push(armature);
             self.tendon_frictionloss
                 .push(tendon.frictionloss.unwrap_or(0.0));
             self.tendon_solref_fri
@@ -138,6 +140,14 @@ impl ModelBuilder {
                                     ))
                                     .at(at()));
                                 }
+                                // MuJoCo cannot differentiate a wrap for the
+                                // armature's bias force (`user_objects.cc:6389`).
+                                if armature > 0.0 {
+                                    return Err(MjcfError::invalid_model(
+                                        "geom wrapping not supported by tendon armature",
+                                    )
+                                    .at(at()));
+                                }
                                 let ss_id = if let Some(ss) = sidesite {
                                     *self.site_name_to_id.get(ss.as_str()).ok_or_else(|| {
                                         MjcfError::undefined(ElementKind::Site, ss).at(at())
@@ -161,6 +171,18 @@ impl ModelBuilder {
                 }
             }
             self.tendon_num.push(self.wrap_type.len() - wrap_start);
+            // MuJoCo refuses a spatial tendon's negative armature
+            // (`user_objects.cc:6342`) but, its check sitting in the spatial
+            // path's branch, adds a fixed tendon's to the mass matrix; this
+            // refuses both (`D-TENDON-ARMATURE-NEGATIVE`).
+            if armature < 0.0 {
+                return Err(MjcfError::invalid_value(
+                    "tendon",
+                    "armature",
+                    "tendon armature cannot be negative",
+                )
+                .at(at()));
+            }
         }
         Ok(())
     }

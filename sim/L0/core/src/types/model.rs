@@ -837,6 +837,11 @@ pub struct Model {
     pub tendon_stiffness: Vec<f64>,
     /// Tendon damping coefficient.
     pub tendon_damping: Vec<f64>,
+    /// Tendon armature, an inertia along the tendon: MuJoCo 3.5.0's
+    /// `tendon_armature`. The mass matrix gains `armature · Jᵀ·J` on its
+    /// pattern (`mj_tendonArmature`) and the bias force
+    /// `armature · (J̇ · qvel) · J` (`mj_tendonBias`).
+    pub tendon_armature: Vec<f64>,
     /// Tendon spring rest length pair [low, high] for deadband spring.
     /// When low == high, acts as a classical spring with rest length = low.
     /// When low < high, force is zero within [low, high] (deadband).

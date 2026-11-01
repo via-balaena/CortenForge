@@ -3,10 +3,12 @@
 //! Dispatches to sub-modules for fixed-path and spatial-path tendon types.
 //! Corresponds to the tendon section of MuJoCo's `engine_core_smooth.c`.
 
+pub(crate) mod armature;
 pub(crate) mod fixed;
 pub(crate) mod spatial;
 pub(crate) mod wrap_math;
 
+pub(crate) use armature::{mj_tendon_armature, mj_tendon_bias};
 pub(crate) use fixed::*;
 pub(crate) use spatial::*;
 

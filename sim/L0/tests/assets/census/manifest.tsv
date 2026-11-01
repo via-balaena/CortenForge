@@ -2536,3 +2536,15 @@ c481c5e0bd03c204	sim/L0/mjcf/tests/joint_axis.rs:53
 ceef6e322c393617	sim/L0/mjcf/tests/joint_axis.rs:82
 e834655daec17376	sim/L0/mjcf/tests/joint_axis.rs:97
 f0a82bb442ef7708	sim/L0/mjcf/tests/joint_axis.rs:28
+034a407f510c32e7	sim/L0/mjcf/tests/tendon_armature.rs:206
+042f3f74a5c658fa	sim/L0/mjcf/tests/tendon_armature.rs:378
+21653215ac7d36a0	sim/L0/mjcf/tests/tendon_armature.rs:174
+3f1f0dea75e66891	sim/L0/mjcf/tests/tendon_armature.rs:388
+5e66f02b497f5f6e	sim/L0/mjcf/tests/tendon_armature.rs:78
+7f8f2c0d6129acd5	sim/L0/mjcf/tests/tendon_armature.rs:238
+7ff4a7b92d60dc5b	sim/L0/mjcf/tests/tendon_armature.rs:262
+838aabab0b34f8b8	sim/L0/mjcf/tests/tendon_armature.rs:46
+a8ab5d1b22562991	sim/L0/mjcf/tests/tendon_armature.rs:287
+b30cd38d92d48c53	sim/L0/mjcf/tests/tendon_armature.rs:142
+c4eaff6562932eaa	sim/L0/mjcf/tests/tendon_armature.rs:110
+f7b03338af7f1e3f	sim/L0/mjcf/tests/tendon_armature.rs:382

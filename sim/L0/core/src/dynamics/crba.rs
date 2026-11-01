@@ -110,6 +110,10 @@ pub fn mj_crba(model: &Model, data: &mut Data) {
         }
     }
 
+    // Each tendon's armature on M's pattern, as MuJoCo's `mj_makeM` adds it
+    // after `mj_crb` (`engine_core_smooth.c:1889-1891`).
+    crate::tendon::mj_tendon_armature(model, data);
+
     // M = L'·D·L on M's pattern (MuJoCo's mj_factorM): the awake
     // rows only when a tree sleeps, a sleeping row keeping its factor.
     mj_factor_m(model, data);

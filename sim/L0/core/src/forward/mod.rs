@@ -567,6 +567,7 @@ impl Data {
         passive::mj_fwd_passive(model, self);
         crate::constraint::mj_reference_constraint(model, self);
         crate::dynamics::rne::mj_rne(model, self);
+        crate::tendon::mj_tendon_bias(model, self);
         if compute_sensors {
             crate::sensor::mj_sensor_vel(model, self);
         }

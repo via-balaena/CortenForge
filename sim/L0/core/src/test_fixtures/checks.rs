@@ -125,6 +125,7 @@ pub fn short_arrays(m: &Model) -> (Vec<String>, Vec<&'static str>) {
     check("tendon_limited", m.tendon_limited.len(), m.ntendon);
     check("tendon_stiffness", m.tendon_stiffness.len(), m.ntendon);
     check("tendon_damping", m.tendon_damping.len(), m.ntendon);
+    check("tendon_armature", m.tendon_armature.len(), m.ntendon);
     check(
         "tendon_lengthspring",
         m.tendon_lengthspring.len(),

@@ -194,6 +194,7 @@ impl ModelBuilder {
             tendon_limited: vec![],
             tendon_stiffness: vec![],
             tendon_damping: vec![],
+            tendon_armature: vec![],
             tendon_frictionloss: vec![],
             tendon_solref_fri: vec![],
             tendon_solimp_fri: vec![],

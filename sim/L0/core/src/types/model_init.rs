@@ -12,13 +12,18 @@ use super::body_wrench::BodyWrench;
 use super::enums::{
     ActuatorDynamics, ActuatorError, DISABLE_NATIVECCD, ENABLE_SLEEP, EqualityType, Integrator,
     JacobianType, JointLayoutError, MakeDataError, MjJointType, MjSensorType, RangeError,
-    ResetError, SleepPolicy, SleepState, SolverType, StepError,
+    ResetError, SleepPolicy, SleepState, SolverType, StepError, WrapType,
 };
 use super::model::Model;
 
 /// What [`Model::try_make_data`] names when it refuses [`DISABLE_NATIVECCD`].
 const NATIVECCD_DISABLED: &str =
     "DISABLE_NATIVECCD: MuJoCo's libccd convex collision is not ported";
+
+/// What [`Model::try_make_data`] names when it refuses a tendon with armature
+/// that wraps a geom.
+const TENDON_ARMATURE_GEOM_WRAP: &str = "armature on a tendon that wraps a geom: \
+     MuJoCo's mj_tendonDot does not differentiate geom wrapping";
 
 // Types from dynamics module (Phase 7 extraction)
 use crate::dynamics::SpatialVector;
@@ -411,6 +416,7 @@ impl Model {
             tendon_limited: vec![],
             tendon_stiffness: vec![],
             tendon_damping: vec![],
+            tendon_armature: vec![],
             tendon_lengthspring: vec![],
             tendon_length0: vec![],
             tendon_num: vec![],
@@ -693,7 +699,10 @@ impl Model {
     /// [`MakeDataError::InitForward`]); [`MakeDataError::Unsupported`] with
     /// [`DISABLE_NATIVECCD`] set, under which MuJoCo collides convex pairs
     /// with libccd, which sim-core does not port (a flag set after this call
-    /// is not checked).
+    /// is not checked), or for a tendon with armature that wraps a geom,
+    /// whose bias force MuJoCo 3.5.0 does not compute (`mj_tendonDot` stops,
+    /// "geom wrapping not supported", `engine_core_smooth.c:1186-1188`; its
+    /// compiler refuses such a tendon).
     ///
     /// # Panics
     /// As [`Self::check_joint_layout`] says.
@@ -704,6 +713,15 @@ impl Model {
         if self.disableflags & DISABLE_NATIVECCD != 0 {
             return Err(MakeDataError::Unsupported {
                 feature: NATIVECCD_DISABLED,
+            });
+        }
+        let wraps_a_geom = |t: usize| {
+            let path = self.tendon_adr[t]..self.tendon_adr[t] + self.tendon_num[t];
+            self.wrap_type[path].contains(&WrapType::Geom)
+        };
+        if (0..self.ntendon).any(|t| self.tendon_armature[t] != 0.0 && wraps_a_geom(t)) {
+            return Err(MakeDataError::Unsupported {
+                feature: TENDON_ARMATURE_GEOM_WRAP,
             });
         }
         if let Some(refusal) = self.history_refusal() {

@@ -690,6 +690,7 @@ pub struct ModelBuilder {
     pub(crate) tendon_limited: Vec<bool>,
     pub(crate) tendon_stiffness: Vec<f64>,
     pub(crate) tendon_damping: Vec<f64>,
+    pub(crate) tendon_armature: Vec<f64>,
     pub(crate) tendon_frictionloss: Vec<f64>,
     pub(crate) tendon_solref_fri: Vec<[f64; 2]>,
     pub(crate) tendon_solimp_fri: Vec<[f64; 5]>,

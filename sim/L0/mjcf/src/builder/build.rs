@@ -404,6 +404,7 @@ impl ModelBuilder {
             tendon_limited: self.tendon_limited,
             tendon_stiffness: self.tendon_stiffness,
             tendon_damping: self.tendon_damping,
+            tendon_armature: self.tendon_armature,
             tendon_frictionloss: self.tendon_frictionloss,
             tendon_solref_fri: self.tendon_solref_fri,
             tendon_solimp_fri: self.tendon_solimp_fri,

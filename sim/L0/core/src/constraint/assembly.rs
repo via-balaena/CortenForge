@@ -1285,6 +1285,7 @@ mod dt23_friction_solref_tests {
         model.tendon_limited = vec![false];
         model.tendon_stiffness = vec![0.0];
         model.tendon_damping = vec![0.0];
+        model.tendon_armature = vec![0.0];
         model.tendon_frictionloss = vec![1.0];
         model.tendon_solref_fri = vec![tendon_solref];
         model.tendon_solimp_fri = vec![tendon_solimp];
@@ -1401,6 +1402,7 @@ mod dt33_tendon_margin_tests {
         model.tendon_limited = vec![true];
         model.tendon_stiffness = vec![0.0];
         model.tendon_damping = vec![0.0];
+        model.tendon_armature = vec![0.0];
         model.tendon_frictionloss = vec![0.0];
         model.tendon_solref_fri = vec![[0.02, 1.0]];
         model.tendon_solimp_fri = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
@@ -1665,6 +1667,7 @@ mod dt33_tendon_margin_tests {
         model.tendon_limited = vec![true; 3];
         model.tendon_stiffness = vec![0.0; 3];
         model.tendon_damping = vec![0.0; 3];
+        model.tendon_armature = vec![0.0; 3];
         model.tendon_frictionloss = vec![0.0; 3];
         model.tendon_solref_fri = vec![[0.02, 1.0]; 3];
         model.tendon_solimp_fri = vec![[0.9, 0.95, 0.001, 0.5, 2.0]; 3];

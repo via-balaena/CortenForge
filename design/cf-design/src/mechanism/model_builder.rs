@@ -806,6 +806,7 @@ fn generate(
             .tendon_stiffness
             .push(tendon.stiffness().unwrap_or(0.0));
         model.tendon_damping.push(tendon.damping().unwrap_or(0.0));
+        model.tendon_armature.push(0.0);
         model.tendon_frictionloss.push(0.0);
         model.tendon_solref_fri.push([0.02, 1.0]);
         model.tendon_solimp_fri.push([0.9, 0.95, 0.001, 0.5, 2.0]);

@@ -1223,9 +1223,10 @@ pub enum MakeDataError {
     /// An actuator's plugin, activation count or activation addresses
     /// ([`Model::check_actuators`](crate::Model::check_actuators)).
     Actuator(ActuatorError),
-    /// The model sets a flag for a part of MuJoCo sim-core does not port.
+    /// The model asks for a part of MuJoCo that sim-core does not port (a
+    /// flag), or that MuJoCo's own forward pass does not compute.
     Unsupported {
-        /// The flag and what it would take.
+        /// What it asks for and why it is refused.
         feature: &'static str,
     },
 }

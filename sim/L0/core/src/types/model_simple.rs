@@ -7,7 +7,7 @@
 
 use nalgebra::{UnitQuaternion, Vector3};
 
-use super::enums::{MjJointType, SameFrame};
+use super::enums::{MjJointType, SameFrame, WrapType};
 use super::model::Model;
 
 /// Two frames whose positions and quaternions differ by less than this in
@@ -51,9 +51,9 @@ impl Model {
     /// axis, with at most one hinge or ball and none before another joint.
     /// `body_simple` is 2 for a
     /// simple body whose joints are all slides, 1 for another simple body
-    /// with a joint, and also 1 for a simple body with none. MuJoCo also
-    /// demotes a body that a tendon with armature passes over; sim-core has
-    /// no tendon armature.
+    /// with a joint, and also 1 for a simple body with none. A body that a
+    /// tendon with armature passes over, through a site or a wrapped geom, is
+    /// not simple.
     pub fn compute_simple_bodies(&mut self) {
         let frame = |pos: &Vector3<f64>, quat: &UnitQuaternion<f64>, body: usize| {
             if null_pos(pos) && null_quat(quat) {
@@ -124,6 +124,25 @@ impl Model {
                 }
                 (true, _) => 1,
             };
+        }
+
+        // A tendon with armature couples the dofs of the bodies its sites and
+        // wrapped geoms sit on, so none of those bodies is simple; a joint in
+        // a fixed tendon's path names no body (`FinalizeSimple`,
+        // `user_model.cc:3922-3939`).
+        for tendon in 0..self.ntendon {
+            if self.tendon_armature[tendon] == 0.0 {
+                continue;
+            }
+            let path = self.tendon_adr[tendon]..self.tendon_adr[tendon] + self.tendon_num[tendon];
+            for w in path {
+                let obj = self.wrap_objid[w];
+                match self.wrap_type[w] {
+                    WrapType::Site => self.body_simple[self.site_body[obj]] = 0,
+                    WrapType::Geom => self.body_simple[self.geom_body[obj]] = 0,
+                    WrapType::Joint | WrapType::Pulley => {}
+                }
+            }
         }
 
         // Each dof counts the simple dofs from it to the next one that is not

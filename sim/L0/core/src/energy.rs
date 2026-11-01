@@ -851,6 +851,7 @@ mod spec_b_tests {
         model.tendon_stiffness = vec![10.0];
         model.tendon_lengthspring = vec![[0.5, 0.5]]; // classical spring, rest=0.5
         model.tendon_damping = vec![0.0];
+        model.tendon_armature = vec![0.0];
         model.tendon_frictionloss = vec![0.0];
         model.tendon_limited = vec![false];
         model.tendon_range = vec![(0.0, 0.0)];
@@ -903,6 +904,7 @@ mod spec_b_tests {
         model.tendon_stiffness = vec![20.0];
         model.tendon_lengthspring = vec![[0.3, 0.7]]; // deadband [0.3, 0.7]
         model.tendon_damping = vec![0.0];
+        model.tendon_armature = vec![0.0];
         model.tendon_frictionloss = vec![0.0];
         model.tendon_limited = vec![false];
         model.tendon_range = vec![(0.0, 0.0)];
@@ -967,6 +969,7 @@ mod spec_b_tests {
         model.tendon_stiffness = vec![0.0]; // zero stiffness
         model.tendon_lengthspring = vec![[0.5, 0.5]];
         model.tendon_damping = vec![0.0];
+        model.tendon_armature = vec![0.0];
         model.tendon_frictionloss = vec![0.0];
         model.tendon_limited = vec![false];
         model.tendon_range = vec![(0.0, 0.0)];
