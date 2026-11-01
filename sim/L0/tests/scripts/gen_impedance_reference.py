@@ -816,7 +816,7 @@ TENDON_PAIR_QPOS = [0.02, -0.01]
 # hinges, a second free sphere) at condim 3 under a pyramidal cone, each body's
 # inertia written out (`<inertial>`), so the compiled masses, inertias and
 # inertial frames are MuJoCo's (sim-mjcf's own round otherwise: ledgers L195,
-# L198): its bodies' and dofs' invweight0, made from M at qpos0
+# L368): its bodies' and dofs' invweight0, made from M at qpos0
 # (`engine_setconst.c:620-712`), and its contact rows. The inertias are picked
 # so that each average set0 takes, (a + b + c)/3, rounds otherwise grouped as
 # (a + (b + c))/3 for a body's translational weight, a body's rotational weight

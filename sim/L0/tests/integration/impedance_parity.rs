@@ -14,7 +14,7 @@
 //! oracle (`scripts/gen_impedance_reference.py`, which describes its cases).
 
 use serde_json::Value;
-use sim_core::{ConstraintState, ConstraintType, Data, EqualityType, Model};
+use sim_core::{ConstraintState, ConstraintType, Data, Model};
 use sim_mjcf::load_model;
 
 const TOL: f64 = 1e-12;
@@ -480,11 +480,7 @@ fn diag_approx_as_mujoco() {
 /// inertias are written out, ledger L223); rows whose weights are below
 /// mjMINVAL, unfloored (`weightless_*`, ledger L227); and `tendon_invweight0`
 /// by `mju_dot`, 0 for a tendon whose Jacobian is 0 at qpos0
-/// (`engine_setconst.c:752-767`; `tendon_zero_j`, `tendon_chain`). Of
-/// `every_row_kind`, the weld's three rotational rows are left to
-/// [`diag_approx_as_mujoco`]'s 1e-12: they take its box's rotational
-/// `body_invweight0`, from the box's inertia as sim-mjcf compiles it, an ulp
-/// off MuJoCo's in two axes (ledger L198).
+/// (`engine_setconst.c:752-767`; `tendon_zero_j`, `tendon_chain`).
 #[test]
 fn diag_approx_rounds_as_mujoco() {
     let g = golden();
@@ -499,24 +495,6 @@ fn diag_approx_rounds_as_mujoco() {
             data.qvel.copy_from_slice(&floats(&case["qvel"]));
         }
         data.forward(&model).expect("forward");
-        let rotational_weld: Vec<usize> = if name == "every_row_kind" {
-            let weld: Vec<usize> = (0..data.efc_type.len())
-                .filter(|&i| {
-                    data.efc_type[i] == ConstraintType::Equality
-                        && model.eq_type[data.efc_id[i]] == EqualityType::Weld
-                })
-                .collect();
-            assert_eq!(weld.len(), 6, "every_row_kind: the weld's rows");
-            weld[3..].to_vec()
-        } else {
-            Vec::new()
-        };
-        let rows = |v: &[f64]| -> Vec<f64> {
-            (0..v.len())
-                .filter(|i| !rotational_weld.contains(i))
-                .map(|i| v[i])
-                .collect()
-        };
         if let Some(weights) = case.get("tendon_invweight0") {
             let what = format!("{name} tendon_invweight0");
             golden_bits(&mut off, &what, &model.tendon_invweight0, &floats(weights));
@@ -533,16 +511,11 @@ fn diag_approx_rounds_as_mujoco() {
             let want = floats(&case["dof_invweight0"]);
             golden_bits(&mut off, &what, &model.dof_invweight0, &want);
         }
-        let want = rows(&floats(&case["efc_diagApprox"]));
+        let want = floats(&case["efc_diagApprox"]);
         let what = format!("{name} efc_diagApprox");
-        golden_bits(&mut off, &what, &rows(&data.efc_diagApprox), &want);
-        let want = rows(&floats(&case["efc_R"]));
-        golden_bits(
-            &mut off,
-            &format!("{name} efc_R"),
-            &rows(&data.efc_R),
-            &want,
-        );
+        golden_bits(&mut off, &what, &data.efc_diagApprox, &want);
+        let want = floats(&case["efc_R"]);
+        golden_bits(&mut off, &format!("{name} efc_R"), &data.efc_R, &want);
     }
     assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
 }

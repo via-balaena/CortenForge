@@ -77,7 +77,7 @@ FIELD = ('<hfield name="hf" nrow="5" ncol="6" size="0.3 0.25 0.08 0.05" '
 
 
 # A rigid body's mass and inertia are given, its frame its own: sim-mjcf's
-# geom volumes and principal axes round otherwise than MuJoCo's (ledger L198),
+# bodies' moments and principal axes round otherwise than MuJoCo's (ledgers L368, L195),
 # which the golden does not measure.
 INERTIAL = '<inertial pos="0 0 0" mass="0.1" diaginertia="2e-5 3e-5 4e-5"/>'
 
