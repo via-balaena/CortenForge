@@ -214,7 +214,7 @@ fn solve_given_mujocos_inputs(name: &str, case: &Value) -> Data {
     // condim-6 cases, whose torsional and rolling rows take P38's, and the
     // chain's, whose bodies' and dofs' invweight0 round otherwise: its
     // capsules' inertias as sim-mjcf compiles them, in another inertial frame
-    // and an ulp off (ledgers L368, L195; with the inertias written out,
+    // and ulps off (ledgers L368, L195; with the inertias written out,
     // impedance_parity's `inertial_chain`, MuJoCo's bit for bit).
     if !name.contains("_6") && !name.contains("_chain_") {
         assert_bits(
