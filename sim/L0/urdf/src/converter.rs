@@ -549,8 +549,12 @@ impl<'a> Converter<'a> {
             pos.x, pos.y, pos.z
         );
 
-        // Add orientation if non-zero
-        if rpy.norm() > 1e-10 {
+        // Add orientation if non-zero. Not beside a full tensor, which
+        // `<inertial>` refuses (as MuJoCo's reader does): MuJoCo 3.5.0's own
+        // URDF import drops an inertial origin's rotation (measured: a link's
+        // tensor with `rpy="0.3 0.5 0.7"` is the one without), as this crate
+        // has since it stopped reading the `euler` (ledger L372).
+        if rpy.norm() > 1e-10 && !inertia_attr.starts_with("fullinertia") {
             write!(attrs, r#" euler="{} {} {}""#, rpy.x, rpy.y, rpy.z).ok();
         }
 
@@ -743,6 +747,23 @@ mod tests {
         )
         .expect("converts");
         assert!(mjcf.contains(r#"<inertial pos="0 0 0" mass="1""#), "{mjcf}");
+    }
+
+    /// A link's full tensor in a turned inertial origin loads, as the same
+    /// tensor unturned: MuJoCo 3.5.0's URDF import drops the turn (measured,
+    /// both tensors (0.5, 0.4, 0.3, 0.05, 0.02, 0.01) in the link's frame),
+    /// and `<inertial>` refuses a `fullinertia` beside an `euler`.
+    #[test]
+    fn a_full_tensor_in_a_turned_origin_loads_as_mujocos_urdf_import() {
+        let urdf = |rpy: &str| {
+            format!(
+                r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="1"/><inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin xyz="0.1 0 0"{rpy}/><mass value="2"/><inertia ixx="0.5" iyy="0.4" izz="0.3" ixy="0.05" ixz="0.02" iyz="0.01"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 1"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint></robot>"#
+            )
+        };
+        let turned = crate::load_urdf_model(&urdf(r#" rpy="0.3 0.5 0.7""#)).expect("loads");
+        let plain = crate::load_urdf_model(&urdf("")).expect("loads");
+        assert_eq!(turned.body_inertia, plain.body_inertia);
+        assert_eq!(turned.body_iquat, plain.body_iquat);
     }
 
     #[test]

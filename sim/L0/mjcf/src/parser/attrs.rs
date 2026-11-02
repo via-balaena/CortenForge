@@ -364,8 +364,9 @@ impl Attrs {
     /// euler=""` loads). Each alternative is read first, in that order and
     /// with its count, so a malformed one is its own error, on an element
     /// whose alternatives sim-mjcf does not otherwise read too (measured:
-    /// `euler="b" xyaxes="a"` is a bad xyaxes).
-    pub(super) fn one_orientation(&self) -> Result<()> {
+    /// `euler="b" xyaxes="a"` is a bad xyaxes). Returns whether one is
+    /// written.
+    pub(super) fn one_orientation(&self) -> Result<bool> {
         let mut given = Vec::new();
         if self.has("quat") {
             given.push("quat");
@@ -385,7 +386,7 @@ impl Attrs {
         if given.len() > 1 {
             return Err(MjcfError::conflicting(&self.element, &given));
         }
-        Ok(())
+        Ok(!given.is_empty())
     }
 
     /// One up to `N` numbers (MuJoCo's `exact = false`).

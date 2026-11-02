@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1614
+# agree_floor 1616
 001bc4149d608b24	agree
 002cac6fc120ff66	both-refuse
 00308b83da9d8bab	agree
@@ -279,6 +279,7 @@
 1aab796f3649ca89	e1:t0:con_pos	divergence=D-HULL-ORDER
 1abf80643fbc72d2	both-refuse
 1ac6a23f3bc92c4c	both-refuse
+1acbae24764c8790	agree
 1ad1721ca9766f0e	agree
 1ae573fd46cc9326	mj-refuses
 1b0408692d06c36e	agree
@@ -558,6 +559,7 @@
 3577a24aa8ebab4a	both-refuse
 359708c0779784ff	agree
 35a1ad3f3e822ab6	both-refuse
+35b7320f221b4859	both-refuse
 35c6148537661de5	agree
 35d0f86b8cd8c281	agree
 35e74b9dc034bf86	agree
@@ -702,10 +704,12 @@
 4143ce5c09be9678	agree
 415c830337c1ca7e	agree
 4163de4aa845d0b6	agree
+41684a62911393e0	both-refuse
 416ee581ad566ad5	agree
 418134605ce793a0	agree
 419622959e10e2fb	both-refuse
 419de3b7f49a0aa0	mj-refuses
+419ec3ee542d747e	both-refuse
 41bb4969109010a8	agree
 41c49d67b62661d7	agree
 41e179ad40fa5853	both-refuse
@@ -713,6 +717,7 @@
 420f869860b7e83c	model:neq
 4223bf35ce3fbef7	agree
 423c7e41cfc6803d	both-refuse
+4275f86c2c6e3c29	both-refuse
 427bd0e5b09a8899	both-refuse
 4293f23076e67bfc	agree
 42965f398ee7441b	agree
@@ -1878,6 +1883,7 @@ b159fba84e6550f0	agree
 b15cb449d8f72fad	agree
 b16aed0349b92f60	agree
 b16fc678197ce772	both-refuse
+b175aa1d844882e1	both-refuse
 b182a8b33bf6f1b5	agree
 b1b01745b06617df	agree
 b1c8420bf2644f95	ours-refused	divergence=D-DAMPER-CLASS-KV
@@ -2619,6 +2625,7 @@ f88799110699217b	agree
 f8ada536b0021d09	agree
 f8b01d7b0d8e60c4	agree
 f8ce638fc99a7c66	agree
+f8d06ca0b27a6381	both-refuse
 f92cb20398502e6d	both-refuse
 f933847483f45d7e	agree
 f935e97a66c86ac6	agree
@@ -2635,6 +2642,7 @@ fa1670856b72726c	agree
 fa26353557800171	agree
 fa269544d05e54a8	model:neq
 fa7328a07177aff1	mj-refuses
+fa790cfc22cd486d	agree
 faa6b2702545d43c	agree
 faad979812e18455	agree
 fab255001870f623	agree

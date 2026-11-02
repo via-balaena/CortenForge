@@ -300,12 +300,21 @@ pub(super) fn parse_inertial_attrs(e: &BytesStart) -> Result<MjcfInertial> {
     if let Some(quat) = a.quat("quat")? {
         inertial.quat = quat;
     }
-    a.one_orientation()?;
+    let orientation = a.one_orientation()?;
     inertial.mass = a
         .real("mass")?
         .ok_or_else(|| MjcfError::missing_attribute("inertial", "mass"))?;
     inertial.diaginertia = a.vec3("diaginertia")?;
     inertial.fullinertia = a.array("fullinertia")?;
+    // MuJoCo's reader refuses a `fullinertia` beside any orientation, a
+    // `quat` counted when written (`xml_native_reader.cc:3534-3537`).
+    if orientation && inertial.fullinertia.is_some() {
+        return Err(MjcfError::invalid_value(
+            "inertial",
+            "fullinertia",
+            "fullinertia and inertial orientation cannot both be specified",
+        ));
+    }
 
     Ok(inertial)
 }

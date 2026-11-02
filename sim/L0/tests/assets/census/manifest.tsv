@@ -2787,3 +2787,11 @@ c04207deca98a860	sim/L0/mjcf/tests/geom_masses.rs:419
 6f44c89f9cef06bf	sim/L0/mjcf/tests/geom_masses.rs:550
 85351e930f995a08	sim/L0/mjcf/tests/geom_masses.rs:537
 ce2e5393f1d84a89	sim/L0/mjcf/tests/geom_masses.rs:576
+1acbae24764c8790	sim/L0/mjcf/tests/mass_checks.rs:102
+35b7320f221b4859	sim/L0/mjcf/tests/mass_checks.rs:69
+41684a62911393e0	sim/L0/mjcf/tests/mass_checks.rs:74
+419ec3ee542d747e	sim/L0/mjcf/tests/mass_checks.rs:79
+4275f86c2c6e3c29	sim/L0/mjcf/tests/mass_checks.rs:64
+b175aa1d844882e1	sim/L0/mjcf/tests/mass_checks.rs:89
+f8d06ca0b27a6381	sim/L0/mjcf/tests/mass_checks.rs:84
+fa790cfc22cd486d	sim/L0/mjcf/tests/mass_checks.rs:94
