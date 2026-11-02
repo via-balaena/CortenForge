@@ -154,6 +154,24 @@ impl ModelBuilder {
         self.hfield_size.push(hfield.size);
         Ok(())
     }
+
+    /// MuJoCo 3.5.0's check of each height field, in order: its four sizes
+    /// positive (`mjCHField::Compile`, `user_objects.cc:4471-4474`), used
+    /// or not. The parser has refused a first or second size that is not
+    /// positive and a third or fourth that is negative; this refuses a third
+    /// or fourth of 0, where MuJoCo does, after the bodies' checks and
+    /// before the tendons' (`user_model.cc:4932-4956`).
+    pub(crate) fn check_hfield_sizes(&self) -> Result<()> {
+        let not_positive = |size: &[f64; 4]| size.iter().any(|&s| s <= 0.0);
+        match self.hfield_size.iter().position(not_positive) {
+            Some(h) => Err(
+                MjcfError::invalid_model("size parameter is not positive in hfield").at(
+                    Location::nth(ElementKind::Hfield, Some(&self.hfield_name[h]), h),
+                ),
+            ),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Load mesh data from a file and convert to `TriangleMeshData`.

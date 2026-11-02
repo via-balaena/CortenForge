@@ -300,12 +300,13 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // RL-6d (book L19-L22), after every check above, so that a document
     // refused before they existed is refused for the same fault (MuJoCo
     // orders some of them before checks above). Among themselves in MuJoCo's
-    // order: each body's geoms and joints, the tendons, the actuators, the
-    // sensors, a moving body's mass and inertia, then the free joint below
-    // the world's children, as MuJoCo's `CopyTree` refuses it. An automatic
-    // range that does not increase is refused after the keyframes
-    // (`D-AUTO-RANGE`).
+    // order: each body's geoms and joints, the height fields' sizes, the
+    // tendons, the actuators, the sensors, a moving body's mass and inertia,
+    // then the free joint below the world's children, as MuJoCo's
+    // `CopyTree` refuses it. An automatic range that does not increase is
+    // refused after the keyframes (`D-AUTO-RANGE`).
     builder.check_bodies()?;
+    builder.check_hfield_sizes()?;
     builder.check_tendons()?;
     builder.check_actuators()?;
     builder.check_limit_sensors()?;
@@ -1305,7 +1306,7 @@ mod tests {
             <mujoco model="hfield_meshdir_test">
                 <compiler meshdir="hfields"/>
                 <asset>
-                    <hfield name="hill" file="hill.png" size="2 2 1 0"/>
+                    <hfield name="hill" file="hill.png" size="2 2 1 0.1"/>
                 </asset>
                 <worldbody>
                     <geom type="hfield" hfield="hill"/>
@@ -1327,7 +1328,7 @@ mod tests {
         let mjcf_content = r#"
             <mujoco model="hfield_missing">
                 <asset>
-                    <hfield name="gone" file="nonexistent.png" size="1 1 1 0"/>
+                    <hfield name="gone" file="nonexistent.png" size="1 1 1 0.1"/>
                 </asset>
                 <worldbody/>
             </mujoco>
@@ -1350,7 +1351,7 @@ mod tests {
             r#"
             <mujoco model="hfield_inline">
                 <asset>
-                    <hfield name="flat" size="1 1 0.5 0"
+                    <hfield name="flat" size="1 1 0.5 0.1"
                             nrow="2" ncol="2"
                             elevation="0 0 0 0"/>
                 </asset>
@@ -1376,7 +1377,7 @@ mod tests {
             r#"
             <mujoco>
                 <asset>
-                    <hfield name="bad" size="1 1 1 0"/>
+                    <hfield name="bad" size="1 1 1 0.1"/>
                 </asset>
                 <worldbody/>
             </mujoco>

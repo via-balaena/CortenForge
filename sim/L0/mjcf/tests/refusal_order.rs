@@ -20,7 +20,8 @@
 //! crate names the later one, as it did before. RL-6d's checks of a body (a
 //! `fullinertia` beside a diagonal inertia; its geoms' plane only in a static
 //! body and negative mass or density; its moments' triangle) run with
-//! RL-6a's, body by body, before the body's joints; a moving body's mass and
+//! RL-6a's, body by body, before the body's joints; a height field's sizes
+//! after every body's and before the tendons'; a moving body's mass and
 //! inertia after the sensors and before the free joint below the world's
 //! children, as MuJoCo orders them. An `<inertial>`'s negative mass or
 //! diagonal moment, which MuJoCo raises to its bounds, is refused after the
@@ -809,6 +810,60 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="-1" diaginertia="0.01 0.01 0.01"/><joint name="jz" type="hinge" axis="0 0 0"/></body></worldbody></mujoco>"#,
         "axis too small in joint",
         "invalid axis on <joint>: axis too small (joint 'jz' in body 'a')",
+    ),
+    (
+        "N6hf3 S4sensor",
+        r#"<mujoco><asset><hfield name="hn" size="1 1 0.1 0" nrow="2" ncol="2" elevation="0 0.5 1 0.25"/></asset><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body><body name="o" pos="2 0 1"><joint name="jo" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><sensor><jointlimitfrc joint="jo"/></sensor></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'hn')",
+    ),
+    (
+        "N6hf3 S4freenest",
+        r#"<mujoco><asset><hfield name="hn" size="1 1 0.1 0" nrow="2" ncol="2" elevation="0 0.5 1 0.25"/></asset><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body><body name="o" pos="2 0 1"><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><body name="oc"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></body></worldbody></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'hn')",
+    ),
+    (
+        "N6hf3 S5key",
+        r#"<mujoco><asset><hfield name="hn" size="1 1 0.1 0" nrow="2" ncol="2" elevation="0 0.5 1 0.25"/></asset><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><keyframe><key qpos="1 2 3 4 5 6 7 8 9"/></keyframe></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'hn')",
+    ),
+    (
+        "N6hf2 N7minval mn",
+        r#"<mujoco><asset><hfield name="hn" size="1 1 0 0.1" nrow="2" ncol="2" elevation="0 0.5 1 0.25"/></asset><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/></body></worldbody></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'hn')",
+    ),
+    (
+        "N6hf3 N7mass0 mn",
+        r#"<mujoco><asset><hfield name="hn" size="1 1 0.1 0" nrow="2" ncol="2" elevation="0 0.5 1 0.25"/></asset><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="0" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'hn')",
+    ),
+    (
+        "N6hf3 N4mass mn",
+        r#"<mujoco><asset><hfield name="hn" size="1 1 0.1 0" nrow="2" ncol="2" elevation="0 0.5 1 0.25"/></asset><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1" mass="-1"/></body></worldbody></mujoco>"#,
+        "mass, inertia or density are negative in geom",
+        "mass, inertia or density are negative in geom (geom #0 in body 'a')",
+    ),
+    (
+        "N6hf3 N5tri mn",
+        r#"<mujoco><asset><hfield name="hn" size="1 1 0.1 0" nrow="2" ncol="2" elevation="0 0.5 1 0.25"/></asset><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="1 1 3"/></body></worldbody></mujoco>"#,
+        "inertia must satisfy A + B >= C; use 'balanceinertia' to fix",
+        "inertia must satisfy A + B >= C; use 'balanceinertia' to fix (body 'a')",
+    ),
+    (
+        "Xms N6hf3",
+        r#"<mujoco><asset><hfield name="hn" size="1 1 0.1 0" nrow="2" ncol="2" elevation="0 0.5 1 0.25"/></asset><worldbody><body name="a" pos="0 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'hn')",
+    ),
+    (
+        "o hfield then spatial armature",
+        r#"<mujoco><asset><hfield name="h" size="1 1 1 0" nrow="2" ncol="2" elevation="0 0.5 1 0.25"/></asset><worldbody><site name="s0" pos="0 0 2"/><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><site name="s1"/></body></worldbody><tendon><spatial name="t" armature="-0.1"><site site="s0"/><site site="s1"/></spatial></tendon></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'h')",
     ),
 ];
 
