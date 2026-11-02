@@ -848,10 +848,14 @@ fn each_moving_body_check_and_total_mass_is_mujocos() {
 /// skipped here (ledger L358), so each document below is the `<deformable>`
 /// form of one MuJoCo loaded in its own form, and expects MuJoCo's result
 /// there (2026-11-02): mass 4e-15 refused; mass 3.2e-14 with inertiabox 2,
-/// each vertex body 8e-15 with moments 2.1333333333333335e-14; and
+/// each vertex body 8e-15 with moments 2.1333333333333335e-14;
 /// `settotalmass="10"` beside a sphere's body, each vertex body
 /// 0.4818078783940578 and the sphere's 8.072768486423769 (MuJoCo lists the
-/// vertex bodies first, this crate after the bodies).
+/// vertex bodies at the flexcomp's place in the document, here after the
+/// sphere's; this crate after every body); and the bounds, which reach each
+/// vertex body: mass 4e-15 under `boundmass="1" boundinertia="1"`, each 1.0
+/// with moments 1.0, and mass 1 under `boundmass="0.5"`, each 0.5 with moments
+/// 4.166666666666667e-06.
 #[test]
 fn a_flexcomps_vertex_bodies_are_checked_and_scaled_as_mujocos() {
     let flexcomp = |compiler: &str, body: &str, mass: &str, inertiabox: &str| {
@@ -891,4 +895,73 @@ fn a_flexcomps_vertex_bodies_are_checked_and_scaled_as_mujocos() {
     for &mass in &model.body_mass[2..] {
         assert!(close(mass, 0.4818078783940578), "{:?}", model.body_mass);
     }
+
+    let bounds = r#"<compiler boundmass="1" boundinertia="1"/>"#;
+    let model = load_model(&flexcomp(bounds, "", "4e-15", "0.005")).expect("loads");
+    assert_eq!(model.body_mass[1..], [1.0; 4]);
+    for inertia in &model.body_inertia[1..] {
+        assert_eq!(inertia.as_slice(), [1.0; 3]);
+    }
+    let model = load_model(&flexcomp(
+        r#"<compiler boundmass="0.5"/>"#,
+        "",
+        "1",
+        "0.005",
+    ))
+    .expect("loads");
+    assert_eq!(model.body_mass[1..], [0.5; 4]);
+    for inertia in &model.body_inertia[1..] {
+        for &moment in inertia.iter() {
+            assert!(close(moment, 4.166666666666667e-06), "{inertia:?}");
+        }
+    }
 }
+
+/// Each flex vertex's `flexvert_mass` and `flexvert_invmass` follow its
+/// body's mass once the bounds and `settotalmass` have changed it: a flex
+/// over two named bodies under `settotalmass="10"`, which MuJoCo 3.5.0 scales
+/// to 2.5 and 7.5 (2026-11-02), and a flexcomp under a bound and under
+/// `settotalmass`, with and without a pinned vertex, whose inverse mass stays
+/// 0.
+#[test]
+fn each_flex_vertex_mass_follows_its_body() {
+    let follows = |model: &sim_core::Model| {
+        assert!(model.nflexvert > 0);
+        for v in 0..model.nflexvert {
+            let mass = model.body_mass[model.flexvert_bodyid[v]];
+            let moves = model.flexvert_dofadr[v] != usize::MAX;
+            let invmass = if moves && mass > 0.0 { 1.0 / mass } else { 0.0 };
+            assert_eq!(
+                model.flexvert_mass[v].to_bits(),
+                mass.to_bits(),
+                "vertex {v}"
+            );
+            assert_eq!(
+                model.flexvert_invmass[v].to_bits(),
+                invmass.to_bits(),
+                "vertex {v}"
+            );
+        }
+    };
+    let named = load_model(NAMED_FLEX_SETTOTALMASS).expect("loads");
+    assert_eq!(named.body_mass[1..], [2.5, 7.5]);
+    follows(&named);
+
+    let flexcomp = |compiler: &str, body: &str| {
+        format!(
+            r#"<mujoco>{compiler}<worldbody>{body}</worldbody><deformable><flexcomp name="cloth" type="grid" count="2 2 1" spacing="0.04 0.04 0.04" dim="2" mass="1" inertiabox="0.005"><edge equality="false"/></flexcomp></deformable></mujoco>"#
+        )
+    };
+    follows(&load_model(&flexcomp(r#"<compiler boundmass="0.5"/>"#, "")).expect("loads"));
+    let sphere = r#"<body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/></body>"#;
+    follows(&load_model(&flexcomp(r#"<compiler settotalmass="10"/>"#, sphere)).expect("loads"));
+    let pinned = flexcomp(r#"<compiler settotalmass="10"/>"#, sphere)
+        .replace("</flexcomp>", r#"<pin id="0"/></flexcomp>"#);
+    let pinned = load_model(&pinned).expect("loads");
+    assert!(pinned.flexvert_invmass.contains(&0.0));
+    follows(&pinned);
+}
+
+/// Two bodies of three slides each, a flex over them, under
+/// `settotalmass="10"` (MuJoCo's own form).
+const NAMED_FLEX_SETTOTALMASS: &str = r#"<mujoco><compiler settotalmass="10"/><worldbody><body name="b1" pos="0 0 1"><joint name="ax" type="slide" axis="1 0 0"/><joint name="ay" type="slide" axis="0 1 0"/><joint name="az" type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.5" diaginertia="0.004 0.004 0.004"/></body><body name="b2" pos="0.3 0 1"><joint name="bx" type="slide" axis="1 0 0"/><joint name="by" type="slide" axis="0 1 0"/><joint name="bz" type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="1.5" diaginertia="0.004 0.004 0.004"/></body></worldbody><deformable><flex name="f" dim="1" body="b1 b2" vertex="0 0 0 0 0 0" element="0 1"/></deformable></mujoco>"#;

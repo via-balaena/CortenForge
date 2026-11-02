@@ -287,11 +287,13 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Process contact pairs and excludes (must be after body tree for name-to-id maps)
     builder.process_contact(&mjcf.contact)?;
 
-    // Each body's boundmass and boundinertia, then its moments' triangle
-    builder.apply_mass_pipeline();
-
-    // Process flex deformable bodies (after mass pipeline, before build)
+    // Process flex deformable bodies (before the mass pipeline, so that a
+    // flexcomp's vertex bodies are bounded as every body is)
     builder.process_flex_bodies(&mjcf.flex)?;
+
+    // Each body's boundmass and boundinertia, then a mass or moment still
+    // negative, then its moments' triangle
+    builder.apply_mass_pipeline();
 
     // Finalize user data: resolve nuser, validate, pad
     builder.finalize_user_data(&mjcf)?;
@@ -314,6 +316,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     builder.check_free_joints_on_top_level()?;
     let automatic = builder.automatic_range_fault();
     builder.apply_settotalmass();
+    builder.sync_flex_vertex_masses();
 
     // Build final model
     let mut model = builder.build();

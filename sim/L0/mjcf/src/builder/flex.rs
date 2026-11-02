@@ -773,6 +773,19 @@ impl ModelBuilder {
             }
         }
     }
+
+    /// Each flex vertex's mass and inverse mass (`flexvert_mass`,
+    /// `flexvert_invmass`) as its body's mass stands once the bounds and
+    /// `settotalmass` have changed it, after the flexes were built. A vertex
+    /// with no degree of freedom keeps an inverse mass of 0, as it was made.
+    pub(crate) fn sync_flex_vertex_masses(&mut self) {
+        for v in 0..self.nflexvert {
+            let mass = self.body_mass[self.flexvert_bodyid[v]];
+            let moves = self.flexvert_dofadr[v] != usize::MAX;
+            self.flexvert_mass[v] = mass;
+            self.flexvert_invmass[v] = if moves && mass > 0.0 { 1.0 / mass } else { 0.0 };
+        }
+    }
 }
 
 // ============================================================================
