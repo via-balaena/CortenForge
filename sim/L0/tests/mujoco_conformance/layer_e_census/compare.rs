@@ -344,9 +344,8 @@ pub fn model_diff(ours: &Value, mj: &Value) -> Vec<String> {
     d.close("geom_pos");
     d.quat("geom_quat");
     d.close_rows("geom_size", ngeom, |g| match str_at(&mj["geom_type"], g) {
-        "Sphere" => 1,
         "Capsule" | "Cylinder" => 2,
-        "Plane" => 3,
+        "Sphere" | "Plane" => 3,
         "Mesh" | "Hfield" | "Sdf" => 0,
         _ => 3,
     });
