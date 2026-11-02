@@ -6,12 +6,11 @@
 # See: https://rust-lang.github.io/rustfmt/
 #
 # Stable options only. The toolchain is pinned to a stable release
-# (rust-toolchain.toml), and rustfmt on stable ignores a nightly-only option,
-# printing a warning for each file it formats. Until 2026-11-02 this file set six
-# such options (imports_granularity, group_imports, format_code_in_doc_comments,
-# format_strings, trailing_comma, trailing_semicolon); none applied. The import
-# rule imports_granularity = "Module" encoded is a review rule now: docs/STANDARDS.md,
-# "Style Base".
+# (rust-toolchain.toml), and rustfmt on stable ignores a nightly-only option with a
+# warning. Until 2026-11-02 this file set six such options (imports_granularity,
+# group_imports, format_code_in_doc_comments, format_strings, trailing_comma,
+# trailing_semicolon); none applied. The import rule imports_granularity = "Module"
+# encoded is a review rule now: docs/STANDARDS.md, "Style Base".
 
 edition = "2021"
 max_width = 100
