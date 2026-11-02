@@ -315,6 +315,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     builder.check_moving_body_mass()?;
     builder.check_free_joints_on_top_level()?;
     let automatic = builder.automatic_range_fault();
+    let negative_inertial = negative_inertial.or_else(|| builder.kept_negative_inertial.take());
     builder.apply_settotalmass();
     builder.sync_flex_vertex_masses();
 
@@ -507,6 +508,10 @@ pub struct ModelBuilder {
     /// Per body, what MuJoCo 3.5.0's compiler refuses in it
     /// ([`Self::check_bodies`]).
     pub(crate) body_faults: Vec<body::BodyFaults>,
+    /// Under `inertiafromgeom="true"`, `D-INERTIAL-NEGATIVE`'s refusal of
+    /// the first body whose negative `<inertial>` MuJoCo keeps, none of its
+    /// geoms being selected; returned after the keyframes.
+    pub(crate) kept_negative_inertial: Option<MjcfError>,
     pub(crate) nmocap: usize,
 
     // Joint arrays

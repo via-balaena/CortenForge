@@ -7,7 +7,7 @@
 use nalgebra::{UnitQuaternion, Vector3};
 
 use super::ModelBuilder;
-use super::geom::geom_volume;
+use super::geom::{compute_geom_mass, geom_volume};
 use super::mass::{
     MJ_MINVAL, check_replaced_full_inertia, compute_inertia_from_geoms,
     extract_inertial_properties, geom_hfield_size, geom_mesh_props,
@@ -275,6 +275,21 @@ impl ModelBuilder {
             negative: false,
             triangle: false,
         });
+        // Under `inertiafromgeom="true"` MuJoCo replaces the `<inertial>`
+        // only where it selects a geom, one whose mass is above mjEPS
+        // (`InertiaFromGeom`, `user_objects.cc:2163-2170`; the group range
+        // is not read, ledger L375); where it selects none, it keeps the
+        // `<inertial>` and raises a negative value to its bound.
+        if self.compiler.inertiafromgeom == InertiaFromGeom::True
+            && self.kept_negative_inertial.is_none()
+            && !body.geoms.iter().any(|geom| self.geom_mass(geom) > MJ_EPS)
+        {
+            self.kept_negative_inertial = body
+                .inertial
+                .as_ref()
+                .and_then(crate::validation::negative_inertial_error)
+                .map(|error| error.at(self.body_location(body_id)));
+        }
 
         // Process sites for this body
         for site in &body.sites {
@@ -320,6 +335,19 @@ impl ModelBuilder {
         );
         let hfield = geom_hfield_size(geom, &self.hfield_name_to_id, &self.hfield_size);
         geom_volume(geom, mesh.as_ref(), hfield)
+    }
+
+    /// A geom's mass as MuJoCo 3.5.0's mass rule gives it
+    /// ([`compute_geom_mass`]), from its mesh's or height field's asset.
+    fn geom_mass(&self, geom: &MjcfGeom) -> f64 {
+        let mesh = geom_mesh_props(
+            geom,
+            &self.mesh_name_to_id,
+            &self.mesh_data,
+            &self.mesh_inertia_modes,
+        );
+        let hfield = geom_hfield_size(geom, &self.hfield_name_to_id, &self.hfield_size);
+        compute_geom_mass(geom, mesh.as_ref(), hfield)
     }
 
     /// MuJoCo 3.5.0's checks of each body, body by body in its order, as

@@ -214,6 +214,14 @@ const INERTIALS: &[(&str, &str, Expect)] = &[
             ],
         },
     ),
+    (
+        "fd1_ifg_true_negmass_geom_above_mjeps_static",
+        r#"<mujoco><compiler inertiafromgeom="true"/><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/><geom type="sphere" size="0.1" mass="2e-14"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 2e-14],
+            inertia: &[[0.0, 0.0, 0.0], [8e-17, 8e-17, 8e-17]],
+        },
+    ),
 ];
 
 #[test]
@@ -252,6 +260,21 @@ fn a_negative_inertial_mass_or_moment_is_refused_where_mujoco_raises_it() {
         (
             "mass beside a geom under inertiafromgeom auto, which keeps the inertial",
             r#"<mujoco><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/><geom name="a" type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+            format!("{MASS} (body 's')"),
+        ),
+        (
+            "mass under inertiafromgeom true beside no geom, MuJoCo keeping the inertial",
+            r#"<mujoco><compiler inertiafromgeom="true"/><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+            format!("{MASS} (body 's')"),
+        ),
+        (
+            "diaginertia under inertiafromgeom true beside a geom of mass 1e-15, not selected",
+            r#"<mujoco><compiler inertiafromgeom="true"/><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="1" diaginertia="-1 1 1"/><geom type="sphere" size="0.1" mass="1e-15"/></body></worldbody></mujoco>"#,
+            format!("{DIAG} (body 's')"),
+        ),
+        (
+            "mass under inertiafromgeom true beside a geom of mass exactly mjEPS, not selected",
+            r#"<mujoco><compiler inertiafromgeom="true"/><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/><geom type="sphere" size="0.1" mass="1e-14"/></body></worldbody></mujoco>"#,
             format!("{MASS} (body 's')"),
         ),
         (

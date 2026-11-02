@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::stack::MAX_BODY_TREE_DEPTH;
 use crate::types::{
-    InertiaFromGeom, MjcfBody, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfModel, MjcfOption,
-    MjcfTendon, MjcfTendonType, SpatialPathElement, TfAuto,
+    InertiaFromGeom, MjcfBody, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfInertial, MjcfModel,
+    MjcfOption, MjcfTendon, MjcfTendonType, SpatialPathElement, TfAuto,
 };
 
 /// Validation result containing the flattened body tree structure.
@@ -363,11 +363,11 @@ pub fn check_tree_depth(worldbody: &MjcfBody) -> Result<()> {
 /// `<inertial>` writes a negative mass or diagonal moment: refused as
 /// `D-INERTIAL-NEGATIVE`, where MuJoCo 3.5.0 raises each to `boundmass` or
 /// `boundinertia` and checks the raised values (`user_objects.cc:2451-2469`).
-/// None under `inertiafromgeom="true"`, where the geoms' inertia replaces
-/// the `<inertial>` (ledger L369 for a body none of whose geoms MuJoCo
-/// selects). The loader takes it from the document before `fusestatic`
-/// removes any body, and returns it after the keyframes, with this crate's
-/// other refusals MuJoCo does not make.
+/// None under `inertiafromgeom="true"`, where MuJoCo keeps an `<inertial>`
+/// only on a body none of whose geoms it selects, which the builder finds
+/// (`ModelBuilder::kept_negative_inertial`). The loader takes it from the
+/// document before `fusestatic` removes any body, and returns it after the
+/// keyframes, with this crate's other refusals MuJoCo does not make.
 pub fn negative_inertial_fault(model: &MjcfModel) -> Option<MjcfError> {
     if model.compiler.inertiafromgeom == InertiaFromGeom::True {
         return None;
@@ -376,32 +376,37 @@ pub fn negative_inertial_fault(model: &MjcfModel) -> Option<MjcfError> {
         .into_iter()
         .skip(1)
         .find_map(|(id, _, body)| {
-            let inertial = body.inertial.as_ref()?;
-            let error = if inertial.mass < 0.0 {
-                MjcfError::invalid_value(
-                    "inertial",
-                    "mass",
-                    format!(
-                        "must not be negative, got {} (MuJoCo raises it to boundmass, \
-                         D-INERTIAL-NEGATIVE)",
-                        inertial.mass
-                    ),
-                )
-            } else if inertial
-                .diaginertia
-                .is_some_and(|d| d.iter().any(|&moment| moment < 0.0))
-            {
-                MjcfError::invalid_value(
-                    "inertial",
-                    "diaginertia",
-                    "diagonal elements must be non-negative (MuJoCo raises them to \
-                     boundinertia, D-INERTIAL-NEGATIVE)",
-                )
-            } else {
-                return None;
-            };
+            let error = negative_inertial_error(body.inertial.as_ref()?)?;
             Some(error.at(Location::nth(ElementKind::Body, body_name(body, id), id)))
         })
+}
+
+/// `D-INERTIAL-NEGATIVE`'s refusal of `inertial`, where it writes a
+/// negative mass or diagonal moment ([`negative_inertial_fault`]).
+pub fn negative_inertial_error(inertial: &MjcfInertial) -> Option<MjcfError> {
+    if inertial.mass < 0.0 {
+        Some(MjcfError::invalid_value(
+            "inertial",
+            "mass",
+            format!(
+                "must not be negative, got {} (MuJoCo raises it to boundmass, \
+                 D-INERTIAL-NEGATIVE)",
+                inertial.mass
+            ),
+        ))
+    } else if inertial
+        .diaginertia
+        .is_some_and(|d| d.iter().any(|&moment| moment < 0.0))
+    {
+        Some(MjcfError::invalid_value(
+            "inertial",
+            "diaginertia",
+            "diagonal elements must be non-negative (MuJoCo raises them to \
+             boundinertia, D-INERTIAL-NEGATIVE)",
+        ))
+    } else {
+        None
+    }
 }
 
 /// The bodies from the world down, each with its id and the id of its first
