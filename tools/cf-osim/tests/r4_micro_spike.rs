@@ -35,6 +35,7 @@ const PULLEY_KNEE: &str = r#"
       <site name="origin" pos="0 0.2 0"/>
       <body name="tibia" pos="0 0 0">
         <joint name="knee" type="hinge" axis="0 0 1"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
         <site name="insertion" pos="0 -0.2 0"/>
       </body>
     </body>

@@ -1561,6 +1561,7 @@ fn t39_framequat_body_vs_xbody() {
                 </body>
                 <body name="B" pos="1 0 0">
                     <joint type="free"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
                     <geom type="sphere" size="0.05" mass="1"/>
                 </body>
             </worldbody>

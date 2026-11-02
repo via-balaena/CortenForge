@@ -88,6 +88,7 @@ const MODEL_C: &str = r#"
   <worldbody>
     <body name="b1" pos="-0.3 0.1 0.2">
       <joint name="j1" type="slide" axis="1 0 0"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       <site name="s1" pos="0 0 0"/>
     </body>
     <body name="cylinder_body" pos="0 0 0">
@@ -95,6 +96,7 @@ const MODEL_C: &str = r#"
     </body>
     <body name="b2" pos="0.3 -0.05 -0.2">
       <joint name="j2" type="slide" axis="1 0 0"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       <site name="s2" pos="0 0 0"/>
     </body>
   </worldbody>
@@ -115,6 +117,7 @@ const MODEL_D: &str = r#"
   <worldbody>
     <body name="b1" pos="0 0 0.5">
       <joint name="j1" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       <site name="s1" pos="0 0 0"/>
     </body>
     <body name="b2" pos="0 0 0">
@@ -123,6 +126,7 @@ const MODEL_D: &str = r#"
     </body>
     <body name="b3" pos="0 0 -0.5">
       <joint name="j2" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       <site name="s4" pos="0 0 0"/>
     </body>
   </worldbody>
@@ -264,6 +268,7 @@ const MODEL_I: &str = r#"
   <worldbody>
     <body name="b1" pos="-0.3 0.1 0.2">
       <joint name="j1" type="slide" axis="1 0 0"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       <site name="s1" pos="0 0 0"/>
     </body>
     <body name="cylinder_body" pos="0 0 0">
@@ -272,6 +277,7 @@ const MODEL_I: &str = r#"
     </body>
     <body name="b2" pos="0.3 -0.05 -0.2">
       <joint name="j2" type="slide" axis="1 0 0"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       <site name="s2" pos="0 0 0"/>
     </body>
   </worldbody>

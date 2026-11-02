@@ -9,8 +9,8 @@ use nalgebra::{UnitQuaternion, Vector3};
 use super::ModelBuilder;
 use super::geom::geom_volume;
 use super::mass::{
-    check_replaced_full_inertia, compute_inertia_from_geoms, extract_inertial_properties,
-    geom_hfield_size, geom_mesh_props,
+    MJ_MINVAL, check_replaced_full_inertia, compute_inertia_from_geoms,
+    extract_inertial_properties, geom_hfield_size, geom_mesh_props,
 };
 use super::orientation::{MJ_EPS, resolve_orientation};
 use crate::error::{ElementKind, Location, MjcfError, Result};
@@ -367,6 +367,40 @@ impl ModelBuilder {
             self.check_body_joints(body)?;
         }
         Ok(())
+    }
+
+    /// MuJoCo 3.5.0's check of every body that moves, one with a joint
+    /// (`user_model.cc:4993-4998`): its mass and each principal moment at
+    /// least mjMINVAL, or a body below it with no joint, reached through
+    /// bodies with no joint, that has them (`CheckBodyMassInertia`,
+    /// `:5310-5331`). A flexcomp's vertex bodies are checked as MuJoCo
+    /// checks them, as bodies. The first such body is refused; the caller
+    /// runs it after the sensors' checks and before the free joints', as
+    /// MuJoCo orders them, and before `settotalmass`.
+    pub(crate) fn check_moving_body_mass(&self) -> Result<()> {
+        let nbody = self.body_parent.len();
+        let mut carries: Vec<bool> = (0..nbody)
+            .map(|b| {
+                self.body_mass[b] >= MJ_MINVAL
+                    && self.body_inertia[b]
+                        .iter()
+                        .all(|&moment| moment >= MJ_MINVAL)
+            })
+            .collect();
+        // A child's id is above its parent's, so each body is final before
+        // it reaches its parent.
+        for body in (1..nbody).rev() {
+            if self.body_jnt_num[body] == 0 && carries[body] {
+                carries[self.body_parent[body]] = true;
+            }
+        }
+        match (1..nbody).find(|&b| self.body_jnt_num[b] > 0 && !carries[b]) {
+            Some(body) => Err(MjcfError::invalid_model(
+                "mass and inertia of moving bodies must be larger than mjMINVAL",
+            )
+            .at(self.body_location(body))),
+            None => Ok(()),
+        }
     }
 
     /// Resolve inertial properties with full MuJoCo semantics.

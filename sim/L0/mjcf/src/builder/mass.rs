@@ -18,13 +18,15 @@ use super::orientation::quat_from_wxyz;
 use crate::error::{MjcfError, Result};
 use crate::types::{MeshInertia, MjcfGeom, MjcfInertial};
 
+/// MuJoCo's `mjMINVAL` (`mjtnum.h:26`).
+pub const MJ_MINVAL: f64 = 1e-15;
+
 impl ModelBuilder {
     /// Apply the mass post-processing pipeline: each body's `boundmass` and
     /// `boundinertia`, then its principal moments' triangle, A + B >= C,
     /// made the moments' mean under `balanceinertia` and otherwise recorded
     /// for [`Self::check_bodies`] to refuse, as MuJoCo 3.5.0's
-    /// `mjCBody::Compile` does (`user_objects.cc:2448-2469`); then
-    /// `settotalmass`.
+    /// `mjCBody::Compile` does (`user_objects.cc:2448-2469`).
     pub(crate) fn apply_mass_pipeline(&mut self) {
         let nbody = self.body_mass.len();
 
@@ -48,17 +50,21 @@ impl ModelBuilder {
                 }
             }
         }
+    }
 
-        // Step 4: settotalmass (A8)
-        // When positive, rescale all body masses and inertias so total == target.
+    /// `settotalmass`, as MuJoCo 3.5.0's `mj_setTotalmass` applies it once
+    /// the model is compiled (`engine_support.c:748-761`, called at
+    /// `user_model.cc:5040-5043`): every body's mass and moments, a
+    /// flexcomp's vertex bodies' too, times `max(mjMINVAL, new /
+    /// max(mjMINVAL, total))`. The caller runs it after every check of the
+    /// bodies' masses.
+    pub(crate) fn apply_settotalmass(&mut self) {
         if self.compiler.settotalmass > 0.0 {
-            let total_mass: f64 = (1..nbody).map(|i| self.body_mass[i]).sum();
-            if total_mass > 0.0 {
-                let scale = self.compiler.settotalmass / total_mass;
-                for i in 1..nbody {
-                    self.body_mass[i] *= scale;
-                    self.body_inertia[i] *= scale;
-                }
+            let total: f64 = self.body_mass[1..].iter().sum();
+            let scale = MJ_MINVAL.max(self.compiler.settotalmass / MJ_MINVAL.max(total));
+            for i in 1..self.body_mass.len() {
+                self.body_mass[i] *= scale;
+                self.body_inertia[i] *= scale;
             }
         }
     }
@@ -368,15 +374,14 @@ mod tests {
             <mujoco>
                 <compiler angle="radian"/>
                 <worldbody>
-                    <body name="b" pos="0 0 0">
-                        <joint type="hinge" axis="0 1 0"/>
-                    </body>
+                    <body name="b" pos="0 0 0"/>
                 </worldbody>
             </mujoco>
             "#,
         )
         .expect("should load");
-        // Auto mode with no geoms and no inertial -> zero mass
+        // Auto mode with no geoms and no inertial -> zero mass (a static
+        // body: MuJoCo refuses a moving one this light).
         assert!(
             model.body_mass[1].abs() < 1e-10,
             "empty body should have zero mass, got {}",

@@ -12,6 +12,7 @@
 
 use nalgebra::{UnitQuaternion, Vector3};
 
+use super::mass::MJ_MINVAL;
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::keywords;
@@ -25,9 +26,6 @@ const BENDING_COEFFS: usize = 17;
 /// Minimum vertex mass (kg) applied when computed mass is near-zero.
 /// Prevents singular mass matrices in the deformable body integrator.
 const MIN_VERTEX_MASS: f64 = 0.001;
-
-/// MuJoCo's `mjMINVAL` (`mjtnum.h`).
-const MJ_MINVAL: f64 = 1e-15;
 
 /// A flexcomp vertex body's inertia about each axis, MuJoCo's
 /// `mass · (2 · inertiabox²) / 3` (`user_flexcomp.cc:470-471`, set at
@@ -1307,7 +1305,7 @@ mod tests {
     /// 1e-15, as MuJoCo's does (`user_flexcomp.cc:143-145`; `mjtnum.h:26`):
     /// 1e-16 is refused, 2e-15 passes. MuJoCo's own flexcomp refuses 1e-16
     /// at this check and 2e-15 at its later check of moving bodies (both
-    /// measured), which sim-mjcf does not make yet (ledger L207).
+    /// measured), which this crate makes in `check_moving_body_mass`.
     #[test]
     fn check_flexcomp_refuses_below_mjminval() {
         let flex = |mass: f64, inertiabox: f64| MjcfFlex {

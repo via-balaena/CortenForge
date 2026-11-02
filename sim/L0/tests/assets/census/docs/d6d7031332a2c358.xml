@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="m" mocap="true"><geom type="sphere" size="0.1" mass="0"/></body></worldbody></mujoco>

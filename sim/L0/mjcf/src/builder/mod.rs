@@ -282,7 +282,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Process contact pairs and excludes (must be after body tree for name-to-id maps)
     builder.process_contact(&mjcf.contact)?;
 
-    // Apply mass pipeline (balanceinertia, boundmass/boundinertia, settotalmass)
+    // Each body's boundmass and boundinertia, then its moments' triangle
     builder.apply_mass_pipeline();
 
     // Process flex deformable bodies (after mass pipeline, before build)
@@ -296,15 +296,18 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // refused before they existed is refused for the same fault (MuJoCo
     // orders some of them before checks above). Among themselves in MuJoCo's
     // order: each body's geoms and joints, the tendons, the actuators, the
-    // sensors, then the free joint below the world's children, as MuJoCo's
-    // `CopyTree` refuses it. An automatic range that does not increase is
-    // refused after the keyframes (`D-AUTO-RANGE`).
+    // sensors, a moving body's mass and inertia, then the free joint below
+    // the world's children, as MuJoCo's `CopyTree` refuses it. An automatic
+    // range that does not increase is refused after the keyframes
+    // (`D-AUTO-RANGE`).
     builder.check_bodies()?;
     builder.check_tendons()?;
     builder.check_actuators()?;
     builder.check_limit_sensors()?;
+    builder.check_moving_body_mass()?;
     builder.check_free_joints_on_top_level()?;
     let automatic = builder.automatic_range_fault();
+    builder.apply_settotalmass();
 
     // Build final model
     let mut model = builder.build();

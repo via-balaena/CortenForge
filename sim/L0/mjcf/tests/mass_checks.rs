@@ -2,7 +2,8 @@
 //! L207): an `<inertial>`'s rules, a geom's (a plane only in a static body;
 //! a negative mass or density where the geom infers its body's inertia), and
 //! a body's (a `fullinertia` beside a diagonal inertia; its moments' triangle
-//! after `boundinertia`, balanced or refused).
+//! after `boundinertia`, balanced or refused), a moving body's mass and
+//! inertia at least mjMINVAL (ledger L207), and `settotalmass` after it.
 //!
 //! Every document below was loaded by MuJoCo 3.5.0 on the census's unfused
 //! oracle (2026-11-02): each refusal expects MuJoCo's words; each load,
@@ -467,4 +468,226 @@ const BODIES: &[(&str, &str, Expect)] = &[
 #[test]
 fn each_body_inertia_check_is_mujocos() {
     check(BODIES);
+}
+
+/// `(name, document, expected)`, generated from the oracle's results.
+const MOVING: &[(&str, &str, Expect)] = &[
+    (
+        "moving_body_no_mass",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia of moving bodies must be larger than mjMINVAL"),
+    ),
+    (
+        "moving_body_site_only",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><site name="s"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia of moving bodies must be larger than mjMINVAL"),
+    ),
+    (
+        "moving_mass_1e-16",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1e-16" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia of moving bodies must be larger than mjMINVAL"),
+    ),
+    (
+        "moving_inertia_1e-20",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="1e-20 1e-20 1e-20"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia of moving bodies must be larger than mjMINVAL"),
+    ),
+    (
+        "diaginertia_zero_moving",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><inertial pos="0 0 0" mass="1" diaginertia="0 0 0"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia of moving bodies must be larger than mjMINVAL"),
+    ),
+    (
+        "geom_mass_zero_moving",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1" mass="0"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia of moving bodies must be larger than mjMINVAL"),
+    ),
+    (
+        "geom_density_zero_moving",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1" density="0"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia of moving bodies must be larger than mjMINVAL"),
+    ),
+    (
+        "inertiafromgeom_false_no_inertial_moving",
+        r#"<mujoco><compiler inertiafromgeom="false"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia of moving bodies must be larger than mjMINVAL"),
+    ),
+    (
+        "moving_nomass_moving_child",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><body name="c" pos="0 0 0"><joint name="j2" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/></body></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia of moving bodies must be larger than mjMINVAL"),
+    ),
+    (
+        "settotalmass_after_check",
+        r#"<mujoco><compiler settotalmass="10"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1e-16" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia of moving bodies must be larger than mjMINVAL"),
+    ),
+    (
+        "moving_mass_1e-14",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1e-14" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 1e-14],
+            inertia: &[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+        },
+    ),
+    (
+        "moving_nomass_static_child",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><body name="c" pos="0 0 0"><geom type="sphere" size="0.1"/></body></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 0.0, 4.188790204786391],
+            inertia: &[
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+        },
+    ),
+    (
+        "moving_nomass_static_grandchild",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><body name="c" pos="0 0 0"><body name="g" pos="0 0 0"><geom type="sphere" size="0.1"/></body></body></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 0.0, 0.0, 4.188790204786391],
+            inertia: &[
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+        },
+    ),
+    (
+        "mocap_geom_mass0",
+        r#"<mujoco><worldbody><body name="m" mocap="true"><geom type="sphere" size="0.1" mass="0"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 0.0],
+            inertia: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        },
+    ),
+    (
+        "static_body_no_mass",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><site name="s"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 0.0],
+            inertia: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        },
+    ),
+    (
+        "plane_static_settotalmass",
+        r#"<mujoco><compiler settotalmass="10"/><worldbody><body name="floor" pos="0 0 0"><geom type="plane" size="1 1 0.1"/></body><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 0.0, 10.0],
+            inertia: &[
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [
+                    0.04000000000000001,
+                    0.04000000000000001,
+                    0.04000000000000001,
+                ],
+            ],
+        },
+    ),
+    (
+        "t_settotalmass_tiny_total",
+        r#"<mujoco><compiler settotalmass="10"/><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="1e-20" diaginertia="1e-20 1e-20 1e-20"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 9.999999999999999e-05],
+            inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    9.999999999999999e-05,
+                    9.999999999999999e-05,
+                    9.999999999999999e-05,
+                ],
+            ],
+        },
+    ),
+    (
+        "t_settotalmass_two_bodies",
+        r#"<mujoco><compiler settotalmass="10"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="2" diaginertia="0.1 0.2 0.25"/></body><body name="s" pos="1 0 1"><inertial pos="0 0 0" mass="3" diaginertia="0.3 0.3 0.3"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 4.0, 6.0],
+            inertia: &[[0.0, 0.0, 0.0], [0.2, 0.4, 0.5], [0.6, 0.6, 0.6]],
+        },
+    ),
+    (
+        "t_moving_exactly_minval",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1e-15" diaginertia="1e-15 1e-15 1e-15"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 1e-15],
+            inertia: &[[0.0, 0.0, 0.0], [1e-15, 1e-15, 1e-15]],
+        },
+    ),
+    (
+        "t_settotalmass_tiny_target",
+        r#"<mujoco><compiler settotalmass="1e-20"/><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 1e-15],
+            inertia: &[[0.0, 0.0, 0.0], [1e-15, 1e-15, 1e-15]],
+        },
+    ),
+];
+
+#[test]
+fn each_moving_body_check_and_total_mass_is_mujocos() {
+    check(MOVING);
+}
+
+/// A flexcomp's vertex bodies are bodies to the moving-body check and to
+/// `settotalmass`. This crate reads a flexcomp only inside `<deformable>`,
+/// which MuJoCo 3.5.0 refuses, and MuJoCo's form (in `<worldbody>`) is
+/// skipped here (ledger L358), so each document below is the `<deformable>`
+/// form of one MuJoCo loaded in its own form, and expects MuJoCo's result
+/// there (2026-11-02): mass 4e-15 refused; mass 3.2e-14 with inertiabox 2,
+/// each vertex body 8e-15 with moments 2.1333333333333335e-14; and
+/// `settotalmass="10"` beside a sphere's body, each vertex body
+/// 0.4818078783940578 and the sphere's 8.072768486423769 (MuJoCo lists the
+/// vertex bodies first, this crate after the bodies).
+#[test]
+fn a_flexcomps_vertex_bodies_are_checked_and_scaled_as_mujocos() {
+    let flexcomp = |compiler: &str, body: &str, mass: &str, inertiabox: &str| {
+        format!(
+            r#"<mujoco>{compiler}<worldbody>{body}</worldbody><deformable><flexcomp name="cloth" type="grid" count="2 2 1" spacing="0.04 0.04 0.04" dim="2" mass="{mass}" inertiabox="{inertiabox}"><edge equality="false"/></flexcomp></deformable></mujoco>"#
+        )
+    };
+    let error = load_model(&flexcomp("", "", "4e-15", "0.005"))
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(
+        error.contains("mass and inertia of moving bodies must be larger than mjMINVAL"),
+        "{error}"
+    );
+
+    let model = load_model(&flexcomp("", "", "3.2e-14", "2")).expect("loads");
+    assert_eq!(model.body_mass[1..], [8e-15; 4]);
+    for inertia in &model.body_inertia[1..] {
+        assert_eq!(inertia.as_slice(), [2.1333333333333335e-14; 3]);
+    }
+
+    let sphere = r#"<body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/></body>"#;
+    let model = load_model(&flexcomp(
+        r#"<compiler settotalmass="10"/>"#,
+        sphere,
+        "1",
+        "0.005",
+    ))
+    .expect("loads");
+    let close = |got: f64, want: f64| (got - want).abs() <= 1e-12 * want;
+    assert!(
+        close(model.body_mass[1], 8.072768486423769),
+        "{:?}",
+        model.body_mass
+    );
+    for &mass in &model.body_mass[2..] {
+        assert!(close(mass, 0.4818078783940578), "{:?}", model.body_mass);
+    }
 }

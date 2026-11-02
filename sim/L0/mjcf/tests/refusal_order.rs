@@ -20,7 +20,9 @@
 //! crate names the later one, as it did before. RL-6d's checks of a body (a
 //! `fullinertia` beside a diagonal inertia; its geoms' plane only in a static
 //! body and negative mass or density; its moments' triangle) run with
-//! RL-6a's, body by body, before the body's joints.
+//! RL-6a's, body by body, before the body's joints; a moving body's mass and
+//! inertia after the sensors and before the free joint below the world's
+//! children, as MuJoCo orders them.
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, for the fault its expected error names (RL-6a's measured
@@ -612,6 +614,84 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><compiler inertiafromgeom="true"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="1 1 3"/><geom type="sphere" size="0.1" mass="-1"/></body></worldbody></mujoco>"#,
         "mass, inertia or density are negative in geom",
         "mass, inertia or density are negative in geom (geom #0 in body 'b')",
+    ),
+    (
+        "N7minval S4axis n first",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/></body><body name="b" pos="1 0 1"><joint name="jb" type="hinge" axis="0 0 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'jb' in body 'b')",
+    ),
+    (
+        "N7minval S4axis s first",
+        r#"<mujoco><worldbody><body name="b" pos="1 0 1"><joint name="jb" type="hinge" axis="0 0 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'jb' in body 'b')",
+    ),
+    (
+        "N7minval S4axis same after",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><joint name="jz" type="hinge" axis="0 0 0"/></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'jz' in body 'a')",
+    ),
+    (
+        "N7minval S4tendlim",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/></body><body name="o" pos="2 0 1"><joint name="jo" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed name="t" limited="true" range="1 0"><joint joint="jo" coef="1"/></fixed></tendon></mujoco>"#,
+        "invalid limits in tendon",
+        "invalid range on <tendon>: invalid limits in tendon (tendon 't')",
+    ),
+    (
+        "N7minval S4sensor",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/></body><body name="o" pos="2 0 1"><joint name="jo" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><sensor><jointlimitfrc joint="jo"/></sensor></mujoco>"#,
+        "joint must be limited in sensor",
+        "joint must be limited in sensor (sensor #0)",
+    ),
+    (
+        "N7minval S4freenest",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/></body><body name="o" pos="2 0 1"><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><body name="oc"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></body></worldbody></mujoco>"#,
+        "mass and inertia of moving bodies must be larger than mjMINVAL",
+        "mass and inertia of moving bodies must be larger than mjMINVAL (body 'a')",
+    ),
+    (
+        "N7minval S5key",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/></body></worldbody><keyframe><key qpos="1 2 3 4 5 6 7 8 9"/></keyframe></mujoco>"#,
+        "mass and inertia of moving bodies must be larger than mjMINVAL",
+        "mass and inertia of moving bodies must be larger than mjMINVAL (body 'a')",
+    ),
+    (
+        "N7tiny S4freenest",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1e-16" diaginertia="0.01 0.01 0.01"/></body><body name="o" pos="2 0 1"><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><body name="oc"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></body></worldbody></mujoco>"#,
+        "mass and inertia of moving bodies must be larger than mjMINVAL",
+        "mass and inertia of moving bodies must be larger than mjMINVAL (body 'a')",
+    ),
+    (
+        "N7tiny S5key",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1e-16" diaginertia="0.01 0.01 0.01"/></body></worldbody><keyframe><key qpos="1 2 3 4 5 6 7 8 9"/></keyframe></mujoco>"#,
+        "mass and inertia of moving bodies must be larger than mjMINVAL",
+        "mass and inertia of moving bodies must be larger than mjMINVAL (body 'a')",
+    ),
+    (
+        "N7minval N3plane nn",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/></body><body name="b" pos="1 0 1"><joint name="jb" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><geom type="plane" size="1 1 0.1"/></body></worldbody></mujoco>"#,
+        "plane only allowed in static bodies",
+        "plane only allowed in static bodies (geom #0 in body 'b')",
+    ),
+    (
+        "N7minval N4mass nn",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/></body><body name="b" pos="1 0 1"><joint name="jb" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1" mass="-1"/></body></worldbody></mujoco>"#,
+        "mass, inertia or density are negative in geom",
+        "mass, inertia or density are negative in geom (geom #0 in body 'b')",
+    ),
+    (
+        "N7minval N5tri nn",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/></body><body name="b" pos="1 0 1"><joint name="jb" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="1 1 3"/></body></worldbody></mujoco>"#,
+        "inertia must satisfy A + B >= C; use 'balanceinertia' to fix",
+        "inertia must satisfy A + B >= C; use 'balanceinertia' to fix (body 'b')",
+    ),
+    (
+        "N7minval N2fulldiag nn",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/></body><body name="b" pos="1 0 1"><joint name="jb" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" fullinertia="1 1 1 0 0 0"/></body></worldbody></mujoco>"#,
+        "fullinertia and diagonal inertia cannot both be specified",
+        "invalid fullinertia on <inertial>: fullinertia and diagonal inertia cannot both be specified (body 'b')",
     ),
 ];
 
