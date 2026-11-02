@@ -30,6 +30,10 @@ pub struct BodyFaults {
     /// value where the geom infers its body's inertia
     /// ([`ModelBuilder::negative_mass`]).
     pub negative_geom: Option<usize>,
+    /// Its mass or a principal moment is negative after `boundmass` and
+    /// `boundinertia` ([`ModelBuilder::apply_mass_pipeline`],
+    /// `user_objects.cc:2457-2459`).
+    pub negative: bool,
     /// Its principal moments, after `boundinertia`, break A + B >= C, and
     /// `balanceinertia` is off ([`ModelBuilder::apply_mass_pipeline`]).
     pub triangle: bool,
@@ -266,6 +270,7 @@ impl ModelBuilder {
         self.body_faults.push(BodyFaults {
             full_and_diagonal,
             negative_geom: negative.map(|k| geom_adr + k),
+            negative: false,
             triangle: false,
         });
 
@@ -322,7 +327,8 @@ impl ModelBuilder {
     /// inertia (`user_objects.cc:2408-2409`); geom by geom, a plane only in a
     /// static body, one with no joint on it or a body above it
     /// (`mjCGeom::Compile`, `:3666-3668`), then a negative mass or density
-    /// ([`Self::negative_mass`], `:3805-3807`); the body's moments' triangle
+    /// ([`Self::negative_mass`], `:3805-3807`); a mass or moment negative
+    /// after the bounds (`:2457-2459`), then the moments' triangle
     /// ([`Self::apply_mass_pipeline`], `:2461-2469`); then the body's joints
     /// ([`Self::check_body_joints`]). The caller runs it with the checks
     /// RL-6a added, after every check this crate makes before building the
@@ -357,6 +363,12 @@ impl ModelBuilder {
                     )
                     .at(at()));
                 }
+            }
+            if faults.negative {
+                return Err(
+                    MjcfError::invalid_model("mass and inertia cannot be negative")
+                        .at(self.body_location(body)),
+                );
             }
             if faults.triangle {
                 return Err(MjcfError::invalid_model(

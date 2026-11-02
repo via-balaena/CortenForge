@@ -23,10 +23,11 @@ pub const MJ_MINVAL: f64 = 1e-15;
 
 impl ModelBuilder {
     /// Apply the mass post-processing pipeline: each body's `boundmass` and
-    /// `boundinertia`, then its principal moments' triangle, A + B >= C,
-    /// made the moments' mean under `balanceinertia` and otherwise recorded
-    /// for [`Self::check_bodies`] to refuse, as MuJoCo 3.5.0's
-    /// `mjCBody::Compile` does (`user_objects.cc:2448-2469`).
+    /// `boundinertia`, then a mass or moment still negative, then its
+    /// principal moments' triangle, A + B >= C, made the moments' mean under
+    /// `balanceinertia`; each fault recorded for [`Self::check_bodies`] to
+    /// refuse, as MuJoCo 3.5.0's `mjCBody::Compile` does
+    /// (`user_objects.cc:2448-2469`).
     pub(crate) fn apply_mass_pipeline(&mut self) {
         let nbody = self.body_mass.len();
 
@@ -39,6 +40,9 @@ impl ModelBuilder {
                 if *moment < self.compiler.boundinertia {
                     *moment = self.compiler.boundinertia;
                 }
+            }
+            if self.body_mass[i] < 0.0 || inertia.iter().any(|&moment| moment < 0.0) {
+                self.body_faults[i].negative = true;
             }
             let (a, b, c) = (inertia.x, inertia.y, inertia.z);
             if a + b < c || a + c < b || b + c < a {
@@ -105,13 +109,8 @@ pub fn extract_inertial_properties(
         // Diagonal inertia already in principal axes
         Ok((mass, diag, ipos, quat_from_wxyz(inertial.quat)))
     } else {
-        // Default: small uniform inertia
-        Ok((
-            mass,
-            Vector3::new(0.001, 0.001, 0.001),
-            ipos,
-            quat_from_wxyz(inertial.quat),
-        ))
+        // MuJoCo's default inertia is 0 (`mjs_defaultBody`, `user_init.c:75-76`).
+        Ok((mass, Vector3::zeros(), ipos, quat_from_wxyz(inertial.quat)))
     }
 }
 

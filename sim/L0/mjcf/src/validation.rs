@@ -124,7 +124,7 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 /// - No duplicate joint names
 /// - No duplicate actuator names
 /// - Actuators reference valid joints
-/// - Valid mass properties (if present)
+/// - An inertial's mass and diagonal inertia finite (if present)
 /// - Valid simulation options
 /// - Tendons reference valid joints, sites and geoms, with valid parameters
 /// - A body and frame tree no deeper than the loader takes
@@ -201,35 +201,17 @@ pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
             }
         }
 
-        // Validate inertial if present
+        // An inertial's mass and diagonal moments are finite (a negative one
+        // is refused once the model is built: `negative_inertial_fault`).
         if let Some(ref inertial) = body.inertial {
-            // Check mass is positive
             let at = || Location::named(ElementKind::Body, &body.name);
-            if inertial.mass <= 0.0 {
-                return Err(MjcfError::invalid_value(
-                    "inertial",
-                    "mass",
-                    format!("must be positive, got {}", inertial.mass),
-                )
-                .at(at()));
-            }
             if !inertial.mass.is_finite() {
                 return Err(MjcfError::non_finite("inertial", "mass", inertial.mass).at(at()));
             }
-
-            // Check inertia tensor if specified
-            if let Some(diag) = inertial.diaginertia {
-                if diag.x < 0.0 || diag.y < 0.0 || diag.z < 0.0 {
-                    return Err(MjcfError::invalid_value(
-                        "inertial",
-                        "diaginertia",
-                        "diagonal elements must be non-negative",
-                    )
-                    .at(at()));
-                }
-                if let Some(v) = diag.iter().find(|v| !v.is_finite()) {
-                    return Err(MjcfError::non_finite("inertial", "diaginertia", *v).at(at()));
-                }
+            if let Some(diag) = inertial.diaginertia
+                && let Some(v) = diag.iter().find(|v| !v.is_finite())
+            {
+                return Err(MjcfError::non_finite("inertial", "diaginertia", *v).at(at()));
             }
         }
 
@@ -375,6 +357,46 @@ pub fn check_tree_depth(worldbody: &MjcfBody) -> Result<()> {
         stack.extend(frames.iter().map(|f| (Node::Frame(f), depth + 1)));
     }
     Ok(())
+}
+
+/// The first body below `world`, in the builder's order, whose `<inertial>`
+/// writes a negative mass or diagonal moment: refused as
+/// `D-INERTIAL-NEGATIVE`, where MuJoCo 3.5.0 raises each to `boundmass` or
+/// `boundinertia` and checks the raised values (`user_objects.cc:2451-2469`).
+/// The loader takes it from the document before `fusestatic` removes any
+/// body, and returns it after the keyframes, with this crate's other
+/// refusals MuJoCo does not make.
+pub fn negative_inertial_fault(world: &MjcfBody) -> Option<MjcfError> {
+    bodies_in_order(world)
+        .into_iter()
+        .skip(1)
+        .find_map(|(id, _, body)| {
+            let inertial = body.inertial.as_ref()?;
+            let error = if inertial.mass < 0.0 {
+                MjcfError::invalid_value(
+                    "inertial",
+                    "mass",
+                    format!(
+                        "must not be negative, got {} (MuJoCo raises it to boundmass, \
+                         D-INERTIAL-NEGATIVE)",
+                        inertial.mass
+                    ),
+                )
+            } else if inertial
+                .diaginertia
+                .is_some_and(|d| d.iter().any(|&moment| moment < 0.0))
+            {
+                MjcfError::invalid_value(
+                    "inertial",
+                    "diaginertia",
+                    "diagonal elements must be non-negative (MuJoCo raises them to \
+                     boundinertia, D-INERTIAL-NEGATIVE)",
+                )
+            } else {
+                return None;
+            };
+            Some(error.at(Location::nth(ElementKind::Body, body_name(body, id), id)))
+        })
 }
 
 /// The bodies from the world down, each with its id and the id of its first
@@ -872,10 +894,10 @@ mod tests {
             ..Default::default()
         });
 
-        let result = validate(&model);
+        assert!(validate(&model).is_ok());
         assert!(matches!(
-            result,
-            Err(MjcfError::InvalidValue { ref attribute, .. }) if attribute == "mass"
+            negative_inertial_fault(&model.worldbody),
+            Some(MjcfError::InvalidValue { ref attribute, .. }) if attribute == "mass"
         ));
     }
 
@@ -891,10 +913,10 @@ mod tests {
             ..Default::default()
         });
 
-        let result = validate(&model);
+        assert!(validate(&model).is_ok());
         assert!(matches!(
-            result,
-            Err(MjcfError::InvalidValue { ref attribute, .. }) if attribute == "diaginertia"
+            negative_inertial_fault(&model.worldbody),
+            Some(MjcfError::InvalidValue { ref attribute, .. }) if attribute == "diaginertia"
         ));
     }
 

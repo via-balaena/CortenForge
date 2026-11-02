@@ -3,12 +3,14 @@
 //! a negative mass or density where the geom infers its body's inertia), and
 //! a body's (a `fullinertia` beside a diagonal inertia; its moments' triangle
 //! after `boundinertia`, balanced or refused), a moving body's mass and
-//! inertia at least mjMINVAL (ledger L207), and `settotalmass` after it.
+//! inertia at least mjMINVAL (ledger L207), and `settotalmass` after it; and
+//! this crate's refusal of an `<inertial>`'s negative mass or moment, which
+//! MuJoCo raises to its bounds (`D-INERTIAL-NEGATIVE`).
 //!
-//! Every document below was loaded by MuJoCo 3.5.0 on the census's unfused
-//! oracle (2026-11-02): each refusal expects MuJoCo's words; each load,
-//! MuJoCo's `body_mass` bit for bit and its `body_inertia` within a relative
-//! 1e-12, which a value that is not finite fails.
+//! Every document in the tables below was loaded by MuJoCo 3.5.0 on the
+//! census's unfused oracle (2026-11-02): each refusal expects MuJoCo's
+//! words; each load, MuJoCo's `body_mass` bit for bit and its `body_inertia`
+//! within a relative 1e-12, which a value that is not finite fails.
 
 // The values are MuJoCo's, printed to the last digit.
 #![allow(
@@ -115,11 +117,142 @@ const INERTIALS: &[(&str, &str, Expect)] = &[
             inertia: &[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
         },
     ),
+    (
+        "inertial_no_inertia_static",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><inertial pos="0 0 0" mass="1"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 1.0],
+            inertia: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        },
+    ),
+    (
+        "inertial_no_inertia_moving",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia of moving bodies must be larger than mjMINVAL"),
+    ),
+    (
+        "inertial_mass0_static",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><inertial pos="0 0 0" mass="0" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 0.0],
+            inertia: &[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+        },
+    ),
+    (
+        "inertial_mass0_moving",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="0" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia of moving bodies must be larger than mjMINVAL"),
+    ),
+    (
+        "boundmass_rescues",
+        r#"<mujoco><compiler boundmass="0.1"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="0" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 0.1],
+            inertia: &[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+        },
+    ),
+    (
+        "i_negbound_negmass_static",
+        r#"<mujoco><compiler boundmass="-1"/><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="-2" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia cannot be negative"),
+    ),
+    (
+        "i_negbound_negdiag_static",
+        r#"<mujoco><compiler boundinertia="-1"/><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="1" diaginertia="-2 1 1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia cannot be negative"),
+    ),
+    (
+        "i_negbound_nothing_negative",
+        r#"<mujoco><compiler boundmass="-1" boundinertia="-1"/><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 1.0],
+            inertia: &[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+        },
+    ),
+    (
+        "i_mass_neg_moving",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia of moving bodies must be larger than mjMINVAL"),
+    ),
+    (
+        "i_diag_neg_moving",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="-1 1 1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia of moving bodies must be larger than mjMINVAL"),
+    ),
+    (
+        "i_negdiag_triangle_static",
+        r#"<mujoco><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="1" diaginertia="-1 1 3"/></body></worldbody></mujoco>"#,
+        Expect::Refused("inertia must satisfy A + B >= C; use 'balanceinertia' to fix"),
+    ),
 ];
 
 #[test]
 fn each_inertial_rule_is_mujocos() {
     check(INERTIALS);
+}
+
+/// `D-INERTIAL-NEGATIVE`: an `<inertial>` whose mass or a diagonal moment is
+/// negative as written is refused, where MuJoCo 3.5.0 raises it to
+/// `boundmass` or `boundinertia` (0 here) and loads every document below
+/// (2026-11-02), a static body `fusestatic` removes included. Beside another
+/// refusal this crate makes and MuJoCo does not, the other is named (a range
+/// `try_make_data` refuses is checked after loading).
+#[test]
+fn a_negative_inertial_mass_or_moment_is_refused_where_mujoco_raises_it() {
+    const MASS: &str = "invalid mass on <inertial>: must not be negative, got -1 (MuJoCo raises it \
+                        to boundmass, D-INERTIAL-NEGATIVE)";
+    const DIAG: &str = "invalid diaginertia on <inertial>: diagonal elements must be non-negative \
+                        (MuJoCo raises them to boundinertia, D-INERTIAL-NEGATIVE)";
+    let stricter = [
+        (
+            "mass",
+            r#"<mujoco><worldbody><body name="b" pos="0 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+            format!("{MASS} (body 'b')"),
+        ),
+        (
+            "diaginertia",
+            r#"<mujoco><worldbody><body name="b" pos="0 0 1"><inertial pos="0 0 0" mass="1" diaginertia="-1 1 1"/></body></worldbody></mujoco>"#,
+            format!("{DIAG} (body 'b')"),
+        ),
+        (
+            "mass beside a moving body",
+            r#"<mujoco><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/></body><body name="b" pos="1 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+            format!("{MASS} (body 's')"),
+        ),
+        (
+            "mass of a fused body",
+            r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><body name="s" pos="0 0 0"><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/></body></body></worldbody></mujoco>"#,
+            format!("{MASS} (body 's')"),
+        ),
+        (
+            "mass beside a slide after a ball",
+            r#"<mujoco><worldbody><body name="a" pos="0 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="0.01 0.01 0.01"/></body><body name="b" pos="1 0 1"><joint type="ball"/><joint type="slide" axis="1 0 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+            "not supported by sim-mjcf (valid in MuJoCo 3.5.0): a slide joint after a ball joint on \
+             one body (body 'b')"
+                .to_owned(),
+        ),
+        (
+            "mass beside a fixed tendon's negative armature",
+            r#"<mujoco><worldbody><body name="a" pos="0 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="0.01 0.01 0.01"/></body><body name="o" pos="2 0 1"><joint name="jo" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody><tendon><fixed armature="-0.1"><joint joint="jo" coef="1"/></fixed></tendon></mujoco>"#,
+            "invalid armature on <tendon>: tendon armature cannot be negative (tendon #0)".to_owned(),
+        ),
+        (
+            "mass beside an automatic range that does not increase",
+            r#"<mujoco><worldbody><body name="a" pos="0 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="0.01 0.01 0.01"/></body><body name="b" pos="1 0 1"><joint name="jb" type="hinge" axis="0 1 0" range="1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+            "invalid range on <joint>: an automatic `limited` needs `range` with range[0] < range[1] \
+             (MuJoCo leaves it unlimited, D-AUTO-RANGE) (joint 'jb' in body 'b')"
+                .to_owned(),
+        ),
+        (
+            "diaginertia beside a range make_data refuses",
+            r#"<mujoco><worldbody><body name="a" pos="0 0 1"><inertial pos="0 0 0" mass="1" diaginertia="-0.01 0.01 0.01"/></body><body name="b" pos="1 0 1"><joint name="jb" type="hinge" axis="0 1 0" limited="true" range="30.000000000000007 30.00000000000001"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body></worldbody></mujoco>"#,
+            format!("{DIAG} (body 'a')"),
+        ),
+    ];
+    for (what, xml, expected) in stricter {
+        let error = load_model(xml).err().map(|e| e.to_string());
+        assert_eq!(error.as_deref(), Some(expected.as_str()), "{what}");
+    }
 }
 
 /// `(name, document, expected)`, generated from the oracle's results.

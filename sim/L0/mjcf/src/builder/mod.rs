@@ -222,6 +222,11 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         ..
     } = front_end(mjcf)?;
 
+    // This crate's refusal of a negative `<inertial>` mass or moment, which
+    // MuJoCo raises to its bounds (`D-INERTIAL-NEGATIVE`), on every body the
+    // document writes, returned after the keyframes.
+    let negative_inertial = crate::validation::negative_inertial_fault(&mjcf.worldbody);
+
     if mjcf.compiler.discardvisual {
         apply_discardvisual(&mut mjcf);
     }
@@ -338,10 +343,15 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // The refusals this crate makes and MuJoCo does not, after the
     // keyframes: a slide after a ball, a fixed tendon's negative armature,
     // an automatic range that does not increase (`D-AUTO-RANGE`, which
-    // MuJoCo leaves unlimited, as every check above has taken it).
+    // MuJoCo leaves unlimited), an `<inertial>`'s negative mass or moment
+    // (`D-INERTIAL-NEGATIVE`, which MuJoCo raises to its bounds); every
+    // check above has taken MuJoCo's value.
     joint::check_ball_then_slide(&model)?;
     tendon::check_fixed_tendon_armature(&model)?;
     if let Some(error) = automatic {
+        return Err(error);
+    }
+    if let Some(error) = negative_inertial {
         return Err(error);
     }
 
