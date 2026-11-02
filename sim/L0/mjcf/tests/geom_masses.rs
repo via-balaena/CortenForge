@@ -526,6 +526,63 @@ const CASES: &[Case] = &[
             [0.010026666666666666, 0.00848, 0.003146666666666667],
         ],
     ),
+    // v_box_at_mjeps
+    (
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><geom type="box" size="1e-14 0.125 1" mass="1"/></body></worldbody></mujoco>"#,
+        &[0.0, 0.0],
+        &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+    ),
+    // v_sphere_r001
+    (
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="sphere" size="0.01"/></body></worldbody></mujoco>"#,
+        &[0.0, 0.004188790204786391],
+        &[
+            [0.0, 0.0, 0.0],
+            [
+                1.6755160819145565e-07,
+                1.6755160819145565e-07,
+                1.6755160819145565e-07,
+            ],
+        ],
+    ),
+    // v_capsule_r002
+    (
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="capsule" size="0.02 0.03" mass="1"/></body></worldbody></mujoco>"#,
+        &[0.0, 1.0],
+        &[
+            [0.0, 0.0, 0.0],
+            [
+                0.0007415384615384616,
+                0.0007415384615384616,
+                0.0001876923076923077,
+            ],
+        ],
+    ),
+    // v_box_thin_mass
+    (
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="box" size="0.1 0.01 0.03" mass="1.3"/></body></worldbody></mujoco>"#,
+        &[0.0, 1.3],
+        &[
+            [0.0, 0.0, 0.0],
+            [
+                0.00043333333333333337,
+                0.004723333333333334,
+                0.004376666666666668,
+            ],
+        ],
+    ),
+    // v_plane_tilted_only
+    (
+        r#"<mujoco><worldbody><body name="floor" pos="0 0 0" euler="0.3 0.2 0.1"><geom type="plane" size="1 1 0.1"/></body></worldbody></mujoco>"#,
+        &[0.0, 0.0],
+        &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+    ),
+    // v_plane_mass3
+    (
+        r#"<mujoco><worldbody><body name="floor" pos="0 0 0"><geom type="plane" size="1 1 0.1" mass="3"/></body></worldbody></mujoco>"#,
+        &[0.0, 0.0],
+        &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+    ),
 ];
 
 /// Each document's `body_mass` is MuJoCo's, bit for bit.

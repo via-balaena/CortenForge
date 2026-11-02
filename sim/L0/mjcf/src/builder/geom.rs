@@ -1342,6 +1342,45 @@ mod tests {
                     6.702064327658226e-07,
                 ],
             ),
+            // v_sphere_r001
+            (
+                MjcfGeomType::Sphere,
+                &[0.01],
+                None,
+                None,
+                None,
+                [
+                    1.6755160819145565e-07,
+                    1.6755160819145565e-07,
+                    1.6755160819145565e-07,
+                ],
+            ),
+            // v_capsule_r002
+            (
+                MjcfGeomType::Capsule,
+                &[0.02, 0.03],
+                Some(1.0),
+                None,
+                None,
+                [
+                    0.0007415384615384616,
+                    0.0007415384615384616,
+                    0.0001876923076923077,
+                ],
+            ),
+            // v_box_thin_mass
+            (
+                MjcfGeomType::Box,
+                &[0.1, 0.01, 0.03],
+                Some(1.3),
+                None,
+                None,
+                [
+                    0.00043333333333333337,
+                    0.004723333333333334,
+                    0.004376666666666668,
+                ],
+            ),
         ];
         let mut wrong = Vec::new();
         for &(geom_type, size, mass, density, hfield, mujoco) in rows {
