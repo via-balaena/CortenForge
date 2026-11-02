@@ -231,10 +231,9 @@ fn validate_mass_properties(robot: &UrdfRobot) -> Result<()> {
                 ));
             }
 
-            // Note: the triangle inequality (Ixx + Iyy >= Izz and cyclic) is a
-            // necessary condition for a physical inertia tensor, but it is
-            // intentionally NOT enforced here — many real URDFs ship with
-            // slightly invalid inertias, so this is treated as acceptable input.
+            // The triangle inequality (A + B >= C on the principal moments) is
+            // not checked here: loading refuses a link that breaks it, as
+            // MuJoCo 3.5.0's own URDF import does.
         }
     }
 

@@ -291,7 +291,7 @@ const FULL_INERTIA_URDF: &str = r#"<?xml version="1.0"?>
     <link name="body">
         <inertial>
             <mass value="2.0"/>
-            <inertia ixx="0.1" ixy="0.02" ixz="0.01" iyy="0.2" iyz="0.03" izz="0.3"/>
+            <inertia ixx="0.2" ixy="0.02" ixz="0.01" iyy="0.25" iyz="0.03" izz="0.3"/>
         </inertial>
     </link>
     <joint name="float" type="floating">

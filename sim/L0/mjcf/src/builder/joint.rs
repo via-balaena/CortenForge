@@ -211,7 +211,7 @@ impl ModelBuilder {
     }
 
     /// Where body `body` is, for an error.
-    fn body_location(&self, body: usize) -> Location {
+    pub(crate) fn body_location(&self, body: usize) -> Location {
         Location::nth(ElementKind::Body, self.body_name[body].as_deref(), body)
     }
 

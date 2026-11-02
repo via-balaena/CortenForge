@@ -19,47 +19,33 @@ use crate::error::{MjcfError, Result};
 use crate::types::{MeshInertia, MjcfGeom, MjcfInertial};
 
 impl ModelBuilder {
-    /// Apply the mass post-processing pipeline (MuJoCo §A6-A8).
-    ///
-    /// Steps (in order):
-    ///   1. inertiafromgeom — already handled during `process_body_with_world_frame`
-    ///   2. balanceinertia — triangle inequality correction
-    ///   3. boundmass / boundinertia — minimum clamping
-    ///   4. settotalmass — rescale to target total mass
+    /// Apply the mass post-processing pipeline: each body's `boundmass` and
+    /// `boundinertia`, then its principal moments' triangle, A + B >= C,
+    /// made the moments' mean under `balanceinertia` and otherwise recorded
+    /// for [`Self::check_bodies`] to refuse, as MuJoCo 3.5.0's
+    /// `mjCBody::Compile` does (`user_objects.cc:2448-2469`); then
+    /// `settotalmass`.
     pub(crate) fn apply_mass_pipeline(&mut self) {
         let nbody = self.body_mass.len();
 
-        // Step 2: balanceinertia (A7)
-        // For each non-world body, check the triangle inequality on diagonal inertia.
-        // If violated (A + B < C for any permutation), set all three to their mean.
-        if self.compiler.balanceinertia {
-            for i in 1..nbody {
-                let inertia = &self.body_inertia[i];
-                let a = inertia.x;
-                let b = inertia.y;
-                let c = inertia.z;
-                if a + b < c || a + c < b || b + c < a {
+        for i in 1..nbody {
+            if self.body_mass[i] < self.compiler.boundmass {
+                self.body_mass[i] = self.compiler.boundmass;
+            }
+            let inertia = &mut self.body_inertia[i];
+            for moment in inertia.iter_mut() {
+                if *moment < self.compiler.boundinertia {
+                    *moment = self.compiler.boundinertia;
+                }
+            }
+            let (a, b, c) = (inertia.x, inertia.y, inertia.z);
+            if a + b < c || a + c < b || b + c < a {
+                if self.compiler.balanceinertia {
                     let mean = (a + b + c) / 3.0;
-                    self.body_inertia[i] = Vector3::new(mean, mean, mean);
+                    *inertia = Vector3::new(mean, mean, mean);
+                } else {
+                    self.body_faults[i].triangle = true;
                 }
-            }
-        }
-
-        // Step 3: boundmass / boundinertia (A6)
-        // Clamp every non-world body's mass and inertia to compiler minimums.
-        if self.compiler.boundmass > 0.0 {
-            for i in 1..nbody {
-                if self.body_mass[i] < self.compiler.boundmass {
-                    self.body_mass[i] = self.compiler.boundmass;
-                }
-            }
-        }
-        if self.compiler.boundinertia > 0.0 {
-            for i in 1..nbody {
-                let inertia = &mut self.body_inertia[i];
-                inertia.x = inertia.x.max(self.compiler.boundinertia);
-                inertia.y = inertia.y.max(self.compiler.boundinertia);
-                inertia.z = inertia.z.max(self.compiler.boundinertia);
             }
         }
 

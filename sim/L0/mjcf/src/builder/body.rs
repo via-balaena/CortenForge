@@ -18,6 +18,23 @@ use crate::keywords;
 use crate::types::{InertiaFromGeom, MjcfBody, MjcfGeom};
 use sim_core::GeomType;
 
+/// What MuJoCo 3.5.0's `mjCBody::Compile` refuses in one body, found as the
+/// body is built and raised in MuJoCo's order by
+/// [`ModelBuilder::check_bodies`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BodyFaults {
+    /// A `fullinertia` beside a diagonal inertia other than 0
+    /// (`user_objects.cc:2408-2409`).
+    pub full_and_diagonal: bool,
+    /// The first of its geoms whose mass or density MuJoCo gives a negative
+    /// value where the geom infers its body's inertia
+    /// ([`ModelBuilder::negative_mass`]).
+    pub negative_geom: Option<usize>,
+    /// Its principal moments, after `boundinertia`, break A + B >= C, and
+    /// `balanceinertia` is off ([`ModelBuilder::apply_mass_pipeline`]).
+    pub triangle: bool,
+}
+
 impl ModelBuilder {
     /// Process geoms and sites directly attached to worldbody (body 0).
     ///
@@ -242,7 +259,15 @@ impl ModelBuilder {
             .geoms
             .iter()
             .position(|geom| infers && self.negative_mass(geom));
-        self.body_negative_geom.push(negative.map(|k| geom_adr + k));
+        let full_and_diagonal = body.inertial.as_ref().is_some_and(|inertial| {
+            inertial.fullinertia.is_some()
+                && inertial.diaginertia.is_some_and(|d| d != Vector3::zeros())
+        });
+        self.body_faults.push(BodyFaults {
+            full_and_diagonal,
+            negative_geom: negative.map(|k| geom_adr + k),
+            triangle: false,
+        });
 
         // Process sites for this body
         for site in &body.sites {
@@ -293,10 +318,12 @@ impl ModelBuilder {
     }
 
     /// MuJoCo 3.5.0's checks of each body, body by body in its order, as
-    /// `mjCBody::Compile` makes them: geom by geom, a plane only in a static
-    /// body, one with no joint on it or a body above it (`mjCGeom::Compile`,
-    /// `user_objects.cc:3666-3668`), then a negative mass or density
-    /// ([`Self::negative_mass`], `:3805-3807`); then the body's joints
+    /// `mjCBody::Compile` makes them: a `fullinertia` beside a diagonal
+    /// inertia (`user_objects.cc:2408-2409`); geom by geom, a plane only in a
+    /// static body, one with no joint on it or a body above it
+    /// (`mjCGeom::Compile`, `:3666-3668`), then a negative mass or density
+    /// ([`Self::negative_mass`], `:3805-3807`); the body's moments' triangle
+    /// ([`Self::apply_mass_pipeline`], `:2461-2469`); then the body's joints
     /// ([`Self::check_body_joints`]). The caller runs it with the checks
     /// RL-6a added, after every check this crate makes before building the
     /// model.
@@ -304,6 +331,15 @@ impl ModelBuilder {
         let mut moving = vec![false; self.body_parent.len()];
         for body in 1..self.body_parent.len() {
             moving[body] = self.body_jnt_num[body] > 0 || moving[self.body_parent[body]];
+            let faults = self.body_faults[body];
+            if faults.full_and_diagonal {
+                return Err(MjcfError::invalid_value(
+                    "inertial",
+                    "fullinertia",
+                    "fullinertia and diagonal inertia cannot both be specified",
+                )
+                .at(self.body_location(body)));
+            }
             let start = self.body_geom_adr[body];
             for geom in start..start + self.body_geom_num[body] {
                 let at = || {
@@ -315,12 +351,18 @@ impl ModelBuilder {
                         MjcfError::invalid_model("plane only allowed in static bodies").at(at()),
                     );
                 }
-                if self.body_negative_geom[body] == Some(geom) {
+                if faults.negative_geom == Some(geom) {
                     return Err(MjcfError::invalid_model(
                         "mass, inertia or density are negative in geom",
                     )
                     .at(at()));
                 }
+            }
+            if faults.triangle {
+                return Err(MjcfError::invalid_model(
+                    "inertia must satisfy A + B >= C; use 'balanceinertia' to fix",
+                )
+                .at(self.body_location(body)));
             }
             self.check_body_joints(body)?;
         }

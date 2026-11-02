@@ -35,7 +35,7 @@ const ZERO_G_MJCF: &str = r#"
   <worldbody>
     <body name="box" pos="0 0 0">
       <freejoint name="free"/>
-      <inertial pos="0 0 0" mass="2.0" diaginertia="0.10 0.06 0.03"/>
+      <inertial pos="0 0 0" mass="2.0" diaginertia="0.10 0.08 0.03"/>
       <geom type="box" size="0.15 0.1 0.08" contype="0" conaffinity="0"/>
     </body>
   </worldbody>

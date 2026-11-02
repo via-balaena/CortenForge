@@ -48,7 +48,7 @@ const FULL_URDF: &str = r#"<?xml version="1.0"?>
     <link name="body">
         <inertial>
             <mass value="2.0"/>
-            <inertia ixx="0.1" ixy="0.02" ixz="0.01" iyy="0.2" iyz="0.03" izz="0.3"/>
+            <inertia ixx="0.2" ixy="0.02" ixz="0.01" iyy="0.25" iyz="0.03" izz="0.3"/>
         </inertial>
     </link>
     <joint name="float" type="floating">
@@ -75,7 +75,7 @@ const COMBINED_MJCF: &str = r#"
     </body>
     <body name="full" pos="1 0 1">
       <freejoint name="free_full"/>
-      <inertial pos="0 0 0" mass="2.0" fullinertia="0.1 0.2 0.3 0.02 0.01 0.03"/>
+      <inertial pos="0 0 0" mass="2.0" fullinertia="0.2 0.25 0.3 0.02 0.01 0.03"/>
       <geom name="full_box" type="box" size="0.25 0.15 0.125"
             rgba="0.8 0.5 0.3 1"/>
     </body>

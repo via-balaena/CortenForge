@@ -487,10 +487,9 @@ pub struct ModelBuilder {
     pub(crate) body_sleep_policy: Vec<Option<SleepPolicy>>,
     /// Per-body gravity compensation factor (0=none, 1=full).
     pub(crate) body_gravcomp: Vec<f64>,
-    /// Per body, the first of its geoms whose mass or density MuJoCo 3.5.0
-    /// gives a negative value where the geom infers its body's inertia
+    /// Per body, what MuJoCo 3.5.0's compiler refuses in it
     /// ([`Self::check_bodies`]).
-    pub(crate) body_negative_geom: Vec<Option<usize>>,
+    pub(crate) body_faults: Vec<body::BodyFaults>,
     pub(crate) nmocap: usize,
 
     // Joint arrays

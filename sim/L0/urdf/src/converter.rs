@@ -766,6 +766,22 @@ mod tests {
         assert_eq!(turned.body_iquat, plain.body_iquat);
     }
 
+    /// A link whose principal moments break A + B >= C is refused, as
+    /// MuJoCo 3.5.0's own URDF import refuses it (measured, with its
+    /// words): the tensor (0.1, 0.2, 0.3, 0.02, 0.01, 0.03) has moments
+    /// (0.096, 0.195, 0.309).
+    #[test]
+    fn a_link_whose_moments_break_the_triangle_is_refused() {
+        let urdf = r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="1"/><inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="2"/><inertia ixx="0.1" iyy="0.2" izz="0.3" ixy="0.02" ixz="0.01" iyz="0.03"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 1"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint></robot>"#;
+        let error = crate::load_urdf_model(urdf).err().map(|e| e.to_string());
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|e| e.contains("inertia must satisfy A + B >= C")),
+            "{error:?}"
+        );
+    }
+
     #[test]
     fn test_fixed_joints_omitted() {
         let urdf = r#"<?xml version="1.0"?>
