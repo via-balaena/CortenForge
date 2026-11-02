@@ -1,0 +1,1 @@
+<mujoco><default><geom shellinertia="true"/></default><worldbody><body name="floor" pos="0 0 0"><geom type="plane" size="1 1 0.1"/></body></worldbody></mujoco>

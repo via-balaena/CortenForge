@@ -566,23 +566,22 @@ fn broadphase_culls_touching_spheres_as_mujoco() {
 /// loads as MuJoCo compiles it (`bumpy`: 9 × 9, elevations multiples of 1/8
 /// from 0 to 1, rows symmetric; each body turned by its frame, so its
 /// inertial frame is the body's in both, ledger L195), at two spots each:
-/// the height after every 50th of 1000 steps against MuJoCo's. A sphere's
-/// and a cylinder's bit for bit on macOS arm64, where the golden was made. A
-/// capsule's and an ellipsoid's within 5e-12 and a box's within 5e-2:
-/// sim-mjcf compiles their masses and inertias otherwise (ledger L198), and
-/// with MuJoCo's written in, `trajectory_parity` runs them bit for bit (a
-/// capsule rolls off the field's edge as MuJoCo's does). Elsewhere a sphere
-/// within 5e-12 and a cylinder within 5e-3: the bodies take sines and
-/// cosines, which a libm need not round correctly, and those bounds are set
-/// above the largest gaps measured with such results moved by an ulp (chunk
-/// 3e's fourth review and its fix-diff pass):
+/// the height after every 50th of 1000 steps against MuJoCo's. A sphere's,
+/// a cylinder's, a capsule's and an ellipsoid's bit for bit on macOS arm64,
+/// where the golden was made (a capsule rolls off the field's edge as
+/// MuJoCo's does). A box's within 5e-2: sim-mjcf compiles its inertia an ulp
+/// off MuJoCo's in x (ledger L368), and with MuJoCo's written in,
+/// `trajectory_parity` runs it bit for bit. Elsewhere a sphere, a capsule
+/// and an ellipsoid within 5e-12 and a cylinder within 5e-3: the bodies take
+/// sines and cosines, which a libm need not round correctly, and those
+/// bounds are set above the largest gaps measured with such results moved
+/// by an ulp (chunk 3e's fourth review and its fix-diff pass):
 ///
 /// | bodies | measured on macOS arm64 | an ulp moved |
 /// |---|---|---|
-/// | sphere | 0 | at most 1.45e-12 |
-/// | capsule, ellipsoid | 5.6e-13 | at most 1.45e-12 |
+/// | sphere, capsule, ellipsoid | 0 | at most 1.45e-12 |
 /// | cylinder | 0 | 2.0e-3 |
-/// | box | 8.4e-3 | 2.2e-2 |
+/// | box | 8.7e-3 | 2.2e-2 |
 #[test]
 fn bodies_on_a_bumpy_height_field_as_mujoco() {
     let golden = golden();
@@ -593,8 +592,6 @@ fn bodies_on_a_bumpy_height_field_as_mujoco() {
         let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
         let bound = if name.starts_with("box") {
             5e-2
-        } else if name.starts_with("capsule") || name.starts_with("ellipsoid") {
-            5e-12
         } else if exact {
             0.0
         } else if name.starts_with("cylinder") {

@@ -12,8 +12,8 @@ fuses multiply-adds.
 It writes trajectory.json: runs whose model sim-mjcf compiles as MuJoCo does,
 so that what a run shows is the forward pass and the step. Each body's
 inertial (position, orientation, mass, inertia) is written out as MuJoCo
-compiles it, which leaves out the masses and inertias sim-mjcf compiles an
-ulp off (ledger L198), and a mesh is written in the frame MuJoCo moves it to,
+compiles it, which leaves out the inertias sim-mjcf compiles an ulp off
+(ledger L368), and a mesh is written in the frame MuJoCo moves it to,
 with the geom's quaternion one both normalise alike (Rigid-loading's L35).
 The cases:
 
