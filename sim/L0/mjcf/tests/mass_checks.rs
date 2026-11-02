@@ -413,7 +413,7 @@ const GEOMS: &[(&str, &str, Expect)] = &[
         },
     ),
     (
-        "g_mass_neg_plane_moving_tiny",
+        "g_mass_neg_tiny_box_static",
         r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><geom type="sphere" size="0.1"/></body><body name="s" pos="1 0 1"><geom type="box" size="1e-6 1e-6 1e-6" mass="-1"/></body></worldbody></mujoco>"#,
         Expect::Loads {
             mass: &[0.0, 1.0, 0.0],
@@ -490,7 +490,7 @@ const GEOMS: &[(&str, &str, Expect)] = &[
         },
     ),
     (
-        "g_plane_under_mocap",
+        "g_plane_in_mocap_body",
         r#"<mujoco><worldbody><body name="m" mocap="true" pos="0 0 1"><geom type="plane" size="1 1 0.1"/></body></worldbody></mujoco>"#,
         Expect::Loads {
             mass: &[0.0, 0.0],
@@ -537,6 +537,14 @@ const GEOMS: &[(&str, &str, Expect)] = &[
         "fx1_posmass_negdens_box_at_mjeps",
         r#"<mujoco><worldbody><body name="b" pos="0 0 1"><geom name="g" type="box" size="1e-14 0.125 1" mass="1" density="-1"/></body></worldbody></mujoco>"#,
         Expect::Refused("mass, inertia or density are negative in geom"),
+    ),
+    (
+        "fx5_plane_under_mocap_child",
+        r#"<mujoco><worldbody><body name="m" mocap="true" pos="0 0 1"><body name="c" pos="0 0 0"><geom type="plane" size="1 1 0.1"/></body></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 0.0, 0.0],
+            inertia: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        },
     ),
 ];
 
@@ -663,6 +671,11 @@ const BODIES: &[(&str, &str, Expect)] = &[
                 ],
             ],
         },
+    ),
+    (
+        "fx5_triangle_and_negative_geom_auto_off",
+        r#"<mujoco><compiler inertiafromgeom="false"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="1 1 3"/><geom type="sphere" size="0.1" mass="-1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("inertia must satisfy A + B >= C; use 'balanceinertia' to fix"),
     ),
 ];
 

@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="m" mocap="true" pos="0 0 1"><body name="c" pos="0 0 0"><geom type="plane" size="1 1 0.1"/></body></body></worldbody></mujoco>
