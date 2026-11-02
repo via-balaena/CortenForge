@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="b" pos="0 0 1"><geom name="g" type="box" size="1e-6 1e-6 1e-6" mass="-1" density="-1"/></body></worldbody></mujoco>

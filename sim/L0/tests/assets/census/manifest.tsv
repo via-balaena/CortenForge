@@ -2979,3 +2979,9 @@ f064d197b7771828	sim/L0/mjcf/tests/refusal_order.rs:791
 afe25ce872b32560	sim/L0/mjcf/tests/refusal_order.rs:816
 d74d6ff145adf3ff	sim/L0/mjcf/tests/refusal_order.rs:834
 f1bf5b588b32c4a6	sim/L0/mjcf/tests/refusal_order.rs:852
+02bbcdf9e088e3c1	sim/L0/mjcf/tests/mass_checks.rs:503
+70f48b65416f02b3	sim/L0/mjcf/tests/mass_checks.rs:485
+9bf8f4cd0fbbe0d5	sim/L0/mjcf/tests/mass_checks.rs:495
+9e7f5e02165fb4c6	sim/L0/mjcf/tests/mass_checks.rs:475
+e3b168b0508f75de	sim/L0/mjcf/tests/mass_checks.rs:490
+ebdc7ea7550875b6	sim/L0/mjcf/tests/mass_checks.rs:480

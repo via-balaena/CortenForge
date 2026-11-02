@@ -470,6 +470,39 @@ const GEOMS: &[(&str, &str, Expect)] = &[
             inertia: &[[0.0, 0.0, 0.0], [0.01, 0.01, 0.01], [0.0, 0.0, 0.0]],
         },
     ),
+    (
+        "fx1_negmass_negdens_plane_static",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><geom name="g" type="plane" size="1 1 0.1" mass="-1" density="-1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass, inertia or density are negative in geom"),
+    ),
+    (
+        "fx1_negmass_negdens_tinybox_static",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><geom name="g" type="box" size="1e-6 1e-6 1e-6" mass="-1" density="-1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass, inertia or density are negative in geom"),
+    ),
+    (
+        "fx1_negmass_classdens_tinybox_static",
+        r#"<mujoco><default><default class="nd"><geom density="-1"/></default></default><worldbody><body name="b" pos="0 0 1"><geom name="g" class="nd" type="box" size="1e-6 1e-6 1e-6" mass="-1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass, inertia or density are negative in geom"),
+    ),
+    (
+        "fx1_posmass_negdens_tinybox_static",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><geom name="g" type="box" size="1e-6 1e-6 1e-6" mass="1" density="-1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass, inertia or density are negative in geom"),
+    ),
+    (
+        "fx1_negmass_box_at_mjeps",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><geom name="g" type="box" size="1e-14 0.125 1" mass="-1"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 0.0],
+            inertia: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        },
+    ),
+    (
+        "fx1_posmass_negdens_box_at_mjeps",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><geom name="g" type="box" size="1e-14 0.125 1" mass="1" density="-1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass, inertia or density are negative in geom"),
+    ),
 ];
 
 #[test]

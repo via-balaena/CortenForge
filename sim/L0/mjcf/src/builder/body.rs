@@ -297,15 +297,13 @@ impl ModelBuilder {
     /// density (`mjCGeom::Compile`, `user_objects.cc:3780-3807`): a written
     /// mass of 0 neither; any other written mass its own sign where the
     /// geom's volume is above mjEPS, and the written density's where it is
-    /// not; with no mass written, the density's. Its volume is found only
-    /// where the sign depends on it.
+    /// not; with no mass written, the density's.
     fn negative_mass(&self, geom: &MjcfGeom) -> bool {
         let density = geom.density.unwrap_or(1000.0);
         match geom.mass {
             Some(0.0) => false,
-            Some(mass) if mass < 0.0 => self.volume(geom) > MJ_EPS,
-            Some(_) => density < 0.0 && self.volume(geom) <= MJ_EPS,
-            None => density < 0.0,
+            Some(mass) if self.volume(geom) > MJ_EPS => mass < 0.0,
+            Some(_) | None => density < 0.0,
         }
     }
 
