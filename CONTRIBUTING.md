@@ -422,8 +422,9 @@ If you are an AI agent contributing to this project:
 3. **Do not mark anything complete without human review**
 4. **Reference docs/STANDARDS.md for all quality decisions**
 5. **When in doubt, choose the more rigorous option**
-6. **Follow the established patterns in existing crates**
-7. **Maintain the A-grade standard—no shortcuts**
+6. **Write new Rust to the Style Base in docs/STANDARDS.md** (Google's Rust Style Guide, with the departures listed there)
+7. **Follow the established patterns in existing crates** where the Style Base does not settle a question
+8. **Maintain the A-grade standard—no shortcuts**
 
 ### The Standard Prompt
 

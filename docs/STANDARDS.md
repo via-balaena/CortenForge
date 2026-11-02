@@ -17,6 +17,27 @@ This document defines what "reliable" means, quantitatively.
 
 ---
 
+## Style Base
+
+New Rust code, and its review, follows [Google's Rust Style Guide](https://google.github.io/styleguide/rustguide.html) (adopted 2026-11-02, at [`c775c0c2`](https://github.com/google/styleguide/blob/c775c0c2f73c110613243520c001577cdbc0034d/rustguide.md)) and, through it, the [Rust Style Guide](https://doc.rust-lang.org/nightly/style-guide/) and the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/). Where this document is stricter, or where the table below departs from the guide, this document applies.
+
+| Topic | Google's guide | CortenForge |
+|-------|----------------|-------------|
+| Panics in library code | `expect` over `unwrap`; `panic!` for a violated invariant | Neither: no `unwrap`, `expect` or `panic!` in library code ([Criterion 4](#criterion-4-safety)). The guide allows a codebase that avoids panics. |
+| Documentation | A trivial doc comment may be omitted | Every public item is documented ([Criterion 2](#criterion-2-documentation)). |
+| Abbreviations | Avoided | A name that mirrors a MuJoCo name keeps MuJoCo's spelling (`qpos`, `jnt_range`, `geom_size`, `dof_armature`). |
+| `with_` methods | `with_foo()` is an accessor that takes a closure | A new builder setter is named after its field, as in the builder example under [Criterion 8](#criterion-8-api-design); `with_` is for closure accessors. The `with_*` builder setters written before 2026-11-02 stay. |
+| Module layout, preludes | `lib.rs` and `mod.rs` hold declarations and re-exports; no preludes | New modules follow the guide. Modules and preludes written before 2026-11-02 stay. |
+| Rules tagged Chrome, Fuchsia or Android | Codebase-specific | Do not apply. |
+
+**What a tool checks:**
+
+- **rustfmt**, with `rustfmt.toml`. The toolchain is pinned to a stable release (`rust-toolchain.toml`), rustfmt on stable ignores a nightly-only option, and so `rustfmt.toml` sets none. The guide's import rule — one module per `use` statement, rustfmt's `imports_granularity = "Module"` — is nightly-only, so here it is a review rule.
+- **Clippy's `pedantic` group**, enabled workspace-wide, checks three of the guide's rules: `wildcard_imports` (no glob imports; its default exceptions are a module named `prelude` and `use super::*` in a test module), `needless_for_each`, and `fn_params_excessive_bools` (four or more `bool` parameters).
+- Every other rule in the guide is checked in review ([Criterion 8](#criterion-8-api-design)).
+
+---
+
 ## The Eight Criteria
 
 Every crate is graded on eight criteria. All must be A-grade before the crate is considered complete.
@@ -801,6 +822,7 @@ STANDARDS.md prior versions listed "compiles for wasm32-unknown-unknown" as an L
 
 **Checklist:**
 
+- [ ] Follows the [Style Base](#style-base): Google's Rust Style Guide, with this document's departures
 - [ ] Follows [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
 - [ ] Naming is consistent with standard library conventions
 - [ ] Naming is consistent with rest of CortenForge

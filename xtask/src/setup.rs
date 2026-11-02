@@ -1251,9 +1251,9 @@ mod hook_tests {
     /// ⚠ TWO-SIDED, because both one-sided versions of this shipped. First the step
     /// carried `2>/dev/null`, so a missing rustfmt component produced only "Run:
     /// cargo fmt --all" — advice that fixes nothing. Removing the redirect put 3552
-    /// lines on EVERY commit: `rustfmt.toml` sets nightly-only options and cargo
-    /// warns about each, per file. A gate on either half alone would have accepted
-    /// the other failure.
+    /// lines on EVERY commit: `rustfmt.toml` then set nightly-only options (removed
+    /// 2026-11-02) and cargo warned about each, per file. A gate on either half alone
+    /// would have accepted the other failure.
     #[test]
     fn the_format_step_shows_its_cause_but_only_when_it_fails() {
         // ⚠ No apostrophes: the stub embeds this in a single-quoted shell literal,
