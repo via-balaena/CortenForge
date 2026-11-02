@@ -17,6 +17,27 @@ This document defines what "reliable" means, quantitatively.
 
 ---
 
+## Style Base
+
+New Rust code, and its review, follows [Google's Rust Style Guide](https://google.github.io/styleguide/rustguide.html) (adopted 2026-11-02, at [`c775c0c2`](https://github.com/google/styleguide/blob/c775c0c2f73c110613243520c001577cdbc0034d/rustguide.md)) and, through it, the [Rust Style Guide](https://doc.rust-lang.org/nightly/style-guide/) and the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/). Where this document is stricter, or where the table below departs from the guide, this document applies.
+
+| Topic | Google's guide | CortenForge |
+|-------|----------------|-------------|
+| Panics in library code | `expect` over `unwrap`; `panic!` for a violated invariant | No `unwrap` or `expect` in library code; `panic!` and `unreachable!` only for an impossible state, with a comment that justifies it ([Criterion 4](#criterion-4-safety)). |
+| Documentation | A comment that only repeats the item's name is better omitted; an undocumented enum variant is generally fine | Every public item is documented, enum variants included ([Criterion 2](#criterion-2-documentation)). |
+| Abbreviations | Avoided | A name that mirrors a MuJoCo name keeps MuJoCo's spelling (`qpos`, `jnt_range`, `geom_size`, `dof_armature`). |
+| `const fn` | A public function is marked `const` only if it is expected to stay `const` | Clippy's `missing_const_for_fn` (`nursery` group, set in `[workspace.lints]`) asks for `const` wherever it is possible, and the grade allows no warning. A public function that should not promise `const` carries an `allow` of that lint with its reason. |
+| Builder setters | `with_foo()` is the name for an accessor that takes a closure | A new builder names its setters after their fields, as in the builder example under [Criterion 8](#criterion-8-api-design). A builder whose setters are `with_*` keeps that naming for the setters added to it. |
+| Module layout, preludes | A non-leaf module holds module declarations, re-exports and at most a little code that ties them together; no preludes | New modules follow the guide. Modules and preludes written before 2026-11-02 stay. |
+| Rules tagged Chrome, Fuchsia or Android | Codebase-specific | Do not apply. |
+
+**What a tool checks:**
+
+- **rustfmt**, with `rustfmt.toml`. The toolchain is pinned to a stable release (`rust-toolchain.toml`), rustfmt on stable ignores a nightly-only option, and so `rustfmt.toml` sets none. The guide's import rule — one module per `use` statement, rustfmt's `imports_granularity = "Module"` — is nightly-only, so here it is a review rule.
+- **Clippy and the grader** check some of the guide's rules (Criteria 2 to 4) in the crates they cover. Where a lint covers part of a rule, the rest of the rule is checked in review ([Criterion 8](#criterion-8-api-design)): `fn_params_excessive_bools`, for one, fires at four or more `bool` parameters, while the guide's rule is about any `bool` whose meaning is not obvious.
+
+---
+
 ## The Eight Criteria
 
 Every crate is graded on eight criteria. All must be A-grade before the crate is considered complete.
@@ -631,9 +652,9 @@ let value = vec.get(index).ok_or(MyError::IndexOutOfBounds(index))?;
 let value: i32 = string.parse().map_err(|_| MyError::ParseFailed)?;
 
 // For truly impossible states (with justification):
-// This is unreachable because we just checked vec.len() > 0 above.
+// Unreachable: `Stack::new` pushes the root frame and `pop` never removes it.
 #[allow(clippy::unreachable)]
-let first = vec.first().unwrap_or_else(|| unreachable!("vec is non-empty"));
+let root = self.frames.first().unwrap_or_else(|| unreachable!("root frame is never popped"));
 ```
 
 **Unsafe Code:**
@@ -801,6 +822,7 @@ STANDARDS.md prior versions listed "compiles for wasm32-unknown-unknown" as an L
 
 **Checklist:**
 
+- [ ] Follows the [Style Base](#style-base): Google's Rust Style Guide, with this document's departures
 - [ ] Follows [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
 - [ ] Naming is consistent with standard library conventions
 - [ ] Naming is consistent with rest of CortenForge
@@ -826,7 +848,7 @@ STANDARDS.md prior versions listed "compiles for wasm32-unknown-unknown" as an L
 
 ```rust
 /// Errors that can occur during mesh repair.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, Copy, thiserror::Error)]
 #[non_exhaustive]
 pub enum RepairError {
     /// The mesh has no vertices.

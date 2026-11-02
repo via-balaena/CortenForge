@@ -126,9 +126,10 @@ echo "→ Checking formatting..."
 # `2>/dev/null` discarded cargo's diagnostics, so a missing rustfmt component
 # reported just "✗ Formatting check failed. Run: cargo fmt --all" — advice that fixes
 # nothing — while the real cause went to /dev/null. Removing the redirect instead put
-# 3552 lines on EVERY commit: rustfmt.toml sets nightly-only options and warns about
-# each, per file. Keeping the output and printing it only when it matters costs
-# nothing on the happy path and loses no evidence on the unhappy one.
+# 3552 lines on EVERY commit: rustfmt.toml then set nightly-only options (removed
+# 2026-11-02) and cargo warned about each. Keeping the output and printing it only
+# when it matters costs nothing on the happy path and loses no evidence on the
+# unhappy one.
 if ! fmt_output=$(cargo fmt --all -- --check 2>&1); then
     echo "$fmt_output"
     echo "✗ Formatting check failed. Run: cargo fmt --all"
