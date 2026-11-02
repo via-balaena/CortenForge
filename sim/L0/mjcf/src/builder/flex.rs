@@ -605,9 +605,11 @@ impl ModelBuilder {
         // 505-511`); a pinned vertex has no body of its own there, so no
         // sphere. The sphere takes its body's class, the root's here, as
         // these bodies hang off the world; the body's mass and inertia stay
-        // the flexcomp's, as MuJoCo's (`explicitinertial`), except where a
-        // compiler setting would change them there: sim-mjcf makes these
-        // bodies after its compiler passes (ledger L325).
+        // the flexcomp's, as MuJoCo's (`explicitinertial`), until the bounds,
+        // the triangle and `settotalmass`, which run once the flexes are
+        // built, change them as MuJoCo's change them; the passes over the
+        // document before the build (`fusestatic`, `discardvisual`) never see
+        // these bodies (ledger L325).
         if flex.vertcollide && !pinned {
             let sphere = self.resolver.apply_to_geom(&MjcfGeom {
                 geom_type: Some(MjcfGeomType::Sphere),
