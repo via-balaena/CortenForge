@@ -552,8 +552,9 @@ impl<'a> Converter<'a> {
         // Add orientation if non-zero. Not beside a full tensor, which
         // `<inertial>` refuses (as MuJoCo's reader does): MuJoCo 3.5.0's own
         // URDF import drops an inertial origin's rotation (measured: a link's
-        // tensor with `rpy="0.3 0.5 0.7"` is the one without), as this crate
-        // has since it stopped reading the `euler` (ledger L372).
+        // tensor with `rpy="0.3 0.5 0.7"` is the one without), and sim-mjcf,
+        // which reads only an `<inertial>`'s `quat`, dropped the `euler` this
+        // wrote beside one (ledger L372).
         if rpy.norm() > 1e-10 && !inertia_attr.starts_with("fullinertia") {
             write!(attrs, r#" euler="{} {} {}""#, rpy.x, rpy.y, rpy.z).ok();
         }

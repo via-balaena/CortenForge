@@ -302,7 +302,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // RL-6d (book L19-L22), after every check above, so that a document
     // refused before they existed is refused for the same fault (MuJoCo
     // orders some of them before checks above). Among themselves in MuJoCo's
-    // order: each body's geoms and joints, the height fields' sizes, the
+    // order: each body's inertia, geoms and joints, the height fields' sizes, the
     // tendons, the actuators, the sensors, a moving body's mass and inertia,
     // then the free joint below the world's children, as MuJoCo's
     // `CopyTree` refuses it. An automatic range that does not increase is
@@ -517,10 +517,10 @@ pub struct ModelBuilder {
     pub(crate) jnt_pos: Vec<Vector3<f64>>,
     pub(crate) jnt_axis: Vec<Vector3<f64>>,
     /// Whether each joint's written axis was too small to make unit, which
-    /// `check_joints` refuses.
+    /// `check_body_joints` refuses.
     pub(crate) jnt_axis_too_small: Vec<bool>,
     pub(crate) jnt_limited: Vec<bool>,
-    /// Each joint's first `limited`/`range` fault, which `check_joints`
+    /// Each joint's first `limited`/`range` fault, which `check_body_joints`
     /// refuses.
     pub(crate) jnt_limit_fault: Vec<Option<limits::LimitFault>>,
     /// Each joint's range as MuJoCo compiles it: `0 0` when unwritten, and in

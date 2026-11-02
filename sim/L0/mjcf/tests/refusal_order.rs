@@ -30,10 +30,10 @@
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, for the fault its expected error names (RL-6a's measured
-//! 2026-10-31, RL-6b's 2026-11-01, RL-6d's 2026-11-02). Eleven are the RL-6a review's first
-//! round, three its fix-diff pass's (a keyframe's fault), and four set the
-//! new checks against each other; the rest are RL-6b's, each a limit's fault
-//! beside another.
+//! 2026-10-31, RL-6b's 2026-11-01, RL-6d's 2026-11-02). Eleven are the RL-6a
+//! review's first round, three its fix-diff pass's (a keyframe's fault), and
+//! four set the new checks against each other; RL-6b's set a limit's fault
+//! beside another, and RL-6d's a body's or a height field's.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

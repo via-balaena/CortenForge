@@ -2,8 +2,9 @@
 //!
 //! Computes body inertial properties from geoms (when no explicit `<inertial>`
 //! is provided), extracts explicit inertial specifications, and applies the
-//! post-processing mass pipeline: balanceinertia, boundmass/boundinertia,
-//! settotalmass.
+//! post-processing mass pipeline: each body's boundmass and boundinertia, a
+//! value still negative, the moments' triangle (balanced or recorded); then,
+//! after every check of the masses, settotalmass.
 
 use nalgebra::{Matrix3, Quaternion, UnitQuaternion, Vector3, Vector4};
 use sim_core::mesh::TriangleMeshData;

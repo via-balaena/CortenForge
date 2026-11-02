@@ -59,7 +59,7 @@ impl ModelBuilder {
         // whatever is written; another's is made unit by `normvec`, which
         // returns 0 where its squared norm is below mjEPS. MuJoCo refuses that
         // one ("axis too small in joint"); here it is kept as z and refused by
-        // `check_joints`, after the checks this crate makes before it.
+        // `check_body_joints`, after the checks this crate makes before it.
         let (axis, axis_too_small) = match jnt_type {
             MjJointType::Ball | MjJointType::Free => (Vector3::z(), false),
             MjJointType::Hinge | MjJointType::Slide => {

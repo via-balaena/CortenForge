@@ -233,7 +233,8 @@ fn validate_mass_properties(robot: &UrdfRobot) -> Result<()> {
 
             // The triangle inequality (A + B >= C on the principal moments) is
             // not checked here: loading refuses a link that breaks it, as
-            // MuJoCo 3.5.0's own URDF import does.
+            // MuJoCo 3.5.0's own URDF import does, except a link on a fixed
+            // joint, which `fusestatic` fuses before the check (ledger L373).
         }
     }
 
@@ -245,8 +246,7 @@ fn validate_mass_properties(robot: &UrdfRobot) -> Result<()> {
 /// Rejects non-finite (`NaN` or ±Inf) numeric fields at the URDF ingress
 /// boundary so that downstream mesh construction and collision code
 /// can assume finite geometry. Positivity is not checked here (some URDFs
-/// intentionally ship with degenerate shapes; see the triangle-inequality
-/// precedent in `validate_mass_properties`).
+/// intentionally ship with degenerate shapes).
 fn validate_geometry(robot: &UrdfRobot) -> Result<()> {
     for link in &robot.links {
         for visual in &link.visuals {

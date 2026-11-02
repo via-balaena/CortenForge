@@ -9,7 +9,7 @@ small red sphere on one corner acts as a visual marker so you can track the
 rotation. There is no gravity and no friction — nothing slows the box down.
 
 The box spins primarily about its longest axis (X), but because its three
-moments of inertia are all different (Ixx=0.10, Iyy=0.06, Izz=0.03), the
+moments of inertia are all different (Ixx=0.10, Iyy=0.08, Izz=0.03), the
 spin axis itself slowly wobbles. This wobble is called **torque-free
 precession** — the angular velocity vector traces a cone around the angular
 momentum vector.
@@ -19,7 +19,7 @@ momentum vector.
 - **The box never stops.** There are no forces acting on it. It will tumble
   forever at exactly the same energy.
 - **The spin axis wobbles.** Watch the red marker — it doesn't trace a simple
-  circle. The box's rotation axis drifts in a periodic pattern (~5 second
+  circle. The box's rotation axis drifts in a periodic pattern (~4 second
   cycle). This is Euler's equations at work.
 - **The HUD confirms conservation.** The `|L|` (angular momentum magnitude)
   and `KE` (kinetic energy) values stay constant to machine precision. The

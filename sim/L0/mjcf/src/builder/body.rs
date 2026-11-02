@@ -256,7 +256,9 @@ impl ModelBuilder {
         }
         self.body_geom_num.push(body.geoms.len());
         // A geom infers its body's inertia where the body writes no
-        // `<inertial>` or `inertiafromgeom` is true (`user_objects.cc:2429-2432`).
+        // `<inertial>` or `inertiafromgeom` is true (`user_objects.cc:2429-2432`;
+        // MuJoCo also asks the geom's group to be in `inertiagrouprange`, which
+        // this crate does not read, ledger L375).
         let infers =
             body.inertial.is_none() || self.compiler.inertiafromgeom == InertiaFromGeom::True;
         let negative = body
