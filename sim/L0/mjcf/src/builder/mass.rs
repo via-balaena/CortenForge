@@ -97,14 +97,13 @@ pub fn extract_inertial_properties(
                 "its principal moments or axes are not finite",
             ));
         }
+        // The principal frame is the inertial frame: MuJoCo's
+        // `mjuu_fullInertia` overwrites `iquat` (`user_objects.cc:2412-2416`),
+        // and the parser refuses an orientation written beside a
+        // `fullinertia`, as MuJoCo's reader does.
         let iquat =
             UnitQuaternion::new_unchecked(Quaternion::new(frame[0], frame[1], frame[2], frame[3]));
-
-        // Combine with any existing inertial frame orientation
-        let base_iquat = quat_from_wxyz(inertial.quat);
-        let final_iquat = base_iquat * iquat;
-
-        Ok((mass, Vector3::from(moments), ipos, final_iquat))
+        Ok((mass, Vector3::from(moments), ipos, iquat))
     } else if let Some(diag) = inertial.diaginertia {
         // Diagonal inertia already in principal axes
         Ok((mass, diag, ipos, quat_from_wxyz(inertial.quat)))
@@ -572,5 +571,25 @@ mod tests {
             (total - 5.0).abs() < 1e-10,
             "total mass should be 5.0, got {total}"
         );
+    }
+
+    /// A full inertia's principal frame is the inertial frame whatever
+    /// `quat` an `MjcfInertial` built in code carries, as MuJoCo's spec
+    /// overwrites `iquat` with it (`user_objects.cc:2412-2416`).
+    #[test]
+    fn a_full_inertias_frame_replaces_a_quat_built_in_code() {
+        let full = crate::types::MjcfInertial {
+            mass: 1.0,
+            fullinertia: Some([3.0, 2.0, 1.0, 0.1, 0.0, 0.0]),
+            ..Default::default()
+        };
+        let half = std::f64::consts::FRAC_1_SQRT_2;
+        let turned = crate::types::MjcfInertial {
+            quat: nalgebra::Vector4::new(half, 0.0, 0.0, half),
+            ..full
+        };
+        let (_, _, _, plain) = super::extract_inertial_properties(&full).expect("principal");
+        let (_, _, _, kept) = super::extract_inertial_properties(&turned).expect("principal");
+        assert_eq!(plain, kept);
     }
 }

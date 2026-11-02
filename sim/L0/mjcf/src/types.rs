@@ -1171,7 +1171,8 @@ impl Default for MjcfInertial {
 }
 
 impl MjcfInertial {
-    /// Create inertial with mass only (unit sphere inertia).
+    /// An inertial of `mass` with no inertia written, which MuJoCo, and the
+    /// loader, give the moments 0 (`mjs_defaultBody`, `user_init.c:75-76`).
     #[must_use]
     pub fn with_mass(mass: f64) -> Self {
         Self {
@@ -1180,7 +1181,8 @@ impl MjcfInertial {
         }
     }
 
-    /// Convert to 3x3 inertia matrix.
+    /// Convert to 3x3 inertia matrix; with no inertia written, 0, as MuJoCo
+    /// and the loader give it.
     #[must_use]
     pub fn inertia_matrix(&self) -> Matrix3<f64> {
         if let Some(diag) = self.diaginertia {
@@ -1194,9 +1196,7 @@ impl MjcfInertial {
                 full[4], full[5], full[2], // Row 2: Ixz, Iyz, Izz
             )
         } else {
-            // Default: unit sphere inertia (2/5 * m * r^2 with m=mass, r=1)
-            let i = 0.4 * self.mass;
-            Matrix3::from_diagonal(&Vector3::new(i, i, i))
+            Matrix3::zeros()
         }
     }
 
@@ -4553,6 +4553,14 @@ mod tests {
         assert_relative_eq!(m[(1, 1)], 2.0, epsilon = 1e-10);
         assert_relative_eq!(m[(2, 2)], 3.0, epsilon = 1e-10);
         assert_relative_eq!(m[(0, 1)], 0.0, epsilon = 1e-10); // Off-diagonal
+    }
+
+    #[test]
+    fn an_inertial_with_no_inertia_written_has_mujocos_inertia_0() {
+        assert_eq!(
+            MjcfInertial::with_mass(2.0).inertia_matrix(),
+            Matrix3::zeros()
+        );
     }
 
     #[test]
