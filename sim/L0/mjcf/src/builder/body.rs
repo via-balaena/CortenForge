@@ -7,13 +7,16 @@
 use nalgebra::{UnitQuaternion, Vector3};
 
 use super::ModelBuilder;
+use super::geom::geom_volume;
 use super::mass::{
     check_replaced_full_inertia, compute_inertia_from_geoms, extract_inertial_properties,
+    geom_hfield_size, geom_mesh_props,
 };
-use super::orientation::resolve_orientation;
+use super::orientation::{MJ_EPS, resolve_orientation};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::keywords;
 use crate::types::{InertiaFromGeom, MjcfBody, MjcfGeom};
+use sim_core::GeomType;
 
 impl ModelBuilder {
     /// Process geoms and sites directly attached to worldbody (body 0).
@@ -231,6 +234,15 @@ impl ModelBuilder {
             self.process_geom(geom, body_id)?;
         }
         self.body_geom_num.push(body.geoms.len());
+        // A geom infers its body's inertia where the body writes no
+        // `<inertial>` or `inertiafromgeom` is true (`user_objects.cc:2429-2432`).
+        let infers =
+            body.inertial.is_none() || self.compiler.inertiafromgeom == InertiaFromGeom::True;
+        let negative = body
+            .geoms
+            .iter()
+            .position(|geom| infers && self.negative_mass(geom));
+        self.body_negative_geom.push(negative.map(|k| geom_adr + k));
 
         // Process sites for this body
         for site in &body.sites {
@@ -249,6 +261,70 @@ impl ModelBuilder {
         }
 
         Ok(body_id)
+    }
+
+    /// Whether MuJoCo 3.5.0's compiler gives `geom` a negative mass or
+    /// density (`mjCGeom::Compile`, `user_objects.cc:3780-3807`): a written
+    /// mass of 0 neither; any other written mass its own sign where the
+    /// geom's volume is above mjEPS, and the written density's where it is
+    /// not; with no mass written, the density's. Its volume is found only
+    /// where the sign depends on it.
+    fn negative_mass(&self, geom: &MjcfGeom) -> bool {
+        let density = geom.density.unwrap_or(1000.0);
+        match geom.mass {
+            Some(0.0) => false,
+            Some(mass) if mass < 0.0 => self.volume(geom) > MJ_EPS,
+            Some(_) => density < 0.0 && self.volume(geom) <= MJ_EPS,
+            None => density < 0.0,
+        }
+    }
+
+    /// A geom's volume as the mass rule reads it ([`geom_volume`]), from
+    /// its mesh's or height field's asset.
+    fn volume(&self, geom: &MjcfGeom) -> f64 {
+        let mesh = geom_mesh_props(
+            geom,
+            &self.mesh_name_to_id,
+            &self.mesh_data,
+            &self.mesh_inertia_modes,
+        );
+        let hfield = geom_hfield_size(geom, &self.hfield_name_to_id, &self.hfield_size);
+        geom_volume(geom, mesh.as_ref(), hfield)
+    }
+
+    /// MuJoCo 3.5.0's checks of each body, body by body in its order, as
+    /// `mjCBody::Compile` makes them: geom by geom, a plane only in a static
+    /// body, one with no joint on it or a body above it (`mjCGeom::Compile`,
+    /// `user_objects.cc:3666-3668`), then a negative mass or density
+    /// ([`Self::negative_mass`], `:3805-3807`); then the body's joints
+    /// ([`Self::check_body_joints`]). The caller runs it with the checks
+    /// RL-6a added, after every check this crate makes before building the
+    /// model.
+    pub(crate) fn check_bodies(&self) -> Result<()> {
+        let mut moving = vec![false; self.body_parent.len()];
+        for body in 1..self.body_parent.len() {
+            moving[body] = self.body_jnt_num[body] > 0 || moving[self.body_parent[body]];
+            let start = self.body_geom_adr[body];
+            for geom in start..start + self.body_geom_num[body] {
+                let at = || {
+                    Location::nth(ElementKind::Geom, self.geom_name[geom].as_deref(), geom)
+                        .within_nth(ElementKind::Body, self.body_name[body].as_deref(), body)
+                };
+                if moving[body] && self.geom_type[geom] == GeomType::Plane {
+                    return Err(
+                        MjcfError::invalid_model("plane only allowed in static bodies").at(at()),
+                    );
+                }
+                if self.body_negative_geom[body] == Some(geom) {
+                    return Err(MjcfError::invalid_model(
+                        "mass, inertia or density are negative in geom",
+                    )
+                    .at(at()));
+                }
+            }
+            self.check_body_joints(body)?;
+        }
+        Ok(())
     }
 
     /// Resolve inertial properties with full MuJoCo semantics.

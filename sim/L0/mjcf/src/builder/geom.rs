@@ -512,7 +512,7 @@ pub fn compute_geom_mass(
 /// ([`hfield_geom_size`]), a plane's 0. A mesh's is its own volume (book
 /// Rigid-loading L35's), and a primitive geom's with `shellinertia` its
 /// surface's area ([`shell_area`]).
-fn geom_volume(
+pub(super) fn geom_volume(
     geom: &MjcfGeom,
     mesh_props: Option<&MeshProps>,
     hfield_size: Option<&[f64; 4]>,

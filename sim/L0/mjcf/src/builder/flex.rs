@@ -516,6 +516,7 @@ impl ModelBuilder {
         self.body_sleep_policy.push(None);
         // The defaults of a body written with none of these (`body.rs`).
         self.body_gravcomp.push(0.0);
+        self.body_negative_geom.push(None);
         self.body_user_raw.push(Vec::new());
         self.body_world_pos.push(*pos);
         self.body_world_quat.push(UnitQuaternion::identity());

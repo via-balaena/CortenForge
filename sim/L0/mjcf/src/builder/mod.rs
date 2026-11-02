@@ -291,15 +291,15 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Finalize user data: resolve nuser, validate, pad
     builder.finalize_user_data(&mjcf)?;
 
-    // MuJoCo 3.5.0's checks this crate did not make before RL-6a and RL-6b
-    // (book L19-L21), after every check above, so that a document refused
-    // before they existed is refused for the same fault (MuJoCo orders some
-    // of them before checks above). Among themselves in MuJoCo's order: each
-    // body's joints, the tendons, the actuators, the sensors, then the free
-    // joint below the world's children, as MuJoCo's `CopyTree` refuses it.
-    // An automatic range that does not increase is refused after the
-    // keyframes (`D-AUTO-RANGE`).
-    builder.check_joints()?;
+    // MuJoCo 3.5.0's checks this crate did not make before RL-6a, RL-6b and
+    // RL-6d (book L19-L22), after every check above, so that a document
+    // refused before they existed is refused for the same fault (MuJoCo
+    // orders some of them before checks above). Among themselves in MuJoCo's
+    // order: each body's geoms and joints, the tendons, the actuators, the
+    // sensors, then the free joint below the world's children, as MuJoCo's
+    // `CopyTree` refuses it. An automatic range that does not increase is
+    // refused after the keyframes (`D-AUTO-RANGE`).
+    builder.check_bodies()?;
     builder.check_tendons()?;
     builder.check_actuators()?;
     builder.check_limit_sensors()?;
@@ -487,6 +487,10 @@ pub struct ModelBuilder {
     pub(crate) body_sleep_policy: Vec<Option<SleepPolicy>>,
     /// Per-body gravity compensation factor (0=none, 1=full).
     pub(crate) body_gravcomp: Vec<f64>,
+    /// Per body, the first of its geoms whose mass or density MuJoCo 3.5.0
+    /// gives a negative value where the geom infers its body's inertia
+    /// ([`Self::check_bodies`]).
+    pub(crate) body_negative_geom: Vec<Option<usize>>,
     pub(crate) nmocap: usize,
 
     // Joint arrays

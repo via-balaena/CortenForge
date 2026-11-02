@@ -215,45 +215,38 @@ impl ModelBuilder {
         Location::nth(ElementKind::Body, self.body_name[body].as_deref(), body)
     }
 
-    /// MuJoCo 3.5.0's checks of each body's joints, body by body in its
-    /// order, as `mjCJoint::Compile` and `mjCBody::Compile` make them: joint
+    /// MuJoCo 3.5.0's checks of a body's joints, as `mjCJoint::Compile` and
+    /// `mjCBody::Compile` make them: joint
     /// by joint, its `limited` and `range` ([`limits::resolve`],
     /// `user_objects.cc:2895-2914`), then a hinge's or a slide's axis too
     /// small to make unit (`:2957-2960`); then the body's more than 6 degrees
-    /// of freedom, then a ball or a hinge after a ball (`:2522-2537`). The
-    /// caller runs it after every check this crate makes before building the
-    /// model, so that a document it refused before these checks existed is
-    /// refused for the same fault, unless that fault is a keyframe's: MuJoCo
-    /// compiles keyframes after these checks, and this crate resolves them
-    /// after building the model.
-    pub(crate) fn check_joints(&self) -> Result<()> {
-        for body in 1..self.body_parent.len() {
-            let joints = self.body_joints(body);
-            for j in joints.clone() {
-                let at =
-                    || {
-                        Location::nth(ElementKind::Joint, self.jnt_name[j].as_deref(), j)
-                            .within_nth(ElementKind::Body, self.body_name[body].as_deref(), body)
-                    };
-                if let Some(fault) = self.jnt_limit_fault[j].filter(|&f| f.is_mujocos()) {
-                    return Err(fault.error(Pair::Joint(self.jnt_type[j])).at(at()));
-                }
-                if self.jnt_axis_too_small[j] {
-                    return Err(
-                        MjcfError::invalid_value("joint", "axis", "axis too small").at(at())
-                    );
-                }
+    /// of freedom, then a ball or a hinge after a ball (`:2522-2537`). Run
+    /// by [`Self::check_bodies`], after the body's geoms.
+    pub(crate) fn check_body_joints(&self, body: usize) -> Result<()> {
+        let joints = self.body_joints(body);
+        for j in joints.clone() {
+            let at = || {
+                Location::nth(ElementKind::Joint, self.jnt_name[j].as_deref(), j).within_nth(
+                    ElementKind::Body,
+                    self.body_name[body].as_deref(),
+                    body,
+                )
+            };
+            if let Some(fault) = self.jnt_limit_fault[j].filter(|&f| f.is_mujocos()) {
+                return Err(fault.error(Pair::Joint(self.jnt_type[j])).at(at()));
             }
-            let kinds = &self.jnt_type[joints];
-            if kinds.iter().map(|j| j.nv()).sum::<usize>() > 6 {
-                return Err(
-                    MjcfError::invalid_model("more than 6 dofs").at(self.body_location(body))
-                );
+            if self.jnt_axis_too_small[j] {
+                return Err(MjcfError::invalid_value("joint", "axis", "axis too small").at(at()));
             }
-            if after_ball(kinds, &[MjJointType::Ball, MjJointType::Hinge]) {
-                return Err(MjcfError::invalid_model("ball followed by rotation")
-                    .at(self.body_location(body)));
-            }
+        }
+        let kinds = &self.jnt_type[joints];
+        if kinds.iter().map(|j| j.nv()).sum::<usize>() > 6 {
+            return Err(MjcfError::invalid_model("more than 6 dofs").at(self.body_location(body)));
+        }
+        if after_ball(kinds, &[MjJointType::Ball, MjJointType::Hinge]) {
+            return Err(
+                MjcfError::invalid_model("ball followed by rotation").at(self.body_location(body))
+            );
         }
         Ok(())
     }

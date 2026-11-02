@@ -38,7 +38,8 @@ impl ModelBuilder {
             body_mocapid: vec![None],      // world body is not mocap
             body_sleep_policy: vec![None], // world body has no sleep policy
             site_connects: vec![],
-            body_gravcomp: vec![0.0], // world body has no gravcomp
+            body_gravcomp: vec![0.0],       // world body has no gravcomp
+            body_negative_geom: vec![None], // the world's geoms infer no inertia
             nmocap: 0,
 
             jnt_type: vec![],

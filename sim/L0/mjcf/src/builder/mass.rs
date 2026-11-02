@@ -141,6 +141,42 @@ pub fn check_replaced_full_inertia(inertial: Option<&MjcfInertial>) -> Result<()
     Ok(())
 }
 
+/// A mesh geom's mesh properties, by its mesh's inertia mode; `None` for
+/// any other geom.
+pub fn geom_mesh_props(
+    geom: &MjcfGeom,
+    mesh_lookup: &HashMap<String, usize>,
+    mesh_data: &[Arc<TriangleMeshData>],
+    mesh_inertia_modes: &[MeshInertia],
+) -> Option<MeshProps> {
+    resolve_mesh(geom, mesh_lookup, mesh_data).map(|mesh| {
+        let mesh_id = geom
+            .mesh
+            .as_ref()
+            .and_then(|name| mesh_lookup.get(name))
+            .copied()
+            .unwrap_or(0);
+        let mode = mesh_inertia_modes
+            .get(mesh_id)
+            .copied()
+            .unwrap_or(MeshInertia::Convex);
+        compute_mesh_inertia_by_mode(&mesh, mode)
+    })
+}
+
+/// A height-field geom's asset's four sizes; `None` for any other geom.
+pub fn geom_hfield_size<'a>(
+    geom: &MjcfGeom,
+    hfield_lookup: &HashMap<String, usize>,
+    hfield_size: &'a [[f64; 4]],
+) -> Option<&'a [f64; 4]> {
+    let id = geom
+        .hfield
+        .as_ref()
+        .and_then(|name| hfield_lookup.get(name))?;
+    hfield_size.get(*id)
+}
+
 /// Compute inertia from geoms (fallback when no explicit inertial).
 ///
 /// Accumulates full 3×3 inertia tensor with geom orientation handling,
@@ -179,31 +215,11 @@ pub fn compute_inertia_from_geoms(
     // Pre-compute mesh inertia once per geom (avoids 3× recomputation).
     let mesh_props: Vec<Option<MeshProps>> = geoms
         .iter()
-        .map(|geom| {
-            resolve_mesh(geom, mesh_lookup, mesh_data).map(|mesh| {
-                let mesh_id = geom
-                    .mesh
-                    .as_ref()
-                    .and_then(|name| mesh_lookup.get(name))
-                    .copied()
-                    .unwrap_or(0);
-                let mode = mesh_inertia_modes
-                    .get(mesh_id)
-                    .copied()
-                    .unwrap_or(MeshInertia::Convex);
-                compute_mesh_inertia_by_mode(&mesh, mode)
-            })
-        })
+        .map(|geom| geom_mesh_props(geom, mesh_lookup, mesh_data, mesh_inertia_modes))
         .collect();
     let hfields: Vec<Option<&[f64; 4]>> = geoms
         .iter()
-        .map(|geom| {
-            let id = geom
-                .hfield
-                .as_ref()
-                .and_then(|name| hfield_lookup.get(name))?;
-            hfield_size.get(*id)
-        })
+        .map(|geom| geom_hfield_size(geom, hfield_lookup, hfield_size))
         .collect();
 
     let mut total_mass = 0.0;
