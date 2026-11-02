@@ -225,7 +225,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // This crate's refusal of a negative `<inertial>` mass or moment, which
     // MuJoCo raises to its bounds (`D-INERTIAL-NEGATIVE`), on every body the
     // document writes, returned after the keyframes.
-    let negative_inertial = crate::validation::negative_inertial_fault(&mjcf.worldbody);
+    let negative_inertial = crate::validation::negative_inertial_fault(&mjcf);
 
     if mjcf.compiler.discardvisual {
         apply_discardvisual(&mut mjcf);

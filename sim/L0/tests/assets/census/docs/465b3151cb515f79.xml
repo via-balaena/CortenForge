@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/><geom name="a" type="sphere" size="0.1"/></body></worldbody></mujoco>

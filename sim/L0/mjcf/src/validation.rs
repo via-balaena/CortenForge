@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::stack::MAX_BODY_TREE_DEPTH;
 use crate::types::{
-    MjcfBody, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfModel, MjcfOption, MjcfTendon, MjcfTendonType,
-    SpatialPathElement, TfAuto,
+    InertiaFromGeom, MjcfBody, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfModel, MjcfOption,
+    MjcfTendon, MjcfTendonType, SpatialPathElement, TfAuto,
 };
 
 /// Validation result containing the flattened body tree structure.
@@ -359,15 +359,20 @@ pub fn check_tree_depth(worldbody: &MjcfBody) -> Result<()> {
     Ok(())
 }
 
-/// The first body below `world`, in the builder's order, whose `<inertial>`
-/// writes a negative mass or diagonal moment: refused as
+/// The first body below the world, in the builder's order, whose
+/// `<inertial>` writes a negative mass or diagonal moment: refused as
 /// `D-INERTIAL-NEGATIVE`, where MuJoCo 3.5.0 raises each to `boundmass` or
 /// `boundinertia` and checks the raised values (`user_objects.cc:2451-2469`).
-/// The loader takes it from the document before `fusestatic` removes any
-/// body, and returns it after the keyframes, with this crate's other
-/// refusals MuJoCo does not make.
-pub fn negative_inertial_fault(world: &MjcfBody) -> Option<MjcfError> {
-    bodies_in_order(world)
+/// None under `inertiafromgeom="true"`, where the geoms' inertia replaces
+/// the `<inertial>` (ledger L369 for a body none of whose geoms MuJoCo
+/// selects). The loader takes it from the document before `fusestatic`
+/// removes any body, and returns it after the keyframes, with this crate's
+/// other refusals MuJoCo does not make.
+pub fn negative_inertial_fault(model: &MjcfModel) -> Option<MjcfError> {
+    if model.compiler.inertiafromgeom == InertiaFromGeom::True {
+        return None;
+    }
+    bodies_in_order(&model.worldbody)
         .into_iter()
         .skip(1)
         .find_map(|(id, _, body)| {
@@ -896,7 +901,7 @@ mod tests {
 
         assert!(validate(&model).is_ok());
         assert!(matches!(
-            negative_inertial_fault(&model.worldbody),
+            negative_inertial_fault(&model),
             Some(MjcfError::InvalidValue { ref attribute, .. }) if attribute == "mass"
         ));
     }
@@ -915,7 +920,7 @@ mod tests {
 
         assert!(validate(&model).is_ok());
         assert!(matches!(
-            negative_inertial_fault(&model.worldbody),
+            negative_inertial_fault(&model),
             Some(MjcfError::InvalidValue { ref attribute, .. }) if attribute == "diaginertia"
         ));
     }

@@ -184,6 +184,36 @@ const INERTIALS: &[(&str, &str, Expect)] = &[
         r#"<mujoco><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="1" diaginertia="-1 1 3"/></body></worldbody></mujoco>"#,
         Expect::Refused("inertia must satisfy A + B >= C; use 'balanceinertia' to fix"),
     ),
+    (
+        "fx2_ifg_true_negmass_moving",
+        r#"<mujoco><compiler inertiafromgeom="true"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/><geom name="a" type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 4.188790204786391],
+            inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+        },
+    ),
+    (
+        "fx2_ifg_true_negdiag_moving",
+        r#"<mujoco><compiler inertiafromgeom="true"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="-1 1 1"/><geom name="a" type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 4.188790204786391],
+            inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+        },
+    ),
 ];
 
 #[test]
@@ -217,6 +247,11 @@ fn a_negative_inertial_mass_or_moment_is_refused_where_mujoco_raises_it() {
         (
             "mass beside a moving body",
             r#"<mujoco><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/></body><body name="b" pos="1 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+            format!("{MASS} (body 's')"),
+        ),
+        (
+            "mass beside a geom under inertiafromgeom auto, which keeps the inertial",
+            r#"<mujoco><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/><geom name="a" type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
             format!("{MASS} (body 's')"),
         ),
         (
