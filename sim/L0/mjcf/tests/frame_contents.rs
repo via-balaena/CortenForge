@@ -956,3 +956,54 @@ fn a_frame_composes_a_pose_as_mujocos_frameaccum() {
     }
     assert!(differ.is_empty(), "{differ:#?}");
 }
+
+/// A5 §3.7's frame cases (book L24's must-fail): a fault inside a frame,
+/// refused as MuJoCo 3.5.0 refuses it. `(case, document, this crate's words,
+/// MuJoCo's)`. Each was refused at this pull request's parent (measured).
+/// The seventh, a geom's condim 2 in a frame, loads here and is book L25's.
+const REFUSED_IN_FRAMES: &[(&str, &str, &str, &str)] = &[
+    (
+        "s37_nan_size",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><geom name="g" size="nan"/></frame></body></worldbody></mujoco>"#,
+        "size on <geom> is not finite (NaN)",
+        "nan size in geom",
+    ),
+    (
+        "s37_zero_size",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><geom name="g" size="0"/></frame></body></worldbody></mujoco>"#,
+        "size 0 must be positive",
+        "size 0 must be positive in geom",
+    ),
+    (
+        "s37_dup_joint",
+        r#"<mujoco><worldbody><body name="b"><joint name="j"/><geom size=".1"/><frame><body name="c"><joint name="j"/><geom size=".1"/></body></frame></body></worldbody></mujoco>"#,
+        "repeated name 'j' in joint",
+        "repeated name 'j' in joint",
+    ),
+    (
+        "s37_backwards_range",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><body name="c"><joint name="j" limited="true" range="1 -1"/><geom size=".1"/></body></frame></body></worldbody></mujoco>"#,
+        "range[0] should be smaller than range[1] in joint",
+        "range[0] should be smaller than range[1] in joint",
+    ),
+    (
+        "s37_massless_moving",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><body name="c"><joint name="j"/></body></frame></body></worldbody></mujoco>"#,
+        "mass and inertia of moving bodies must be larger than mjMINVAL",
+        "mass and inertia of moving bodies must be larger than mjMINVAL",
+    ),
+    (
+        "s37_free_below_top",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><body name="c"><freejoint/><geom size=".1"/></body></frame></body></worldbody></mujoco>"#,
+        "free joint can only be used on top level",
+        "free joint can only be used on top level",
+    ),
+];
+
+#[test]
+fn a_fault_inside_a_frame_is_refused_as_outside_one() {
+    for &(case, xml, ours, _mujoco) in REFUSED_IN_FRAMES {
+        let err = load_model(xml).expect_err(case).to_string();
+        assert!(err.contains(ours), "{case}: {err}");
+    }
+}
