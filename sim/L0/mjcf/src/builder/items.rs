@@ -49,6 +49,7 @@ impl Contents {
             sites: std::mem::take(&mut frame.sites),
             bodies: std::mem::take(&mut frame.bodies),
             frames: std::mem::take(&mut frame.frames),
+            composites: std::mem::take(&mut frame.composites),
             ..Self::default()
         }
     }
@@ -133,6 +134,18 @@ impl Contents {
         body.children = self.bodies;
         body.frames = self.frames;
         body.composites = self.composites;
+    }
+
+    /// The elements put back into `frame`, whose lists `take_from_frame`
+    /// emptied. A frame holds no joint, and none was taken from it.
+    pub(super) fn put_into_frame(self, frame: &mut MjcfFrame) {
+        debug_assert!(self.joints.is_empty(), "a frame holds no joint");
+        frame.items = self.items;
+        frame.geoms = self.geoms;
+        frame.sites = self.sites;
+        frame.bodies = self.bodies;
+        frame.frames = self.frames;
+        frame.composites = self.composites;
     }
 }
 

@@ -12,8 +12,8 @@
 use nalgebra::Vector3;
 use sim_core::Model;
 use sim_mjcf::{
-    MjcfFrame, MjcfGeom, MjcfGeomType, MjcfItem, Prefix, load_model, model_from_mjcf,
-    parse_mjcf_str,
+    ElementKind, MjcfError, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfItem, Prefix, load_model,
+    model_from_mjcf, parse_mjcf_str,
 };
 
 /// `(case, document, bodies, geoms, sites)`: each kind in id order as
@@ -185,4 +185,117 @@ fn a_frame_built_in_code_takes_the_place_its_items_give() {
     let listed = model_from_mjcf(&model, None).unwrap();
     assert_eq!(numbering(&listed)[1], "a@1 f@1 c@1");
     assert_eq!(listed.geom_pos[1], Vector3::new(0.0, 0.0, 1.0));
+}
+
+/// `(case, document, bodies, geoms, sites)` as `ORDER`: a cable written in a
+/// frame, which MuJoCo 3.5.0 makes when it reads it, its first body one of
+/// the frame's bodies (`user_composite.cc:381-383`).
+const COMPOSITES_IN_FRAMES: &[(&str, &str, &str, &str, &str)] = &[
+    (
+        "comp_in_world_frame",
+        r#"<mujoco><worldbody><frame pos="0 1 0"><composite type="cable" count="4 1 1" curve="s" size="1" prefix="c"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></frame></worldbody></mujoco>"#,
+        "world@0 cB_first@0 cB_1@1 cB_last@2",
+        "cG0@1 cG1@2 cG2@3",
+        "cS_first@1 cS_last@3",
+    ),
+    (
+        "comp_in_turned_world_frame",
+        r#"<mujoco><compiler angle="degree"/><worldbody><frame pos="0 1 0" euler="0 0 90"><composite type="cable" count="4 1 1" curve="s" size="1" prefix="c"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></frame></worldbody></mujoco>"#,
+        "world@0 cB_first@0 cB_1@1 cB_last@2",
+        "cG0@1 cG1@2 cG2@3",
+        "cS_first@1 cS_last@3",
+    ),
+    (
+        "comp_in_body_frame",
+        r#"<mujoco><worldbody><body name="p" pos="0 0 1"><geom size=".1"/><frame pos="0 1 0"><composite type="cable" count="4 1 1" curve="s" size="1" prefix="c"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></frame></body></worldbody></mujoco>"#,
+        "world@0 p@0 cB_first@1 cB_1@2 cB_last@3",
+        "-@1 cG0@2 cG1@3 cG2@4",
+        "cS_first@2 cS_last@4",
+    ),
+    (
+        "comp_in_nested_frame",
+        r#"<mujoco><compiler angle="degree"/><worldbody><frame pos="1 0 0"><frame pos="0 1 0" euler="0 0 45"><composite type="cable" count="4 1 1" curve="s" size="1" prefix="c"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></frame></frame></worldbody></mujoco>"#,
+        "world@0 cB_first@0 cB_1@1 cB_last@2",
+        "cG0@1 cG1@2 cG2@3",
+        "cS_first@1 cS_last@3",
+    ),
+    (
+        "comp_frame_order",
+        r#"<mujoco><worldbody><body name="A"><geom size=".1"/></body><frame pos="0 1 0"><composite type="cable" count="4 1 1" curve="s" size="1" prefix="c"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></frame><body name="C"><geom size=".1"/></body></worldbody></mujoco>"#,
+        "world@0 A@0 cB_first@0 cB_1@2 cB_last@3 C@0",
+        "-@1 cG0@2 cG1@3 cG2@4 -@5",
+        "cS_first@2 cS_last@4",
+    ),
+    (
+        "comp_two_prefixes_frame",
+        r#"<mujoco><worldbody><composite type="cable" count="4 1 1" curve="s" size="1" prefix="c"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite><frame pos="0 1 0"><composite type="cable" count="4 1 1" curve="s" size="1" prefix="d"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></frame></worldbody></mujoco>"#,
+        "world@0 cB_first@0 cB_1@1 cB_last@2 dB_first@0 dB_1@4 dB_last@5",
+        "cG0@1 cG1@2 cG2@3 dG0@4 dG1@5 dG2@6",
+        "cS_first@1 cS_last@3 dS_first@4 dS_last@6",
+    ),
+    (
+        "comp_then_body_in_frame",
+        r#"<mujoco><worldbody><frame pos="0 1 0"><composite type="cable" count="4 1 1" curve="s" size="1" prefix="c"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite><body name="X"><geom name="gX" size=".1"/></body></frame></worldbody></mujoco>"#,
+        "world@0 cB_first@0 cB_1@1 cB_last@2 X@0",
+        "cG0@1 cG1@2 cG2@3 gX@4",
+        "cS_first@1 cS_last@3",
+    ),
+];
+
+#[test]
+fn a_composite_in_a_frame_is_one_of_the_frames_bodies() {
+    for &(case, xml, bodies, geoms, sites) in COMPOSITES_IN_FRAMES {
+        let model = load_model(xml).unwrap_or_else(|e| panic!("{case}: {e}"));
+        assert_eq!(numbering(&model), [bodies, geoms, sites], "{case}");
+    }
+}
+
+#[test]
+fn a_frame_composes_a_cables_first_body_and_no_other() {
+    // MuJoCo 3.5.0's cB_first: the frames' position, and their turn about z
+    // (90 degrees; 45 in the nested frame); cB_1 as written in cB_first.
+    for (case, pos, turn) in [
+        ("comp_in_turned_world_frame", [0.0, 1.0, 0.0], 90.0_f64),
+        ("comp_in_nested_frame", [1.0, 1.0, 0.0], 45.0),
+    ] {
+        let xml = COMPOSITES_IN_FRAMES
+            .iter()
+            .find(|row| row.0 == case)
+            .unwrap()
+            .1;
+        let model = load_model(xml).unwrap();
+        let half = turn.to_radians() / 2.0;
+        let first = model.body_name_to_id["cB_first"];
+        assert!(
+            (model.body_pos[first] - Vector3::from(pos)).norm() < 1e-12,
+            "{case}"
+        );
+        let q = model.body_quat[first];
+        let want = [half.cos(), 0.0, 0.0, half.sin()];
+        assert!(
+            [q.w, q.i, q.j, q.k]
+                .iter()
+                .zip(want)
+                .all(|(a, b)| (a - b).abs() < 1e-12),
+            "{case}: {q:?}"
+        );
+        let next = model.body_name_to_id["cB_1"];
+        assert_eq!(
+            model.body_quat[next],
+            nalgebra::UnitQuaternion::identity(),
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn two_cables_of_one_prefix_one_in_a_frame_repeat_a_body_name() {
+    // MuJoCo 3.5.0: "repeated name 'cB_1' in body", the repeat that sorts
+    // first; this crate names the first it meets ('cB_first', ledger L353).
+    let xml = r#"<mujoco><worldbody><composite type="cable" count="4 1 1" curve="s" size="1" prefix="c"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite><frame pos="0 1 0"><composite type="cable" count="4 1 1" curve="s" size="1" prefix="c"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></frame></worldbody></mujoco>"#;
+    let err = load_model(xml).expect_err("MuJoCo refuses it");
+    assert!(
+        matches!(&err, MjcfError::DuplicateName { kind: ElementKind::Body, name, .. } if name == "cB_first"),
+        "{err}"
+    );
 }

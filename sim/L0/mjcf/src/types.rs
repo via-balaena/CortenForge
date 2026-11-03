@@ -2389,9 +2389,12 @@ pub struct MjcfFrame {
     pub sites: Vec<MjcfSite>,
     /// Nested child frames.
     pub frames: Vec<MjcfFrame>,
-    /// Its geoms, sites, bodies and frames in the order the document writes
-    /// them, one entry each, as [`MjcfBody::items`] lists a body's: the
-    /// frame's contents take its place among its holder's.
+    /// Composites within this frame: each one's first body is one of the
+    /// frame's bodies.
+    pub composites: Vec<MjcfComposite>,
+    /// Its geoms, sites, bodies, frames and composites in the order the
+    /// document writes them, one entry each, as [`MjcfBody::items`] lists a
+    /// body's: the frame's contents take its place among its holder's.
     pub items: Vec<MjcfItem>,
 }
 
@@ -2410,6 +2413,7 @@ impl Default for MjcfFrame {
             geoms: Vec::new(),
             sites: Vec::new(),
             frames: Vec::new(),
+            composites: Vec::new(),
             items: Vec::new(),
         }
     }

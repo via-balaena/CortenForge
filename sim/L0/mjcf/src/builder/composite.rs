@@ -26,25 +26,44 @@ pub fn expand_composites(body: &mut MjcfBody) -> Result<Vec<MjcfContactExclude>>
     Ok(excludes)
 }
 
-/// Each composite of `body` and of the bodies below it made, in the order
-/// the document writes them (`MjcfBody::items`), as MuJoCo 3.5.0 makes one
-/// when it reads it: its bodies take its place among `body`'s children, and a
-/// child body written before it has its own composites made first. An error
-/// names the body that holds the composite.
+/// Each composite of `body` and of the bodies and frames below it made, in
+/// the order the document writes them (`MjcfBody::items`), as MuJoCo 3.5.0
+/// makes one when it reads it: its bodies take its place among the children
+/// of the body or frame holding it, and a body written before it has its own
+/// composites made first.
 fn expand_composites_recursive(
     body: &mut MjcfBody,
     excludes: &mut Vec<MjcfContactExclude>,
 ) -> Result<()> {
+    let contents = Contents::take_from_body(body);
+    make_in_place(contents, &body.name, excludes)?.put_into_body(body);
+    Ok(())
+}
+
+/// `contents`, a body's or a frame's elements in `holder`, with each
+/// composite made into its bodies where it stands, and each body and frame
+/// among them made the same way. An error names `holder`, the body that
+/// holds the composite.
+fn make_in_place(
+    contents: Contents,
+    holder: &str,
+    excludes: &mut Vec<MjcfContactExclude>,
+) -> Result<Contents> {
     let mut placed = Contents::default();
-    for element in Contents::take_from_body(body).into_elements() {
+    for element in contents.into_elements() {
         match element {
             Element::Body(mut child) => {
                 expand_composites_recursive(&mut child, excludes)?;
                 placed.push(Element::Body(child));
             }
+            Element::Frame(mut frame) => {
+                let inner = Contents::take_from_frame(&mut frame);
+                make_in_place(inner, holder, excludes)?.put_into_frame(&mut frame);
+                placed.push(Element::Frame(frame));
+            }
             Element::Composite(composite) => {
                 let (bodies, excl) = expand_composite(&composite).map_err(|e| {
-                    e.with_location_if_unknown(Location::named(ElementKind::Body, &body.name))
+                    e.with_location_if_unknown(Location::named(ElementKind::Body, holder))
                 })?;
                 for made in bodies {
                     placed.push(Element::Body(made));
@@ -54,8 +73,7 @@ fn expand_composites_recursive(
             other => placed.push(other),
         }
     }
-    placed.put_into_body(body);
-    Ok(())
+    Ok(placed)
 }
 
 /// One composite's bodies and contact excludes: a cable's, or MuJoCo's

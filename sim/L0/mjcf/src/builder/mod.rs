@@ -391,19 +391,20 @@ pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
     let resolver = DefaultResolver::from_model(&mjcf)?;
     let actuators = resolve::apply_defaults(&mut mjcf, &resolver)?;
 
+    // Expand <composite> elements where they are written, in a body or a
+    // frame, as MuJoCo makes one when it reads it: a composite in a frame
+    // becomes one of the frame's bodies, which the frame then composes.
+    // Before discardvisual/fusestatic, which need to see the expanded bodies.
+    let composite_excludes = composite::expand_composites(&mut mjcf.worldbody)?;
+    mjcf.contact.excludes.extend(composite_excludes);
+
     // Expand <frame> elements: compose transforms into children, lift onto parent bodies.
     // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
     // visible to those passes (matches MuJoCo, which expands frames during XML parsing).
     // A frame's name, which expanding drops, is kept for the name check.
     let frame_names = crate::names::frame_names(&mjcf.worldbody);
     expand_frames(&mut mjcf.worldbody, &mjcf.compiler)?;
-
-    // Expand <composite> elements: generates body chains from composite definitions.
-    // Runs AFTER frame expansion and BEFORE discardvisual/fusestatic (which need
-    // to see the expanded bodies).
-    let composite_excludes = composite::expand_composites(&mut mjcf.worldbody)?;
     crate::validation::check_tree_depth(&mjcf.worldbody)?;
-    mjcf.contact.excludes.extend(composite_excludes);
 
     // Every name, reference and value check, on the model as resolved and
     // expanded, before fusion or discarding hides an element (MuJoCo 3.5.0

@@ -402,6 +402,12 @@ pub(super) fn parse_frame<R: BufRead>(
                         frame.frames.push(parse_frame(reader, e, child_empty)?);
                         frame.items.push(MjcfItem::Frame);
                     }
+                    b"composite" => {
+                        frame
+                            .composites
+                            .push(parse_composite(reader, e, child_empty)?);
+                        frame.items.push(MjcfItem::Composite);
+                    }
                     tag @ (b"camera" | b"light") => {
                         tracing::warn!(
                             "skipping <{}> inside <frame>: camera/light not yet supported",

@@ -164,8 +164,8 @@ fn dissolve(
                 dissolve(nested, &pos, &quat, placed, body, compiler)?;
                 continue;
             }
-            // A frame holds no joint (the reader refuses one) and, until
-            // composites are made before frames, no composite.
+            // A frame holds no joint (the reader refuses one), and its
+            // composites were made into bodies before frames.
             other @ (Element::Joint(_) | Element::Composite(_)) => other,
         };
         placed.push(element);
