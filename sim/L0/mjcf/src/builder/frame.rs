@@ -11,7 +11,8 @@ use nalgebra::{Quaternion, UnitQuaternion, Vector3, Vector4};
 
 use super::items::{Contents, Element};
 use super::orientation::{
-    mulquat, mulvecmat, quat_to_wxyz, quat2mat, resolve_orientation, site_quat_as_written,
+    made_unit, mulquat, mulvecmat, quat_as_written, quat_to_wxyz, quat2mat, resolve_orientation,
+    site_quat_as_written,
 };
 use crate::error::{ElementKind, Location, Result};
 use crate::types::{MjcfBody, MjcfCompiler, MjcfFrame};
@@ -65,14 +66,7 @@ pub fn expand_frames(body: &mut MjcfBody, compiler: &MjcfCompiler) -> Result<()>
     let mut placed = Contents::default();
     for element in Contents::take_from_body(body).into_elements() {
         match element {
-            Element::Frame(frame) => dissolve(
-                frame,
-                &Vector3::zeros(),
-                &UnitQuaternion::identity(),
-                &mut placed,
-                &body.name,
-                compiler,
-            )?,
+            Element::Frame(frame) => dissolve(frame, None, &mut placed, &body.name, compiler)?,
             other => placed.push(other),
         }
     }
@@ -84,20 +78,23 @@ pub fn expand_frames(body: &mut MjcfBody, compiler: &MjcfCompiler) -> Result<()>
 }
 
 /// One frame's contents, in its document order, composed with its transform
-/// (itself composed with `outer_pos`/`outer_quat`, the frames holding it) and
-/// added to `placed`, the elements of `body`; a nested frame's at its place.
+/// (itself composed with `outer`'s, the pose of the frame holding it, where a
+/// frame holds it) and added to `placed`, the elements of `body`; a nested
+/// frame's at its place.
 fn dissolve(
     mut frame: MjcfFrame,
-    outer_pos: &Vector3<f64>,
-    outer_quat: &UnitQuaternion<f64>,
+    outer: Option<(&Vector3<f64>, &UnitQuaternion<f64>)>,
     placed: &mut Contents,
     body: &str,
     compiler: &MjcfCompiler,
 ) -> Result<()> {
     let in_body =
         |kind, name: Option<&str>| Location::named(kind, name.unwrap_or("")).in_body(body);
-    // The frame's own orientation, composed with the frames holding it.
-    let frame_quat = resolve_orientation(
+    // The frame's own orientation as written, composed with the frame holding
+    // it where one does, then made unit, as `mjCFrame::Compile` makes it
+    // (`user_objects.cc:2734-2745`); a frame no frame holds keeps its pose as
+    // written.
+    let written = quat_as_written(
         frame.quat,
         frame.euler,
         frame.axisangle,
@@ -110,8 +107,11 @@ fn dissolve(
             .at(in_body(ElementKind::Frame, frame.name.as_deref()))
     })?;
     let mut pos = frame.pos;
-    let mut quat = frame_quat;
-    frame_accum_child(outer_pos, outer_quat, &mut pos, &mut quat);
+    let mut quat = written;
+    if let Some((outer_pos, outer_quat)) = outer {
+        frame_accum_child(outer_pos, outer_quat, &mut pos, &mut quat);
+    }
+    let quat = made_unit(&quat);
 
     for element in Contents::take_from_frame(&mut frame).into_elements() {
         let element = match element {
@@ -141,9 +141,8 @@ fn dissolve(
                 g.zaxis = None;
                 Element::Geom(g)
             }
-            // Each site's quaternion as written, composed with the frame's;
-            // the builder makes the product unit, as MuJoCo does
-            // (`user_objects.cc:3984-3988`).
+            // Each site's quaternion as written, composed with the frame's,
+            // as MuJoCo composes a site's (`user_objects.cc:3976-3988`).
             Element::Site(mut s) => {
                 let mut spos = s.pos.unwrap_or_else(Vector3::zeros);
                 let mut squat = site_quat_as_written(&s, compiler)
@@ -175,7 +174,7 @@ fn dissolve(
                 Element::Body(b)
             }
             Element::Frame(nested) => {
-                dissolve(nested, &pos, &quat, placed, body, compiler)?;
+                dissolve(nested, Some((&pos, &quat)), placed, body, compiler)?;
                 continue;
             }
             // A frame holds no joint (the reader refuses one), and its

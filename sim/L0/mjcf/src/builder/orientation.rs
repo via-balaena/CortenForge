@@ -164,9 +164,7 @@ impl OrientationError {
 }
 
 /// `q` (w, x, y, z) as a `UnitQuaternion`, as MuJoCo's arithmetic left it: unit,
-/// or not where `normvec` kept a quaternion whose squared norm is below mjEPS
-/// (frames and fusion then turn by it with nalgebra's unit-only arithmetic,
-/// where MuJoCo's does not normalise: ledger L255).
+/// or not where `normvec` kept a quaternion whose squared norm is below mjEPS.
 fn unit(q: [f64; 4]) -> UnitQuaternion<f64> {
     UnitQuaternion::new_unchecked(Quaternion::new(q[0], q[1], q[2], q[3]))
 }
@@ -176,24 +174,47 @@ pub fn quat_from_wxyz(q: nalgebra::Vector4<f64>) -> UnitQuaternion<f64> {
     UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]))
 }
 
-/// A site's orientation as MuJoCo's compiler holds it before composing the
-/// site's frame (`user_objects.cc:3976-3985`): its alternative where it has
-/// one, else its quaternion as written, not yet made unit.
+/// An orientation as MuJoCo's compiler holds it before composing the frame
+/// holding its element (a site's, `user_objects.cc:3976-3985`; a frame's,
+/// `mjCFrame::Compile`, `:2734-2743`): its alternative where it has one, else
+/// its quaternion as written, not yet made unit.
+pub fn quat_as_written(
+    quat: Vector4<f64>,
+    euler: Option<Vector3<f64>>,
+    axisangle: Option<Vector4<f64>>,
+    xyaxes: Option<[f64; 6]>,
+    zaxis: Option<Vector3<f64>>,
+    compiler: &MjcfCompiler,
+) -> Result<UnitQuaternion<f64>, OrientationError> {
+    if let Some(q) = alternative(euler, axisangle, xyaxes, zaxis, compiler)? {
+        return Ok(unit(q));
+    }
+    Ok(unit([quat[0], quat[1], quat[2], quat[3]]))
+}
+
+/// A site's orientation as written ([`quat_as_written`]).
 pub fn site_quat_as_written(
     site: &MjcfSite,
     compiler: &MjcfCompiler,
 ) -> Result<UnitQuaternion<f64>, OrientationError> {
-    if let Some(q) = alternative(
+    quat_as_written(
+        site.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
         site.euler,
         site.axisangle,
         site.xyaxes,
         site.zaxis,
         compiler,
-    )? {
-        return Ok(unit(q));
-    }
-    let quat = site.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0));
-    Ok(unit([quat[0], quat[1], quat[2], quat[3]]))
+    )
+}
+
+/// `q` made unit as MuJoCo's compiler makes an orientation it composed
+/// (`normvec`, `user_objects.cc:2745`, `:3988`): left as it is where its norm
+/// lies within mjEPS of 1.
+pub fn made_unit(q: &UnitQuaternion<f64>) -> UnitQuaternion<f64> {
+    let q = q.into_inner();
+    let mut q = [q.w, q.i, q.j, q.k];
+    normvec(&mut q);
+    unit(q)
 }
 
 /// A site's orientation made unit as MuJoCo's compiler makes it (`normvec`,
@@ -203,10 +224,7 @@ pub fn site_orientation(
     site: &MjcfSite,
     compiler: &MjcfCompiler,
 ) -> Result<UnitQuaternion<f64>, OrientationError> {
-    let q = site_quat_as_written(site, compiler)?.into_inner();
-    let mut q = [q.w, q.i, q.j, q.k];
-    normvec(&mut q);
-    Ok(unit(q))
+    Ok(made_unit(&site_quat_as_written(site, compiler)?))
 }
 
 /// Convert a `UnitQuaternion` back to MJCF `Vector4<f64>` (w, x, y, z order).
@@ -318,10 +336,10 @@ fn alternative(
     Ok(None)
 }
 
-/// A body's, geom's or frame's orientation as MuJoCo 3.5.0's compiler makes it
+/// A body's or geom's orientation as MuJoCo 3.5.0's compiler makes it
 /// (`mjCBody::Compile`, `user_objects.cc:2387-2402`; `mjCGeom::Compile`,
-/// `:3673-3724`; `mjCFrame::Compile`, `:2734-2746`): its alternative where it
-/// has one, else its quaternion made unit by `normvec`.
+/// `:3673-3724`): its alternative where it has one, else its quaternion made
+/// unit by `normvec`.
 pub fn resolve_orientation(
     quat: Vector4<f64>,
     euler: Option<Vector3<f64>>,
