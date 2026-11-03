@@ -4,6 +4,7 @@ use thiserror::Error;
 
 /// Errors that can occur during URDF parsing and loading.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum UrdfError {
     /// XML parsing error.
     #[error("XML parse error: {0}")]
@@ -62,6 +63,15 @@ pub enum UrdfError {
     /// Kinematic loop detected.
     #[error("kinematic loop detected: {0}")]
     KinematicLoop(String),
+
+    /// A joint whose child is the link named `world`, which MuJoCo 3.5.0's
+    /// importer makes the world body: it refuses a moving joint there ("joint
+    /// found in world body") and moves the world for a fixed one.
+    #[error("joint {joint} enters link 'world': joint found in world body")]
+    WorldChild {
+        /// The joint whose child is `world`.
+        joint: String,
+    },
 
     /// No root link found.
     #[error("no root link found (all links are children of joints)")]

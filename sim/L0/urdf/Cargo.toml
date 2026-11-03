@@ -27,6 +27,8 @@ nalgebra = { workspace = true }
 quick-xml = { workspace = true }
 # Derive macros for the URDF parse / validation error enum
 thiserror = { workspace = true }
+# The importer's warnings MuJoCo 3.5.0 prints (a repeated geom name)
+tracing = { workspace = true }
 # Optional Serialize / Deserialize derives for the URDF IR types
 serde = { workspace = true, optional = true }
 
