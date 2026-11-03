@@ -393,6 +393,8 @@ pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
     // Expand <frame> elements: compose transforms into children, lift onto parent bodies.
     // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
     // visible to those passes (matches MuJoCo, which expands frames during XML parsing).
+    // A frame's name, which expanding drops, is checked first.
+    crate::names::check_frame_names(&mjcf.worldbody)?;
     expand_frames(&mut mjcf.worldbody, &mjcf.compiler)?;
 
     // Expand <composite> elements: generates body chains from composite definitions.

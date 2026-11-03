@@ -143,12 +143,11 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
 /// [`validate`]'s checks, on a model whose classes are applied and whose
 /// frames and composites are expanded (`builder::front_end`).
 pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
-    // Validate options first
+    // Every name but a frame's (`names::check_frame_names`), composites'
+    // included; then the options, whose checks MuJoCo does not make.
+    crate::names::check_names(model)?;
     validate_option(&model.option)?;
-    // Check for duplicate names
-    let mut body_names = HashSet::new();
     let mut joint_names = HashSet::new();
-    let mut actuator_names = HashSet::new();
 
     let mut sorted_bodies = Vec::new();
     let mut body_parent: HashMap<String, String> = HashMap::new();
@@ -160,7 +159,6 @@ pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
     fn traverse_body(
         body: &MjcfBody,
         parent_name: Option<&str>,
-        body_names: &mut HashSet<String>,
         joint_names: &mut HashSet<String>,
         sorted_bodies: &mut Vec<String>,
         body_parent: &mut HashMap<String, String>,
@@ -168,13 +166,6 @@ pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
         joint_to_body: &mut HashMap<String, String>,
         all_joint_names: &mut Vec<String>,
     ) -> Result<()> {
-        // Check for duplicate body name. Anonymous bodies (empty name) are
-        // exempt — mirrors the joint-name guard below and the builder's
-        // is_empty() contract for body name lookup.
-        if !body.name.is_empty() && !body_names.insert(body.name.clone()) {
-            return Err(MjcfError::duplicate_name(ElementKind::Body, &body.name));
-        }
-
         sorted_bodies.push(body.name.clone());
 
         // Set parent relationship
@@ -189,13 +180,10 @@ pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
         // Initialize children list
         body_children.entry(body.name.clone()).or_default();
 
-        // Check joints
+        // Each named joint, for the references below
         for joint in &body.joints {
             if !joint.name.is_empty() {
-                if !joint_names.insert(joint.name.clone()) {
-                    return Err(MjcfError::duplicate_name(ElementKind::Joint, &joint.name)
-                        .at(Location::named(ElementKind::Joint, &joint.name).in_body(&body.name)));
-                }
+                joint_names.insert(joint.name.clone());
                 joint_to_body.insert(joint.name.clone(), body.name.clone());
                 all_joint_names.push(joint.name.clone());
             }
@@ -220,7 +208,6 @@ pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
             traverse_body(
                 child,
                 Some(&body.name),
-                body_names,
                 joint_names,
                 sorted_bodies,
                 body_parent,
@@ -238,7 +225,6 @@ pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
         traverse_body(
             body,
             None, // Root bodies have no parent (worldbody is implicit)
-            &mut body_names,
             &mut joint_names,
             &mut sorted_bodies,
             &mut body_parent,
@@ -277,12 +263,6 @@ pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
     for (i, actuator) in model.actuators.iter().enumerate() {
         let at = || Location::nth(ElementKind::Actuator, Some(&actuator.name), i);
         if !actuator.name.is_empty() {
-            if !actuator_names.insert(actuator.name.clone()) {
-                return Err(MjcfError::duplicate_name(
-                    ElementKind::Actuator,
-                    &actuator.name,
-                ));
-            }
             all_actuator_names.push(actuator.name.clone());
         }
 

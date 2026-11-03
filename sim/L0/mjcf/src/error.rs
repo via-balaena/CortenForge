@@ -371,6 +371,8 @@ pub enum ElementKind {
     Hfield,
     /// `<flex>` or `<flexcomp>`.
     Flex,
+    /// `<skin>`.
+    Skin,
     /// `<pair>`.
     Pair,
     /// `<exclude>`.
@@ -387,6 +389,8 @@ pub enum ElementKind {
     Keyframe,
     /// A `<default>` class.
     DefaultClass,
+    /// An `<extension>` plugin's `<instance>`.
+    Plugin,
 }
 
 impl fmt::Display for ElementKind {
@@ -400,6 +404,7 @@ impl fmt::Display for ElementKind {
             Self::Mesh => "mesh",
             Self::Hfield => "hfield",
             Self::Flex => "flex",
+            Self::Skin => "skin",
             Self::Pair => "pair",
             Self::Exclude => "exclude",
             Self::Equality => "equality",
@@ -408,6 +413,7 @@ impl fmt::Display for ElementKind {
             Self::Sensor => "sensor",
             Self::Keyframe => "key",
             Self::DefaultClass => "default",
+            Self::Plugin => "plugin",
         })
     }
 }

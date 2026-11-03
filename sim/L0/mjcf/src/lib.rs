@@ -188,6 +188,7 @@ mod include;
 mod keywords;
 #[cfg(feature = "mjb")]
 mod mjb;
+mod names;
 mod parser;
 mod stack;
 mod types;
