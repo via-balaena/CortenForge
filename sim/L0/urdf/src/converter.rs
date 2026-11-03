@@ -1298,6 +1298,7 @@ mod tests {
     /// file at scales 1, 2, 1, 3 → meshes `['part', 'part1', 'part2']`, geoms'
     /// meshes 0, 1, 0, 2; two files under one collision name → meshes
     /// `['a', 'b']`, which at the parent were both named `c` and refused).
+    /// A `\` separates a path's parts too (`mjuu_strippath`).
     #[test]
     fn meshes_are_named_by_file_stem_and_scale() {
         let mesh = |name: &str, file: &str, scale: &str| {
@@ -1311,11 +1312,12 @@ mod tests {
             massive_link(
                 "arm",
                 &format!(
-                    "{}{}{}{}",
+                    "{}{}{}{}{}",
                     mesh("d", "meshes/part.stl", r#" scale="2 2 2""#),
                     mesh("e", "meshes/part.stl", ""),
                     mesh("f", "part.stl", r#" scale="3 3 3""#),
-                    mesh("g", "meshes/a.stl", "")
+                    mesh("g", "meshes/a.stl", ""),
+                    mesh("h", "meshes\\b.obj", "")
                 )
             ),
             hinge("j", "base", "arm"),
@@ -1326,6 +1328,7 @@ mod tests {
             r#"<mesh name="part1" file="meshes/part.stl" scale="2 2 2"/>"#,
             r#"<mesh name="part2" file="part.stl" scale="3 3 3"/>"#,
             r#"<mesh name="a" file="meshes/a.stl"/>"#,
+            r#"<mesh name="b" file="meshes\b.obj"/>"#,
         ] {
             assert!(mjcf.contains(asset), "{asset} in {mjcf}");
         }
@@ -1335,5 +1338,28 @@ mod tests {
                 "geom {geom} names {asset} in {mjcf}"
             );
         }
+    }
+
+    /// A `<mimic>` becomes a joint equality, the follower's position the
+    /// leader's times the multiplier plus the offset; MuJoCo 3.5.0's
+    /// importer does not read `<mimic>` (measured: `neq` 0;
+    /// `D-URDF-MIMIC`).
+    #[test]
+    fn a_mimic_becomes_a_joint_equality() {
+        let urdf = format!(
+            r#"<robot name="r"><link name="base"/>{}{}{}<joint name="follower" type="revolute"><parent link="base"/><child link="b"/><axis xyz="0 0 1"/><limit lower="-1" upper="1"/><mimic joint="j" multiplier="2" offset="0.1"/></joint></robot>"#,
+            massive_link("a", ""),
+            massive_link("b", ""),
+            hinge("j", "base", "a"),
+        );
+        let model = sim_mjcf::load_model(&urdf_to_mjcf(&urdf).expect("converts")).expect("loads");
+        assert_eq!(model.neq, 1);
+        assert_eq!(
+            model.eq_data[0][..2]
+                .iter()
+                .map(|x| x.to_bits())
+                .collect::<Vec<_>>(),
+            [0.1_f64.to_bits(), 2.0_f64.to_bits()]
+        );
     }
 }
