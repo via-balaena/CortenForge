@@ -10,6 +10,15 @@ pub enum UrdfError {
     #[error("XML parse error: {0}")]
     XmlParse(String),
 
+    /// An element nested deeper than MuJoCo 3.5.0's XML reader (tinyxml2)
+    /// takes: with the root at depth 1, one that is not self-closing at 498
+    /// (a self-closing one loads at 499; measured, the same rule as sim-mjcf's).
+    #[error("XML parse error: an element nested deeper than {limit}")]
+    TooDeep {
+        /// The deepest nesting taken.
+        limit: usize,
+    },
+
     /// Missing required element.
     #[error("missing required element: {element} in {context}")]
     MissingElement {

@@ -104,8 +104,8 @@ pub fn parse_urdf_str(xml: &str) -> Result<UrdfRobot> {
 // ============================================================================
 
 /// An element of the document: its tag, its attributes as tinyxml2 gives
-/// them to MuJoCo (entities and character references replaced), its child
-/// elements in order. Text is not kept: the importer reads none.
+/// them to MuJoCo ([`unescape`]), its child elements in order. Text is not
+/// kept: the importer reads none.
 struct Element {
     tag: String,
     attrs: Vec<(String, String)>,
@@ -122,11 +122,9 @@ impl Element {
             let attr = attr.map_err(|e| UrdfError::XmlParse(e.to_string()))?;
             let raw =
                 std::str::from_utf8(&attr.value).map_err(|e| UrdfError::XmlParse(e.to_string()))?;
-            let value =
-                quick_xml::escape::unescape(raw).map_err(|e| UrdfError::XmlParse(e.to_string()))?;
             attrs.push((
                 String::from_utf8_lossy(attr.key.as_ref()).into_owned(),
-                value.into_owned(),
+                unescape(raw),
             ));
         }
         Ok(Self {
@@ -176,7 +174,14 @@ impl Element {
     }
 }
 
-/// The document's root element, read without recursing.
+/// MuJoCo 3.5.0's XML reader (tinyxml2) takes an element that is not
+/// self-closing at depth 498 at most, the root at depth 1 (measured on URDFs,
+/// as sim-mjcf's `XML_DEPTH_LIMIT` on MJCF). It bounds the tree, whose drop
+/// recurses.
+const XML_DEPTH_LIMIT: usize = 498;
+
+/// The document's root element, read without recursing; an element nested
+/// past [`XML_DEPTH_LIMIT`] is refused.
 fn read_tree(xml: &str) -> Result<Element> {
     let mut reader = Reader::from_str(xml);
     let mut stack: Vec<Element> = Vec::new();
@@ -187,7 +192,14 @@ fn read_tree(xml: &str) -> Result<Element> {
             .read_event_into(&mut buf)
             .map_err(|e| UrdfError::XmlParse(e.to_string()))?;
         match event {
-            Event::Start(ref e) => stack.push(Element::new(e)?),
+            Event::Start(ref e) => {
+                stack.push(Element::new(e)?);
+                if stack.len() > XML_DEPTH_LIMIT {
+                    return Err(UrdfError::TooDeep {
+                        limit: XML_DEPTH_LIMIT,
+                    });
+                }
+            }
             Event::Empty(ref e) => {
                 let element = Element::new(e)?;
                 match stack.last_mut() {
@@ -213,6 +225,126 @@ fn read_tree(xml: &str) -> Result<Element> {
         return Err(UrdfError::XmlParse("unexpected end of the document".into()));
     }
     root.ok_or_else(|| UrdfError::missing_element("robot", "URDF document"))
+}
+
+/// An attribute's text as tinyxml2 gives it to MuJoCo 3.5.0
+/// (`StrPair::GetStr`), by sim-mjcf's reader's rules (`sim-mjcf`
+/// `parser/attrs.rs`, `unescape`, which this crate cannot call: sim-mjcf
+/// exports no reader; `attribute_text_read_as_sim_mjcf_reads_it` holds the
+/// two to one table): line ends made `\n`; the five predefined entities and
+/// numeric character references replaced; any other `&` kept as written
+/// (measured: `a&b`, `a & b` and `a&foo;b` load as written), where tinyxml2
+/// leaves a stale byte once an entity has shortened the text
+/// (`D-XML-STALE-BYTE`). A character reference of code 0 ends the text
+/// (measured: `a&#0;b` is `a`).
+fn unescape(raw: &str) -> String {
+    const ENTITIES: [(&str, char); 5] = [
+        ("quot;", '"'),
+        ("amp;", '&'),
+        ("apos;", '\''),
+        ("lt;", '<'),
+        ("gt;", '>'),
+    ];
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(c) = rest.chars().next() {
+        let after = &rest[c.len_utf8()..];
+        match c {
+            '\r' | '\n' => {
+                out.push('\n');
+                let other = if c == '\r' { '\n' } else { '\r' };
+                rest = after.strip_prefix(other).unwrap_or(after);
+            }
+            '&' => {
+                if after.starts_with('#') {
+                    match character_reference(after) {
+                        Reference::Char(ch, len) => {
+                            out.push(ch);
+                            rest = &after[len..];
+                        }
+                        Reference::End => return out,
+                        Reference::Dropped => rest = after,
+                        Reference::Kept => {
+                            out.push('&');
+                            rest = after;
+                        }
+                    }
+                } else if let Some((pattern, ch)) = ENTITIES
+                    .iter()
+                    .find(|(pattern, _)| after.starts_with(pattern))
+                {
+                    out.push(*ch);
+                    rest = &after[pattern.len()..];
+                } else {
+                    out.push('&');
+                    rest = after;
+                }
+            }
+            _ => {
+                out.push(c);
+                rest = after;
+            }
+        }
+    }
+    out
+}
+
+/// What tinyxml2 makes of an `&` before a `#` (`XMLUtil::GetCharacterRef`).
+enum Reference {
+    /// A character, and the length of the text read after the `&`.
+    Char(char, usize),
+    /// Code 0: the text ends there.
+    End,
+    /// `&#` closing the text: the `&` is dropped.
+    Dropped,
+    /// Anything else: the `&` is kept as written.
+    Kept,
+}
+
+/// A numeric character reference, `after_amp` being the text after its `&`
+/// and starting with `#`, as tinyxml2 reads it: hexadecimal after a lowercase
+/// `x`; its digits are those back from the next `;` to the nearest `#` (or
+/// `x`), so `&#1#53;` is `5`; a code past U+10FFFF is kept as written
+/// (measured). A surrogate code, which tinyxml2 writes as bytes no Rust
+/// string holds, is kept as written too (`D-XML-SURROGATE`).
+fn character_reference(after_amp: &str) -> Reference {
+    const MAX_CODE_POINT: u32 = 0x10_FFFF;
+    let bytes = after_amp.as_bytes();
+    if bytes.len() < 2 {
+        return Reference::Dropped;
+    }
+    let (start, terminator, radix) = if bytes[1] == b'x' {
+        (2, b'x', 16)
+    } else {
+        (1, b'#', 10)
+    };
+    let Some(semicolon) = after_amp
+        .get(start..)
+        .and_then(|digits| digits.find(';'))
+        .map(|i| start + i)
+    else {
+        return Reference::Kept;
+    };
+    let first = bytes[..semicolon]
+        .iter()
+        .rposition(|&b| b == terminator)
+        .map_or(start, |i| i + 1);
+    let (mut code, mut mult) = (0_u32, 1_u32);
+    for &b in bytes[first..semicolon].iter().rev() {
+        let digit = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' if radix == 16 => b - b'a' + 10,
+            b'A'..=b'F' if radix == 16 => b - b'A' + 10,
+            _ => return Reference::Kept,
+        };
+        code = code.wrapping_add(mult * u32::from(digit));
+        mult = (mult * radix).min(MAX_CODE_POINT);
+    }
+    if code == 0 {
+        return Reference::End;
+    }
+    // `from_u32` refuses a code past U+10FFFF, as tinyxml2 does.
+    char::from_u32(code).map_or(Reference::Kept, |ch| Reference::Char(ch, semicolon + 1))
 }
 
 // ============================================================================
@@ -934,6 +1066,70 @@ mod tests {
             );
             let err = parse_urdf_str(&urdf).expect_err(attrs);
             assert!(err.to_string().contains(words), "{attrs}: {err}");
+        }
+    }
+
+    /// Attribute text is read as sim-mjcf reads it ([`unescape`]): each text
+    /// below names a URDF link and an MJCF body alike. MuJoCo 3.5.0 loads
+    /// each as a link's name (measured), reading it as written here but for
+    /// `a&amp;b&c` (`a&bmc`, `D-XML-STALE-BYTE`) and `a&#xD800;b` (the
+    /// surrogate's bytes, `D-XML-SURROGATE`).
+    #[test]
+    fn attribute_text_read_as_sim_mjcf_reads_it() {
+        let texts = [
+            ("a&b", "a&b"),
+            ("a & b", "a & b"),
+            ("a&amp;b", "a&b"),
+            ("a&quot;b", "a\"b"),
+            ("a&foo;b", "a&foo;b"),
+            ("a&amp;b&c", "a&b&c"),
+            ("a&#0;b", "a"),
+            ("a&#;b", "a"),
+            ("a&#", "a#"),
+            ("a&#1#53;", "a5"),
+            ("a&#x4e2d;", "a\u{4e2d}"),
+            ("a&#X35;", "a&#X35;"),
+            ("a&#1114112;", "a&#1114112;"),
+            ("a&#xD800;b", "a&#xD800;b"),
+            ("a>b", "a>b"),
+            ("a\r\nb", "a\nb"),
+            ("a\rb", "a\nb"),
+            ("a\tb", "a\tb"),
+        ];
+        for (written, read) in texts {
+            let urdf = format!(r#"<robot name="r"><link name="{written}"/></robot>"#);
+            let mjcf =
+                format!(r#"<mujoco><worldbody><body name="{written}"/></worldbody></mujoco>"#);
+            let ours = parse_urdf_str(&urdf).expect(written);
+            let theirs = sim_mjcf::parse_mjcf_str(&mjcf).expect(written);
+            assert_eq!(ours.links[0].name, read, "{written:?}");
+            assert_eq!(theirs.worldbody.children[0].name, read, "{written:?}");
+        }
+    }
+
+    /// An element is nested at most as deep as MuJoCo 3.5.0's XML reader takes
+    /// (measured: `<robot><link>` and 496 nested elements load, the last
+    /// self-closing or not; 497 load only with the last self-closing), and a
+    /// document nested a million deep is an error, not an overflow.
+    #[test]
+    fn an_element_nested_past_mujocos_depth_is_refused() {
+        let doc = |n: usize, last: &str| {
+            format!(
+                r#"<robot name="r"><link name="base">{}{last}{}</link></robot>"#,
+                "<x>".repeat(n - 1),
+                "</x>".repeat(n - 1)
+            )
+        };
+        for last in ["<x/>", "<x></x>"] {
+            assert!(parse_urdf_str(&doc(496, last)).is_ok(), "{last}");
+        }
+        assert!(parse_urdf_str(&doc(497, "<x/>")).is_ok());
+        for (n, last) in [(497, "<x></x>"), (498, "<x/>"), (1_000_000, "<x/>")] {
+            let err = parse_urdf_str(&doc(n, last)).expect_err(last);
+            assert!(
+                matches!(err, UrdfError::TooDeep { limit: 498 }),
+                "{n}: {err}"
+            );
         }
     }
 
