@@ -7,26 +7,40 @@
 //! Each element reaches it with its class applied and its `fromto` resolved
 //! (`resolve::apply_defaults`), so a frame composes the element's own pose.
 
-use nalgebra::{UnitQuaternion, Vector3, Vector4};
+use nalgebra::{Quaternion, UnitQuaternion, Vector3, Vector4};
 
 use super::items::{Contents, Element};
-use super::orientation::{quat_to_wxyz, resolve_orientation, site_quat_as_written};
+use super::orientation::{
+    mulquat, mulvecmat, quat_to_wxyz, quat2mat, resolve_orientation, site_quat_as_written,
+};
 use crate::error::{ElementKind, Location, Result};
 use crate::types::{MjcfBody, MjcfCompiler, MjcfFrame};
 
-/// Core SE(3) composition — direct translation of MuJoCo's `mjuu_frameaccumChild`.
-///
-/// Composes a parent frame transform into a child's pos/quat:
-/// - `child_pos_new = frame_pos + frame_quat * child_pos_old`
-/// - `child_quat_new = frame_quat * child_quat_old`
+/// A frame's transform composed into a child's pose, in MuJoCo 3.5.0's
+/// arithmetic (`mjuu_frameaccumChild`, `user_util.cc:483-490`, through
+/// `mjuu_frameaccum`, `:469-479`): the child's position turned by the frame's
+/// rotation matrix (`quat2mat`, `mulvecmat`) and added to the frame's, and
+/// its quaternion the frame's times its own, made unit (`mulquat`).
 fn frame_accum_child(
     frame_pos: &Vector3<f64>,
     frame_quat: &UnitQuaternion<f64>,
     child_pos: &mut Vector3<f64>,
     child_quat: &mut UnitQuaternion<f64>,
 ) {
-    *child_pos = *frame_pos + frame_quat.transform_vector(child_pos);
-    *child_quat = *frame_quat * *child_quat;
+    let frame = wxyz(frame_quat);
+    let turned = mulvecmat(&[child_pos.x, child_pos.y, child_pos.z], &quat2mat(&frame));
+    *child_pos = Vector3::new(
+        frame_pos.x + turned[0],
+        frame_pos.y + turned[1],
+        frame_pos.z + turned[2],
+    );
+    let [w, x, y, z] = mulquat(&frame, &wxyz(child_quat));
+    *child_quat = UnitQuaternion::new_unchecked(Quaternion::new(w, x, y, z));
+}
+
+/// `q`'s components, (w, x, y, z).
+fn wxyz(q: &UnitQuaternion<f64>) -> [f64; 4] {
+    [q.w, q.i, q.j, q.k]
 }
 
 /// Expand every `<frame>` of a body tree.

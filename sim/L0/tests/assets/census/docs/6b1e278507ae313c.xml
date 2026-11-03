@@ -1,0 +1,1 @@
+<mujoco><compiler angle="degree"/><worldbody><body name="b"><freejoint/><frame pos="0.1 0.2 0.3" euler="10 20 30"><geom name="g" type="capsule" size=".05" fromto="0 0 0 0.3 0.4 0.5"/></frame></body></worldbody></mujoco>

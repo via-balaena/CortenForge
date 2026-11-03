@@ -8,6 +8,8 @@
 //! measured on MuJoCo 3.5.0; each table row is its numbering.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// `COMPOSED`'s poses are bit patterns, written as MuJoCo's values' raw bits.
+#![allow(clippy::unreadable_literal)]
 
 use nalgebra::Vector3;
 use sim_core::Model;
@@ -298,4 +300,659 @@ fn two_cables_of_one_prefix_one_in_a_frame_repeat_a_body_name() {
         matches!(&err, MjcfError::DuplicateName { kind: ElementKind::Body, name, .. } if name == "cB_first"),
         "{err}"
     );
+}
+
+/// One composed element, `(kind, id, name, position, quaternion)`: a body
+/// (`'B'`), geom (`'G'`) or site (`'S'`) by its id, and its position and
+/// quaternion (w, x, y, z) as f64 bits.
+type Composed = (char, usize, &'static str, [u64; 3], [u64; 4]);
+
+/// `(case, document, elements)`: every body but the world, every geom and
+/// every site, posed as MuJoCo 3.5.0 composes them through their frames
+/// (`mjuu_frameaccum`; measured, ledger L255).
+const COMPOSED: &[(&str, &str, &[Composed])] = &[
+    (
+        "bits_turned_frame_geom",
+        r#"<mujoco><compiler angle="degree"/><worldbody><body name="b" pos="0.1 0.2 0.3"><freejoint/><frame pos="0.3 -0.7 1.1" euler="10 20 30"><geom name="g" size=".1" pos="0.7 0.1 -0.3" euler="5 -15 25"/><site name="s" pos="0.2 0.3 0.4" euler="30 10 -20"/></frame></body></worldbody></mujoco>"#,
+        &[
+            (
+                'B',
+                1,
+                "b",
+                [0x3fb999999999999a, 0x3fc999999999999a, 0x3fd3333333333333],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'G',
+                0,
+                "g",
+                [0x3fe70acb6c5c9a52, 0xbfc811ccf6cc8128, 0x3fe6bf39383bba17],
+                [
+                    0x3fec05abf1452832,
+                    0x3fca15cfc7c62e76,
+                    0xbf87c39bbd091bb3,
+                    0x3fdc01b61d024c2a,
+                ],
+            ),
+            (
+                'S',
+                0,
+                "s",
+                [0x3fdd59ed474467b0, 0xbfda3614c7775bcf, 0x3ff865b4b5082318],
+                [
+                    0x3fec6936dbddd3a4,
+                    0x3fd2b0e2e918e377,
+                    0x3fd5d4bd747ad218,
+                    0x3fb9b60efccd6fae,
+                ],
+            ),
+        ],
+    ),
+    (
+        "bits_turned_frame_body",
+        r#"<mujoco><compiler angle="degree"/><worldbody><body name="b"><freejoint/><geom size=".1"/><frame pos="0.3 -0.7 1.1" euler="10 20 30"><body name="c" pos="0.7 0.1 -0.3" euler="5 -15 25"><joint name="j" axis="0.3 0.5 0.7"/><geom name="g" size=".1" pos="0.1 0.1 0.1"/></body></frame></body></worldbody></mujoco>"#,
+        &[
+            (
+                'B',
+                1,
+                "b",
+                [0x0000000000000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'B',
+                2,
+                "c",
+                [0x3fe70acb6c5c9a52, 0xbfc811ccf6cc8128, 0x3fe6bf39383bba17],
+                [
+                    0x3fec05abf1452832,
+                    0x3fca15cfc7c62e76,
+                    0xbf87c39bbd091bb3,
+                    0x3fdc01b61d024c2a,
+                ],
+            ),
+            (
+                'G',
+                0,
+                "-",
+                [0x0000000000000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'G',
+                1,
+                "g",
+                [0x3fb999999999999a, 0x3fb999999999999a, 0x3fb999999999999a],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+        ],
+    ),
+    (
+        "bits_nested_turned",
+        r#"<mujoco><compiler angle="degree"/><worldbody><body name="b"><freejoint/><frame pos="0.3 0.1 0" euler="13 17 19"><frame pos="-0.2 0.5 0.4" euler="23 29 31"><frame pos="0.1 0.1 0.1" axisangle="0.3 0.4 0.5 37"><geom name="g" size=".1" pos="0.7 0.1 -0.3" quat="0.9 0.1 0.2 0.3"/><site name="s" pos="0.2 0.3 0.4"/></frame></frame></frame></body></worldbody></mujoco>"#,
+        &[
+            (
+                'B',
+                1,
+                "b",
+                [0x0000000000000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'G',
+                0,
+                "g",
+                [0xbfcb87a30563a950, 0x3ff25838be23b2cb, 0x3fe93dc5edccc4f0],
+                [
+                    0x3fc497f416727ccd,
+                    0x3fdd005c109e3635,
+                    0x3fd98aaebf16c958,
+                    0x3fe8fb8995a87cbd,
+                ],
+            ),
+            (
+                'S',
+                0,
+                "s",
+                [0x3fdbadf7c99b2eec, 0x3fe4af5655784dd5, 0x3ff1f092548b989f],
+                [
+                    0x3fe08d39d89c9400,
+                    0x3fdc1d2c34102c4e,
+                    0x3fd945a25a7db178,
+                    0x3fe3d18ceefa325a,
+                ],
+            ),
+        ],
+    ),
+    (
+        "bits_unit_quat_frame",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><frame pos="0.3 -0.7 1.1" quat="0.2222222222222222 0.4444444444444444 0.5555555555555556 0.6666666666666666"><geom name="g" size=".1" pos="0.7 0.1 -0.3" quat="0.2222222222222222 0.4444444444444444 0.5555555555555556 0.6666666666666666"/></frame></body></worldbody></mujoco>"#,
+        &[
+            (
+                'B',
+                1,
+                "b",
+                [0x0000000000000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'G',
+                0,
+                "g",
+                [0xbfd254b3841bcff5, 0xbfd5a63df218050e, 0x3ff708379febc5d9],
+                [
+                    0xbfecd6e9e06522c4,
+                    0x3fc948b0fcd6e9e0,
+                    0x3fcf9add3c0ca458,
+                    0x3fd2f684bda12f68,
+                ],
+            ),
+        ],
+    ),
+    (
+        "bits_xyaxes_frame",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><frame xyaxes="0.6 0.8 0 -0.8 0.6 0.1"><geom name="g" size=".1" pos="1 2 3" zaxis="0.1 0.2 0.9"/><site name="s" pos="0.5 0 0" xyaxes="0 1 0 -1 0 0.2"/></frame></body></worldbody></mujoco>"#,
+        &[
+            (
+                'B',
+                1,
+                "b",
+                [0x0000000000000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'G',
+                0,
+                "g",
+                [0xbfe81aa0f524b9aa, 0x3ffd09fc5bedc59f, 0x4009791363068b54],
+                [
+                    0x3fec7d9c05305130,
+                    0xbfb3bbcc06315ff4,
+                    0x3f96a4a417ba857c,
+                    0x3fdcaf2c90d551cb,
+                ],
+            ),
+            (
+                'S',
+                0,
+                "s",
+                [0x3fd3333333333333, 0x3fd999999999999b, 0x0000000000000000],
+                [
+                    0x3fd3d12a7c1fc8ad,
+                    0x3fb401941b38dbe6,
+                    0x3fb3e36f3a0e8b17,
+                    0x3fee38e7f5d72fc8,
+                ],
+            ),
+        ],
+    ),
+    (
+        "bits_zaxis_frame",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><frame pos="1 2 3" zaxis="0.3 -0.4 0.8"><geom name="g" size=".1" pos="0.1 0.2 0.3"/><body name="c" pos="0.4 0.5 0.6" zaxis="1 1 1"><joint/><geom size=".1"/></body></frame></body></worldbody></mujoco>"#,
+        &[
+            (
+                'B',
+                1,
+                "b",
+                [0x0000000000000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'B',
+                2,
+                "c",
+                [0x3ff9afaf4ad97bce, 0x4001cf24bd089c66, 0x400cbfb0bbff7c5c],
+                [
+                    0x3febe400c4bf8429,
+                    0xbfbdd9804945e05c,
+                    0x3fdd661b1d4cbe88,
+                    0x3fc00f0009a9062c,
+                ],
+            ),
+            (
+                'G',
+                0,
+                "g",
+                [0x3ff345b6ab8f486a, 0x40007c30e2f5cfb9, 0x400a758dcf1204f9],
+                [
+                    0x3feec28cbb0319e1,
+                    0x3fcc3ada0709eacf,
+                    0x3fc52c238547701b,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'G',
+                1,
+                "-",
+                [0x0000000000000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+        ],
+    ),
+    (
+        "bits_world_frame_body",
+        r#"<mujoco><compiler angle="degree"/><worldbody><frame pos="0.3 -0.7 1.1" euler="10 20 30"><body name="c" pos="0.7 0.1 -0.3" euler="5 -15 25"><freejoint/><geom name="g" size=".1"/></body><geom name="wg" size=".1" pos="0.3 0.3 0.3" euler="1 2 3"/></frame></worldbody></mujoco>"#,
+        &[
+            (
+                'B',
+                1,
+                "c",
+                [0x3fe70acb6c5c9a52, 0xbfc811ccf6cc8128, 0x3fe6bf39383bba17],
+                [
+                    0x3fec05abf1452832,
+                    0x3fca15cfc7c62e76,
+                    0xbf87c39bbd091bb3,
+                    0x3fdc01b61d024c2a,
+                ],
+            ),
+            (
+                'G',
+                0,
+                "wg",
+                [0x3fe02f718f57f5c2, 0xbfd5afb59782a8d3, 0x3ff696bd22e4fb3d],
+                [
+                    0x3fedd6cffea9eae5,
+                    0x3fc156df1585580c,
+                    0x3fc47fe0150263d2,
+                    0x3fd2d293ce9db9e9,
+                ],
+            ),
+            (
+                'G',
+                1,
+                "g",
+                [0x0000000000000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+        ],
+    ),
+    (
+        "bits_unnormalised_frame_quat",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><frame quat="1 2 3 4"><geom name="g" size=".1" pos="1 1 1" quat="4 3 2 1"/><site name="s" pos="1 0 0" quat="2 0 0 1"/></frame></body></worldbody></mujoco>"#,
+        &[
+            (
+                'B',
+                1,
+                "b",
+                [0x0000000000000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'G',
+                0,
+                "g",
+                [0x3fc9999999999998, 0x3fefffffffffffff, 0x3ff6666666666666],
+                [
+                    0xbfd9999999999999,
+                    0x3fc9999999999998,
+                    0x3fe9999999999999,
+                    0x3fd9999999999998,
+                ],
+            ),
+            (
+                'S',
+                0,
+                "s",
+                [0xbfe5555555555554, 0x3fe5555555555554, 0x3fd5555555555554],
+                [
+                    0xbfc4e6fdf33cf031,
+                    0x3fe24a1e34d5522b,
+                    0x3fd4e6fdf33cf031,
+                    0x3fe783ddb1a48e37,
+                ],
+            ),
+        ],
+    ),
+    (
+        "bits_fromto_in_turned_frame",
+        r#"<mujoco><compiler angle="degree"/><worldbody><body name="b"><freejoint/><frame pos="0.1 0.2 0.3" euler="10 20 30"><geom name="g" type="capsule" size=".05" fromto="0 0 0 0.3 0.4 0.5"/></frame></body></worldbody></mujoco>"#,
+        &[
+            (
+                'B',
+                1,
+                "b",
+                [0x0000000000000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'G',
+                0,
+                "g",
+                [0x3fcb576c2f5ce964, 0x3fd9f257585935f6, 0x3fe20f6b382143a4],
+                [
+                    0x3fd636a5ff5cdedc,
+                    0x3feca5a52df55cd3,
+                    0xbfd13ab76ea9b2e4,
+                    0xbfb3393a8c09305a,
+                ],
+            ),
+        ],
+    ),
+    (
+        "bits_frame_radian",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><frame euler="0.1 0.2 0.3"><geom name="g" size=".1" pos="1 0 0" euler="0.3 0.2 0.1"/></frame></body></worldbody></mujoco>"#,
+        &[
+            (
+                'B',
+                1,
+                "b",
+                [0x0000000000000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'G',
+                0,
+                "g",
+                [0x3fefffd679f32c1b, 0x3f7578af92deb8eb, 0xbf6c85267bd4d147],
+                [
+                    0x3fefffd99d5d207a,
+                    0x3f6c9ec8bc3410d5,
+                    0x3f6c9b909f6604f1,
+                    0x3f6c9ec8bc3410d5,
+                ],
+            ),
+        ],
+    ),
+    (
+        "comp_in_turned_world_frame",
+        r#"<mujoco><compiler angle="degree"/><worldbody><frame pos="0 1 0" euler="0 0 90"><composite type="cable" count="4 1 1" curve="s" size="1" prefix="c"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></frame></worldbody></mujoco>"#,
+        &[
+            (
+                'B',
+                1,
+                "cB_first",
+                [0x0000000000000000, 0x3ff0000000000000, 0x0000000000000000],
+                [
+                    0x3fe6a09e667f3bcd,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x3fe6a09e667f3bcc,
+                ],
+            ),
+            (
+                'B',
+                2,
+                "cB_1",
+                [0x3fd5555560000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'B',
+                3,
+                "cB_last",
+                [0x3fd5555560000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'G',
+                0,
+                "cG0",
+                [0x3fc5555560000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3fe6a09e667f3bcd,
+                    0x0000000000000000,
+                    0xbfe6a09e667f3bcc,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'G',
+                1,
+                "cG1",
+                [0x3fc5555560000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3fe6a09e667f3bcd,
+                    0x0000000000000000,
+                    0xbfe6a09e667f3bcc,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'G',
+                2,
+                "cG2",
+                [0x3fc5555540000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3fe6a09e667f3bcd,
+                    0x0000000000000000,
+                    0xbfe6a09e667f3bcc,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'S',
+                0,
+                "cS_first",
+                [0x0000000000000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'S',
+                1,
+                "cS_last",
+                [0x3fd5555540000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+        ],
+    ),
+    (
+        "comp_in_nested_frame",
+        r#"<mujoco><compiler angle="degree"/><worldbody><frame pos="1 0 0"><frame pos="0 1 0" euler="0 0 45"><composite type="cable" count="4 1 1" curve="s" size="1" prefix="c"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></frame></frame></worldbody></mujoco>"#,
+        &[
+            (
+                'B',
+                1,
+                "cB_first",
+                [0x3ff0000000000000, 0x3ff0000000000000, 0x0000000000000000],
+                [
+                    0x3fed906bcf328d46,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x3fd87de2a6aea963,
+                ],
+            ),
+            (
+                'B',
+                2,
+                "cB_1",
+                [0x3fd5555560000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'B',
+                3,
+                "cB_last",
+                [0x3fd5555560000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'G',
+                0,
+                "cG0",
+                [0x3fc5555560000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3fe6a09e667f3bcd,
+                    0x0000000000000000,
+                    0xbfe6a09e667f3bcc,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'G',
+                1,
+                "cG1",
+                [0x3fc5555560000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3fe6a09e667f3bcd,
+                    0x0000000000000000,
+                    0xbfe6a09e667f3bcc,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'G',
+                2,
+                "cG2",
+                [0x3fc5555540000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3fe6a09e667f3bcd,
+                    0x0000000000000000,
+                    0xbfe6a09e667f3bcc,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'S',
+                0,
+                "cS_first",
+                [0x0000000000000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+            (
+                'S',
+                1,
+                "cS_last",
+                [0x3fd5555540000000, 0x0000000000000000, 0x0000000000000000],
+                [
+                    0x3ff0000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                    0x0000000000000000,
+                ],
+            ),
+        ],
+    ),
+];
+
+#[test]
+fn a_frame_composes_a_pose_as_mujocos_frameaccum() {
+    // Bit for bit where the goldens were measured (macOS arm64); elsewhere
+    // the libm that turns an euler angle may round otherwise, so within
+    // 1e-12, which a NaN fails.
+    let here = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let mut differ = Vec::new();
+    for &(case, xml, elements) in COMPOSED {
+        let model = load_model(xml).unwrap_or_else(|e| panic!("{case}: {e}"));
+        for &(kind, id, name, pos, quat) in elements {
+            let (p, q) = match kind {
+                'B' => (model.body_pos[id], model.body_quat[id]),
+                'G' => (model.geom_pos[id], model.geom_quat[id]),
+                _ => (model.site_pos[id], model.site_quat[id]),
+            };
+            let got = [p.x, p.y, p.z, q.w, q.i, q.j, q.k];
+            let want = pos.iter().chain(&quat).map(|b| f64::from_bits(*b));
+            let same = got.iter().zip(want).all(|(a, b)| {
+                if here {
+                    a.to_bits() == b.to_bits()
+                } else {
+                    (a - b).abs() <= 1e-12
+                }
+            });
+            if !same {
+                differ.push(format!("{case} {kind} {name}: {got:?}"));
+            }
+        }
+    }
+    assert!(differ.is_empty(), "{differ:#?}");
 }

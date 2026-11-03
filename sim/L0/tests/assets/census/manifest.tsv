@@ -3091,3 +3091,13 @@ d0663fa9a18d9138	sim/L0/mjcf/tests/frame_contents.rs:81
 8171548486fd82ac	sim/L0/mjcf/tests/frame_contents.rs:231
 9102447d3a4b1eb6	sim/L0/mjcf/tests/frame_contents.rs:295
 9235d4b50419ec68	sim/L0/mjcf/src/builder/items.rs:254
+0d9a47b254132e2d	sim/L0/mjcf/tests/frame_contents.rs:622
+2e46d83a17baad64	sim/L0/mjcf/tests/frame_contents.rs:358
+3c06604cff5f38fe	sim/L0/mjcf/tests/frame_contents.rs:526
+5da01d2351fb8182	sim/L0/mjcf/tests/frame_contents.rs:412
+6508068d0a771a66	sim/L0/mjcf/tests/frame_contents.rs:316
+6b1e278507ae313c	sim/L0/mjcf/tests/frame_contents.rs:664
+71c801e63f136cea	sim/L0/mjcf/tests/frame_contents.rs:484
+9465b5acc5da0d9a	sim/L0/mjcf/tests/frame_contents.rs:580
+bdc89eacbd79567f	sim/L0/mjcf/tests/frame_contents.rs:454
+efbf4abaf622d9c4	sim/L0/mjcf/tests/frame_contents.rs:694

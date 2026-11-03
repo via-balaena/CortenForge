@@ -73,6 +73,47 @@ pub fn mulquat(qa: &[f64; 4], qb: &[f64; 4]) -> [f64; 4] {
     r
 }
 
+/// `mjuu_quat2mat` (`user_util.cc:203-241`): the rotation matrix (row-major)
+/// of the quaternion, exactly the identity for (1, 0, 0, 0).
+pub fn quat2mat(q: &[f64; 4]) -> [f64; 9] {
+    // MuJoCo's exact test for the identity, which skips the products.
+    #[allow(clippy::float_cmp)]
+    if *q == [1.0, 0.0, 0.0, 0.0] {
+        return [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    }
+    let q00 = q[0] * q[0];
+    let q01 = q[0] * q[1];
+    let q02 = q[0] * q[2];
+    let q03 = q[0] * q[3];
+    let q11 = q[1] * q[1];
+    let q12 = q[1] * q[2];
+    let q13 = q[1] * q[3];
+    let q22 = q[2] * q[2];
+    let q23 = q[2] * q[3];
+    let q33 = q[3] * q[3];
+    [
+        q00 + q11 - q22 - q33,
+        2.0 * (q12 - q03),
+        2.0 * (q13 + q02),
+        2.0 * (q12 + q03),
+        q00 - q11 + q22 - q33,
+        2.0 * (q23 - q01),
+        2.0 * (q13 - q02),
+        2.0 * (q23 + q01),
+        q00 - q11 - q22 + q33,
+    ]
+}
+
+/// `mjuu_mulvecmat` (`user_util.cc:257-266`): the row-major matrix `mat`
+/// times `vec`, each row's sum from its first product.
+pub fn mulvecmat(vec: &[f64; 3], mat: &[f64; 9]) -> [f64; 3] {
+    [
+        mat[0] * vec[0] + mat[1] * vec[1] + mat[2] * vec[2],
+        mat[3] * vec[0] + mat[4] * vec[1] + mat[5] * vec[2],
+        mat[6] * vec[0] + mat[7] * vec[1] + mat[8] * vec[2],
+    ]
+}
+
 /// `mjuu_frame2quat` (`user_util.cc:412-448`): the quaternion of the frame
 /// whose columns are `x`, `y` and `z`, taken from its largest component, made
 /// unit by `normvec`.

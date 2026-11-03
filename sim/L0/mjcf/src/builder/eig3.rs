@@ -5,7 +5,7 @@
 //! plain arithmetic: each product and sum in the C source's order, with no
 //! fused multiply-add, as the build the census's oracle compiles.
 
-use super::orientation::{MJ_EPS, mulquat, normvec};
+use super::orientation::{MJ_EPS, mulquat, normvec, quat2mat};
 
 /// `kEigEPS` (`user_util.cc:660`): the Jacobi iteration's stop thresholds and
 /// the sort's tie margin.
@@ -104,37 +104,6 @@ pub fn full_inertia(full: &[f64; 6]) -> Result<([f64; 3], [f64; 4]), &'static st
         return Err("inertia must have positive eigenvalues");
     }
     Ok((eigval, quat))
-}
-
-/// `mjuu_quat2mat`: the rotation matrix (row-major) of the quaternion, exactly
-/// the identity for (1, 0, 0, 0).
-fn quat2mat(q: &[f64; 4]) -> [f64; 9] {
-    // MuJoCo's exact test for the identity, which skips the products.
-    #[allow(clippy::float_cmp)]
-    if *q == [1.0, 0.0, 0.0, 0.0] {
-        return [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-    }
-    let q00 = q[0] * q[0];
-    let q01 = q[0] * q[1];
-    let q02 = q[0] * q[2];
-    let q03 = q[0] * q[3];
-    let q11 = q[1] * q[1];
-    let q12 = q[1] * q[2];
-    let q13 = q[1] * q[3];
-    let q22 = q[2] * q[2];
-    let q23 = q[2] * q[3];
-    let q33 = q[3] * q[3];
-    [
-        q00 + q11 - q22 - q33,
-        2.0 * (q12 - q03),
-        2.0 * (q13 + q02),
-        2.0 * (q12 + q03),
-        q00 - q11 + q22 - q33,
-        2.0 * (q23 - q01),
-        2.0 * (q13 - q02),
-        2.0 * (q23 + q01),
-        q00 - q11 - q22 + q33,
-    ]
 }
 
 /// `mjuu_transposemat`.
