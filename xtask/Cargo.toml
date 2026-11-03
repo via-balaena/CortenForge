@@ -43,7 +43,7 @@ serde_json = "1"
 # not enough -- see coverage.rs. `visit` is for doc_theft.rs, which has to reach
 # every named declaration wherever it nests -- including items declared inside
 # function bodies -- and a hand-written walk misses those by omission.
-syn = { version = "2", features = ["full", "parsing", "printing", "visit"] }
+syn = { version = "3", features = ["full", "parsing", "printing", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 
 # SHA-256 for the licensed-asset integrity check. The BodyParts3D meshes are
@@ -52,7 +52,7 @@ proc-macro2 = { version = "1", features = ["span-locations"] }
 # pure-Rust digest beats shelling out to shasum/sha256sum, which differ by
 # platform; sha2 is already in the workspace lock, so this adds a direct edge
 # rather than new supply-chain surface.
-sha2 = "0.10"
+sha2 = "0.11"
 
 # Walking directories
 walkdir = "2"
