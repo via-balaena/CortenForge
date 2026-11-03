@@ -111,6 +111,13 @@ const ORDER: &[(&str, &str, &str, &str, &str)] = &[
         "a@1 z@1 cG0@2 cG1@3 cG2@4 -@5",
         "cS_first@2 cS_last@4",
     ),
+    (
+        "ord_frame_bodies_around_nested",
+        r#"<mujoco><worldbody><body name="p"><freejoint/><geom size=".1"/><frame pos="0 0 1"><body name="A"><geom name="gA" size=".1"/></body><frame pos="1 0 0"><body name="B"><geom name="gB" size=".1"/></body></frame><body name="C"><geom name="gC" size=".1"/></body></frame></body></worldbody></mujoco>"#,
+        "world@0 p@0 A@1 B@1 C@1",
+        "-@1 gA@2 gB@3 gC@4",
+        "",
+    ),
 ];
 
 /// One kind's elements in id order, as `ORDER` writes them.
