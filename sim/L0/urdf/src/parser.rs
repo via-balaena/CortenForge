@@ -798,39 +798,44 @@ mod tests {
     }
 
     /// Every document below MuJoCo 3.5.0's importer refuses (measured), for
-    /// the attribute or element named; this reader refuses each. At the
-    /// parent 23 of the 31 loaded, 6 were refused for another reason (a
-    /// vector of other than three numbers, and an empty `<geometry/>` read to
-    /// the end of its link), and `mass empty` and `mass two` as here (run
-    /// there).
+    /// the attribute or element, or in MuJoCo's words, named; this reader
+    /// refuses each. Before `a7ac2c20` 23 of the 32 loaded, 8 were refused
+    /// otherwise (a vector of other than three numbers, `1 2` and `nan(1)`
+    /// as not a number, an empty `<geometry/>` read to the end of its link)
+    /// and `mass empty` as here (run there).
     #[test]
     fn what_mujocos_importer_refuses_is_refused() {
         let joint = |limit: &str| format!(r#"<axis xyz="0 0 1"/>{limit}"#);
         let cases: Vec<(&str, String, &str)> = vec![
             ("lower bad", two_links("", &joint(r#"<limit lower="abc" upper="1"/>"#)), "lower"),
-            ("lower two", two_links("", &joint(r#"<limit lower="-1 0" upper="1"/>"#)), "lower"),
+            ("lower two", two_links("", &joint(r#"<limit lower="-1 0" upper="1"/>"#)), "has too much data"),
             ("effort bad", two_links("", &joint(r#"<limit effort="x"/>"#)), "effort"),
             ("damping bad", two_links("", &joint(r#"<dynamics damping="x"/>"#)), "damping"),
-            ("origin too much", two_links(r#"<origin xyz="0 0 1 4"/>"#, ""), "xyz"),
-            ("origin too little", two_links(r#"<origin xyz="0 1"/>"#, ""), "xyz"),
+            ("origin too much", two_links(r#"<origin xyz="0 0 1 4"/>"#, ""), "has too much data"),
+            ("origin too little", two_links(r#"<origin xyz="0 1"/>"#, ""), "does not have enough data"),
             ("rpy bad", two_links(r#"<origin rpy="0 0 a"/>"#, ""), "rpy"),
             ("axis no xyz", two_links("", "<axis/>"), "xyz"),
-            ("axis too much", two_links("", r#"<axis xyz="0 0 1 0"/>"#), "xyz"),
-            ("axis too little", two_links("", r#"<axis xyz="0 1"/>"#), "xyz"),
+            ("axis too much", two_links("", r#"<axis xyz="0 0 1 0"/>"#), "has too much data"),
+            ("axis too little", two_links("", r#"<axis xyz="0 1"/>"#), "does not have enough data"),
             ("ixy missing", one_link(r#"<inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1"/></inertial>"#), "ixy"),
             ("ixx bad", one_link(r#"<inertial><mass value="1"/><inertia ixx="a" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial>"#), "ixx"),
             ("no inertia", one_link(r#"<inertial><mass value="1"/></inertial>"#), "inertia"),
             ("no mass", one_link(&format!("<inertial><inertia {I6}/></inertial>")), "mass"),
             ("empty inertial", one_link("<inertial/>"), "mass"),
             ("mass empty", one_link(&format!(r#"<inertial><mass value=""/><inertia {I6}/></inertial>"#)), "value"),
-            ("mass two", one_link(&format!(r#"<inertial><mass value="1 2"/><inertia {I6}/></inertial>"#)), "value"),
-            ("mass underflow", one_link(&format!(r#"<inertial><mass value="1e-999"/><inertia {I6}/></inertial>"#)), "value"),
-            ("mass overflow", one_link(&format!(r#"<inertial><mass value="1e400"/><inertia {I6}/></inertial>"#)), "value"),
+            ("mass two", one_link(&format!(r#"<inertial><mass value="1 2"/><inertia {I6}/></inertial>"#)), "has too much data"),
+            ("mass underflow", one_link(&format!(r#"<inertial><mass value="1e-999"/><inertia {I6}/></inertial>"#)), "number is too large"),
+            ("mass overflow", one_link(&format!(r#"<inertial><mass value="1e400"/><inertia {I6}/></inertial>"#)), "number is too large"),
             // MuJoCo loads a NaN with a warning; refused here (D-NONFINITE).
-            ("mass nan", one_link(&format!(r#"<inertial><mass value="nan"/><inertia {I6}/></inertial>"#)), "value"),
+            (
+                "mass nan payload",
+                one_link(&format!(r#"<inertial><mass value="nan(1)"/><inertia {I6}/></inertial>"#)),
+                "a NaN or an infinity is not allowed",
+            ),
+            ("mass nan", one_link(&format!(r#"<inertial><mass value="nan"/><inertia {I6}/></inertial>"#)), "a NaN or an infinity is not allowed"),
             ("sphere bad", one_link(r#"<collision><geometry><sphere radius="x"/></geometry></collision>"#), "radius"),
             ("sphere no radius", one_link("<collision><geometry><sphere/></geometry></collision>"), "radius"),
-            ("box two", one_link(r#"<collision><geometry><box size="1 1"/></geometry></collision>"#), "size"),
+            ("box two", one_link(r#"<collision><geometry><box size="1 1"/></geometry></collision>"#), "does not have enough data"),
             ("cylinder no length", one_link(r#"<collision><geometry><cylinder radius="0.1"/></geometry></collision>"#), "length"),
             ("mesh scale two", one_link(r#"<collision><geometry><mesh filename="a.stl" scale="1 1"/></geometry></collision>"#), "scale"),
             ("collision no geometry", one_link(r#"<collision><origin xyz="0 0 0"/></collision>"#), "geometry"),
