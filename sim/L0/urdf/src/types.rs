@@ -128,6 +128,7 @@ impl UrdfInertia {
 /// Geometry shape from `<geometry>` element.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[non_exhaustive]
 pub enum UrdfGeometry {
     /// Box with size (x, y, z) in meters.
     Box {
@@ -145,6 +146,14 @@ pub enum UrdfGeometry {
     Sphere {
         /// Sphere radius in meters.
         radius: f64,
+    },
+    /// Capsule with radius and length (of its cylinder) in meters: not URDF's
+    /// own shape, but one MuJoCo 3.5.0's importer reads (`xml_urdf.cc:567-573`).
+    Capsule {
+        /// Capsule radius in meters.
+        radius: f64,
+        /// The length of the capsule's cylinder in meters.
+        length: f64,
     },
     /// Mesh file reference.
     Mesh {

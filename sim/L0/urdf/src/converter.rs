@@ -685,6 +685,10 @@ impl<'a> Converter<'a> {
                 ("cylinder", format!("{} {}", radius, length / 2.0))
             }
             UrdfGeometry::Sphere { radius } => ("sphere", format!("{radius}")),
+            UrdfGeometry::Capsule { radius, length } => {
+                // MJCF capsule: size="radius half_length", as MuJoCo's importer halves it
+                ("capsule", format!("{} {}", radius, length / 2.0))
+            }
             UrdfGeometry::Mesh { filename, scale } => {
                 let stripped = strip_package_prefix(filename);
                 if let Some(asset) = self.mesh_asset(&stripped, *scale) {

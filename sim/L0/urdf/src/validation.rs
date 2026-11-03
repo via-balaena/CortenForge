@@ -288,6 +288,14 @@ fn check_geometry_finite(geom: &UrdfGeometry, link_name: &str) -> Result<()> {
                 ));
             }
         }
+        UrdfGeometry::Capsule { radius, length } => {
+            if !radius.is_finite() || !length.is_finite() {
+                return Err(UrdfError::invalid_geometry(
+                    link_name,
+                    "capsule radius and length must be finite",
+                ));
+            }
+        }
         UrdfGeometry::Mesh { scale: Some(s), .. } => {
             if !s.x.is_finite() || !s.y.is_finite() || !s.z.is_finite() {
                 return Err(UrdfError::invalid_geometry(

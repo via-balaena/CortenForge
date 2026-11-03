@@ -19,6 +19,16 @@ pub enum UrdfError {
         context: String,
     },
 
+    /// A sub-element MuJoCo 3.5.0's importer looks up by name, written twice
+    /// (`FindSubElem`: "repeated element").
+    #[error("repeated element: {element} in {context}")]
+    RepeatedElement {
+        /// The repeated element's tag.
+        element: &'static str,
+        /// The element holding it.
+        context: String,
+    },
+
     /// Missing required attribute.
     #[error("missing required attribute: {attribute} on {element}")]
     MissingAttribute {

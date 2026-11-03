@@ -1,505 +1,426 @@
 //! URDF XML parser.
 //!
-//! Parses URDF XML into the intermediate representation types.
+//! Reads a URDF document as MuJoCo 3.5.0's importer reads it (`xml_urdf.cc`,
+//! `mjXURDF::Parse`): the document is read into a tree of elements, then in
+//! the importer's passes — every named material's colour (`MakeMaterials`),
+//! every link's name, every joint's parent and child links, then each link's
+//! contents, then each joint's — so that of two faults it refuses the one
+//! MuJoCo meets first. A sub-element the importer looks up by name
+//! (`FindSubElem`) is refused when written twice, and when missing where it
+//! is required; every number is read by MuJoCo's rules ([`read_numbers`]).
+//! What the importer does not read is not read here: a visual's origin and
+//! geometry (it discards visuals under URDF's `discardvisual`), a fixed
+//! joint's limit and dynamics, a geometry's shapes after the one it takes, a
+//! `velocity`. A `<mimic>`, which it does not read either, this crate makes
+//! a joint equality of (`D-URDF-MIMIC`).
+
+use std::collections::HashSet;
 
 use nalgebra::Vector3;
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
-use std::io::BufRead;
 
 use crate::error::{Result, UrdfError};
 use crate::types::{
     UrdfCollision, UrdfGeometry, UrdfInertia, UrdfInertial, UrdfJoint, UrdfJointDynamics,
-    UrdfJointLimit, UrdfJointType, UrdfLink, UrdfOrigin, UrdfRobot, UrdfVisual,
+    UrdfJointLimit, UrdfJointType, UrdfLink, UrdfMimic, UrdfOrigin, UrdfRobot, UrdfVisual,
 };
 
 /// Parse a URDF string into a robot model.
 ///
 /// # Errors
 ///
-/// Returns an error if the XML is malformed or missing required elements.
+/// Returns an error if the XML is malformed, or where MuJoCo 3.5.0's importer
+/// refuses the document.
 pub fn parse_urdf_str(xml: &str) -> Result<UrdfRobot> {
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-    parse_urdf_reader(&mut reader)
-}
+    let root = read_tree(xml)?;
+    if root.tag != "robot" {
+        return Err(UrdfError::missing_element("robot", "URDF document"));
+    }
+    // MuJoCo's own sections in a URDF (`<mujoco><compiler|option|size>`) are
+    // not read (ledger L378); the element is looked up as MuJoCo looks it up.
+    root.find_sub("mujoco", false)?;
+    let mut robot = UrdfRobot::new(root.attr("name").unwrap_or(""));
+    make_materials(&root)?;
 
-/// Parse URDF from a reader.
-fn parse_urdf_reader<R: BufRead>(reader: &mut Reader<R>) -> Result<UrdfRobot> {
-    let mut buf = Vec::new();
-    let mut robot: Option<UrdfRobot> = None;
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) if e.name().as_ref() == b"robot" => {
-                robot = Some(parse_robot(reader, e)?);
-            }
-            Ok(Event::Eof) => break,
-            Ok(_) => {}
-            Err(e) => return Err(UrdfError::XmlParse(e.to_string())),
+    let links: Vec<&Element> = root.children.iter().filter(|e| e.tag == "link").collect();
+    let joints: Vec<&Element> = root.children.iter().filter(|e| e.tag == "joint").collect();
+    let mut names = HashSet::new();
+    for link in &links {
+        let name = link.required_text("name")?;
+        if !names.insert(name) {
+            return Err(UrdfError::DuplicateLink(name.to_owned()));
         }
-        buf.clear();
+    }
+    let mut children = HashSet::new();
+    let mut edges = Vec::new();
+    for joint in &joints {
+        let joint_name = joint.attr("name").unwrap_or("");
+        let parent = joint.required_sub("parent")?.required_text("link")?;
+        let child = joint.required_sub("child")?.required_text("link")?;
+        if let Some(missing) = [parent, child].into_iter().find(|l| !names.contains(l)) {
+            return Err(UrdfError::undefined_link(missing, joint_name));
+        }
+        if !children.insert(child) {
+            return Err(UrdfError::KinematicLoop(format!(
+                "link '{child}' has multiple parent joints"
+            )));
+        }
+        edges.push((parent, child));
+    }
+    // The links a root reaches (`AddToTree`): MuJoCo reads a link no root
+    // reaches as "URDF body not found", at that link's turn below.
+    let mut reached: HashSet<&str> = names
+        .iter()
+        .copied()
+        .filter(|l| !children.contains(l))
+        .collect();
+    let mut frontier: Vec<&str> = reached.iter().copied().collect();
+    while let Some(link) = frontier.pop() {
+        for &(_, child) in edges.iter().filter(|(parent, _)| *parent == link) {
+            if reached.insert(child) {
+                frontier.push(child);
+            }
+        }
     }
 
-    robot.ok_or_else(|| UrdfError::missing_element("robot", "URDF document"))
-}
-
-/// Parse the robot element and its children.
-fn parse_robot<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<UrdfRobot> {
-    let name = get_attribute(start, "name")?;
-    let mut robot = UrdfRobot::new(name);
-    let mut buf = Vec::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
-                    b"link" => {
-                        let link = parse_link(reader, e)?;
-                        robot.links.push(link);
-                    }
-                    b"joint" => {
-                        let joint = parse_joint(reader, e)?;
-                        robot.joints.push(joint);
-                    }
-                    b"material" => read_material(reader, e)?,
-                    // Skip gazebo and other elements
-                    _ => skip_element(reader, &elem_name)?,
-                }
-            }
-            Ok(Event::Empty(ref e)) => {
-                // Handle self-closing elements
-                if e.name().as_ref() == b"link" {
-                    // Empty link (just a name, no inertial/visual/collision)
-                    let name = get_attribute(e, "name")?;
-                    robot.links.push(UrdfLink::new(name));
-                }
-            }
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"robot" => break,
-            Ok(Event::Eof) => return Err(UrdfError::XmlParse("unexpected EOF in robot".into())),
-            Ok(_) => {}
-            Err(e) => return Err(UrdfError::XmlParse(e.to_string())),
+    for link in links {
+        let name = link.required_text("name")?;
+        if !reached.contains(name) {
+            return Err(UrdfError::KinematicLoop(format!(
+                "link '{name}' is reached from no root link: its parent joints lead into a loop"
+            )));
         }
-        buf.clear();
+        robot.links.push(parse_link(link)?);
     }
-
+    for joint in joints {
+        robot.joints.push(parse_joint(joint)?);
+    }
     Ok(robot)
 }
 
-/// Parse a link element.
-fn parse_link<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<UrdfLink> {
-    let name = get_attribute(start, "name")?;
-    let mut link = UrdfLink::new(name);
-    let mut buf = Vec::new();
+// ============================================================================
+// The element tree
+// ============================================================================
 
+/// An element of the document: its tag, its attributes as tinyxml2 gives
+/// them to MuJoCo (entities and character references replaced), its child
+/// elements in order. Text is not kept: the importer reads none.
+struct Element {
+    tag: String,
+    attrs: Vec<(String, String)>,
+    children: Vec<Self>,
+}
+
+impl Element {
+    /// A new element from its start tag. An attribute that is malformed or
+    /// written twice is an XML error, as tinyxml2's is in MuJoCo.
+    fn new(start: &BytesStart) -> Result<Self> {
+        let tag = String::from_utf8_lossy(start.name().as_ref()).into_owned();
+        let mut attrs = Vec::new();
+        for attr in start.attributes() {
+            let attr = attr.map_err(|e| UrdfError::XmlParse(e.to_string()))?;
+            let raw =
+                std::str::from_utf8(&attr.value).map_err(|e| UrdfError::XmlParse(e.to_string()))?;
+            let value =
+                quick_xml::escape::unescape(raw).map_err(|e| UrdfError::XmlParse(e.to_string()))?;
+            attrs.push((
+                String::from_utf8_lossy(attr.key.as_ref()).into_owned(),
+                value.into_owned(),
+            ));
+        }
+        Ok(Self {
+            tag,
+            attrs,
+            children: Vec::new(),
+        })
+    }
+
+    /// The attribute's text.
+    fn attr(&self, name: &str) -> Option<&str> {
+        self.attrs
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// The attribute's text, required (`ReadAttrTxt` with `required`).
+    fn required_text(&self, name: &'static str) -> Result<&str> {
+        self.attr(name)
+            .ok_or_else(|| UrdfError::missing_attribute(name, &self.tag))
+    }
+
+    /// The child element `tag`, as MuJoCo's `FindSubElem` finds it
+    /// (`xml_util.cc:901-926`): written twice, refused ("repeated element").
+    fn find_sub(&self, tag: &'static str, required: bool) -> Result<Option<&Self>> {
+        let mut found = None;
+        for child in self.children.iter().filter(|c| c.tag == tag) {
+            if found.is_some() {
+                return Err(UrdfError::RepeatedElement {
+                    element: tag,
+                    context: self.tag.clone(),
+                });
+            }
+            found = Some(child);
+        }
+        if required && found.is_none() {
+            return Err(UrdfError::missing_element(tag, self.tag.clone()));
+        }
+        Ok(found)
+    }
+
+    /// The child element `tag`, required ([`Element::find_sub`]).
+    fn required_sub(&self, tag: &'static str) -> Result<&Self> {
+        self.find_sub(tag, true)?
+            .ok_or_else(|| UrdfError::missing_element(tag, self.tag.clone()))
+    }
+}
+
+/// The document's root element, read without recursing.
+fn read_tree(xml: &str) -> Result<Element> {
+    let mut reader = Reader::from_str(xml);
+    let mut stack: Vec<Element> = Vec::new();
+    let mut root = None;
+    let mut buf = Vec::new();
     loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
-                    b"inertial" => {
-                        link.inertial = Some(parse_inertial(reader)?);
-                    }
-                    b"visual" => {
-                        if let Some(visual) = parse_visual(reader, e)? {
-                            link.visuals.push(visual);
-                        }
-                    }
-                    b"collision" => link.collisions.push(parse_collision(reader, e)?),
-                    _ => skip_element(reader, &elem_name)?,
+        let event = reader
+            .read_event_into(&mut buf)
+            .map_err(|e| UrdfError::XmlParse(e.to_string()))?;
+        match event {
+            Event::Start(ref e) => stack.push(Element::new(e)?),
+            Event::Empty(ref e) => {
+                let element = Element::new(e)?;
+                match stack.last_mut() {
+                    Some(parent) => parent.children.push(element),
+                    None => root = root.or(Some(element)),
                 }
             }
-            // MuJoCo 3.5.0's importer reads an element whatever its form: an
-            // empty `<inertial/>` has no `<mass>`, an empty `<collision/>` no
-            // `<geometry>` (measured); an empty `<visual/>` it does not read.
-            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
-                b"inertial" => return Err(UrdfError::missing_element("mass", "inertial")),
-                b"collision" => return Err(UrdfError::missing_element("geometry", "collision")),
-                _ => {}
-            },
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"link" => break,
-            Ok(Event::Eof) => return Err(UrdfError::XmlParse("unexpected EOF in link".into())),
-            Ok(_) => {}
-            Err(e) => return Err(UrdfError::XmlParse(e.to_string())),
+            Event::End(_) => {
+                let element = stack
+                    .pop()
+                    .ok_or_else(|| UrdfError::XmlParse("unmatched end tag".into()))?;
+                match stack.last_mut() {
+                    Some(parent) => parent.children.push(element),
+                    None => root = root.or(Some(element)),
+                }
+            }
+            Event::Eof => break,
+            _ => {}
         }
         buf.clear();
     }
+    if !stack.is_empty() {
+        return Err(UrdfError::XmlParse("unexpected end of the document".into()));
+    }
+    root.ok_or_else(|| UrdfError::missing_element("robot", "URDF document"))
+}
 
+// ============================================================================
+// The importer's passes
+// ============================================================================
+
+/// Every named material's colour, as MuJoCo 3.5.0's `MakeMaterials` reads
+/// them (`xml_urdf.cc:741-768`): every `<material>` in the document, at any
+/// depth, in document order; one whose name no earlier material with a
+/// colour registered has its `<color>`'s `rgba` read, four single-precision
+/// numbers, required, and registers the name.
+fn make_materials(root: &Element) -> Result<()> {
+    let mut registered = HashSet::new();
+    let mut stack = vec![root];
+    while let Some(element) = stack.pop() {
+        if element.tag == "material"
+            && let Some(name) = element.attr("name")
+            && !registered.contains(name)
+            && let Some(color) = element.find_sub("color", false)?
+        {
+            read_floats::<4>(color, "rgba", true)?;
+            registered.insert(name);
+        }
+        stack.extend(element.children.iter().rev());
+    }
+    Ok(())
+}
+
+/// A link's contents (`mjXURDF::Body`, `xml_urdf.cc:230-361`): its
+/// `<inertial>`, then its visuals and collisions in order.
+fn parse_link(element: &Element) -> Result<UrdfLink> {
+    let mut link = UrdfLink::new(element.required_text("name")?);
+    if let Some(inertial) = element.find_sub("inertial", false)? {
+        link.inertial = Some(parse_inertial(inertial)?);
+    }
+    for child in &element.children {
+        match child.tag.as_str() {
+            "visual" => {
+                if let Some(visual) = parse_visual(child)? {
+                    link.visuals.push(visual);
+                }
+            }
+            "collision" => link.collisions.push(parse_collision(child)?),
+            _ => {}
+        }
+    }
     Ok(link)
 }
 
-/// Parse an inertial element: its `<mass>` and `<inertia>` are required, as
-/// MuJoCo 3.5.0's importer requires them ("missing element: 'mass'",
-/// `xml_urdf.cc:248-252`; measured).
-fn parse_inertial<R: BufRead>(reader: &mut Reader<R>) -> Result<UrdfInertial> {
-    let mut inertial = UrdfInertial::default();
-    let (mut mass, mut inertia) = (false, false);
-    let mut buf = Vec::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => match e.name().as_ref() {
-                b"origin" => inertial.origin = parse_origin(e)?,
-                b"mass" => {
-                    inertial.mass = required_number(e, "value")?;
-                    mass = true;
-                }
-                b"inertia" => {
-                    inertial.inertia = parse_inertia_element(e)?;
-                    inertia = true;
-                }
-                _ => {}
-            },
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"inertial" => break,
-            Ok(Event::Eof) => return Err(UrdfError::XmlParse("unexpected EOF in inertial".into())),
-            Ok(_) => {}
-            Err(e) => return Err(UrdfError::XmlParse(e.to_string())),
-        }
-        buf.clear();
-    }
-
-    if !mass {
-        return Err(UrdfError::missing_element("mass", "inertial"));
-    }
-    if !inertia {
-        return Err(UrdfError::missing_element("inertia", "inertial"));
-    }
-    Ok(inertial)
-}
-
-/// Parse origin element attributes: `xyz` and `rpy`, three numbers each
-/// where written.
-fn parse_origin(e: &BytesStart) -> Result<UrdfOrigin> {
-    let xyz = read_vector3(e, "xyz", false)?.unwrap_or_else(Vector3::zeros);
-    let rpy = read_vector3(e, "rpy", false)?.unwrap_or_else(Vector3::zeros);
-    Ok(UrdfOrigin::new(xyz, rpy))
-}
-
-/// Parse inertia element attributes: all six are required, as MuJoCo
-/// 3.5.0's importer requires them (`xml_urdf.cc:253-258`; measured:
-/// "required attribute missing: 'ixy'").
-fn parse_inertia_element(e: &BytesStart) -> Result<UrdfInertia> {
-    Ok(UrdfInertia {
-        ixx: required_number(e, "ixx")?,
-        iyy: required_number(e, "iyy")?,
-        izz: required_number(e, "izz")?,
-        ixy: required_number(e, "ixy")?,
-        ixz: required_number(e, "ixz")?,
-        iyz: required_number(e, "iyz")?,
+/// An `<inertial>`: its origin, then its `<mass>` and `<inertia>`, required
+/// with their values (`xml_urdf.cc:242-258`; measured: "missing element:
+/// 'mass'", "required attribute missing: 'ixy'").
+fn parse_inertial(element: &Element) -> Result<UrdfInertial> {
+    let origin = parse_origin(element)?;
+    let mass = required_number(element.required_sub("mass")?, "value")?;
+    let inertia = element.required_sub("inertia")?;
+    Ok(UrdfInertial {
+        origin,
+        mass,
+        inertia: UrdfInertia {
+            ixx: required_number(inertia, "ixx")?,
+            iyy: required_number(inertia, "iyy")?,
+            izz: required_number(inertia, "izz")?,
+            ixy: required_number(inertia, "ixy")?,
+            ixz: required_number(inertia, "ixz")?,
+            iyz: required_number(inertia, "iyz")?,
+        },
     })
 }
 
-/// Parse a visual element, as MuJoCo 3.5.0's importer reads one under
-/// URDF's `discardvisual` (`xml_urdf.cc:297-337`; measured): its
-/// `<material>` is read ([`read_material_in`]), its origin and geometry are
-/// not, so a visual whose origin or geometry is not readable is dropped
-/// (`None`), where MuJoCo makes no geom of it.
-fn parse_visual<R: BufRead>(
-    reader: &mut Reader<R>,
-    start: &BytesStart,
-) -> Result<Option<UrdfVisual>> {
-    let name = get_attribute_opt(start, "name");
-    let mut origin = Some(UrdfOrigin::default());
-    let mut geometry: Option<UrdfGeometry> = None;
-    let mut material: Option<String> = None;
-    let mut buf = Vec::new();
+/// An element's `<origin>` (`mjXURDF::Origin`, `xml_urdf.cc:650-670`): its
+/// `xyz` and `rpy`, three numbers each where written; none, the identity.
+fn parse_origin(element: &Element) -> Result<UrdfOrigin> {
+    let Some(origin) = element.find_sub("origin", false)? else {
+        return Ok(UrdfOrigin::default());
+    };
+    let xyz = read_vector3(origin, "xyz", false)?.unwrap_or_else(Vector3::zeros);
+    let rpy = read_vector3(origin, "rpy", false)?.unwrap_or_else(Vector3::zeros);
+    Ok(UrdfOrigin::new(xyz, rpy))
+}
 
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => match e.name().as_ref() {
-                b"origin" => origin = origin.and_then(|_| parse_origin(e).ok()),
-                b"geometry" => geometry = parse_geometry(reader).ok(),
-                b"material" => material = read_material_in(reader, e, false)?,
-                _ => {}
-            },
-            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
-                b"origin" => origin = origin.and_then(|_| parse_origin(e).ok()),
-                b"material" => material = read_material_in(reader, e, true)?,
-                _ => {}
-            },
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"visual" => break,
-            Ok(Event::Eof) => return Err(UrdfError::XmlParse("unexpected EOF in visual".into())),
-            Ok(_) => {}
-            Err(e) => return Err(UrdfError::XmlParse(e.to_string())),
+/// A `<visual>`, as MuJoCo 3.5.0's importer reads one under URDF's
+/// `discardvisual` (`xml_urdf.cc:297-337`; measured): its `<material>` is
+/// read — a `<color>`'s `rgba`, four numbers, required, else the material's
+/// `name` — and its origin and geometry are not, so a visual whose origin or
+/// geometry is not readable is dropped (`None`), where MuJoCo makes no geom.
+fn parse_visual(element: &Element) -> Result<Option<UrdfVisual>> {
+    let material = match element.find_sub("material", false)? {
+        Some(m) => {
+            if let Some(color) = m.find_sub("color", false)? {
+                read_floats::<4>(color, "rgba", true)?;
+            } else {
+                m.required_text("name")?;
+            }
+            m.attr("name").map(str::to_owned)
         }
-        buf.clear();
-    }
-
+        None => None,
+    };
+    let origin = parse_origin(element).ok();
+    let geometry = element
+        .find_sub("geometry", true)
+        .ok()
+        .flatten()
+        .and_then(|g| parse_geometry(g).ok());
     Ok(origin.zip(geometry).map(|(origin, geometry)| UrdfVisual {
-        name,
+        name: element.attr("name").map(str::to_owned),
         origin,
         geometry,
         material,
     }))
 }
 
-/// A visual's `<material>`, read as MuJoCo 3.5.0's importer reads it
-/// (`xml_urdf.cc:301-315`): a `<color>`'s `rgba`, four numbers, required;
-/// with no `<color>`, the material's `name` required. Returns the name.
-/// `empty` is whether the element is self-closing (then it has no children).
-fn read_material_in<R: BufRead>(
-    reader: &mut Reader<R>,
-    start: &BytesStart,
-    empty: bool,
-) -> Result<Option<String>> {
-    let name = get_attribute_opt(start, "name");
-    let color = if empty { false } else { read_color(reader)? };
-    if !color && name.is_none() {
-        return Err(UrdfError::missing_attribute("name", "material"));
-    }
-    Ok(name)
-}
-
-/// The rest of a `<material>`: whether it has a `<color>`, whose `rgba`,
-/// four numbers, is required (`xml_urdf.cc:303-305`, `:753-754`).
-fn read_color<R: BufRead>(reader: &mut Reader<R>) -> Result<bool> {
-    let mut color = false;
-    let mut buf = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) if e.name().as_ref() == b"color" => {
-                read_numbers::<4>(e, "rgba", true)?;
-                color = true;
-            }
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"material" => break,
-            Ok(Event::Eof) => return Err(UrdfError::XmlParse("unexpected EOF in material".into())),
-            Ok(_) => {}
-            Err(e) => return Err(UrdfError::XmlParse(e.to_string())),
-        }
-        buf.clear();
-    }
-    Ok(color)
-}
-
-/// A robot-level `<material>`, read as MuJoCo 3.5.0's importer reads one
-/// (`MakeMaterials`, `xml_urdf.cc:745-760`): a `<color>`'s `rgba`, four
-/// numbers, required where the material is named; otherwise not read.
-fn read_material<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<()> {
-    if get_attribute_opt(start, "name").is_some() {
-        read_color(reader)?;
-    } else {
-        skip_element(reader, b"material")?;
-    }
-    Ok(())
-}
-
-/// Parse a collision element.
-fn parse_collision<R: BufRead>(
-    reader: &mut Reader<R>,
-    start: &BytesStart,
-) -> Result<UrdfCollision> {
-    let name = get_attribute_opt(start, "name");
-    let mut origin = UrdfOrigin::default();
-    let mut geometry: Option<UrdfGeometry> = None;
-    let mut buf = Vec::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => match e.name().as_ref() {
-                b"origin" => origin = parse_origin(e)?,
-                b"geometry" => geometry = Some(parse_geometry(reader)?),
-                _ => {}
-            },
-            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
-                b"origin" => origin = parse_origin(e)?,
-                // An empty `<geometry/>` names no shape (measured: "visual
-                // geometry specification not found").
-                b"geometry" => return Err(UrdfError::missing_element("shape", "geometry")),
-                _ => {}
-            },
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"collision" => break,
-            Ok(Event::Eof) => {
-                return Err(UrdfError::XmlParse("unexpected EOF in collision".into()));
-            }
-            Ok(_) => {}
-            Err(e) => return Err(UrdfError::XmlParse(e.to_string())),
-        }
-        buf.clear();
-    }
-
-    let geometry = geometry.ok_or_else(|| UrdfError::missing_element("geometry", "collision"))?;
-
+/// A `<collision>` (`mjXURDF::Geom`, `xml_urdf.cc:523-648`): its required
+/// `<geometry>`, then its origin.
+fn parse_collision(element: &Element) -> Result<UrdfCollision> {
+    let geometry = parse_geometry(element.required_sub("geometry")?)?;
     Ok(UrdfCollision {
-        name,
-        origin,
+        name: element.attr("name").map(str::to_owned),
+        origin: parse_origin(element)?,
         geometry,
     })
 }
 
-/// Parse a geometry element.
-fn parse_geometry<R: BufRead>(reader: &mut Reader<R>) -> Result<UrdfGeometry> {
-    let mut buf = Vec::new();
-    let mut geometry: Option<UrdfGeometry> = None;
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => match e.name().as_ref() {
-                // Each shape's numbers required, as MuJoCo 3.5.0's importer
-                // reads them (`xml_urdf.cc:546-584`).
-                b"box" => {
-                    let size = required_vector3(e, "size")?;
-                    geometry = Some(UrdfGeometry::Box { size });
-                }
-                b"cylinder" => {
-                    let radius = required_number(e, "radius")?;
-                    let length = required_number(e, "length")?;
-                    geometry = Some(UrdfGeometry::Cylinder { radius, length });
-                }
-                b"sphere" => {
-                    let radius = required_number(e, "radius")?;
-                    geometry = Some(UrdfGeometry::Sphere { radius });
-                }
-                b"mesh" => {
-                    let filename = get_attribute(e, "filename")?;
-                    let scale = read_vector3(e, "scale", false)?;
-                    geometry = Some(UrdfGeometry::Mesh { filename, scale });
-                }
-                _ => {}
-            },
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"geometry" => break,
-            Ok(Event::Eof) => return Err(UrdfError::XmlParse("unexpected EOF in geometry".into())),
-            Ok(_) => {}
-            Err(e) => return Err(UrdfError::XmlParse(e.to_string())),
-        }
-        buf.clear();
+/// A `<geometry>`'s shape, the first of `box`, `cylinder`, `sphere`,
+/// `capsule` and `mesh` it holds, in that order, the others not read
+/// (`xml_urdf.cc:546-636`); each shape's numbers required; none, refused
+/// (MuJoCo: "visual geometry specification not found").
+fn parse_geometry(element: &Element) -> Result<UrdfGeometry> {
+    if let Some(shape) = element.find_sub("box", false)? {
+        return Ok(UrdfGeometry::Box {
+            size: required_vector3(shape, "size")?,
+        });
     }
-
-    geometry.ok_or_else(|| UrdfError::missing_element("shape", "geometry"))
+    if let Some(shape) = element.find_sub("cylinder", false)? {
+        return Ok(UrdfGeometry::Cylinder {
+            radius: required_number(shape, "radius")?,
+            length: required_number(shape, "length")?,
+        });
+    }
+    if let Some(shape) = element.find_sub("sphere", false)? {
+        return Ok(UrdfGeometry::Sphere {
+            radius: required_number(shape, "radius")?,
+        });
+    }
+    if let Some(shape) = element.find_sub("capsule", false)? {
+        return Ok(UrdfGeometry::Capsule {
+            radius: required_number(shape, "radius")?,
+            length: required_number(shape, "length")?,
+        });
+    }
+    if let Some(shape) = element.find_sub("mesh", false)? {
+        return Ok(UrdfGeometry::Mesh {
+            filename: shape.required_text("filename")?.to_owned(),
+            scale: read_scale(shape)?,
+        });
+    }
+    Err(UrdfError::missing_element("shape", "geometry"))
 }
 
-/// Parse a joint element.
-fn parse_joint<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<UrdfJoint> {
-    let name = get_attribute(start, "name")?;
-    let type_str = get_attribute(start, "type")?;
-    let joint_type =
-        UrdfJointType::from_str(&type_str).ok_or_else(|| UrdfError::UnknownJointType(type_str))?;
-
-    let mut parent: Option<String> = None;
-    let mut child: Option<String> = None;
-    let mut origin = UrdfOrigin::default();
-    // Without an `<axis>`, (1, 0, 0) (`xml_urdf.cc:412`; measured).
-    let mut axis = Vector3::x();
-    let mut limit: Option<UrdfJointLimit> = None;
-    let mut dynamics: Option<UrdfJointDynamics> = None;
-    let mut mimic: Option<crate::types::UrdfMimic> = None;
-
-    let mut buf = Vec::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                let elem_name = e.name().as_ref().to_vec();
-                match elem_name.as_slice() {
-                    b"parent" => {
-                        parent = Some(get_attribute(e, "link")?);
-                    }
-                    b"child" => {
-                        child = Some(get_attribute(e, "link")?);
-                    }
-                    b"origin" => {
-                        origin = parse_origin(e)?;
-                    }
-                    // A written `<axis>` requires its `xyz`
-                    // (`xml_urdf.cc:413-414`; measured).
-                    b"axis" => axis = required_vector3(e, "xyz")?,
-                    b"limit" => {
-                        limit = Some(parse_joint_limit(e)?);
-                    }
-                    b"dynamics" => {
-                        dynamics = Some(parse_joint_dynamics(e)?);
-                    }
-                    // MuJoCo 3.5.0's importer does not read `<mimic>`
-                    // (D-URDF-MIMIC); its numbers are read as every other.
-                    b"mimic" => {
-                        let leader = get_attribute(e, "joint")?;
-                        let multiplier = read_number(e, "multiplier", false)?.unwrap_or(1.0);
-                        let offset = read_number(e, "offset", false)?.unwrap_or(0.0);
-                        mimic = Some(crate::types::UrdfMimic {
-                            joint: leader,
-                            multiplier,
-                            offset,
-                        });
-                    }
-                    _ => {}
-                }
-            }
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"joint" => break,
-            Ok(Event::Eof) => return Err(UrdfError::XmlParse("unexpected EOF in joint".into())),
-            Ok(_) => {}
-            Err(e) => return Err(UrdfError::XmlParse(e.to_string())),
-        }
-        buf.clear();
-    }
-
-    let parent =
-        parent.ok_or_else(|| UrdfError::missing_element("parent", format!("joint '{name}'")))?;
-    let child =
-        child.ok_or_else(|| UrdfError::missing_element("child", format!("joint '{name}'")))?;
-
+/// A joint's contents (`mjXURDF::Joint`, `xml_urdf.cc:375-519`): its type,
+/// name, parent and child links, origin and axis — (1, 0, 0) without an
+/// `<axis>`, whose `xyz` is required (`:411-414`; measured) — then, but for a
+/// fixed joint, which MuJoCo returns before reading them, its `<dynamics>`
+/// and `<limit>`. `velocity` MuJoCo does not read (measured: `velocity="x"`
+/// loads): 0 here where it is not one number.
+fn parse_joint(element: &Element) -> Result<UrdfJoint> {
+    let type_str = element.required_text("type")?;
+    let joint_type = UrdfJointType::from_str(type_str)
+        .ok_or_else(|| UrdfError::UnknownJointType(type_str.to_owned()))?;
+    let name = element.required_text("name")?;
+    let parent = element.required_sub("parent")?.required_text("link")?;
+    let child = element.required_sub("child")?.required_text("link")?;
+    let origin = parse_origin(element)?;
+    let axis = match element.find_sub("axis", false)? {
+        Some(axis) => required_vector3(axis, "xyz")?,
+        None => Vector3::x(),
+    };
     let mut joint = UrdfJoint::new(name, joint_type, parent, child)
         .with_origin(origin)
         .with_axis(axis);
-
-    if let Some(l) = limit {
-        joint = joint.with_limit(l);
+    if joint_type == UrdfJointType::Fixed {
+        return Ok(joint);
     }
-    if let Some(d) = dynamics {
-        joint = joint.with_dynamics(d);
+    if let Some(dynamics) = element.find_sub("dynamics", false)? {
+        joint = joint.with_dynamics(UrdfJointDynamics {
+            damping: read_number(dynamics, "damping", false)?.unwrap_or(0.0),
+            friction: read_number(dynamics, "friction", false)?.unwrap_or(0.0),
+        });
     }
-    if let Some(m) = mimic {
-        joint = joint.with_mimic(m);
+    if let Some(limit) = element.find_sub("limit", false)? {
+        joint = joint.with_limit(UrdfJointLimit {
+            lower: read_number(limit, "lower", false)?,
+            upper: read_number(limit, "upper", false)?,
+            effort: read_number(limit, "effort", false)?.unwrap_or(0.0),
+            velocity: limit
+                .attr("velocity")
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0.0),
+        });
     }
-
+    if let Some(mimic) = element.find_sub("mimic", false)? {
+        joint = joint.with_mimic(UrdfMimic {
+            joint: mimic.required_text("joint")?.to_owned(),
+            multiplier: read_number(mimic, "multiplier", false)?.unwrap_or(1.0),
+            offset: read_number(mimic, "offset", false)?.unwrap_or(0.0),
+        });
+    }
     Ok(joint)
-}
-
-/// Parse joint limit element: `lower`, `upper` and `effort` read as MuJoCo
-/// 3.5.0's importer reads them (`xml_urdf.cc:500-516`). It does not read
-/// `velocity` (measured: `velocity="x"` loads), so a `velocity` that is not
-/// one number is 0 here.
-fn parse_joint_limit(e: &BytesStart) -> Result<UrdfJointLimit> {
-    Ok(UrdfJointLimit {
-        lower: read_number(e, "lower", false)?,
-        upper: read_number(e, "upper", false)?,
-        effort: read_number(e, "effort", false)?.unwrap_or(0.0),
-        velocity: get_attribute_opt(e, "velocity")
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0.0),
-    })
-}
-
-/// Parse joint dynamics element.
-fn parse_joint_dynamics(e: &BytesStart) -> Result<UrdfJointDynamics> {
-    Ok(UrdfJointDynamics {
-        damping: read_number(e, "damping", false)?.unwrap_or(0.0),
-        friction: read_number(e, "friction", false)?.unwrap_or(0.0),
-    })
-}
-
-// ============================================================================
-// Helper functions
-// ============================================================================
-
-/// Get a required attribute value.
-fn get_attribute(e: &BytesStart, name: &'static str) -> Result<String> {
-    for attr in e.attributes().flatten() {
-        if attr.key.as_ref() == name.as_bytes() {
-            return String::from_utf8(attr.value.to_vec())
-                .map_err(|_| UrdfError::invalid_attribute(name, element_name(e), "invalid UTF-8"));
-        }
-    }
-    Err(UrdfError::missing_attribute(name, element_name(e)))
-}
-
-/// Get an optional attribute value.
-fn get_attribute_opt(e: &BytesStart, name: &str) -> Option<String> {
-    for attr in e.attributes().flatten() {
-        if attr.key.as_ref() == name.as_bytes() {
-            return String::from_utf8(attr.value.to_vec()).ok();
-        }
-    }
-    None
 }
 
 // ============================================================================
@@ -511,47 +432,100 @@ fn is_c_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\u{b}' | '\u{c}' | '\r')
 }
 
-/// One number of an attribute, as MuJoCo 3.5.0's `StringToVector` reads it
-/// (`user_util.cc:1238-1255`), by sim-mjcf's reader's rules (`sim-mjcf`
-/// `parser/attrs.rs`, `real_token`; `numbers_read_as_sim_mjcf_reads_them`
-/// holds the two to one table): a token that is not a number is a bad
-/// format; a nonzero one that underflows to zero or a subnormal, or one that
-/// overflows to an infinity, is MuJoCo's "number is too large"; a written
-/// `NaN` or infinity, which MuJoCo loads, is refused (`D-NONFINITE`), a `NaN`
-/// with a payload (`nan(1)`) included.
-fn read_token(element: &str, name: &'static str, token: &str) -> Result<f64> {
-    let invalid = |message: &str| UrdfError::invalid_attribute(name, element, message);
-    let nan_with_payload = {
-        let unsigned = token.strip_prefix(['+', '-']).unwrap_or(token);
-        unsigned
-            .get(..4)
-            .is_some_and(|nan| nan.eq_ignore_ascii_case("nan("))
-            && unsigned[4..]
-                .strip_suffix(')')
-                .is_some_and(|payload| !payload.contains(')'))
-    };
-    let Ok(x) = token.parse::<f64>() else {
-        return Err(invalid(if nan_with_payload {
-            "a NaN or an infinity is not allowed"
-        } else {
-            "bad format"
-        }));
-    };
-    let names_infinity = token
+/// Whether a token spells an infinity (`inf`, `-Infinity`), as Rust's parser
+/// reads one, rather than overflowing to it.
+fn names_infinity(token: &str) -> bool {
+    token
         .trim_start_matches(['+', '-'])
         .get(..3)
-        .is_some_and(|s| s.eq_ignore_ascii_case("inf"));
-    let mantissa_nonzero = token
+        .is_some_and(|s| s.eq_ignore_ascii_case("inf"))
+}
+
+/// Whether a decimal token's mantissa has a nonzero digit, so that reading it
+/// as zero or a subnormal is an underflow.
+fn mantissa_is_nonzero(token: &str) -> bool {
+    token
         .split(['e', 'E'])
         .next()
-        .is_some_and(|m| m.bytes().any(|b| (b'1'..=b'9').contains(&b)));
-    if (x.is_finite() && x.abs() < f64::MIN_POSITIVE && mantissa_nonzero)
-        || (x.is_infinite() && !names_infinity)
-    {
-        return Err(invalid("number is too large"));
+        .is_some_and(|m| m.bytes().any(|b| (b'1'..=b'9').contains(&b)))
+}
+
+/// Whether a token is a `NaN` with a payload, `nan(…)` in any case and with
+/// a sign or none, which `strtod` reads as a `NaN` and Rust's parser refuses.
+fn names_nan_with_payload(token: &str) -> bool {
+    let unsigned = token.strip_prefix(['+', '-']).unwrap_or(token);
+    unsigned
+        .get(..4)
+        .is_some_and(|nan| nan.eq_ignore_ascii_case("nan("))
+        && unsigned[4..]
+            .strip_suffix(')')
+            .is_some_and(|payload| !payload.contains(')'))
+}
+
+/// One number of an attribute, as MuJoCo 3.5.0's `StringToVector` reads it
+/// (`user_util.cc:1238-1255`), by sim-mjcf's reader's rules (`sim-mjcf`
+/// `parser/attrs.rs`, `real_token`, which this crate cannot call: sim-mjcf
+/// exports no reader, by choice, before 0.10 freezes its API;
+/// `numbers_read_as_sim_mjcf_reads_them` holds the two to one table): a token
+/// that is not a number is a bad format; a nonzero one that underflows to
+/// zero or a subnormal, or one that overflows to an infinity, is MuJoCo's
+/// "number is too large"; a written `NaN` or infinity, which MuJoCo loads,
+/// is refused (`D-NONFINITE`), a `NaN` with a payload (`nan(1)`) included; a
+/// hexadecimal float, which MuJoCo's `strtod` reads, is a bad format
+/// (`D-HEX-FLOAT`). Where `single`, the number is read as a `float`, to its
+/// range: an `rgba` (`xml_urdf.cc:304`, `:754`).
+fn read_token(element: &str, name: &'static str, token: &str, single: bool) -> Result<f64> {
+    token_value(token, single)
+        .map_err(|fault| UrdfError::invalid_attribute(name, element, fault.words()))
+}
+
+/// Why a token is not read ([`token_value`]).
+enum TokenFault {
+    /// Not a number.
+    BadFormat,
+    /// It underflows or overflows its type.
+    TooLarge,
+    /// A written `NaN` or infinity.
+    NonFinite,
+}
+
+impl TokenFault {
+    /// MuJoCo's words for it (`xml_util.cc:708-716`), and this crate's for a
+    /// non-finite number.
+    fn words(&self) -> &'static str {
+        match self {
+            Self::BadFormat => "bad format",
+            Self::TooLarge => "number is too large",
+            Self::NonFinite => "a NaN or an infinity is not allowed",
+        }
+    }
+}
+
+/// A token's value by [`read_token`]'s rules.
+fn token_value(token: &str, single: bool) -> std::result::Result<f64, TokenFault> {
+    let Ok(x) = token.parse::<f64>() else {
+        return Err(if names_nan_with_payload(token) {
+            TokenFault::NonFinite
+        } else {
+            TokenFault::BadFormat
+        });
+    };
+    let too_large = |x: f64, min_positive: f64| {
+        (x.is_finite() && x.abs() < min_positive && mantissa_is_nonzero(token))
+            || (x.is_infinite() && !names_infinity(token))
+    };
+    if too_large(x, f64::MIN_POSITIVE) {
+        return Err(TokenFault::TooLarge);
     }
     if !x.is_finite() {
-        return Err(invalid("a NaN or an infinity is not allowed"));
+        return Err(TokenFault::NonFinite);
+    }
+    if single {
+        let f = token.parse::<f32>().map_err(|_| TokenFault::BadFormat)?;
+        if too_large(f64::from(f), f64::from(f32::MIN_POSITIVE)) {
+            return Err(TokenFault::TooLarge);
+        }
+        return Ok(f64::from(f));
     }
     Ok(x)
 }
@@ -561,23 +535,23 @@ fn read_token(element: &str, name: &'static str, token: &str) -> Result<f64> {
 /// not written (`None`), refused where `required` ("required attribute
 /// missing"); fewer numbers than `N` do not have enough data, more have too
 /// much.
-fn read_numbers<const N: usize>(
-    e: &BytesStart,
+fn read_numbers_as<const N: usize>(
+    element: &Element,
     name: &'static str,
     required: bool,
+    single: bool,
 ) -> Result<Option<[f64; N]>> {
-    let element = element_name(e);
-    let values = match get_attribute_opt(e, name) {
+    let values = match element.attr(name) {
         Some(text) => text
             .split(is_c_space)
             .filter(|t| !t.is_empty())
-            .map(|t| read_token(&element, name, t))
+            .map(|t| read_token(&element.tag, name, t, single))
             .collect::<Result<Vec<_>>>()?,
         None => Vec::new(),
     };
     if values.is_empty() {
         return if required {
-            Err(UrdfError::missing_attribute(name, element))
+            Err(UrdfError::missing_attribute(name, &element.tag))
         } else {
             Ok(None)
         };
@@ -590,63 +564,90 @@ fn read_numbers<const N: usize>(
             } else {
                 "has too much data"
             };
-            UrdfError::invalid_attribute(name, element, message)
+            UrdfError::invalid_attribute(name, &element.tag, message)
         })
 }
 
+/// `name`'s `N` numbers ([`read_numbers_as`], doubles).
+fn read_numbers<const N: usize>(
+    element: &Element,
+    name: &'static str,
+    required: bool,
+) -> Result<Option<[f64; N]>> {
+    read_numbers_as::<N>(element, name, required, false)
+}
+
+/// `name`'s `N` single-precision numbers ([`read_numbers_as`]).
+fn read_floats<const N: usize>(
+    element: &Element,
+    name: &'static str,
+    required: bool,
+) -> Result<Option<[f64; N]>> {
+    read_numbers_as::<N>(element, name, required, true)
+}
+
 /// One number ([`read_numbers`]).
-fn read_number(e: &BytesStart, name: &'static str, required: bool) -> Result<Option<f64>> {
-    Ok(read_numbers::<1>(e, name, required)?.map(|[x]| x))
+fn read_number(element: &Element, name: &'static str, required: bool) -> Result<Option<f64>> {
+    Ok(read_numbers::<1>(element, name, required)?.map(|[x]| x))
 }
 
 /// Three numbers ([`read_numbers`]).
 fn read_vector3(
-    e: &BytesStart,
+    element: &Element,
     name: &'static str,
     required: bool,
 ) -> Result<Option<Vector3<f64>>> {
-    Ok(read_numbers::<3>(e, name, required)?.map(Vector3::from))
+    Ok(read_numbers::<3>(element, name, required)?.map(Vector3::from))
 }
 
 /// A required number ([`read_number`]).
-fn required_number(e: &BytesStart, name: &'static str) -> Result<f64> {
-    read_number(e, name, true)?.ok_or_else(|| UrdfError::missing_attribute(name, element_name(e)))
+fn required_number(element: &Element, name: &'static str) -> Result<f64> {
+    read_number(element, name, true)?
+        .ok_or_else(|| UrdfError::missing_attribute(name, &element.tag))
 }
 
 /// A required three numbers ([`read_vector3`]).
-fn required_vector3(e: &BytesStart, name: &'static str) -> Result<Vector3<f64>> {
-    read_vector3(e, name, true)?.ok_or_else(|| UrdfError::missing_attribute(name, element_name(e)))
+fn required_vector3(element: &Element, name: &'static str) -> Result<Vector3<f64>> {
+    read_vector3(element, name, true)?
+        .ok_or_else(|| UrdfError::missing_attribute(name, &element.tag))
 }
 
-/// Get element name as string for error messages.
-fn element_name(e: &BytesStart) -> String {
-    String::from_utf8_lossy(e.name().as_ref()).to_string()
-}
-
-/// Skip an element and all its children.
-fn skip_element<R: BufRead>(reader: &mut Reader<R>, name: &[u8]) -> Result<()> {
-    let mut buf = Vec::new();
-    let mut depth = 1;
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) if e.name().as_ref() == name => {
-                depth += 1;
-            }
-            Ok(Event::End(ref e)) if e.name().as_ref() == name => {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-            }
-            Ok(Event::Eof) => break,
-            Ok(_) => {}
-            Err(e) => return Err(UrdfError::XmlParse(e.to_string())),
-        }
-        buf.clear();
+/// A mesh's `scale`, which MuJoCo 3.5.0's importer reads by `ReadAttrArr`
+/// (`xml_urdf.cc:584`, `xml_util.h:126-147`, `xml_util.cc:596-636`), a
+/// stream reader with words of its own (measured): written empty or blank, or
+/// with a token it cannot read (an underflow and an overflow included),
+/// "problem reading attribute"; more than three numbers "has too much data",
+/// fewer "does not have enough data". Absent, `None`. Its tokens are read as
+/// [`read_token`] reads them otherwise: a `NaN`, an infinity and a
+/// hexadecimal float, which MuJoCo's stream reads, are refused here
+/// (`D-NONFINITE`, `D-HEX-FLOAT`).
+fn read_scale(element: &Element) -> Result<Option<Vector3<f64>>> {
+    let name = "scale";
+    let Some(text) = element.attr(name) else {
+        return Ok(None);
+    };
+    let invalid = |message: &str| UrdfError::invalid_attribute(name, &element.tag, message);
+    let tokens: Vec<&str> = text.split(is_c_space).filter(|t| !t.is_empty()).collect();
+    if tokens.is_empty() {
+        return Err(invalid("problem reading attribute"));
     }
-
-    Ok(())
+    let mut values = Vec::new();
+    for token in tokens.iter().take(3) {
+        match token_value(token, false) {
+            Ok(x) => values.push(x),
+            Err(fault @ TokenFault::NonFinite) => return Err(invalid(fault.words())),
+            Err(TokenFault::BadFormat | TokenFault::TooLarge) => {
+                return Err(invalid("problem reading attribute"));
+            }
+        }
+    }
+    if tokens.len() > 3 {
+        return Err(invalid("has too much data"));
+    }
+    if values.len() < 3 {
+        return Err(invalid("does not have enough data"));
+    }
+    Ok(Some(Vector3::new(values[0], values[1], values[2])))
 }
 
 #[cfg(test)]
@@ -773,7 +774,11 @@ mod tests {
 
     #[test]
     fn three_numbers_split_on_c_whitespace() {
-        let e = BytesStart::from_content("origin xyz=\"  1   2 \t 3 \u{b} \"", 6);
+        let e = Element {
+            tag: "origin".into(),
+            attrs: vec![("xyz".into(), "  1   2 \t 3 \u{b} ".into())],
+            children: Vec::new(),
+        };
         let v = read_vector3(&e, "xyz", false)
             .expect("reads")
             .expect("written");
@@ -928,11 +933,13 @@ mod tests {
         }
     }
 
+    /// A robot's name is optional, as MuJoCo 3.5.0's importer reads it
+    /// (`xml_urdf.cc:115`; measured: `<robot>` without a name loads).
     #[test]
-    fn test_missing_robot_name() {
-        let xml = r#"<robot><link name="base"/></robot>"#;
-        let result = parse_urdf_str(xml);
-        assert!(result.is_err());
+    fn a_robot_without_a_name_is_read() {
+        let robot = parse_urdf_str(r#"<robot><link name="base"/></robot>"#).expect("parses");
+        assert_eq!(robot.name, "");
+        assert_eq!(robot.links.len(), 1);
     }
 
     #[test]
