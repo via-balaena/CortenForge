@@ -8,13 +8,6 @@ use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// Safe axis normalization with Z fallback for zero-length vectors.
-#[inline]
-fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
-    let n = v.norm();
-    if n > 1e-10 { v / n } else { Vector3::z() }
-}
-
 // ============================================================================
 // Origin (Pose)
 // ============================================================================
@@ -135,6 +128,7 @@ impl UrdfInertia {
 /// Geometry shape from `<geometry>` element.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[non_exhaustive]
 pub enum UrdfGeometry {
     /// Box with size (x, y, z) in meters.
     Box {
@@ -152,6 +146,14 @@ pub enum UrdfGeometry {
     Sphere {
         /// Sphere radius in meters.
         radius: f64,
+    },
+    /// Capsule with radius and length (of its cylinder) in meters: not URDF's
+    /// own shape, but one MuJoCo 3.5.0's importer reads (`xml_urdf.cc:567-573`).
+    Capsule {
+        /// Capsule radius in meters.
+        radius: f64,
+        /// The length of the capsule's cylinder in meters.
+        length: f64,
     },
     /// Mesh file reference.
     Mesh {
@@ -288,10 +290,10 @@ impl UrdfJointType {
 /// Joint limits from `<limit>` element.
 ///
 /// **Note on effort and velocity:** These are parsed from URDF but not mapped
-/// to MJCF joint attributes. `MuJoCo` enforces effort limits via actuator
-/// `forcerange` and has no joint-level velocity limit. Since the URDF converter
-/// does not auto-generate actuators, these fields are preserved for inspection
-/// but do not affect the compiled Model.
+/// to MJCF joint attributes. MuJoCo 3.5.0's importer makes a nonzero `effort`
+/// the joint's actuator force range, plus and minus its magnitude, which this
+/// crate's model does not have (`D-URDF-EFFORT`); it does not read `velocity`.
+/// Both are kept for inspection and do not affect the compiled Model.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct UrdfJointLimit {
@@ -364,7 +366,10 @@ pub struct UrdfJoint {
     pub child: String,
     /// Origin of joint frame relative to parent link frame.
     pub origin: UrdfOrigin,
-    /// Joint axis in joint frame (default: z-axis).
+    /// Joint axis in the joint frame, as written: the MJCF loader normalises
+    /// it, and refuses one too small, as MuJoCo 3.5.0 does when it compiles
+    /// the model. Default (1, 0, 0), URDF's and MuJoCo's importer's
+    /// (`xml_urdf.cc:411`).
     pub axis: Vector3<f64>,
     /// Joint limits (required for revolute and prismatic).
     pub limit: Option<UrdfJointLimit>,
@@ -389,7 +394,7 @@ impl UrdfJoint {
             parent: parent.into(),
             child: child.into(),
             origin: UrdfOrigin::default(),
-            axis: Vector3::z(), // URDF default axis
+            axis: Vector3::x(),
             limit: None,
             dynamics: None,
             mimic: None,
@@ -403,10 +408,10 @@ impl UrdfJoint {
         self
     }
 
-    /// Set the joint axis.
+    /// Set the joint axis, as written ([`UrdfJoint::axis`]).
     #[must_use]
     pub fn with_axis(mut self, axis: Vector3<f64>) -> Self {
-        self.axis = safe_normalize_axis(axis);
+        self.axis = axis;
         self
     }
 

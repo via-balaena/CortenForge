@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="p"><joint/><geom size="0.1" mass="1"/><body name="c1"><joint/><geom name="g" size="0.1" mass="1"/></body><body name="c2"><joint/><geom name="h" size="0.1" mass="1"/></body><body name="c3"><joint/><geom name="g" size="0.1" mass="1"/></body><body name="c4"><joint/><geom name="h" size="0.1" mass="1"/></body></body></worldbody></mujoco>

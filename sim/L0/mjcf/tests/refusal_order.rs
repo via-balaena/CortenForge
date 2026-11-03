@@ -26,7 +26,14 @@
 //! children, as MuJoCo orders them. An `<inertial>`'s negative mass or
 //! diagonal moment, which MuJoCo raises to its bounds, is refused after the
 //! keyframes (`D-INERTIAL-NEGATIVE`), every check before it taking MuJoCo's
-//! raised value.
+//! raised value. RL-7a's check of repeated names (book L23) runs where this
+//! crate checked a body's, a joint's and an actuator's name before, now
+//! ahead of the options too, as MuJoCo's reader meets a name before any
+//! check its compiler makes; a frame's name after the world's tree. Where
+//! MuJoCo's reader meets the repeated name first and this crate meets the
+//! other fault first (a parse fault, an undefined class, a composite's, a
+//! frame repeated before a later name), this crate names the other: ledger
+//! L353's.
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, for the fault its expected error names (RL-6a's measured
@@ -34,6 +41,9 @@
 //! review's first round, three its fix-diff pass's (a keyframe's fault), and
 //! four set the new checks against each other; RL-6b's set a limit's fault
 //! beside another, and RL-6d's a body's or a height field's.
+//! RL-7a's (measured 2026-11-03) set a repeated name beside a size, a
+//! reference and an axis MuJoCo refuses too, and beside an option this crate
+//! refuses and MuJoCo does not.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -882,6 +892,36 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><geom type="plane" size="1 1 0.1"/></body><body name="z" pos="1 0 1"><joint name="k" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" quat="1 0 0 0" fullinertia="1 1 1 0 0 0"/></body></worldbody></mujoco>"#,
         "fullinertia and inertial orientation cannot both be specified",
         "invalid fullinertia on <inertial>: fullinertia and inertial orientation cannot both be specified (line 1: worldbody > body 'z' > inertial)",
+    ),
+    (
+        "name then size",
+        r#"<mujoco><worldbody><body name="base" pos="0 0 0"><joint name="basej" type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><body name="sz" pos="0 0 7"><joint name="szj" type="hinge"/><geom type="sphere" size="0" mass="1"/></body><body name="g1" pos="5 1 0"><joint/><geom name="gg" size="0.1" mass="1"/></body><body name="g2" pos="6 1 0"><joint/><geom name="gg" size="0.1" mass="1"/></body></worldbody></mujoco>"#,
+        "repeated name 'gg' in geom",
+        "repeated name 'gg' in geom (geom 'gg' in body 'g2')",
+    ),
+    (
+        "name then reference",
+        r#"<mujoco><worldbody><body name="base" pos="0 0 0"><joint name="basej" type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body></worldbody><tendon><fixed name="t"><joint joint="basej" coef="1"/></fixed><fixed name="t"><joint joint="basej" coef="2"/></fixed></tendon><actuator><motor name="mr" joint="nope"/></actuator></mujoco>"#,
+        "repeated name 't' in tendon",
+        "repeated name 't' in tendon",
+    ),
+    (
+        "name then axis",
+        r#"<mujoco><worldbody><body name="base" pos="0 0 0"><joint name="basej" type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><body name="ax" pos="0 0 8"><joint type="hinge" axis="0 0 0"/><geom type="sphere" size="0.1" mass="1"/></body></worldbody><keyframe><key name="k"/><key name="k"/></keyframe></mujoco>"#,
+        "repeated name 'k' in key",
+        "repeated name 'k' in key",
+    ),
+    (
+        "name then option",
+        r#"<mujoco><option timestep="0"/><worldbody><body name="base" pos="0 0 0"><joint name="basej" type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><body name="a" pos="5 0 0"><joint name="aj" type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><body name="a" pos="6 0 0"><joint name="aj" type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body></worldbody></mujoco>"#,
+        "repeated name 'a' in body",
+        "repeated name 'a' in body",
+    ),
+    (
+        "geom name then axis",
+        r#"<mujoco><worldbody><body name="base" pos="0 0 0"><joint name="basej" type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><body name="ax" pos="0 0 8"><joint type="hinge" axis="0 0 0"/><geom type="sphere" size="0.1" mass="1"/></body><body name="g1" pos="5 1 0"><joint/><geom name="gg" size="0.1" mass="1"/></body><body name="g2" pos="6 1 0"><joint/><geom name="gg" size="0.1" mass="1"/></body></worldbody></mujoco>"#,
+        "repeated name 'gg' in geom",
+        "repeated name 'gg' in geom (geom 'gg' in body 'g2')",
     ),
 ];
 

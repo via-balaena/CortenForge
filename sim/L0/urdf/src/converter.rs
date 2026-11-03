@@ -20,11 +20,11 @@
 //! | URDF | MJCF |
 //! |------|------|
 //! | `<robot>` | `<mujoco>` |
-//! | `<link>` | `<body>` |
-//! | `<joint>` | `<joint>` (inside child body) |
+//! | `<link>` | `<body>` (the link named `world`: `<worldbody>`) |
+//! | `<joint>` | `<joint>` (inside child body; a planar one: two slides and a hinge) |
 //! | `<inertial>` | `<inertial>` |
 //! | `<collision>` | `<geom>` |
-//! | `<visual>` | `<geom class="visual">` (optional) |
+//! | `<visual>` | not written (MuJoCo's importer discards visuals under URDF's `discardvisual`) |
 //!
 //! ## Key Differences
 //!
@@ -47,6 +47,17 @@ use nalgebra::Vector3;
 use crate::types::{
     UrdfGeometry, UrdfJoint, UrdfJointLimit, UrdfJointType, UrdfLink, UrdfOrigin, UrdfRobot,
 };
+
+/// The link name MuJoCo 3.5.0's importer reads as the world body
+/// (`xml_urdf.cc:727`).
+const WORLD: &str = "world";
+
+/// A name or path as an MJCF attribute's text: `&`, `<`, `>`, `"` and `'`
+/// written as entities, so the document the converter writes reads the text
+/// the URDF held.
+fn escape(text: &str) -> std::borrow::Cow<'_, str> {
+    quick_xml::escape::escape(text)
+}
 
 /// Strip `package://.../<file>` prefix, returning just the filename.
 /// Also strips `file://` prefix. Passes through plain paths unchanged.
@@ -126,44 +137,107 @@ fn dynamics_attrs(joint: &UrdfJoint) -> String {
     attrs
 }
 
-/// A planar joint's two slide axes: the first two columns of the rotation
-/// taking z to `axis`, as MuJoCo's `mjuu_z2quat` and `mjuu_quat2mat` compute
-/// it (`user_util.cc`). `axis` is the unit axis the parser gives; MuJoCo
-/// applies the cut-off below to the axis as written (ledger L316). The rotation turns about z × `axis` by
-/// atan2(|z × `axis`|, `axis`.z); where |z × `axis`|² < 1e-14, `mjuu_normvec`
-/// reads the cross product as zero and the rotation turns about x.
+/// A planar joint's two slide axes, as MuJoCo 3.5.0's importer makes them
+/// from the axis as written (`xml_urdf.cc:448-449`): the first two columns
+/// of `mjuu_quat2mat(mjuu_z2quat(axis))` (`user_util.cc:203-240`, `:395-408`),
+/// in their operations and order.
+// `mjuu_quat2mat`'s identity shortcut is an exact `==` (a zero of either
+// sign passes it).
+#[allow(clippy::float_cmp)]
 fn planar_axes(axis: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
-    let cross = Vector3::z().cross(axis);
-    let (about, length) = if cross.norm_squared() < 1e-14 {
-        (Vector3::x(), 0.0)
+    // mjuu_z2quat: about = z × axis, normalised by mjuu_normvec, which leaves
+    // a vector of squared length below mjEPS as it is and returns 0, and one
+    // within mjEPS of unit length unscaled.
+    let z = [0.0, 0.0, 1.0];
+    let mut about = [
+        z[1] * axis.z - z[2] * axis.y,
+        z[2] * axis.x - z[0] * axis.z,
+        z[0] * axis.y - z[1] * axis.x,
+    ];
+    let squared = about[0] * about[0] + about[1] * about[1] + about[2] * about[2];
+    let length = if squared < MJ_EPS {
+        0.0
     } else {
-        let length = cross.norm();
-        (cross / length, length)
+        let length = squared.sqrt();
+        if (length - 1.0).abs() > MJ_EPS {
+            about = about.map(|c| c / length);
+        }
+        length
     };
-    let (sin, cos) = (length.atan2(axis.z) / 2.0).sin_cos();
-    let q = [cos, about.x * sin, about.y * sin, about.z * sin];
+    if length < 1e-10 {
+        about = [1.0, 0.0, 0.0];
+    }
+    let angle = length.atan2(axis.z);
+    let (sin, cos) = ((angle / 2.0).sin(), (angle / 2.0).cos());
+    let q = [cos, about[0] * sin, about[1] * sin, about[2] * sin];
+    // mjuu_quat2mat, its identity shortcut included; columns 0 and 1.
+    if q == [1.0, 0.0, 0.0, 0.0] {
+        return (Vector3::x(), Vector3::y());
+    }
+    let (q00, q01, q02, q03) = (q[0] * q[0], q[0] * q[1], q[0] * q[2], q[0] * q[3]);
+    let (q11, q12, q13) = (q[1] * q[1], q[1] * q[2], q[1] * q[3]);
+    let (q22, q23, q33) = (q[2] * q[2], q[2] * q[3], q[3] * q[3]);
     (
-        Vector3::new(
-            q[0] * q[0] + q[1] * q[1] - q[2] * q[2] - q[3] * q[3],
-            2.0 * (q[1] * q[2] + q[0] * q[3]),
-            2.0 * (q[1] * q[3] - q[0] * q[2]),
-        ),
-        Vector3::new(
-            2.0 * (q[1] * q[2] - q[0] * q[3]),
-            q[0] * q[0] - q[1] * q[1] + q[2] * q[2] - q[3] * q[3],
-            2.0 * (q[2] * q[3] + q[0] * q[1]),
-        ),
+        Vector3::new(q00 + q11 - q22 - q33, 2.0 * (q12 + q03), 2.0 * (q13 - q02)),
+        Vector3::new(2.0 * (q12 - q03), q00 - q11 + q22 - q33, 2.0 * (q23 + q01)),
     )
 }
 
+/// MuJoCo's `mjEPS`.
+const MJ_EPS: f64 = 1e-14;
+
 /// A mesh asset collected during geom conversion.
 struct MeshAssetEntry {
-    /// Unique asset name for MJCF reference.
+    /// The asset's name, as MuJoCo 3.5.0's importer names it
+    /// ([`mesh_stem`]; a later scale of one stem appends its index).
     name: String,
     /// File path from URDF (package:// prefix stripped).
     file: String,
     /// Optional scale.
     scale: Option<nalgebra::Vector3<f64>>,
+}
+
+/// A mesh file's name stem: its text past the last `/` or `\`, cut at the
+/// last `.`, as MuJoCo 3.5.0's importer names a mesh (`mjuu_strippath`,
+/// `mjuu_stripext`, `xml_urdf.cc:593-594`).
+fn mesh_stem(file: &str) -> &str {
+    let base = file.rsplit(['/', '\\']).next().unwrap_or(file);
+    base.rfind('.').map_or(base, |dot| &base[..dot])
+}
+
+/// Whether two mesh scales are the one MuJoCo 3.5.0's importer compares
+/// exactly, an unwritten scale being 1 1 1 (`xml_urdf.cc:583-608`).
+fn same_scale(a: Option<Vector3<f64>>, b: Option<Vector3<f64>>) -> bool {
+    let one = Vector3::new(1.0, 1.0, 1.0);
+    a.unwrap_or(one) == b.unwrap_or(one)
+}
+
+/// Each link's collision geoms' names, as MuJoCo 3.5.0's importer names
+/// them (`xml_urdf.cc:345-358`): links in document order, a link's
+/// collisions in order, a name kept only where no earlier collision has it,
+/// a repeat left unnamed with MuJoCo's warning; an empty name is no name,
+/// without a warning (measured: two `name=""` give geoms `[None, None]`).
+fn collision_names(robot: &UrdfRobot) -> HashMap<&str, Vec<Option<String>>> {
+    let mut seen = HashSet::new();
+    let mut names = HashMap::new();
+    for link in &robot.links {
+        let kept = link
+            .collisions
+            .iter()
+            .map(|collision| {
+                let name = collision.name.as_ref().filter(|n| !n.is_empty())?;
+                if seen.insert(name.as_str()) {
+                    return Some(name.clone());
+                }
+                tracing::warn!(
+                    "Geom with duplicate name '{name}' encountered in URDF, creating an unnamed geom."
+                );
+                None
+            })
+            .collect();
+        names.insert(link.name.as_str(), kept);
+    }
+    names
 }
 
 /// Internal converter state.
@@ -175,6 +249,8 @@ struct Converter<'a> {
     child_to_joint: HashMap<&'a str, &'a UrdfJoint>,
     /// Map from parent link name to list of child joints
     parent_to_joints: HashMap<&'a str, Vec<&'a UrdfJoint>>,
+    /// Each link's collision geoms' names ([`collision_names`]).
+    collision_names: HashMap<&'a str, Vec<Option<String>>>,
     /// Output buffer
     output: String,
     /// Current indentation level
@@ -192,6 +268,7 @@ impl<'a> Converter<'a> {
     /// joint parent or child missing"), and a link with a second parent joint
     /// ("URDF body has multiple parents"), whether or not the joints close a
     /// loop. So the walk from a link no joint enters reaches each link once.
+    /// A joint whose child is `world` is refused ([`UrdfError::WorldChild`]).
     fn new(robot: &'a UrdfRobot) -> Result<Self> {
         let mut links = HashMap::new();
         for link in &robot.links {
@@ -207,6 +284,11 @@ impl<'a> Converter<'a> {
                 if !links.contains_key(link.as_str()) {
                     return Err(UrdfError::undefined_link(link, &joint.name));
                 }
+            }
+            if joint.child == WORLD {
+                return Err(UrdfError::WorldChild {
+                    joint: joint.name.clone(),
+                });
             }
             if child_to_joint.insert(joint.child.as_str(), joint).is_some() {
                 return Err(UrdfError::KinematicLoop(format!(
@@ -225,6 +307,7 @@ impl<'a> Converter<'a> {
             links,
             child_to_joint,
             parent_to_joints,
+            collision_names: collision_names(robot),
             output: String::with_capacity(4096),
             indent: 0,
             mesh_assets: Vec::new(),
@@ -236,7 +319,7 @@ impl<'a> Converter<'a> {
         let roots = self.root_links()?;
 
         // Write MJCF header
-        self.write_line(&format!(r#"<mujoco model="{}">"#, self.robot.name));
+        self.write_line(&format!(r#"<mujoco model="{}">"#, escape(&self.robot.name)));
         self.indent += 1;
 
         // Write options
@@ -258,7 +341,8 @@ impl<'a> Converter<'a> {
             self.indent += 1;
             let assets = std::mem::take(&mut self.mesh_assets);
             for ma in &assets {
-                let mut attrs = format!(r#"name="{}" file="{}""#, ma.name, ma.file);
+                let mut attrs =
+                    format!(r#"name="{}" file="{}""#, escape(&ma.name), escape(&ma.file));
                 if let Some(s) = &ma.scale {
                     write!(attrs, r#" scale="{} {} {}""#, s.x, s.y, s.z).ok();
                 }
@@ -277,7 +361,19 @@ impl<'a> Converter<'a> {
 
         let mut opened = HashSet::new();
         for root in roots {
-            self.convert_tree(root, &mut opened)?;
+            if root == WORLD {
+                // MuJoCo 3.5.0's importer makes the link named `world` the
+                // world body (`AddToTree`, `xml_urdf.cc:727`): its geoms are
+                // the world's, the links its joints enter are top-level
+                // bodies. Its `<inertial>`, which MuJoCo stores as the world
+                // body's mass, has no MJCF form under `<worldbody>`.
+                self.write_geoms(WORLD)?;
+                opened.insert(WORLD.to_string());
+                let children = self.child_links(WORLD);
+                self.convert_tree(children, &mut opened)?;
+            } else {
+                self.convert_tree(vec![(root.to_string(), None)], &mut opened)?;
+            }
         }
         // With one parent joint per link, a link no root reaches has parent
         // joints that lead into a loop; MuJoCo refuses it ("URDF body not
@@ -302,7 +398,10 @@ impl<'a> Converter<'a> {
             for mc in &constraints {
                 self.write_line(&format!(
                     r#"<joint joint1="{}" joint2="{}" polycoef="{} {} 0 0 0"/>"#,
-                    mc.follower, mc.leader, mc.offset, mc.multiplier,
+                    escape(&mc.follower),
+                    escape(&mc.leader),
+                    mc.offset,
+                    mc.multiplier,
                 ));
             }
             self.indent -= 1;
@@ -334,22 +433,33 @@ impl<'a> Converter<'a> {
     /// Write a link's `<body>` and its subtree, depth-first, children in
     /// order, without recursing: a URDF chain nests one body per link, and a
     /// recursion per link overflowed a 2-mebibyte caller's stack at 5000 links
-    /// (ledger L303). Each link written is added to `opened`.
-    fn convert_tree(&mut self, root: &str, opened: &mut HashSet<String>) -> Result<()> {
+    /// (ledger L303). Each link written is added to `opened`. `links` are
+    /// the first links, in order, each with the joint entering it.
+    fn convert_tree(
+        &mut self,
+        links: Vec<(String, Option<UrdfJoint>)>,
+        opened: &mut HashSet<String>,
+    ) -> Result<()> {
         enum Step {
             Open(String, Option<Box<UrdfJoint>>),
             Close,
         }
-        let mut stack = vec![Step::Open(root.to_string(), None)];
+        let mut stack: Vec<Step> = links
+            .into_iter()
+            .rev()
+            .map(|(link, joint)| Step::Open(link, joint.map(Box::new)))
+            .collect();
         while let Some(step) = stack.pop() {
             match step {
                 Step::Open(link, joint) => {
                     let children = self.open_link(&link, joint.as_deref())?;
                     opened.insert(link);
                     stack.push(Step::Close);
-                    stack.extend(children.into_iter().rev().map(|(child, child_joint)| {
-                        Step::Open(child, Some(Box::new(child_joint)))
-                    }));
+                    stack.extend(
+                        children.into_iter().rev().map(|(child, child_joint)| {
+                            Step::Open(child, child_joint.map(Box::new))
+                        }),
+                    );
                 }
                 Step::Close => {
                     self.indent -= 1;
@@ -367,19 +477,10 @@ impl<'a> Converter<'a> {
         &mut self,
         link_name: &str,
         parent_joint: Option<&UrdfJoint>,
-    ) -> Result<Vec<(String, UrdfJoint)>> {
-        // Clone data we need from the link to avoid borrow conflicts
-        let (name, inertial, collisions, visuals) = {
-            let link = self
-                .links
-                .get(link_name)
-                .ok_or_else(|| UrdfError::undefined_link(link_name, "converter"))?;
-            (
-                link.name.clone(),
-                link.inertial,
-                link.collisions.clone(),
-                link.visuals.clone(),
-            )
+    ) -> Result<Vec<(String, Option<UrdfJoint>)>> {
+        let (name, inertial) = {
+            let link = self.link(link_name)?;
+            (link.name.clone(), link.inertial)
         };
 
         // Determine body position from parent joint origin
@@ -393,6 +494,7 @@ impl<'a> Converter<'a> {
         let pos_str = format!("{} {} {}", pos.x, pos.y, pos.z);
         let euler_str = format!("{} {} {}", rpy.x, rpy.y, rpy.z);
 
+        let name = escape(&name);
         if rpy.norm() < 1e-10 {
             self.write_line(&format!(r#"<body name="{name}" pos="{pos_str}">"#));
         } else {
@@ -412,34 +514,46 @@ impl<'a> Converter<'a> {
             self.convert_inertial(inertial)?;
         }
 
-        // Write collision geoms
-        for collision in &collisions {
-            self.convert_geom(
-                &collision.geometry,
-                &collision.origin,
-                collision.name.as_ref(),
-                false,
-            )?;
-        }
+        self.write_geoms(link_name)?;
+        Ok(self.child_links(link_name))
+    }
 
-        // Write visual geoms (as separate geoms with contype=0)
-        for visual in &visuals {
-            self.convert_geom(&visual.geometry, &visual.origin, visual.name.as_ref(), true)?;
-        }
+    /// The link named `link_name`.
+    fn link(&self, link_name: &str) -> Result<&'a UrdfLink> {
+        self.links
+            .get(link_name)
+            .copied()
+            .ok_or_else(|| UrdfError::undefined_link(link_name, "converter"))
+    }
 
-        // Child links, cloned to avoid borrow conflicts
-        let child_joints: Vec<_> = self
-            .parent_to_joints
+    /// Write a link's collision geoms, named as [`collision_names`] names
+    /// them. Its visual geoms are not written: MuJoCo 3.5.0's importer makes
+    /// none under URDF's `discardvisual` (`xml_urdf.cc:317`), which this
+    /// converter writes.
+    fn write_geoms(&mut self, link_name: &str) -> Result<()> {
+        let link = self.link(link_name)?;
+        let names = self
+            .collision_names
+            .get(link_name)
+            .cloned()
+            .unwrap_or_default();
+        for (collision, name) in link.collisions.iter().zip(names) {
+            self.convert_geom(&collision.geometry, &collision.origin, name.as_ref())?;
+        }
+        Ok(())
+    }
+
+    /// The links `link_name`'s joints enter, in order, each with its joint.
+    fn child_links(&self, link_name: &str) -> Vec<(String, Option<UrdfJoint>)> {
+        self.parent_to_joints
             .get(link_name)
             .map(|joints| {
                 joints
                     .iter()
-                    .map(|j| (j.child.clone(), (*j).clone()))
+                    .map(|j| (j.child.clone(), Some((*j).clone())))
                     .collect()
             })
-            .unwrap_or_default();
-
-        Ok(child_joints)
+            .unwrap_or_default()
     }
 
     #[allow(clippy::unreachable)] // Planar variant dispatched to convert_planar_joint above
@@ -457,7 +571,7 @@ impl<'a> Converter<'a> {
             UrdfJointType::Planar => unreachable!("handled above"),
         };
 
-        let mut attrs = format!(r#"name="{}" type="{}""#, joint.name, joint_type);
+        let mut attrs = format!(r#"name="{}" type="{}""#, escape(&joint.name), joint_type);
 
         // Add axis for hinge/slide joints
         if axis_needed {
@@ -502,7 +616,7 @@ impl<'a> Converter<'a> {
         let normal = joint.axis;
         let limit = joint.limit.as_ref().map(limit_attrs).unwrap_or_default();
         let dynamics = dynamics_attrs(joint);
-        let name = &joint.name;
+        let name = escape(&joint.name);
         self.write_line(&format!(
             r#"<joint name="{name}_TX" type="slide" axis="{} {} {}"{limit}{dynamics}/>"#,
             tx.x, tx.y, tx.z,
@@ -569,7 +683,6 @@ impl<'a> Converter<'a> {
         geometry: &UrdfGeometry,
         origin: &UrdfOrigin,
         name: Option<&String>,
-        is_visual: bool,
     ) -> Result<()> {
         let (geom_type, size) = match geometry {
             UrdfGeometry::Box { size } => {
@@ -582,15 +695,18 @@ impl<'a> Converter<'a> {
                 ("cylinder", format!("{} {}", radius, length / 2.0))
             }
             UrdfGeometry::Sphere { radius } => ("sphere", format!("{radius}")),
-            UrdfGeometry::Mesh { filename, .. } => {
-                // Look up the pre-collected mesh asset by filename
+            UrdfGeometry::Capsule { radius, length } => {
+                // MJCF capsule: size="radius half_length", as MuJoCo's importer halves it
+                ("capsule", format!("{} {}", radius, length / 2.0))
+            }
+            UrdfGeometry::Mesh { filename, scale } => {
                 let stripped = strip_package_prefix(filename);
-                if let Some(asset) = self.mesh_assets.iter().find(|a| a.file == stripped) {
+                if let Some(asset) = self.mesh_asset(&stripped, *scale) {
                     let mesh_ref = asset.name.clone();
                     // Mesh geoms use type="mesh" mesh="asset_name" (no size)
-                    let mut attrs = format!(r#"type="mesh" mesh="{mesh_ref}""#);
+                    let mut attrs = format!(r#"type="mesh" mesh="{}""#, escape(&mesh_ref));
                     if let Some(n) = name {
-                        write!(attrs, r#" name="{n}""#).ok();
+                        write!(attrs, r#" name="{}""#, escape(n)).ok();
                     }
                     let pos = origin.xyz;
                     if pos.norm() > 1e-10 {
@@ -599,9 +715,6 @@ impl<'a> Converter<'a> {
                     let rpy = origin.rpy;
                     if rpy.norm() > 1e-10 {
                         write!(attrs, r#" euler="{} {} {}""#, rpy.x, rpy.y, rpy.z).ok();
-                    }
-                    if is_visual {
-                        attrs.push_str(r#" contype="0" conaffinity="0""#);
                     }
                     self.write_line(&format!("<geom {attrs}/>"));
                 }
@@ -613,7 +726,7 @@ impl<'a> Converter<'a> {
 
         // Add name if present
         if let Some(n) = name {
-            write!(attrs, r#" name="{n}""#).ok();
+            write!(attrs, r#" name="{}""#, escape(n)).ok();
         }
 
         // Add position if non-zero
@@ -628,60 +741,58 @@ impl<'a> Converter<'a> {
             write!(attrs, r#" euler="{} {} {}""#, rpy.x, rpy.y, rpy.z).ok();
         }
 
-        // Visual geoms don't participate in collision
-        if is_visual {
-            attrs.push_str(r#" contype="0" conaffinity="0""#);
-        }
-
         self.write_line(&format!("<geom {attrs}/>"));
 
         Ok(())
     }
 
-    /// Pre-scan all links to collect mesh asset entries.
+    /// Every mesh the collision geoms name, as MuJoCo 3.5.0's importer makes
+    /// them (`xml_urdf.cc:576-626`), links in document order: one per file
+    /// stem and scale, the first scale of a stem named by the stem, each later
+    /// one by the stem and its index. A geom names the asset of its own stem
+    /// and scale, where MuJoCo gives a geom of a stem's later scale, met a
+    /// second time, the stem's first mesh (`:604-616`, `:632`; measured:
+    /// scales 1, 2, 2 give the third geom the scale-1 mesh;
+    /// `D-URDF-MESH-SCALE`).
     fn collect_mesh_assets(&mut self) {
-        let mut counter = 0usize;
-        for link in &self.robot.links {
-            // Check collision geometries
-            for collision in &link.collisions {
-                if let UrdfGeometry::Mesh { filename, scale } = &collision.geometry {
-                    let stripped = strip_package_prefix(filename);
-                    // Avoid duplicate assets for the same file
-                    if !self.mesh_assets.iter().any(|a| a.file == stripped) {
-                        let name = if let Some(n) = &collision.name {
-                            n.clone()
-                        } else {
-                            counter += 1;
-                            format!("{}_mesh_{counter}", link.name)
-                        };
-                        self.mesh_assets.push(MeshAssetEntry {
-                            name,
-                            file: stripped,
-                            scale: *scale,
-                        });
-                    }
+        let geoms = self
+            .robot
+            .links
+            .iter()
+            .flat_map(|link| link.collisions.iter().map(|collision| &collision.geometry));
+        for geometry in geoms {
+            if let UrdfGeometry::Mesh { filename, scale } = geometry {
+                let file = strip_package_prefix(filename);
+                if self.mesh_asset(&file, *scale).is_some() {
+                    continue;
                 }
-            }
-            // Check visual geometries
-            for visual in &link.visuals {
-                if let UrdfGeometry::Mesh { filename, scale } = &visual.geometry {
-                    let stripped = strip_package_prefix(filename);
-                    if !self.mesh_assets.iter().any(|a| a.file == stripped) {
-                        let name = if let Some(n) = &visual.name {
-                            n.clone()
-                        } else {
-                            counter += 1;
-                            format!("{}_mesh_{counter}", link.name)
-                        };
-                        self.mesh_assets.push(MeshAssetEntry {
-                            name,
-                            file: stripped,
-                            scale: *scale,
-                        });
-                    }
-                }
+                let stem = mesh_stem(&file);
+                let index = self
+                    .mesh_assets
+                    .iter()
+                    .filter(|asset| mesh_stem(&asset.file) == stem)
+                    .count();
+                let name = if index == 0 {
+                    stem.to_string()
+                } else {
+                    format!("{stem}{index}")
+                };
+                self.mesh_assets.push(MeshAssetEntry {
+                    name,
+                    file,
+                    scale: *scale,
+                });
             }
         }
+    }
+
+    /// The mesh asset a geom of `file` and `scale` names: the one of its
+    /// file's stem and scale.
+    fn mesh_asset(&self, file: &str, scale: Option<Vector3<f64>>) -> Option<&MeshAssetEntry> {
+        let stem = mesh_stem(file);
+        self.mesh_assets
+            .iter()
+            .find(|asset| mesh_stem(&asset.file) == stem && same_scale(asset.scale, scale))
     }
 
     fn write_line(&mut self, line: &str) {
@@ -1030,10 +1141,11 @@ mod tests {
         );
     }
 
-    /// Visual geometry is excluded from collision so it cannot perturb the
-    /// physics it is only meant to depict.
+    /// A visual geom is not written: MuJoCo 3.5.0's importer makes none under
+    /// URDF's `discardvisual` (measured: a link with one visual sphere has no
+    /// geom). `b8a6ffba` wrote it with `contype` 0, for `discardvisual` to drop.
     #[test]
-    fn visual_geometry_is_excluded_from_collision() {
+    fn a_visual_geom_is_not_written() {
         let urdf = r#"<?xml version="1.0"?>
             <robot name="vis">
                 <link name="base">
@@ -1042,7 +1154,7 @@ mod tests {
             </robot>"#;
 
         let mjcf = urdf_to_mjcf(urdf).expect("conversion should succeed");
-        assert!(mjcf.contains(r#"contype="0" conaffinity="0""#));
+        assert!(!mjcf.contains("<geom"), "{mjcf}");
     }
 
     /// `package://` and `file://` URIs are resolver-specific; MJCF wants a
@@ -1082,6 +1194,489 @@ mod tests {
         assert!(
             urdf_to_mjcf(urdf).is_err(),
             "a cyclic tree has no root link and must not convert"
+        );
+    }
+
+    /// A sphere collision named `name` (none if `None`) of radius `radius`.
+    fn collision(name: Option<&str>, radius: f64) -> String {
+        let name = name.map_or(String::new(), |n| format!(r#" name="{n}""#));
+        format!(r#"<collision{name}><geometry><sphere radius="{radius}"/></geometry></collision>"#)
+    }
+
+    /// A link with an inertial of mass 1 and `inner`.
+    fn massive_link(name: &str, inner: &str) -> String {
+        format!(
+            r#"<link name="{name}"><inertial><origin xyz="0 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial>{inner}</link>"#
+        )
+    }
+
+    /// A revolute joint `name` from `parent` to `child`.
+    fn hinge(name: &str, parent: &str, child: &str) -> String {
+        format!(
+            r#"<joint name="{name}" type="revolute"><parent link="{parent}"/><child link="{child}"/><origin xyz="0 0 1"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>"#
+        )
+    }
+
+    /// A collision name repeated in the robot is kept by the first link in the
+    /// document that has it and the later geom is unnamed, as MuJoCo 3.5.0's
+    /// importer names them (measured: the child link `arm`, written first,
+    /// keeps `c`; geom names `[None, 'c']` in body order, its radius-0.2 geom
+    /// named). `b8a6ffba` kept `c` on both.
+    #[test]
+    fn a_repeated_collision_name_is_kept_by_the_first_link_written() {
+        let urdf = format!(
+            r#"<robot name="r">{}{}{}</robot>"#,
+            massive_link("arm", &collision(Some("c"), 0.2)),
+            massive_link("base", &collision(Some("c"), 0.3)),
+            hinge("j", "base", "arm"),
+        );
+        let mjcf = urdf_to_mjcf(&urdf).expect("converts");
+        assert_eq!(mjcf.matches(r#"name="c""#).count(), 1, "{mjcf}");
+        assert!(
+            mjcf.contains(r#"type="sphere" size="0.2" name="c""#),
+            "{mjcf}"
+        );
+        let model = sim_mjcf::load_model(&mjcf).expect("loads");
+        let named: Vec<_> = model.geom_name.iter().map(Option::as_deref).collect();
+        assert_eq!(named, [None, Some("c")]);
+        assert_eq!(model.geom_size[1].x.to_bits(), 0.2_f64.to_bits());
+    }
+
+    /// A visual's name never meets a collision's: MuJoCo 3.5.0's importer
+    /// discards visuals under URDF's `discardvisual` before naming them
+    /// (measured: a collision and a visual both named `c` load, geom names
+    /// `['c', 'd']`).
+    #[test]
+    fn a_visual_name_never_meets_a_collisions() {
+        let urdf = format!(
+            r#"<robot name="r">{}{}{}</robot>"#,
+            massive_link(
+                "base",
+                &format!(
+                    r#"{}<visual name="c"><geometry><sphere radius="0.1"/></geometry></visual>"#,
+                    collision(Some("c"), 0.1)
+                )
+            ),
+            massive_link("arm", &collision(Some("d"), 0.1)),
+            hinge("j", "base", "arm"),
+        );
+        let mjcf = urdf_to_mjcf(&urdf).expect("converts");
+        assert_eq!(mjcf.matches(r#"name="c""#).count(), 1, "{mjcf}");
+        let model = sim_mjcf::load_model(&mjcf).expect("loads");
+        let named: Vec<_> = model.geom_name.iter().map(Option::as_deref).collect();
+        assert_eq!(named, [Some("c"), Some("d")]);
+    }
+
+    /// The link named `world` is the world body, as MuJoCo 3.5.0's importer
+    /// makes it (measured: bodies `['world', 'base']`, geoms `['floor', 'b']`
+    /// on bodies 0 and 1). `b8a6ffba` wrote it as a body named
+    /// `world`, which only fusion folded into the world. Its `<inertial>` is
+    /// dropped, where MuJoCo stores it as the world body's mass (measured:
+    /// `body_mass[0]` 1; `D-URDF-WORLD-INERTIAL`).
+    #[test]
+    fn the_link_named_world_is_the_world_body() {
+        let urdf = format!(
+            r#"<robot name="r">{}{}{}</robot>"#,
+            massive_link("world", &collision(Some("floor"), 0.1)),
+            massive_link("base", &collision(Some("b"), 0.1)),
+            hinge("j0", "world", "base"),
+        );
+        let mjcf = urdf_to_mjcf(&urdf).expect("converts");
+        assert!(!mjcf.contains(r#"<body name="world""#), "{mjcf}");
+        let model = sim_mjcf::load_model(&mjcf).expect("loads");
+        assert_eq!(model.body_mass[0].to_bits(), 0.0_f64.to_bits());
+        let bodies: Vec<_> = model.body_name.iter().map(Option::as_deref).collect();
+        assert_eq!(bodies, [Some("world"), Some("base")]);
+        let geoms: Vec<_> = model.geom_name.iter().map(Option::as_deref).collect();
+        assert_eq!(geoms, [Some("floor"), Some("b")]);
+        assert_eq!(model.geom_body, [0, 1]);
+    }
+
+    /// A joint whose child is `world` is refused: MuJoCo 3.5.0 refuses a
+    /// moving one ("joint found in world body", measured) and, for a fixed
+    /// one, moves the world body to the joint's origin (measured: `body_pos`
+    /// (0, 0, 3)), which this crate refuses too (`D-URDF-WORLD-CHILD`).
+    #[test]
+    fn a_joint_entering_world_is_refused() {
+        for kind in ["revolute", "fixed"] {
+            let urdf = format!(
+                r#"<robot name="r">{}<link name="world"/><joint name="j" type="{kind}"><parent link="base"/><child link="world"/><origin xyz="0 0 3"/><axis xyz="0 0 1"/></joint></robot>"#,
+                massive_link("base", "")
+            );
+            let err = urdf_to_mjcf(&urdf).expect_err(kind);
+            assert!(
+                matches!(&err, UrdfError::WorldChild { joint } if joint == "j"),
+                "{err}"
+            );
+            assert!(
+                err.to_string().contains("joint found in world body"),
+                "{err}"
+            );
+        }
+    }
+
+    /// Mesh assets are named as MuJoCo 3.5.0's importer names them: by the
+    /// file's stem, a later scale of a stem by the stem and its index, and a
+    /// geom of a stem and scale met before names that asset (measured: one
+    /// file at scales 1, 2, 1, 3 → meshes `['part', 'part1', 'part2']`, geoms'
+    /// meshes 0, 1, 0, 2; two files under one collision name → meshes
+    /// `['a', 'b']`, which `b8a6ffba` named both `c` and refused). Here two
+    /// files give meshes by their stems, `a` and `b`, a `\` separating a
+    /// path's parts too (`mjuu_strippath`).
+    #[test]
+    fn meshes_are_named_by_file_stem_and_scale() {
+        let mesh = |name: &str, file: &str, scale: &str| {
+            format!(
+                r#"<collision name="{name}"><geometry><mesh filename="{file}"{scale}/></geometry></collision>"#
+            )
+        };
+        let urdf = format!(
+            r#"<robot name="r">{}{}{}</robot>"#,
+            massive_link("base", &mesh("c", "package://p/meshes/part.stl", "")),
+            massive_link(
+                "arm",
+                &format!(
+                    "{}{}{}{}{}",
+                    mesh("d", "meshes/part.stl", r#" scale="2 2 2""#),
+                    mesh("e", "meshes/part.stl", ""),
+                    mesh("f", "part.stl", r#" scale="3 3 3""#),
+                    mesh("g", "meshes/a.stl", ""),
+                    mesh("h", "meshes\\b.obj", "")
+                )
+            ),
+            hinge("j", "base", "arm"),
+        );
+        let mjcf = urdf_to_mjcf(&urdf).expect("converts");
+        for asset in [
+            r#"<mesh name="part" file="meshes/part.stl"/>"#,
+            r#"<mesh name="part1" file="meshes/part.stl" scale="2 2 2"/>"#,
+            r#"<mesh name="part2" file="part.stl" scale="3 3 3"/>"#,
+            r#"<mesh name="a" file="meshes/a.stl"/>"#,
+            r#"<mesh name="b" file="meshes\b.obj"/>"#,
+        ] {
+            assert!(mjcf.contains(asset), "{asset} in {mjcf}");
+        }
+        for (geom, asset) in [("c", "part"), ("d", "part1"), ("e", "part"), ("f", "part2")] {
+            assert!(
+                mjcf.contains(&format!(r#"mesh="{asset}" name="{geom}""#)),
+                "geom {geom} names {asset} in {mjcf}"
+            );
+        }
+    }
+
+    /// A `<mimic>` becomes a joint equality, the follower's position the
+    /// leader's times the multiplier plus the offset; MuJoCo 3.5.0's
+    /// importer does not read `<mimic>` (measured: `neq` 0;
+    /// `D-URDF-MIMIC`).
+    #[test]
+    fn a_mimic_becomes_a_joint_equality() {
+        let urdf = format!(
+            r#"<robot name="r"><link name="base"/>{}{}{}<joint name="follower" type="revolute"><parent link="base"/><child link="b"/><axis xyz="0 0 1"/><limit lower="-1" upper="1"/><mimic joint="j" multiplier="2" offset="0.1"/></joint></robot>"#,
+            massive_link("a", ""),
+            massive_link("b", ""),
+            hinge("j", "base", "a"),
+        );
+        let model = sim_mjcf::load_model(&urdf_to_mjcf(&urdf).expect("converts")).expect("loads");
+        assert_eq!(model.neq, 1);
+        assert_eq!(
+            model.eq_data[0][..2]
+                .iter()
+                .map(|x| x.to_bits())
+                .collect::<Vec<_>>(),
+            [0.1_f64.to_bits(), 2.0_f64.to_bits()]
+        );
+    }
+
+    /// The joint named `name`'s axis in `model`, as bits.
+    fn axis_bits(model: &sim_core::Model, name: &str) -> [u64; 3] {
+        let j = model.jnt_name_to_id[name];
+        let a = model.jnt_axis[j];
+        [a.x, a.y, a.z].map(f64::to_bits)
+    }
+
+    /// A joint without an `<axis>` turns about (1, 0, 0), as URDF and
+    /// MuJoCo 3.5.0's importer define it (measured: `jnt_axis` [1, 0, 0] for
+    /// a revolute, a prismatic and a continuous joint); `b8a6ffba` took z.
+    #[test]
+    fn a_joint_without_an_axis_turns_about_x() {
+        for kind in ["revolute", "prismatic", "continuous"] {
+            let urdf = format!(
+                r#"<robot name="r"><link name="base"/>{}<joint name="j" type="{kind}"><parent link="base"/><child link="a"/><limit lower="-1" upper="1"/></joint></robot>"#,
+                massive_link("a", "")
+            );
+            let model = sim_mjcf::load_model(&urdf_to_mjcf(&urdf).expect("converts")).expect(kind);
+            assert_eq!(
+                axis_bits(&model, "j"),
+                [1.0, 0.0, 0.0].map(f64::to_bits),
+                "{kind}"
+            );
+        }
+    }
+
+    /// An axis is kept as written, so the MJCF loader refuses one too small,
+    /// as MuJoCo 3.5.0 refuses it (measured: "axis too small in joint", a
+    /// revolute's and a planar's), and normalises the rest as MuJoCo does;
+    /// `b8a6ffba` made a zero axis z.
+    #[test]
+    fn an_axis_is_kept_as_written() {
+        for kind in ["revolute", "planar"] {
+            let urdf = format!(
+                r#"<robot name="r"><link name="base"/>{}<joint name="j" type="{kind}"><parent link="base"/><child link="a"/><axis xyz="0 0 0"/></joint></robot>"#,
+                massive_link("a", "")
+            );
+            let err =
+                sim_mjcf::load_model(&urdf_to_mjcf(&urdf).expect("converts")).expect_err(kind);
+            assert!(err.to_string().contains("axis too small"), "{kind}: {err}");
+        }
+    }
+
+    /// A planar joint's axes are MuJoCo 3.5.0's, from the axis as written
+    /// (`mjuu_z2quat`; each case's `jnt_axis` measured, as bits): an axis
+    /// written short of unit length within about 1e-7 of z gives `_TY`
+    /// (0, 1, 0), where `b8a6ffba`, from the unit axis, gave
+    /// (0, 0.99999999999987, -5e-7) (ledger L316); an axis whose product
+    /// with z is within mjEPS of unit length keeps it unscaled
+    /// (`mjuu_normvec`), and so do MuJoCo's slide axes. Every row is compared
+    /// bit for bit on macOS arm64 (the rows through `sin` and `cos` round by
+    /// the platform's library), to 1e-15 elsewhere.
+    // MuJoCo's values as bit patterns, compared exactly.
+    #[allow(clippy::unreadable_literal)]
+    #[test]
+    fn a_planar_joints_axes_are_mujocos() {
+        const ROWS: &[(&str, [[u64; 3]; 3])] = &[
+            (
+                "",
+                [
+                    [0x3cb0000000000000, 0, 0xbff0000000000000],
+                    [0, 0x3ff0000000000000, 0],
+                    [0x3ff0000000000000, 0, 0],
+                ],
+            ),
+            (
+                "0 0 1",
+                [
+                    [0x3ff0000000000000, 0, 0],
+                    [0, 0x3ff0000000000000, 0],
+                    [0, 0, 0x3ff0000000000000],
+                ],
+            ),
+            (
+                "0 5e-8 0.1",
+                [
+                    [0x3ff0000000000000, 0, 0],
+                    [0, 0x3ff0000000000000, 0],
+                    [0, 0x3ea0c6f7a0b5eb3e, 0x3feffffffffffb9a],
+                ],
+            ),
+            (
+                "3 0 0",
+                [
+                    [0x3cb0000000000000, 0, 0xbff0000000000000],
+                    [0, 0x3ff0000000000000, 0],
+                    [0x3ff0000000000000, 0, 0],
+                ],
+            ),
+            (
+                "1.000000000000005 0 0",
+                [
+                    [0xbcf6800000000000, 0, 0xbff0000000000017],
+                    [0, 0x3ff0000000000018, 0],
+                    [0x3ff0000000000017, 0, 0],
+                ],
+            ),
+            (
+                "0 0 -1",
+                [
+                    [0x3ff0000000000000, 0, 0],
+                    [0, 0xbff0000000000000, 0x3ca1a62633145c07],
+                    [0, 0, 0xbff0000000000000],
+                ],
+            ),
+            (
+                "0.6000000000000003 0.8 0",
+                [
+                    [0x3fe47ae147ae147a, 0xbfdeb851eb851ebc, 0xbfe3333333333336],
+                    [0xbfdeb851eb851ebc, 0x3fd70a3d70a3d70e, 0xbfe999999999999a],
+                    [0x3fe3333333333336, 0x3fe999999999999a, 0],
+                ],
+            ),
+        ];
+        let here = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+        for &(axis, mujoco) in ROWS {
+            let axis_element = if axis.is_empty() {
+                String::new()
+            } else {
+                format!(r#"<axis xyz="{axis}"/>"#)
+            };
+            let urdf = format!(
+                r#"<robot name="r"><link name="base"/>{}<joint name="pj" type="planar"><parent link="base"/><child link="a"/>{axis_element}</joint></robot>"#,
+                massive_link("a", "")
+            );
+            let model = sim_mjcf::load_model(&urdf_to_mjcf(&urdf).expect("converts")).expect(axis);
+            for (joint, want) in ["pj_TX", "pj_TY", "pj_RZ"].into_iter().zip(mujoco) {
+                let got = axis_bits(&model, joint);
+                let exact = got == want;
+                let close = got.iter().zip(&want).all(|(&g, &w)| {
+                    let (g, w) = (f64::from_bits(g), f64::from_bits(w));
+                    (g - w).abs() <= 1e-15
+                });
+                assert!(
+                    if here { exact } else { close },
+                    "axis {axis:?} {joint}: {:?}, MuJoCo {:?}",
+                    got.map(f64::from_bits),
+                    want.map(f64::from_bits)
+                );
+            }
+        }
+    }
+
+    /// A `<limit effort>` is parsed and not mapped: MuJoCo 3.5.0's importer
+    /// makes it the joint's actuator force range, ±|effort| where above 0
+    /// (measured: effort 5 gives `jnt_actfrcrange` (-5, 5)), which this
+    /// crate's model does not have (`D-URDF-EFFORT`).
+    #[test]
+    fn an_effort_is_parsed_and_not_mapped() {
+        let urdf = format!(
+            r#"<robot name="r"><link name="base"/>{}<joint name="j" type="revolute"><parent link="base"/><child link="a"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="5" velocity="1"/></joint></robot>"#,
+            massive_link("a", "")
+        );
+        let robot = crate::parser::parse_urdf_str(&urdf).expect("parses");
+        let limit = robot.joints[0].limit.as_ref().expect("a limit");
+        assert_eq!(limit.effort.to_bits(), 5.0_f64.to_bits());
+        let mjcf = urdf_to_mjcf(&urdf).expect("converts");
+        assert!(
+            !mjcf.contains("actuatorfrc") && !mjcf.contains("5\""),
+            "{mjcf}"
+        );
+    }
+
+    /// A geom of a mesh file's second scale, met again, names that scale's
+    /// asset, where MuJoCo 3.5.0's importer gives it the file's first mesh
+    /// (measured: scales 1, 2, 2 give meshes `part`, `part1` and
+    /// `geom_dataid` [0, 1, 0]): its `meshname` stays the stem when it finds the
+    /// scale among the stem's meshes past the first (`xml_urdf.cc:604-616`,
+    /// `:632`), so it scales the geom by the first scale it read
+    /// (`D-URDF-MESH-SCALE`, wrong-value).
+    #[test]
+    fn a_meshs_repeated_later_scale_names_its_own_asset() {
+        let mesh = |name: &str, scale: &str| {
+            format!(
+                r#"<collision name="{name}"><geometry><mesh filename="meshes/part.stl"{scale}/></geometry></collision>"#
+            )
+        };
+        let urdf = format!(
+            r#"<robot name="r">{}{}{}</robot>"#,
+            massive_link("base", &mesh("c", "")),
+            massive_link(
+                "arm",
+                &format!(
+                    "{}{}",
+                    mesh("d", r#" scale="2 2 2""#),
+                    mesh("e", r#" scale="2 2 2""#)
+                )
+            ),
+            hinge("j", "base", "arm"),
+        );
+        let mjcf = urdf_to_mjcf(&urdf).expect("converts");
+        assert!(mjcf.contains(r#"mesh="part1" name="d""#), "{mjcf}");
+        assert!(mjcf.contains(r#"mesh="part1" name="e""#), "{mjcf}");
+    }
+
+    /// An empty collision name is no name: MuJoCo 3.5.0's importer leaves two
+    /// `name=""` collisions unnamed, without a warning (measured: geoms
+    /// `[None, None]`); `b8a6ffba` wrote the first `name=""`.
+    #[test]
+    fn an_empty_collision_name_is_no_name() {
+        let urdf = format!(
+            r#"<robot name="r">{}</robot>"#,
+            massive_link(
+                "base",
+                &format!("{}{}", collision(Some(""), 0.1), collision(Some(""), 0.2))
+            ),
+        );
+        let mjcf = urdf_to_mjcf(&urdf).expect("converts");
+        assert!(!mjcf.contains(r#"name="""#), "{mjcf}");
+    }
+
+    /// Every name and path the converter writes reaches sim-mjcf's reader as
+    /// the URDF held it: the model's, a body's, a joint's, a planar joint's
+    /// three, a mimic's two joints, a mesh's name and file, and a geom's name
+    /// and mesh. Each ends in `"&lt;` as the reader gives it, which written
+    /// unescaped would end its attribute at the `"`.
+    #[test]
+    fn names_with_markup_characters_round_trip() {
+        // A name as the URDF writes it, and as the reader gives it.
+        let written = |stem: &str| format!("{stem}&quot;&amp;lt;");
+        let read = |stem: &str| format!("{stem}\u{22}&lt;");
+        let mesh = format!(
+            r#"<collision name="{}"><geometry><mesh filename="{}.stl"/></geometry></collision>"#,
+            written("gm"),
+            written("m"),
+        );
+        let urdf = format!(
+            r#"<robot name="{}">{}{}{}{}{}<joint name="{}" type="planar"><parent link="{}"/><child link="{}"/><axis xyz="0 0 1"/></joint><joint name="{}" type="revolute"><parent link="{}"/><child link="{}"/><axis xyz="0 0 1"/><limit lower="-1" upper="1"/><mimic joint="{}"/></joint></robot>"#,
+            written("r"),
+            massive_link(&written("b"), ""),
+            massive_link(&written("a"), &mesh),
+            massive_link(&written("c"), &collision(Some(&written("gs")), 0.1)),
+            massive_link(&written("d"), ""),
+            hinge(&written("j"), &written("b"), &written("a")),
+            written("p"),
+            written("a"),
+            written("c"),
+            written("f"),
+            written("b"),
+            written("d"),
+            written("j"),
+        );
+        let model =
+            sim_mjcf::parse_mjcf_str(&urdf_to_mjcf(&urdf).expect("converts")).expect("parses");
+        let (mut bodies, mut joints, mut geoms) = (Vec::new(), Vec::new(), Vec::new());
+        let mut stack: Vec<_> = model.worldbody.children.iter().collect();
+        while let Some(body) = stack.pop() {
+            bodies.push(body.name.clone());
+            joints.extend(body.joints.iter().map(|joint| joint.name.clone()));
+            geoms.extend(
+                body.geoms
+                    .iter()
+                    .map(|geom| (geom.name.clone(), geom.mesh.clone())),
+            );
+            stack.extend(&body.children);
+        }
+        for list in [&mut bodies, &mut joints] {
+            list.sort();
+        }
+        geoms.sort();
+        assert_eq!(model.name, read("r"));
+        assert_eq!(
+            model
+                .meshes
+                .iter()
+                .map(|mesh| (mesh.name.clone(), mesh.file.clone()))
+                .collect::<Vec<_>>(),
+            [(read("m"), Some(format!("{}.stl", read("m"))))]
+        );
+        assert_eq!(bodies, ["a", "b", "c", "d"].map(read));
+        let planar = read("p");
+        let mut expected = vec![read("f"), read("j")];
+        expected.extend(["_RZ", "_TX", "_TY"].map(|axis| format!("{planar}{axis}")));
+        expected.sort();
+        assert_eq!(joints, expected);
+        assert_eq!(
+            geoms,
+            [
+                (Some(read("gm")), Some(read("m"))),
+                (Some(read("gs")), None)
+            ]
+        );
+        assert_eq!(
+            model
+                .equality
+                .joints
+                .iter()
+                .map(|equality| (equality.joint1.clone(), equality.joint2.clone()))
+                .collect::<Vec<_>>(),
+            [(read("f"), Some(read("j")))]
         );
     }
 }

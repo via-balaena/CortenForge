@@ -30,7 +30,7 @@
 //!         <link name="base_link">
 //!             <inertial>
 //!                 <mass value="1.0"/>
-//!                 <inertia ixx="0.1" iyy="0.1" izz="0.1"/>
+//!                 <inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/>
 //!             </inertial>
 //!         </link>
 //!     </robot>
@@ -140,7 +140,7 @@ pub use validation::{ValidationResult, validate};
 ///         <link name="base">
 ///             <inertial>
 ///                 <mass value="1.0"/>
-///                 <inertia ixx="0.1" iyy="0.1" izz="0.1"/>
+///                 <inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/>
 ///             </inertial>
 ///         </link>
 ///     </robot>
@@ -168,7 +168,7 @@ mod tests {
                 <link name="base_link">
                     <inertial>
                         <mass value="5.0"/>
-                        <inertia ixx="0.5" iyy="0.5" izz="0.5"/>
+                        <inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/>
                     </inertial>
                 </link>
 
@@ -176,7 +176,7 @@ mod tests {
                     <inertial>
                         <origin xyz="0 0 0.25"/>
                         <mass value="1.0"/>
-                        <inertia ixx="0.1" iyy="0.1" izz="0.01"/>
+                        <inertia ixx="0.1" iyy="0.1" izz="0.01" ixy="0" ixz="0" iyz="0"/>
                     </inertial>
                     <collision>
                         <origin xyz="0 0 0.25"/>
@@ -190,7 +190,7 @@ mod tests {
                     <inertial>
                         <origin xyz="0 0 0.2"/>
                         <mass value="0.5"/>
-                        <inertia ixx="0.05" iyy="0.05" izz="0.005"/>
+                        <inertia ixx="0.05" iyy="0.05" izz="0.005" ixy="0" ixz="0" iyz="0"/>
                     </inertial>
                     <collision>
                         <origin xyz="0 0 0.2"/>
@@ -281,7 +281,7 @@ mod tests {
                 <link name="base_link">
                     <inertial>
                         <mass value="1.0"/>
-                        <inertia ixx="0.1" iyy="0.1" izz="0.1"/>
+                        <inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/>
                     </inertial>
                 </link>
             </robot>
@@ -556,9 +556,9 @@ mod tests {
             assert_eq!(names, ["p_TX", "p_TY", "p_RZ"], "{axis}");
             for (k, want) in expected.iter().enumerate() {
                 let got = model.jnt_axis[k];
-                let gap = (0..3).map(|i| (got[i] - want[i]).abs()).fold(0.0, f64::max);
+                // `<=` fails a NaN component, which `f64::max` would drop.
                 assert!(
-                    gap <= 1e-15,
+                    (0..3).all(|i| (got[i] - want[i]).abs() <= 1e-15),
                     "{axis}: joint {k} axis {got:?}, MuJoCo {want:?}"
                 );
             }

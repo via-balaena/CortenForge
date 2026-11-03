@@ -4,10 +4,20 @@ use thiserror::Error;
 
 /// Errors that can occur during URDF parsing and loading.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum UrdfError {
     /// XML parsing error.
     #[error("XML parse error: {0}")]
     XmlParse(String),
+
+    /// An element nested deeper than MuJoCo 3.5.0's XML reader (tinyxml2)
+    /// takes: with the root at depth 1, one that is not self-closing at 498
+    /// (a self-closing one loads at 499; measured, the same rule as sim-mjcf's).
+    #[error("XML parse error: an element nested deeper than {limit}")]
+    TooDeep {
+        /// The deepest nesting taken.
+        limit: usize,
+    },
 
     /// Missing required element.
     #[error("missing required element: {element} in {context}")]
@@ -15,6 +25,16 @@ pub enum UrdfError {
         /// The missing element name.
         element: &'static str,
         /// Where the element was expected.
+        context: String,
+    },
+
+    /// A sub-element MuJoCo 3.5.0's importer looks up by name, written twice
+    /// (`FindSubElem`: "repeated element").
+    #[error("repeated element: {element} in {context}")]
+    RepeatedElement {
+        /// The repeated element's tag.
+        element: &'static str,
+        /// The element holding it.
         context: String,
     },
 
@@ -62,6 +82,15 @@ pub enum UrdfError {
     /// Kinematic loop detected.
     #[error("kinematic loop detected: {0}")]
     KinematicLoop(String),
+
+    /// A joint whose child is the link named `world`, which MuJoCo 3.5.0's
+    /// importer makes the world body: it refuses a moving joint there ("joint
+    /// found in world body") and moves the world for a fixed one.
+    #[error("joint {joint} enters link 'world': joint found in world body")]
+    WorldChild {
+        /// The joint whose child is `world`.
+        joint: String,
+    },
 
     /// No root link found.
     #[error("no root link found (all links are children of joints)")]

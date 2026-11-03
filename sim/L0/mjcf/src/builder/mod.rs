@@ -393,6 +393,8 @@ pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
     // Expand <frame> elements: compose transforms into children, lift onto parent bodies.
     // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
     // visible to those passes (matches MuJoCo, which expands frames during XML parsing).
+    // A frame's name, which expanding drops, is kept for the name check.
+    let frame_names = crate::names::frame_names(&mjcf.worldbody);
     expand_frames(&mut mjcf.worldbody, &mjcf.compiler)?;
 
     // Expand <composite> elements: generates body chains from composite definitions.
@@ -405,7 +407,7 @@ pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
     // Every name, reference and value check, on the model as resolved and
     // expanded, before fusion or discarding hides an element (MuJoCo 3.5.0
     // checks names before either, measured).
-    let checked = crate::validation::validate_resolved(&mjcf)?;
+    let checked = crate::validation::validate_resolved(&mjcf, &frame_names)?;
     Ok(FrontEnd {
         mjcf,
         resolver,

@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="base" pos="0 0 0"><joint name="basej" type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body></worldbody><tendon><fixed name="t"><joint joint="basej" coef="1"/></fixed><fixed name="t"><joint joint="basej" coef="2"/></fixed></tendon><actuator><motor name="mr" joint="nope"/></actuator></mujoco>

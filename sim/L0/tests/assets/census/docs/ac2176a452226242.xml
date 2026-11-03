@@ -1,0 +1,1 @@
+<mujoco><worldbody><geom name="g1" type="sphere" size="1"/><geom name="g2" type="sphere" size="1" pos="3 0 0"/><frame name="f"/><frame name="f"/></worldbody><contact><pair name="p" geom1="g1" geom2="g2"/><pair name="p" geom1="g2" geom2="g1"/></contact></mujoco>
