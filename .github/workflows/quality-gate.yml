@@ -28,9 +28,9 @@
 #   `grade`: on a foundational `sim-core` PR the affected set is nearly the full
 #   crate list, making this the COMPILE-bound long pole, so the heavy GUI dep
 #   tree (Bevy) is isolated on one shard so it compiles once.
-# - `conformance-macos` (macos-26 arm64, --release): sim-conformance-tests on
-#   the parity goldens' platform, the only job that runs their bit-for-bit
-#   branch (see the job's note).
+# - `conformance-macos` (macos-26 arm64, --release): sim-conformance-tests and
+#   sim-urdf on the parity goldens' platform, the only job that runs their
+#   bit-for-bit branch (see the job's note).
 # - `tests-release` (ubuntu, default features, --release): authoritative
 #   test gate for the crates whose heavy stochastic-physics integration
 #   tests (90M–600M-step Boltzmann/CEM/REINFORCE/SA validators) run 5–10×
@@ -1059,8 +1059,10 @@ jobs:
   # named on 2026-10-24); GitHub still updates the image under it, so the job
   # prints the image's macOS. Whether its libm rounds every value as
   # 27.0.1's does is shown by the job's runs. It refuses a runner that is not arm64, where
-  # the bit-for-bit branch would not run. PR-scoped to sim-conformance-tests;
-  # always runs, so it is never a skipped required check.
+  # the bit-for-bit branch would not run. sim-urdf's planar-axis test is bit
+  # for bit here too (MuJoCo's values through the platform's sin and cos).
+  # PR-scoped to sim-conformance-tests and sim-urdf; always runs, so it is
+  # never a skipped required check.
   conformance-macos:
     name: Conformance (release, macOS arm64)
     runs-on: macos-26
@@ -1095,7 +1097,7 @@ jobs:
           AFFECTED_CRATES: ${{ needs.affected.outputs.crates }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          PKGS=$(bash .github/scripts/affected-packages.sh "sim-conformance-tests")
+          PKGS=$(bash .github/scripts/affected-packages.sh "sim-conformance-tests cortenforge-sim-urdf")
           echo "PKGS=$PKGS" >> "$GITHUB_ENV"
         shell: bash
 
