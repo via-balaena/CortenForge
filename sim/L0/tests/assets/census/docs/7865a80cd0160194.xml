@@ -1,0 +1,1 @@
+<mujoco><default><default class="k"><geom size=".2"/></default></default><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><composite type="grid" count="4 4 1" spacing=".1" prefix="c"><geom type="sphere" size=".01"/></composite></frame><frame childclass="nope"><geom size=".1"/></frame></body></worldbody></mujoco>

@@ -14,7 +14,7 @@ use super::orientation::{
     made_unit, mulquat, mulvecmat, quat_as_written, quat_to_wxyz, quat2mat, resolve_orientation,
     site_quat_as_written,
 };
-use crate::error::{ElementKind, Location, Result};
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{MjcfBody, MjcfCompiler, MjcfFrame};
 
 /// A frame's transform composed into a child's pose, in MuJoCo 3.5.0's
@@ -61,15 +61,20 @@ fn wxyz(q: &UnitQuaternion<f64>) -> [f64; 4] {
 /// # Errors
 ///
 /// An orientation alternative `ResolveOrientation` refuses, on a frame or on
-/// an element in one.
+/// an element in one: of one body's, the one MuJoCo 3.5.0 names first
+/// ([`Faults`]).
 pub fn expand_frames(body: &mut MjcfBody, compiler: &MjcfCompiler) -> Result<()> {
     let mut placed = Contents::default();
+    let mut faults = Faults::default();
     for element in Contents::take_from_body(body).into_elements() {
         match element {
-            Element::Frame(frame) => dissolve(frame, None, &mut placed, &body.name, compiler)?,
+            Element::Frame(frame) => {
+                dissolve(frame, None, &mut placed, &mut faults, &body.name, compiler);
+            }
             other => placed.push(other),
         }
     }
+    faults.first()?;
     placed.put_into_body(body);
     for child in &mut body.children {
         expand_frames(child, compiler)?;
@@ -77,35 +82,70 @@ pub fn expand_frames(body: &mut MjcfBody, compiler: &MjcfCompiler) -> Result<()>
     Ok(())
 }
 
+/// The orientations one body's frames and the elements in them refuse, kept
+/// to name the one MuJoCo 3.5.0 names first. MuJoCo compiles bodies one by
+/// one (`user_model.cc:4933`), each its frames, then its geoms, then its
+/// sites (`mjCBody::Compile`, `user_objects.cc:2376-2378`, `:2427-2433`,
+/// `:2551-2552`); a body a frame holds is compiled after them, as one of its
+/// children. Of each kind, the first in document order.
+#[derive(Default)]
+struct Faults {
+    frame: Option<MjcfError>,
+    geom: Option<MjcfError>,
+    site: Option<MjcfError>,
+    body: Option<MjcfError>,
+}
+
+impl Faults {
+    /// `fault` kept in `slot`, unless an earlier one is.
+    fn keep(slot: &mut Option<MjcfError>, fault: MjcfError) {
+        slot.get_or_insert(fault);
+    }
+
+    /// The fault MuJoCo names first, if any.
+    fn first(self) -> Result<()> {
+        self.frame
+            .or(self.geom)
+            .or(self.site)
+            .or(self.body)
+            .map_or(Ok(()), Err)
+    }
+}
+
 /// One frame's contents, in its document order, composed with its transform
 /// (itself composed with `outer`'s, the pose of the frame holding it, where a
 /// frame holds it) and added to `placed`, the elements of `body`; a nested
-/// frame's at its place.
+/// frame's at its place. An orientation refused is kept in `faults` and its
+/// element left out (a frame's with its contents).
 fn dissolve(
     mut frame: MjcfFrame,
     outer: Option<(&Vector3<f64>, &UnitQuaternion<f64>)>,
     placed: &mut Contents,
+    faults: &mut Faults,
     body: &str,
     compiler: &MjcfCompiler,
-) -> Result<()> {
+) {
     let in_body =
         |kind, name: Option<&str>| Location::named(kind, name.unwrap_or("")).in_body(body);
     // The frame's own orientation as written, composed with the frame holding
     // it where one does, then made unit, as `mjCFrame::Compile` makes it
     // (`user_objects.cc:2734-2745`); a frame no frame holds keeps its pose as
     // written.
-    let written = quat_as_written(
+    let written = match quat_as_written(
         frame.quat,
         frame.euler,
         frame.axisangle,
         frame.xyaxes,
         frame.zaxis,
         compiler,
-    )
-    .map_err(|e| {
-        e.on("frame")
-            .at(in_body(ElementKind::Frame, frame.name.as_deref()))
-    })?;
+    ) {
+        Ok(q) => q,
+        Err(e) => {
+            let at = in_body(ElementKind::Frame, frame.name.as_deref());
+            Faults::keep(&mut faults.frame, e.on("frame").at(at));
+            return;
+        }
+    };
     let mut pos = frame.pos;
     let mut quat = written;
     if let Some((outer_pos, outer_quat)) = outer {
@@ -118,18 +158,21 @@ fn dissolve(
             // Each geom's orientation (a `fromto` resolved already gives its
             // `quat`), composed with the frame's.
             Element::Geom(mut g) => {
-                let geom_quat = resolve_orientation(
+                let geom_quat = match resolve_orientation(
                     g.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
                     g.euler,
                     g.axisangle,
                     g.xyaxes,
                     g.zaxis,
                     compiler,
-                )
-                .map_err(|e| {
-                    e.on("geom")
-                        .at(in_body(ElementKind::Geom, g.name.as_deref()))
-                })?;
+                ) {
+                    Ok(q) => q,
+                    Err(e) => {
+                        let at = in_body(ElementKind::Geom, g.name.as_deref());
+                        Faults::keep(&mut faults.geom, e.on("geom").at(at));
+                        continue;
+                    }
+                };
                 let mut gpos = g.pos.unwrap_or_else(Vector3::zeros);
                 let mut gquat = geom_quat;
                 frame_accum_child(&pos, &quat, &mut gpos, &mut gquat);
@@ -144,9 +187,15 @@ fn dissolve(
             // Each site's quaternion as written, composed with the frame's,
             // as MuJoCo composes a site's (`user_objects.cc:3976-3988`).
             Element::Site(mut s) => {
+                let mut squat = match site_quat_as_written(&s, compiler) {
+                    Ok(q) => q,
+                    Err(e) => {
+                        let at = in_body(ElementKind::Site, Some(&s.name));
+                        Faults::keep(&mut faults.site, e.on("site").at(at));
+                        continue;
+                    }
+                };
                 let mut spos = s.pos.unwrap_or_else(Vector3::zeros);
-                let mut squat = site_quat_as_written(&s, compiler)
-                    .map_err(|e| e.on("site").at(in_body(ElementKind::Site, Some(&s.name))))?;
                 frame_accum_child(&pos, &quat, &mut spos, &mut squat);
                 s.pos = Some(spos);
                 s.quat = Some(quat_to_wxyz(&squat));
@@ -157,11 +206,21 @@ fn dissolve(
                 Element::Site(s)
             }
             Element::Body(mut b) => {
-                let body_quat =
-                    resolve_orientation(b.quat, b.euler, b.axisangle, b.xyaxes, b.zaxis, compiler)
-                        .map_err(|e| {
-                            e.on("body").at(Location::named(ElementKind::Body, &b.name))
-                        })?;
+                let body_quat = match resolve_orientation(
+                    b.quat,
+                    b.euler,
+                    b.axisangle,
+                    b.xyaxes,
+                    b.zaxis,
+                    compiler,
+                ) {
+                    Ok(q) => q,
+                    Err(e) => {
+                        let at = Location::named(ElementKind::Body, &b.name);
+                        Faults::keep(&mut faults.body, e.on("body").at(at));
+                        continue;
+                    }
+                };
                 let mut bpos = b.pos;
                 let mut bquat = body_quat;
                 frame_accum_child(&pos, &quat, &mut bpos, &mut bquat);
@@ -174,7 +233,7 @@ fn dissolve(
                 Element::Body(b)
             }
             Element::Frame(nested) => {
-                dissolve(nested, Some((&pos, &quat)), placed, body, compiler)?;
+                dissolve(nested, Some((&pos, &quat)), placed, faults, body, compiler);
                 continue;
             }
             // A frame holds no joint (the reader refuses one), and its
@@ -183,7 +242,6 @@ fn dissolve(
         };
         placed.push(element);
     }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -26,6 +26,34 @@ pub fn expand_composites(body: &mut MjcfBody) -> Result<Vec<MjcfContactExclude>>
     Ok(excludes)
 }
 
+/// Each geom a composite made, its `fromto` made into its pose: every geom
+/// whose `fromto` is still written (`resolve::apply_defaults` resolved the
+/// document's own). This runs after frames, so a fault in a frame is named
+/// before a cable's segment too short, as MuJoCo 3.5.0 names it: it refuses
+/// the segment when it compiles the geom (`user_objects.cc:3700`), after the
+/// frames of the bodies compiled before it (`:2376-2378`). The checks
+/// `validate_resolved` makes come after it here (ledger L353).
+///
+/// # Errors
+///
+/// A `fromto` [`resolve_geom_fromto`] refuses, naming the geom and its body.
+pub fn resolve_made_fromtos(body: &mut MjcfBody) -> Result<()> {
+    for geom in &mut body.geoms {
+        if geom.fromto.is_some() {
+            let name = geom.name.clone().unwrap_or_default();
+            resolve_geom_fromto(geom).map_err(|e| {
+                e.with_location_if_unknown(
+                    Location::named(ElementKind::Geom, &name).in_body(&body.name),
+                )
+            })?;
+        }
+    }
+    for child in &mut body.children {
+        resolve_made_fromtos(child)?;
+    }
+    Ok(())
+}
+
 /// Each composite of `body` and of the bodies and frames below it made, in
 /// the order the document writes them (`MjcfBody::items`), as MuJoCo 3.5.0
 /// makes one when it reads it: its bodies take its place among the children
@@ -418,13 +446,9 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
             )
         };
 
-        // Build geom from template; a refusal of its `fromto` names it and
-        // its body.
-        let geom = build_cable_geom(composite, &geom_name, length).map_err(|e| {
-            e.with_location_if_unknown(
-                Location::named(ElementKind::Geom, &geom_name).in_body(&body_name),
-            )
-        })?;
+        // Build geom from template; its `fromto` is made into its pose after
+        // frames (`resolve_made_fromtos`).
+        let geom = build_cable_geom(composite, &geom_name, length);
 
         // Build joint
         let joint = build_cable_joint(composite, &joint_name, is_first);
@@ -493,11 +517,10 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
 }
 
 /// Build an `MjcfGeom` from the composite's geom template.
-/// Matches `AddCableBody:392-403` in `user_composite.cc`. Its `fromto` is
-/// made into its pose here, as for every geom before frames and fusion
-/// (`resolve::apply_defaults`), which ran before the composite made it.
+/// Matches `AddCableBody:392-403` in `user_composite.cc`. Its `fromto` stays
+/// written until [`resolve_made_fromtos`], after frames.
 #[allow(clippy::unreachable)] // unwrap_or_else fallback: geom presence validated by validate_cable() upstream
-fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> Result<MjcfGeom> {
+fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> MjcfGeom {
     // geom presence validated by validate_cable() before this point
     let template = composite
         .geom
@@ -555,8 +578,7 @@ fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> Resul
         _ => {} // Validated earlier — unreachable
     }
 
-    resolve_geom_fromto(&mut geom)?;
-    Ok(geom)
+    geom
 }
 
 /// Build an `MjcfJoint` for a cable body.

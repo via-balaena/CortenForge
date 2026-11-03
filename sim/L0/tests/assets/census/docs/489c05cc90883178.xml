@@ -1,0 +1,1 @@
+<mujoco><worldbody><frame zaxis="0 0 0"><geom size=".1"/></frame><composite type="cable" prefix="v" vertex="0 0 0  0.3 0 0  0.3 0 0  0.9 0 0"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></worldbody></mujoco>

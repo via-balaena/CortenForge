@@ -1,0 +1,1 @@
+<mujoco><worldbody><frame zaxis="0 0 0"><geom size=".1"/></frame><composite type="cable" count="4 2 1" curve="s" size="1" prefix="k"><geom type="capsule" size=".01"/></composite></worldbody></mujoco>
