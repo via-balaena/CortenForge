@@ -556,9 +556,9 @@ mod tests {
             assert_eq!(names, ["p_TX", "p_TY", "p_RZ"], "{axis}");
             for (k, want) in expected.iter().enumerate() {
                 let got = model.jnt_axis[k];
-                let gap = (0..3).map(|i| (got[i] - want[i]).abs()).fold(0.0, f64::max);
+                // `<=` fails a NaN component, which `f64::max` would drop.
                 assert!(
-                    gap <= 1e-15,
+                    (0..3).all(|i| (got[i] - want[i]).abs() <= 1e-15),
                     "{axis}: joint {k} axis {got:?}, MuJoCo {want:?}"
                 );
             }

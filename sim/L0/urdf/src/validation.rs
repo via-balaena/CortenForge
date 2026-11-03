@@ -46,6 +46,13 @@ pub fn validate(robot: &UrdfRobot) -> Result<ValidationResult> {
     }
 
     for joint in &robot.joints {
+        // The link named `world` is the world body: a joint entering it is
+        // refused, as the converter refuses it (`UrdfError::WorldChild`).
+        if joint.child == "world" {
+            return Err(UrdfError::WorldChild {
+                joint: joint.name.clone(),
+            });
+        }
         // Check parent link exists
         if !link_names.contains(joint.parent.as_str()) {
             return Err(UrdfError::undefined_link(&joint.parent, &joint.name));
