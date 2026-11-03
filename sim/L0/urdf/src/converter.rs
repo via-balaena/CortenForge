@@ -1429,7 +1429,9 @@ mod tests {
     /// (`mjuu_z2quat`; each case's `jnt_axis` measured, as bits): an axis
     /// written short of unit length within about 1e-7 of z gives `_TY`
     /// (0, 1, 0), where the parent, from the unit axis, gave
-    /// (0, 0.99999999999987, -5e-7) (ledger L316). The rows through `sin`
+    /// (0, 0.99999999999987, -5e-7) (ledger L316); an axis whose product
+    /// with z is within mjEPS of unit length keeps it unscaled
+    /// (`mjuu_normvec`), and so do MuJoCo's slide axes. The rows through `sin`
     /// and `cos` are compared bit for bit on macOS arm64 only, elsewhere to
     /// 1e-15.
     // MuJoCo's values as bit patterns, compared exactly.
@@ -1467,6 +1469,30 @@ mod tests {
                     [0x3cb0000000000000, 0, 0xbff0000000000000],
                     [0, 0x3ff0000000000000, 0],
                     [0x3ff0000000000000, 0, 0],
+                ],
+            ),
+            (
+                "1.000000000000005 0 0",
+                [
+                    [0xbcf6800000000000, 0, 0xbff0000000000017],
+                    [0, 0x3ff0000000000018, 0],
+                    [0x3ff0000000000017, 0, 0],
+                ],
+            ),
+            (
+                "0 0 -1",
+                [
+                    [0x3ff0000000000000, 0, 0],
+                    [0, 0xbff0000000000000, 0x3ca1a62633145c07],
+                    [0, 0, 0xbff0000000000000],
+                ],
+            ),
+            (
+                "0.6000000000000003 0.8 0",
+                [
+                    [0x3fe47ae147ae147a, 0xbfdeb851eb851ebc, 0xbfe3333333333336],
+                    [0xbfdeb851eb851ebc, 0x3fd70a3d70a3d70e, 0xbfe999999999999a],
+                    [0x3fe3333333333336, 0x3fe999999999999a, 0],
                 ],
             ),
         ];
