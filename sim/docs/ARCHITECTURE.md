@@ -575,7 +575,9 @@ URDF robot description parser. Converts URDF → MJCF via sim-mjcf. Supports:
 links with mass, joints (fixed, revolute, continuous, prismatic, floating, and
 planar as MuJoCo's importer builds it: two slides and a hinge), geometry (box,
 sphere, cylinder, capsule, mesh), dynamics, limits; read as MuJoCo 3.5.0's URDF
-importer reads it (`sim/L0/urdf/src/parser.rs`).
+importer reads it (`sim/L0/urdf/src/parser.rs`), but for the differences
+registered in `sim/L0/tests/assets/census/divergences.tsv` (`D-URDF-*`, and the
+number and XML rows it shares with sim-mjcf).
 
 ### sim-gpu (GPU Acceleration)
 

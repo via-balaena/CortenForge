@@ -7,12 +7,15 @@
 //! contents, then each joint's — so that of two faults it refuses the one
 //! MuJoCo meets first. A sub-element the importer looks up by name
 //! (`FindSubElem`) is refused when written twice, and when missing where it
-//! is required; every number is read by MuJoCo's rules ([`read_numbers`]).
-//! What the importer does not read is not read here: a visual's origin and
-//! geometry (it discards visuals under URDF's `discardvisual`), a fixed
-//! joint's limit and dynamics, a geometry's shapes after the one it takes, a
-//! `velocity`. A `<mimic>`, which it does not read either, this crate makes
-//! a joint equality of (`D-URDF-MIMIC`).
+//! is required; every number is read by MuJoCo's rules ([`read_numbers`], a
+//! mesh's scale by [`read_scale`]). A fixed joint's limit and dynamics and a
+//! geometry's shapes after the one it takes, which the importer does not
+//! read, are not read here; a visual's origin and geometry (it discards
+//! visuals under URDF's `discardvisual`) and a `velocity`, which it does not
+//! read either, are kept where they can be read and refused nowhere. A
+//! `<mimic>`, which it does not read, this crate makes a joint equality of
+//! (`D-URDF-MIMIC`). What it reads otherwise than MuJoCo is registered in
+//! `sim/L0/tests/assets/census/divergences.tsv`.
 
 use std::collections::HashSet;
 
@@ -373,7 +376,7 @@ fn make_materials(root: &Element) -> Result<()> {
     Ok(())
 }
 
-/// A link's contents (`mjXURDF::Body`, `xml_urdf.cc:230-361`): its
+/// A link's contents (`mjXURDF::Body`, `xml_urdf.cc:227-364`): its
 /// `<inertial>`, then its visuals and collisions in order.
 fn parse_link(element: &Element) -> Result<UrdfLink> {
     let mut link = UrdfLink::new(element.required_text("name")?);
@@ -415,7 +418,7 @@ fn parse_inertial(element: &Element) -> Result<UrdfInertial> {
     })
 }
 
-/// An element's `<origin>` (`mjXURDF::Origin`, `xml_urdf.cc:650-670`): its
+/// An element's `<origin>` (`mjXURDF::Origin`, `xml_urdf.cc:648-669`): its
 /// `xyz` and `rpy`, three numbers each where written; none, the identity.
 fn parse_origin(element: &Element) -> Result<UrdfOrigin> {
     let Some(origin) = element.find_sub("origin", false)? else {
@@ -427,7 +430,7 @@ fn parse_origin(element: &Element) -> Result<UrdfOrigin> {
 }
 
 /// A `<visual>`, as MuJoCo 3.5.0's importer reads one under URDF's
-/// `discardvisual` (`xml_urdf.cc:297-337`; measured): its `<material>` is
+/// `discardvisual` (`xml_urdf.cc:299-338`; measured): its `<material>` is
 /// read — a `<color>`'s `rgba`, four numbers, required, else the material's
 /// `name` — and its origin and geometry are not, so a visual whose origin or
 /// geometry is not readable is dropped (`None`), where MuJoCo makes no geom.
@@ -457,7 +460,7 @@ fn parse_visual(element: &Element) -> Result<Option<UrdfVisual>> {
     }))
 }
 
-/// A `<collision>` (`mjXURDF::Geom`, `xml_urdf.cc:523-648`): its required
+/// A `<collision>` (`mjXURDF::Geom`, `xml_urdf.cc:524-643`): its required
 /// `<geometry>`, then its origin.
 fn parse_collision(element: &Element) -> Result<UrdfCollision> {
     let geometry = parse_geometry(element.required_sub("geometry")?)?;
@@ -750,9 +753,11 @@ fn required_vector3(element: &Element, name: &'static str) -> Result<Vector3<f64
 /// with a token it cannot read (an underflow and an overflow included),
 /// "problem reading attribute"; more than three numbers "has too much data",
 /// fewer "does not have enough data". Absent, `None`. Its tokens are read as
-/// [`read_token`] reads them otherwise: a `NaN`, an infinity and a
-/// hexadecimal float, which MuJoCo's stream reads, are refused here
-/// (`D-NONFINITE`, `D-HEX-FLOAT`).
+/// [`read_token`] reads them otherwise: a hexadecimal float, which MuJoCo's
+/// stream reads, is refused here (`D-HEX-FLOAT`), and so is a `NaN` or an
+/// infinity in this crate's words (`D-NONFINITE`), where MuJoCo's stream
+/// reads `inf` and `nan` in any case, with a `-` or none, and refuses `+inf`,
+/// `infinity` and `nan(1)`, "problem reading attribute" (measured).
 fn read_scale(element: &Element) -> Result<Option<Vector3<f64>>> {
     let name = "scale";
     let Some(text) = element.attr(name) else {
@@ -1021,7 +1026,9 @@ mod tests {
     /// A mesh's `scale` is read as MuJoCo 3.5.0's `ReadAttrArr` reads it
     /// (measured): empty, blank or unreadable, "problem reading attribute";
     /// too many or too few numbers in `ReadAttr`'s words. A hexadecimal float,
-    /// which MuJoCo's stream reads, is refused (`D-HEX-FLOAT`).
+    /// which MuJoCo's stream reads, is refused (`D-HEX-FLOAT`); a `NaN` or an
+    /// infinity in this crate's words (`D-NONFINITE`: MuJoCo reads `inf 1 1`
+    /// and refuses `+inf 1 1` and `nan(1) 1 1` in its own).
     #[test]
     fn a_mesh_scale_is_read_as_mujocos_stream_reads_it() {
         let cases = [
@@ -1034,6 +1041,9 @@ mod tests {
             ("1 1 1 1", "has too much data"),
             ("1 1", "does not have enough data"),
             ("0x1p0 1 1", "problem reading attribute"),
+            ("inf 1 1", "a NaN or an infinity is not allowed"),
+            ("+inf 1 1", "a NaN or an infinity is not allowed"),
+            ("nan(1) 1 1", "a NaN or an infinity is not allowed"),
         ];
         for (scale, words) in cases {
             let urdf = one_link(&format!(
@@ -1052,20 +1062,41 @@ mod tests {
         assert_eq!(scale.map(|s| s.x.to_bits()), Some(2.0_f64.to_bits()));
     }
 
-    /// A `<mimic>`'s numbers are read as every other (`D-URDF-MIMIC`: MuJoCo
-    /// 3.5.0's importer does not read `<mimic>`, so it loads these).
+    /// A `<mimic>`, which MuJoCo 3.5.0's importer does not read, is refused
+    /// where this crate cannot make a joint equality of it (`D-URDF-MIMIC`):
+    /// MuJoCo loads each document below (measured, as written), with no
+    /// equality.
     #[test]
-    fn a_mimics_numbers_are_read_as_every_other() {
-        for (attrs, words) in [
-            (r#"joint="j1" multiplier="x""#, "bad format"),
-            (r#"joint="j1" offset="1 2""#, "has too much data"),
-            (r#"multiplier="2""#, "missing required attribute: joint"),
+    fn a_mimic_is_refused_where_mujoco_loads_it() {
+        let urdf = |leader: &str, mimics: &str| {
+            format!(
+                r#"<robot name="r"><link name="base"/><link name="a"><inertial><mass value="1"/><inertia {I6}/></inertial></link><link name="b"><inertial><mass value="1"/><inertia {I6}/></inertial></link><joint name="j1" type="{leader}"><parent link="base"/><child link="a"/></joint><joint name="j2" type="revolute"><parent link="base"/><child link="b"/>{mimics}</joint></robot>"#
+            )
+        };
+        for (mimics, words) in [
+            (r#"<mimic joint="j1" multiplier="x"/>"#, "bad format"),
+            (r#"<mimic joint="j1" offset="1 2"/>"#, "has too much data"),
+            (
+                r#"<mimic multiplier="2"/>"#,
+                "missing required attribute: joint",
+            ),
+            (
+                r#"<mimic joint="j1"/><mimic joint="j1"/>"#,
+                "repeated element: mimic in joint",
+            ),
         ] {
-            let urdf = format!(
-                r#"<robot name="r"><link name="base"/><link name="a"/><link name="b"/><joint name="j1" type="revolute"><parent link="base"/><child link="a"/></joint><joint name="j2" type="revolute"><parent link="base"/><child link="b"/><mimic {attrs}/></joint></robot>"#
+            let err = parse_urdf_str(&urdf("revolute", mimics)).expect_err(mimics);
+            assert!(err.to_string().contains(words), "{mimics}: {err}");
+        }
+        for (leader, mimic) in [("revolute", "nope"), ("fixed", "j1"), ("planar", "j1")] {
+            let doc = urdf(leader, &format!(r#"<mimic joint="{mimic}"/>"#));
+            parse_urdf_str(&doc).expect(leader);
+            let err = crate::load_urdf_model(&doc).expect_err(leader);
+            assert!(
+                err.to_string()
+                    .contains(&format!("unknown joint '{mimic}'")),
+                "{leader}: {err}"
             );
-            let err = parse_urdf_str(&urdf).expect_err(attrs);
-            assert!(err.to_string().contains(words), "{attrs}: {err}");
         }
     }
 

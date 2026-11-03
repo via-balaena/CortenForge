@@ -288,10 +288,67 @@ const LOADS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The fix-diff review's documents (reviewer FD, 2026-11-03) for importer branches the rows above do not
+/// try, each measured on MuJoCo 3.5.0: a geometry's shapes looked up in MuJoCo's order (box, cylinder,
+/// sphere, capsule, mesh) up to the one it takes, a material without a colour registering no name, a repeated
+/// `<mujoco>`, an inertial's origin read before its mass, a fixed joint's axis read before it returns.
+/// `(case, URDF, MuJoCo's error, words of this crate's error)`.
+const BRANCHES_REFUSED: &[(&str, &str, &str, &str)] = &[
+    (
+        "FD/u2/col_capsule_and_two_cylinders",
+        r#"<robot name="r"><link name="a"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision name="c"><geometry><capsule radius="1" length="1"/><cylinder radius="1" length="1"/><cylinder radius="1" length="1"/></geometry></collision></link></robot>"#,
+        "repeated element: 'cylinder'",
+        "repeated element: cylinder in geometry",
+    ),
+    (
+        "FD/u2/col_two_spheres_and_capsule",
+        r#"<robot name="r"><link name="a"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision name="c"><geometry><sphere radius="1"/><sphere radius="1"/><capsule radius="1" length="1"/></geometry></collision></link></robot>"#,
+        "repeated element: 'sphere'",
+        "repeated element: sphere in geometry",
+    ),
+    (
+        "FD/u2/mat_nocolor_then_bad",
+        r#"<robot name="r"><material name="m"/><material name="m"><color rgba="x"/></material><link name="a"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link></robot>"#,
+        "bad format in attribute 'rgba'",
+        "bad format",
+    ),
+    (
+        "FD/u2/mujoco_twice",
+        r#"<robot name="r"><mujoco/><mujoco/><link name="a"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link></robot>"#,
+        "repeated element: 'mujoco'",
+        "repeated element: mujoco in robot",
+    ),
+    (
+        "FD/u2/inertial_mass_before_origin_bad",
+        r#"<robot name="r"><link name="a"><inertial><mass value="x"/><origin xyz="1 2"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link></robot>"#,
+        "attribute 'xyz' does not have enough data",
+        "invalid value for xyz on origin",
+    ),
+    (
+        "FD/u2/joint_fixed_axis_bad",
+        r#"<robot name="r"><link name="a"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="b"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="fixed"><parent link="a"/><child link="b"/><axis xyz="1 0"/></joint></robot>"#,
+        "attribute 'xyz' does not have enough data",
+        "invalid value for xyz on axis",
+    ),
+];
+
+/// The fix-diff review's documents MuJoCo 3.5.0 loads (measured): a cylinder before two spheres (the
+/// spheres not looked up), and a material whose name an earlier one registered, its two colours unread.
+const BRANCHES_LOAD: &[(&str, &str)] = &[
+    (
+        "FD/u2/col_cyl_and_two_spheres",
+        r#"<robot name="r"><link name="a"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision name="c"><geometry><cylinder radius="1" length="1"/><sphere radius="1"/><sphere radius="1"/></geometry></collision></link></robot>"#,
+    ),
+    (
+        "FD/u2/mat_two_colors_registered",
+        r#"<robot name="r"><material name="m"><color rgba="1 0 0 1"/></material><material name="m"><color rgba="1 0 0 1"/><color rgba="0 1 0 1"/></material><link name="a"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link></robot>"#,
+    ),
+];
+
 #[test]
 fn what_mujocos_importer_refuses_is_refused_for_its_fault() {
     let mut missed = Vec::new();
-    for &(case, urdf, mujoco, words) in REFUSED {
+    for &(case, urdf, mujoco, words) in REFUSED.iter().chain(BRANCHES_REFUSED) {
         match load_urdf_model(urdf) {
             Err(e) if e.to_string().contains(words) => {}
             Err(e) => missed.push(format!("{case}: {e} (MuJoCo: {mujoco})")),
@@ -303,8 +360,18 @@ fn what_mujocos_importer_refuses_is_refused_for_its_fault() {
 
 #[test]
 fn what_mujocos_importer_loads_is_read() {
-    for &(case, urdf) in LOADS {
+    for &(case, urdf) in LOADS.iter().chain(BRANCHES_LOAD) {
         parse_urdf_str(urdf).unwrap_or_else(|e| panic!("{case}: {e}"));
         load_urdf_model(urdf).unwrap_or_else(|e| panic!("{case}: {e}"));
     }
+}
+
+/// Of a cylinder and two spheres MuJoCo 3.5.0 takes the cylinder (measured: `geom_type` 5).
+#[test]
+fn a_geometrys_first_shape_in_mujocos_order_is_taken() {
+    let robot = parse_urdf_str(BRANCHES_LOAD[0].1).unwrap();
+    assert!(matches!(
+        robot.links[0].collisions[0].geometry,
+        sim_urdf::UrdfGeometry::Cylinder { .. }
+    ));
 }

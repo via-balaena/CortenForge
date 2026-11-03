@@ -19,7 +19,7 @@ pub struct ValidationResult {
 /// Validate a URDF robot model.
 ///
 /// This checks:
-/// - All joints reference valid links
+/// - All joints reference valid links, and none enters the link `world`
 /// - No duplicate link or joint names
 /// - Exactly one root link (no parent)
 /// - No kinematic loops
@@ -46,13 +46,6 @@ pub fn validate(robot: &UrdfRobot) -> Result<ValidationResult> {
     }
 
     for joint in &robot.joints {
-        // The link named `world` is the world body: a joint entering it is
-        // refused, as the converter refuses it (`UrdfError::WorldChild`).
-        if joint.child == "world" {
-            return Err(UrdfError::WorldChild {
-                joint: joint.name.clone(),
-            });
-        }
         // Check parent link exists
         if !link_names.contains(joint.parent.as_str()) {
             return Err(UrdfError::undefined_link(&joint.parent, &joint.name));
@@ -60,6 +53,14 @@ pub fn validate(robot: &UrdfRobot) -> Result<ValidationResult> {
         // Check child link exists
         if !link_names.contains(joint.child.as_str()) {
             return Err(UrdfError::undefined_link(&joint.child, &joint.name));
+        }
+        // The link named `world` is the world body: a joint entering it is
+        // refused once its links are found, as the converter refuses it
+        // (`UrdfError::WorldChild`).
+        if joint.child == "world" {
+            return Err(UrdfError::WorldChild {
+                joint: joint.name.clone(),
+            });
         }
 
         // Record parent joint for child link
@@ -363,6 +364,30 @@ mod tests {
 
         let result = validate(&robot);
         assert!(matches!(result, Err(UrdfError::DuplicateLink(_))));
+    }
+
+    /// A joint entering the link `world` is refused once its links are found,
+    /// as the converter refuses it: with its parent undefined, the parent is
+    /// named.
+    #[test]
+    fn a_joint_into_world_is_refused_after_its_links() {
+        let joint = |parent| UrdfJoint::new("j", UrdfJointType::Revolute, parent, "world");
+        let robot = UrdfRobot::new("test")
+            .with_link(UrdfLink::new("world"))
+            .with_link(UrdfLink::new("base"));
+        let err = validate(&robot.clone().with_joint(joint("base"))).unwrap_err();
+        assert!(
+            matches!(&err, UrdfError::WorldChild { joint } if joint == "j"),
+            "{err}"
+        );
+        let err = validate(&robot.clone().with_joint(joint("nope"))).unwrap_err();
+        assert!(matches!(err, UrdfError::UndefinedLink { .. }), "{err}");
+        assert!(
+            crate::robot_to_mjcf(&robot.with_joint(joint("nope")))
+                .unwrap_err()
+                .to_string()
+                .contains("nope")
+        );
     }
 
     #[test]
