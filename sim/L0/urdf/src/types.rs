@@ -8,13 +8,6 @@ use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// Safe axis normalization with Z fallback for zero-length vectors.
-#[inline]
-fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
-    let n = v.norm();
-    if n > 1e-10 { v / n } else { Vector3::z() }
-}
-
 // ============================================================================
 // Origin (Pose)
 // ============================================================================
@@ -364,7 +357,10 @@ pub struct UrdfJoint {
     pub child: String,
     /// Origin of joint frame relative to parent link frame.
     pub origin: UrdfOrigin,
-    /// Joint axis in joint frame (default: z-axis).
+    /// Joint axis in the joint frame, as written: the MJCF loader normalises
+    /// it, and refuses one too small, as MuJoCo 3.5.0 does when it compiles
+    /// the model. Default (1, 0, 0), URDF's and MuJoCo's importer's
+    /// (`xml_urdf.cc:412`).
     pub axis: Vector3<f64>,
     /// Joint limits (required for revolute and prismatic).
     pub limit: Option<UrdfJointLimit>,
@@ -389,7 +385,7 @@ impl UrdfJoint {
             parent: parent.into(),
             child: child.into(),
             origin: UrdfOrigin::default(),
-            axis: Vector3::z(), // URDF default axis
+            axis: Vector3::x(),
             limit: None,
             dynamics: None,
             mimic: None,
@@ -403,10 +399,10 @@ impl UrdfJoint {
         self
     }
 
-    /// Set the joint axis.
+    /// Set the joint axis, as written ([`UrdfJoint::axis`]).
     #[must_use]
     pub fn with_axis(mut self, axis: Vector3<f64>) -> Self {
-        self.axis = safe_normalize_axis(axis);
+        self.axis = axis;
         self
     }
 

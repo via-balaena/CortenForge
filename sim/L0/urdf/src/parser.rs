@@ -378,7 +378,8 @@ fn parse_joint<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result
     let mut parent: Option<String> = None;
     let mut child: Option<String> = None;
     let mut origin = UrdfOrigin::default();
-    let mut axis = Vector3::z();
+    // Without an `<axis>`, (1, 0, 0) (`xml_urdf.cc:412`; measured).
+    let mut axis = Vector3::x();
     let mut limit: Option<UrdfJointLimit> = None;
     let mut dynamics: Option<UrdfJointDynamics> = None;
     let mut mimic: Option<crate::types::UrdfMimic> = None;

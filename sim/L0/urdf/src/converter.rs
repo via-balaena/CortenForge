@@ -130,35 +130,54 @@ fn dynamics_attrs(joint: &UrdfJoint) -> String {
     attrs
 }
 
-/// A planar joint's two slide axes: the first two columns of the rotation
-/// taking z to `axis`, as MuJoCo's `mjuu_z2quat` and `mjuu_quat2mat` compute
-/// it (`user_util.cc`). `axis` is the unit axis the parser gives; MuJoCo
-/// applies the cut-off below to the axis as written (ledger L316). The rotation turns about z × `axis` by
-/// atan2(|z × `axis`|, `axis`.z); where |z × `axis`|² < 1e-14, `mjuu_normvec`
-/// reads the cross product as zero and the rotation turns about x.
+/// A planar joint's two slide axes, as MuJoCo 3.5.0's importer makes them
+/// from the axis as written (`xml_urdf.cc:445-446`): the first two columns
+/// of `mjuu_quat2mat(mjuu_z2quat(axis))` (`user_util.cc:203-240`, `:395-408`),
+/// in their operations and order.
+// `mjuu_quat2mat`'s identity shortcut is an exact `==` (a zero of either
+// sign passes it).
+#[allow(clippy::float_cmp)]
 fn planar_axes(axis: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
-    let cross = Vector3::z().cross(axis);
-    let (about, length) = if cross.norm_squared() < 1e-14 {
-        (Vector3::x(), 0.0)
+    // mjuu_z2quat: about = z × axis, normalised by mjuu_normvec, which leaves
+    // a vector of squared length below mjEPS as it is and returns 0, and one
+    // within mjEPS of unit length unscaled.
+    let z = [0.0, 0.0, 1.0];
+    let mut about = [
+        z[1] * axis.z - z[2] * axis.y,
+        z[2] * axis.x - z[0] * axis.z,
+        z[0] * axis.y - z[1] * axis.x,
+    ];
+    let squared = about[0] * about[0] + about[1] * about[1] + about[2] * about[2];
+    let length = if squared < MJ_EPS {
+        0.0
     } else {
-        let length = cross.norm();
-        (cross / length, length)
+        let length = squared.sqrt();
+        if (length - 1.0).abs() > MJ_EPS {
+            about = about.map(|c| c / length);
+        }
+        length
     };
-    let (sin, cos) = (length.atan2(axis.z) / 2.0).sin_cos();
-    let q = [cos, about.x * sin, about.y * sin, about.z * sin];
+    if length < 1e-10 {
+        about = [1.0, 0.0, 0.0];
+    }
+    let angle = length.atan2(axis.z);
+    let (sin, cos) = ((angle / 2.0).sin(), (angle / 2.0).cos());
+    let q = [cos, about[0] * sin, about[1] * sin, about[2] * sin];
+    // mjuu_quat2mat, its identity shortcut included; columns 0 and 1.
+    if q == [1.0, 0.0, 0.0, 0.0] {
+        return (Vector3::x(), Vector3::y());
+    }
+    let (q00, q01, q02, q03) = (q[0] * q[0], q[0] * q[1], q[0] * q[2], q[0] * q[3]);
+    let (q11, q12, q13) = (q[1] * q[1], q[1] * q[2], q[1] * q[3]);
+    let (q22, q23, q33) = (q[2] * q[2], q[2] * q[3], q[3] * q[3]);
     (
-        Vector3::new(
-            q[0] * q[0] + q[1] * q[1] - q[2] * q[2] - q[3] * q[3],
-            2.0 * (q[1] * q[2] + q[0] * q[3]),
-            2.0 * (q[1] * q[3] - q[0] * q[2]),
-        ),
-        Vector3::new(
-            2.0 * (q[1] * q[2] - q[0] * q[3]),
-            q[0] * q[0] - q[1] * q[1] + q[2] * q[2] - q[3] * q[3],
-            2.0 * (q[2] * q[3] + q[0] * q[1]),
-        ),
+        Vector3::new(q00 + q11 - q22 - q33, 2.0 * (q12 + q03), 2.0 * (q13 - q02)),
+        Vector3::new(2.0 * (q12 - q03), q00 - q11 + q22 - q33, 2.0 * (q23 + q01)),
     )
 }
+
+/// MuJoCo's `mjEPS`.
+const MJ_EPS: f64 = 1e-14;
 
 /// A mesh asset collected during geom conversion.
 struct MeshAssetEntry {
@@ -1360,6 +1379,143 @@ mod tests {
                 .map(|x| x.to_bits())
                 .collect::<Vec<_>>(),
             [0.1_f64.to_bits(), 2.0_f64.to_bits()]
+        );
+    }
+
+    /// The joint named `name`'s axis in `model`, as bits.
+    fn axis_bits(model: &sim_core::Model, name: &str) -> [u64; 3] {
+        let j = model.jnt_name_to_id[name];
+        let a = model.jnt_axis[j];
+        [a.x, a.y, a.z].map(f64::to_bits)
+    }
+
+    /// A joint without an `<axis>` turns about (1, 0, 0), as URDF and
+    /// MuJoCo 3.5.0's importer define it (measured: `jnt_axis` [1, 0, 0] for
+    /// a revolute, a prismatic and a continuous joint); the parent took z.
+    #[test]
+    fn a_joint_without_an_axis_turns_about_x() {
+        for kind in ["revolute", "prismatic", "continuous"] {
+            let urdf = format!(
+                r#"<robot name="r"><link name="base"/>{}<joint name="j" type="{kind}"><parent link="base"/><child link="a"/><limit lower="-1" upper="1"/></joint></robot>"#,
+                massive_link("a", "")
+            );
+            let model = sim_mjcf::load_model(&urdf_to_mjcf(&urdf).expect("converts")).expect(kind);
+            assert_eq!(
+                axis_bits(&model, "j"),
+                [1.0, 0.0, 0.0].map(f64::to_bits),
+                "{kind}"
+            );
+        }
+    }
+
+    /// An axis is kept as written, so the MJCF loader refuses one too small,
+    /// as MuJoCo 3.5.0 refuses it (measured: "axis too small in joint", a
+    /// revolute's and a planar's), and normalises the rest as MuJoCo does;
+    /// the parent made a zero axis z.
+    #[test]
+    fn an_axis_is_kept_as_written() {
+        for kind in ["revolute", "planar"] {
+            let urdf = format!(
+                r#"<robot name="r"><link name="base"/>{}<joint name="j" type="{kind}"><parent link="base"/><child link="a"/><axis xyz="0 0 0"/></joint></robot>"#,
+                massive_link("a", "")
+            );
+            let err =
+                sim_mjcf::load_model(&urdf_to_mjcf(&urdf).expect("converts")).expect_err(kind);
+            assert!(err.to_string().contains("axis too small"), "{kind}: {err}");
+        }
+    }
+
+    /// A planar joint's axes are MuJoCo 3.5.0's, from the axis as written
+    /// (`mjuu_z2quat`; each case's `jnt_axis` measured, as bits): an axis
+    /// written short of unit length within about 1e-7 of z gives `_TY`
+    /// (0, 1, 0), where the parent, from the unit axis, gave
+    /// (0, 0.99999999999987, -5e-7) (ledger L316). The rows through `sin`
+    /// and `cos` are compared bit for bit on macOS arm64 only, elsewhere to
+    /// 1e-15.
+    // MuJoCo's values as bit patterns, compared exactly.
+    #[allow(clippy::unreadable_literal)]
+    #[test]
+    fn a_planar_joints_axes_are_mujocos() {
+        const ROWS: &[(&str, [[u64; 3]; 3])] = &[
+            (
+                "",
+                [
+                    [0x3cb0000000000000, 0, 0xbff0000000000000],
+                    [0, 0x3ff0000000000000, 0],
+                    [0x3ff0000000000000, 0, 0],
+                ],
+            ),
+            (
+                "0 0 1",
+                [
+                    [0x3ff0000000000000, 0, 0],
+                    [0, 0x3ff0000000000000, 0],
+                    [0, 0, 0x3ff0000000000000],
+                ],
+            ),
+            (
+                "0 5e-8 0.1",
+                [
+                    [0x3ff0000000000000, 0, 0],
+                    [0, 0x3ff0000000000000, 0],
+                    [0, 0x3ea0c6f7a0b5eb3e, 0x3feffffffffffb9a],
+                ],
+            ),
+            (
+                "3 0 0",
+                [
+                    [0x3cb0000000000000, 0, 0xbff0000000000000],
+                    [0, 0x3ff0000000000000, 0],
+                    [0x3ff0000000000000, 0, 0],
+                ],
+            ),
+        ];
+        let here = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+        for &(axis, mujoco) in ROWS {
+            let axis_element = if axis.is_empty() {
+                String::new()
+            } else {
+                format!(r#"<axis xyz="{axis}"/>"#)
+            };
+            let urdf = format!(
+                r#"<robot name="r"><link name="base"/>{}<joint name="pj" type="planar"><parent link="base"/><child link="a"/>{axis_element}</joint></robot>"#,
+                massive_link("a", "")
+            );
+            let model = sim_mjcf::load_model(&urdf_to_mjcf(&urdf).expect("converts")).expect(axis);
+            for (joint, want) in ["pj_TX", "pj_TY", "pj_RZ"].into_iter().zip(mujoco) {
+                let got = axis_bits(&model, joint);
+                let exact = got == want;
+                let close = got.iter().zip(&want).all(|(&g, &w)| {
+                    let (g, w) = (f64::from_bits(g), f64::from_bits(w));
+                    (g - w).abs() <= 1e-15
+                });
+                assert!(
+                    if here { exact } else { close },
+                    "axis {axis:?} {joint}: {:?}, MuJoCo {:?}",
+                    got.map(f64::from_bits),
+                    want.map(f64::from_bits)
+                );
+            }
+        }
+    }
+
+    /// A `<limit effort>` is parsed and not mapped: MuJoCo 3.5.0's importer
+    /// makes it the joint's actuator force range, ±|effort| where above 0
+    /// (measured: effort 5 gives `jnt_actfrcrange` (-5, 5)), which this
+    /// crate's model does not have (`D-URDF-EFFORT`).
+    #[test]
+    fn an_effort_is_parsed_and_not_mapped() {
+        let urdf = format!(
+            r#"<robot name="r"><link name="base"/>{}<joint name="j" type="revolute"><parent link="base"/><child link="a"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="5" velocity="1"/></joint></robot>"#,
+            massive_link("a", "")
+        );
+        let robot = crate::parser::parse_urdf_str(&urdf).expect("parses");
+        let limit = robot.joints[0].limit.as_ref().expect("a limit");
+        assert_eq!(limit.effort.to_bits(), 5.0_f64.to_bits());
+        let mjcf = urdf_to_mjcf(&urdf).expect("converts");
+        assert!(
+            !mjcf.contains("actuatorfrc") && !mjcf.contains("5\""),
+            "{mjcf}"
         );
     }
 }
