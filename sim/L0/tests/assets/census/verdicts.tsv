@@ -146,6 +146,7 @@
 0ae6d732de1d4ece	agree
 0aebb87d09701f46	mj-refuses
 0af65a5777666f9a	agree
+0b034a161f3b8d85	both-refuse
 0b364ff088ceba2a	both-refuse
 0b51fa215a9a863e	agree
 0b55e2f3472bbe39	agree
@@ -874,6 +875,7 @@
 49e0d06f38cc7bcb	both-refuse
 49ededc986f252d5	both-refuse
 4a042f9877aaca64	agree
+4a14a49acddf260c	both-refuse
 4a1a1b5a20eedf03	agree
 4a33caefe1660757	both-refuse
 4a4409fcea6ad260	ours-refused	divergence=D-HEX-FLOAT
@@ -1610,6 +1612,7 @@
 8a72a8469aac9bad	agree
 8a73892c84e51302	mj-refuses
 8a7b3a37a6aa6cc6	both-refuse
+8a95da4556fd216e	both-refuse
 8acfa2c1e1928df2	agree
 8aee765a33e5f9a9	both-refuse
 8af53a643ada5d6f	agree
@@ -1747,6 +1750,7 @@
 97ae962b8036348c	agree
 97b3effb7c508041	agree
 97c2da41b6b81ae1	both-refuse
+97c36a0e98dec084	both-refuse
 97f5d0e184c8c661	both-refuse
 9802c21f2863943c	agree
 98066541a3bd104d	both-refuse
@@ -1821,6 +1825,7 @@
 9e03ba46b8064182	both-refuse
 9e053095b19e3cb3	mj-refuses
 9e32d899178cf487	both-refuse
+9e3e15a9b647d4af	both-refuse
 9e7f5e02165fb4c6	both-refuse
 9ea0facb35a5f41b	agree
 9eb86ba723df3a22	agree
@@ -1919,6 +1924,7 @@ a69fdcd96d70baf2	mj-refuses
 a6b079c0ffc2cc8c	both-refuse
 a6b4bb51d44ed0a3	agree
 a6c0fbbadb09e283	agree
+a6c728e0f18d3af0	both-refuse
 a6e04a3c7773a380	agree
 a6fb60bd3bbe23a4	model:meaninertia;dyn:e1:t0:qM
 a7128f4d225c0e86	agree

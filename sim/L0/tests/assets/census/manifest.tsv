@@ -3035,3 +3035,9 @@ e84848dd9eb5acfd	sim/L0/mjcf/tests/repeated_names.rs:131
 f3bcbaebf8598064	sim/L0/mjcf/tests/refusal_order.rs:919
 f6ae26d89413f653	sim/L0/mjcf/tests/repeated_names.rs:23
 fdb84cae291fdadd	sim/L0/mjcf/tests/refusal_order.rs:913
+0b034a161f3b8d85	sim/L0/mjcf/tests/repeated_names.rs:271
+4a14a49acddf260c	sim/L0/mjcf/tests/repeated_names.rs:247
+8a95da4556fd216e	sim/L0/mjcf/tests/repeated_names.rs:253
+97c36a0e98dec084	sim/L0/mjcf/tests/repeated_names.rs:259
+9e3e15a9b647d4af	sim/L0/mjcf/tests/repeated_names.rs:265
+a6c728e0f18d3af0	sim/L0/mjcf/tests/repeated_names.rs:277

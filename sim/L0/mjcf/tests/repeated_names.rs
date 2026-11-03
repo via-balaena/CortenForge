@@ -235,3 +235,59 @@ fn two_composites_of_one_prefix_repeat_a_body_name() {
         "{err}"
     );
 }
+
+/// Repeated joint names, which this crate refused before (book L23 moves
+/// the check), and names repeated in nested bodies, `(case, document, kind,
+/// name)`, each refused by MuJoCo 3.5.0 as its row says (measured
+/// 2026-11-03; added for two mutants of the check that the rows above let
+/// live: joints unchecked, and child bodies not walked).
+const REFUSED_NESTED_AND_JOINTS: &[(&str, &str, ElementKind, &str)] = &[
+    (
+        "dup_body_nested",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 0"><joint type="hinge"/><geom type="sphere" size="0.1" mass="1"/><body name="a" pos="0 0 0"><joint type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body></body></worldbody></mujoco>"#,
+        ElementKind::Body,
+        "a",
+    ),
+    (
+        "dup_geom_nested",
+        r#"<mujoco><worldbody><body name="a"><joint/><geom name="g" size="0.1" mass="1"/><body name="b" pos="0 0 1"><joint/><geom size="0.1" mass="1"/><body name="c" pos="0 0 1"><joint/><geom name="g" size="0.1" mass="1"/></body></body></body></worldbody></mujoco>"#,
+        ElementKind::Geom,
+        "g",
+    ),
+    (
+        "dup_joint",
+        r#"<mujoco><worldbody><body name="a"><joint name="j"/><geom type="sphere" size="0.1" mass="1"/></body><body name="b" pos="1 0 0"><joint name="j"/><geom type="sphere" size="0.1" mass="1"/></body></worldbody></mujoco>"#,
+        ElementKind::Joint,
+        "j",
+    ),
+    (
+        "dup_joint_in_frame",
+        r#"<mujoco><worldbody><body name="a"><joint name="j"/><geom type="sphere" size="0.1" mass="1"/></body><frame pos="1 0 0"><body name="b"><joint name="j"/><geom type="sphere" size="0.1" mass="1"/></body></frame></worldbody></mujoco>"#,
+        ElementKind::Joint,
+        "j",
+    ),
+    (
+        "dup_joint_same_body",
+        r#"<mujoco><worldbody><body name="a"><joint name="j"/><joint name="j" axis="0 1 0"/><geom type="sphere" size="0.1" mass="1"/></body></worldbody></mujoco>"#,
+        ElementKind::Joint,
+        "j",
+    ),
+    (
+        "dup_site_nested",
+        r#"<mujoco><worldbody><body name="a"><joint/><geom size="0.1" mass="1"/><site name="s"/><body name="b" pos="0 0 1"><joint/><geom size="0.1" mass="1"/><site name="s"/></body></body></worldbody></mujoco>"#,
+        ElementKind::Site,
+        "s",
+    ),
+];
+
+#[test]
+fn a_repeated_joint_name_and_a_name_in_a_nested_body_are_refused() {
+    for &(case, xml, kind, name) in REFUSED_NESTED_AND_JOINTS {
+        match load_model(xml) {
+            Err(MjcfError::DuplicateName {
+                kind: k, name: n, ..
+            }) if k == kind && n == name => {}
+            other => panic!("{case}: {:?} (MuJoCo: '{name}' in {kind})", other.err()),
+        }
+    }
+}
