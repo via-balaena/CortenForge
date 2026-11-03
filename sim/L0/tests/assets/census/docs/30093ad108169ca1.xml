@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="x"><joint name="x"/><geom name="x" size="0.1" mass="1"/><site name="x"/></body></worldbody><actuator><motor name="x" joint="x"/></actuator><sensor><jointpos name="x" joint="x"/></sensor></mujoco>

@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="base" pos="0 0 0"><joint name="basej" type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><body name="ax" pos="0 0 8"><joint type="hinge" axis="0 0 0"/><geom type="sphere" size="0.1" mass="1"/></body></worldbody><keyframe><key name="k"/><key name="k"/></keyframe></mujoco>

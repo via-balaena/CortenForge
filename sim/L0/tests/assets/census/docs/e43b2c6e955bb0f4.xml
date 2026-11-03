@@ -1,0 +1,1 @@
+<mujoco><worldbody><site name="s"/><body name="a"><joint/><geom type="sphere" size="0.1" mass="1"/><site name="s"/></body></worldbody></mujoco>
