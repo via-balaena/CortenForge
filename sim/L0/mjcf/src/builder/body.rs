@@ -7,13 +7,37 @@
 use nalgebra::{UnitQuaternion, Vector3};
 
 use super::ModelBuilder;
+use super::geom::{compute_geom_mass, geom_volume};
 use super::mass::{
-    check_replaced_full_inertia, compute_inertia_from_geoms, extract_inertial_properties,
+    MJ_MINVAL, check_replaced_full_inertia, compute_inertia_from_geoms,
+    extract_inertial_properties, geom_hfield_size, geom_mesh_props,
 };
-use super::orientation::resolve_orientation;
+use super::orientation::{MJ_EPS, resolve_orientation};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::keywords;
 use crate::types::{InertiaFromGeom, MjcfBody, MjcfGeom};
+use sim_core::GeomType;
+
+/// What MuJoCo 3.5.0's `mjCBody::Compile` refuses in one body, found as the
+/// body is built and raised in MuJoCo's order by
+/// [`ModelBuilder::check_bodies`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BodyFaults {
+    /// A `fullinertia` beside a diagonal inertia other than 0
+    /// (`user_objects.cc:2408-2409`).
+    pub full_and_diagonal: bool,
+    /// The first of its geoms whose mass or density MuJoCo gives a negative
+    /// value where the geom infers its body's inertia
+    /// ([`ModelBuilder::negative_mass`]).
+    pub negative_geom: Option<usize>,
+    /// Its mass or a principal moment is negative after `boundmass` and
+    /// `boundinertia` ([`ModelBuilder::apply_mass_pipeline`],
+    /// `user_objects.cc:2457-2459`).
+    pub negative: bool,
+    /// Its principal moments, after `boundinertia`, break A + B >= C, and
+    /// `balanceinertia` is off ([`ModelBuilder::apply_mass_pipeline`]).
+    pub triangle: bool,
+}
 
 impl ModelBuilder {
     /// Process geoms and sites directly attached to worldbody (body 0).
@@ -231,6 +255,41 @@ impl ModelBuilder {
             self.process_geom(geom, body_id)?;
         }
         self.body_geom_num.push(body.geoms.len());
+        // A geom infers its body's inertia where the body writes no
+        // `<inertial>` or `inertiafromgeom` is true (`user_objects.cc:2429-2432`;
+        // MuJoCo also asks the geom's group to be in `inertiagrouprange`, which
+        // this crate does not read, ledger L375).
+        let infers =
+            body.inertial.is_none() || self.compiler.inertiafromgeom == InertiaFromGeom::True;
+        let negative = body
+            .geoms
+            .iter()
+            .position(|geom| infers && self.negative_mass(geom));
+        let full_and_diagonal = body.inertial.as_ref().is_some_and(|inertial| {
+            inertial.fullinertia.is_some()
+                && inertial.diaginertia.is_some_and(|d| d != Vector3::zeros())
+        });
+        self.body_faults.push(BodyFaults {
+            full_and_diagonal,
+            negative_geom: negative.map(|k| geom_adr + k),
+            negative: false,
+            triangle: false,
+        });
+        // Under `inertiafromgeom="true"` MuJoCo replaces the `<inertial>`
+        // only where it selects a geom, one whose mass is above mjEPS
+        // (`InertiaFromGeom`, `user_objects.cc:2163-2170`; the group range
+        // is not read, ledger L375); where it selects none, it keeps the
+        // `<inertial>` and raises a negative value to its bound.
+        if self.compiler.inertiafromgeom == InertiaFromGeom::True
+            && self.kept_negative_inertial.is_none()
+            && !body.geoms.iter().any(|geom| self.geom_mass(geom) > MJ_EPS)
+        {
+            self.kept_negative_inertial = body
+                .inertial
+                .as_ref()
+                .and_then(crate::validation::negative_inertial_error)
+                .map(|error| error.at(self.body_location(body_id)));
+        }
 
         // Process sites for this body
         for site in &body.sites {
@@ -249,6 +308,139 @@ impl ModelBuilder {
         }
 
         Ok(body_id)
+    }
+
+    /// Whether MuJoCo 3.5.0's compiler gives `geom` a negative mass or
+    /// density (`mjCGeom::Compile`, `user_objects.cc:3780-3807`): a written
+    /// mass of 0 neither; any other written mass its own sign where the
+    /// geom's volume is above mjEPS, and the written density's where it is
+    /// not; with no mass written, the density's.
+    fn negative_mass(&self, geom: &MjcfGeom) -> bool {
+        let density = geom.density.unwrap_or(1000.0);
+        match geom.mass {
+            Some(0.0) => false,
+            Some(mass) if self.volume(geom) > MJ_EPS => mass < 0.0,
+            Some(_) | None => density < 0.0,
+        }
+    }
+
+    /// A geom's volume as the mass rule reads it ([`geom_volume`]), from
+    /// its mesh's or height field's asset.
+    fn volume(&self, geom: &MjcfGeom) -> f64 {
+        let mesh = geom_mesh_props(
+            geom,
+            &self.mesh_name_to_id,
+            &self.mesh_data,
+            &self.mesh_inertia_modes,
+        );
+        let hfield = geom_hfield_size(geom, &self.hfield_name_to_id, &self.hfield_size);
+        geom_volume(geom, mesh.as_ref(), hfield)
+    }
+
+    /// A geom's mass as MuJoCo 3.5.0's mass rule gives it
+    /// ([`compute_geom_mass`]), from its mesh's or height field's asset.
+    fn geom_mass(&self, geom: &MjcfGeom) -> f64 {
+        let mesh = geom_mesh_props(
+            geom,
+            &self.mesh_name_to_id,
+            &self.mesh_data,
+            &self.mesh_inertia_modes,
+        );
+        let hfield = geom_hfield_size(geom, &self.hfield_name_to_id, &self.hfield_size);
+        compute_geom_mass(geom, mesh.as_ref(), hfield)
+    }
+
+    /// MuJoCo 3.5.0's checks of each body, body by body in its order, as
+    /// `mjCBody::Compile` makes them: a `fullinertia` beside a diagonal
+    /// inertia (`user_objects.cc:2408-2409`); geom by geom, a plane only in a
+    /// static body, one with no joint on it or a body above it
+    /// (`mjCGeom::Compile`, `:3666-3668`), then a negative mass or density
+    /// ([`Self::negative_mass`], `:3805-3807`); a mass or moment negative
+    /// after the bounds (`:2457-2459`), then the moments' triangle
+    /// ([`Self::apply_mass_pipeline`], `:2461-2469`); then the body's joints
+    /// ([`Self::check_body_joints`]). The caller runs it with the checks
+    /// RL-6a added, after every check this crate makes before building the
+    /// model.
+    pub(crate) fn check_bodies(&self) -> Result<()> {
+        let mut moving = vec![false; self.body_parent.len()];
+        for body in 1..self.body_parent.len() {
+            moving[body] = self.body_jnt_num[body] > 0 || moving[self.body_parent[body]];
+            let faults = self.body_faults[body];
+            if faults.full_and_diagonal {
+                return Err(MjcfError::invalid_value(
+                    "inertial",
+                    "fullinertia",
+                    "fullinertia and diagonal inertia cannot both be specified",
+                )
+                .at(self.body_location(body)));
+            }
+            let start = self.body_geom_adr[body];
+            for geom in start..start + self.body_geom_num[body] {
+                let at = || {
+                    Location::nth(ElementKind::Geom, self.geom_name[geom].as_deref(), geom)
+                        .within_nth(ElementKind::Body, self.body_name[body].as_deref(), body)
+                };
+                if moving[body] && self.geom_type[geom] == GeomType::Plane {
+                    return Err(
+                        MjcfError::invalid_model("plane only allowed in static bodies").at(at()),
+                    );
+                }
+                if faults.negative_geom == Some(geom) {
+                    return Err(MjcfError::invalid_model(
+                        "mass, inertia or density are negative in geom",
+                    )
+                    .at(at()));
+                }
+            }
+            if faults.negative {
+                return Err(
+                    MjcfError::invalid_model("mass and inertia cannot be negative")
+                        .at(self.body_location(body)),
+                );
+            }
+            if faults.triangle {
+                return Err(MjcfError::invalid_model(
+                    "inertia must satisfy A + B >= C; use 'balanceinertia' to fix",
+                )
+                .at(self.body_location(body)));
+            }
+            self.check_body_joints(body)?;
+        }
+        Ok(())
+    }
+
+    /// MuJoCo 3.5.0's check of every body that moves, one with a joint
+    /// (`user_model.cc:4993-4998`): its mass and each principal moment at
+    /// least mjMINVAL, or a body below it with no joint, reached through
+    /// bodies with no joint, that has them (`CheckBodyMassInertia`,
+    /// `:5310-5331`). A flexcomp's vertex bodies are checked as MuJoCo
+    /// checks them, as bodies. The first such body is refused; the caller
+    /// runs it after the sensors' checks and before the free joints', as
+    /// MuJoCo orders them, and before `settotalmass`.
+    pub(crate) fn check_moving_body_mass(&self) -> Result<()> {
+        let nbody = self.body_parent.len();
+        let mut carries: Vec<bool> = (0..nbody)
+            .map(|b| {
+                self.body_mass[b] >= MJ_MINVAL
+                    && self.body_inertia[b]
+                        .iter()
+                        .all(|&moment| moment >= MJ_MINVAL)
+            })
+            .collect();
+        // A child's id is above its parent's, so each body is final before
+        // it reaches its parent.
+        for body in (1..nbody).rev() {
+            if self.body_jnt_num[body] == 0 && carries[body] {
+                carries[self.body_parent[body]] = true;
+            }
+        }
+        match (1..nbody).find(|&b| self.body_jnt_num[b] > 0 && !carries[b]) {
+            Some(body) => Err(MjcfError::invalid_model(
+                "mass and inertia of moving bodies must be larger than mjMINVAL",
+            )
+            .at(self.body_location(body))),
+            None => Ok(()),
+        }
     }
 
     /// Resolve inertial properties with full MuJoCo semantics.

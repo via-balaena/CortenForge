@@ -12,6 +12,7 @@
 
 use nalgebra::{UnitQuaternion, Vector3};
 
+use super::mass::MJ_MINVAL;
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::keywords;
@@ -25,9 +26,6 @@ const BENDING_COEFFS: usize = 17;
 /// Minimum vertex mass (kg) applied when computed mass is near-zero.
 /// Prevents singular mass matrices in the deformable body integrator.
 const MIN_VERTEX_MASS: f64 = 0.001;
-
-/// MuJoCo's `mjMINVAL` (`mjtnum.h`).
-const MJ_MINVAL: f64 = 1e-15;
 
 /// A flexcomp vertex body's inertia about each axis, MuJoCo's
 /// `mass · (2 · inertiabox²) / 3` (`user_flexcomp.cc:470-471`, set at
@@ -516,6 +514,7 @@ impl ModelBuilder {
         self.body_sleep_policy.push(None);
         // The defaults of a body written with none of these (`body.rs`).
         self.body_gravcomp.push(0.0);
+        self.body_faults.push(super::body::BodyFaults::default());
         self.body_user_raw.push(Vec::new());
         self.body_world_pos.push(*pos);
         self.body_world_quat.push(UnitQuaternion::identity());
@@ -606,9 +605,11 @@ impl ModelBuilder {
         // 505-511`); a pinned vertex has no body of its own there, so no
         // sphere. The sphere takes its body's class, the root's here, as
         // these bodies hang off the world; the body's mass and inertia stay
-        // the flexcomp's, as MuJoCo's (`explicitinertial`), except where a
-        // compiler setting would change them there: sim-mjcf makes these
-        // bodies after its compiler passes (ledger L325).
+        // the flexcomp's, as MuJoCo's (`explicitinertial`), until the bounds,
+        // the triangle and `settotalmass`, which run once the flexes are
+        // built, change them as MuJoCo's change them; the passes over the
+        // document before the build (`fusestatic`, `discardvisual`) never see
+        // these bodies (ledger L325).
         if flex.vertcollide && !pinned {
             let sphere = self.resolver.apply_to_geom(&MjcfGeom {
                 geom_type: Some(MjcfGeomType::Sphere),
@@ -772,6 +773,19 @@ impl ModelBuilder {
                 let base = BENDING_COEFFS * global_e;
                 self.flex_bending[base..base + BENDING_COEFFS].copy_from_slice(&coeffs);
             }
+        }
+    }
+
+    /// Each flex vertex's mass and inverse mass (`flexvert_mass`,
+    /// `flexvert_invmass`) as its body's mass stands once the bounds and
+    /// `settotalmass` have changed it, after the flexes were built. A vertex
+    /// with no degree of freedom keeps an inverse mass of 0, as it was made.
+    pub(crate) fn sync_flex_vertex_masses(&mut self) {
+        for v in 0..self.nflexvert {
+            let mass = self.body_mass[self.flexvert_bodyid[v]];
+            let moves = self.flexvert_dofadr[v] != usize::MAX;
+            self.flexvert_mass[v] = mass;
+            self.flexvert_invmass[v] = if moves && mass > 0.0 { 1.0 / mass } else { 0.0 };
         }
     }
 }
@@ -1306,7 +1320,7 @@ mod tests {
     /// 1e-15, as MuJoCo's does (`user_flexcomp.cc:143-145`; `mjtnum.h:26`):
     /// 1e-16 is refused, 2e-15 passes. MuJoCo's own flexcomp refuses 1e-16
     /// at this check and 2e-15 at its later check of moving bodies (both
-    /// measured), which sim-mjcf does not make yet (ledger L207).
+    /// measured), which this crate makes in `check_moving_body_mass`.
     #[test]
     fn check_flexcomp_refuses_below_mjminval() {
         let flex = |mass: f64, inertiabox: f64| MjcfFlex {

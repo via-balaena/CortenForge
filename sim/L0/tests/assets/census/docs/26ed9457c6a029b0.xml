@@ -1,0 +1,1 @@
+<mujoco><asset><hfield name="hn" size="1 1 0.1 0" nrow="2" ncol="2" elevation="0 0.5 1 0.25"/></asset><worldbody><body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1" mass="-1"/></body></worldbody></mujoco>

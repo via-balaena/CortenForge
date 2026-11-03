@@ -119,7 +119,7 @@ const MODEL_N: &str = r#"<mujoco><option density="1.2" viscosity="0.001"/>
 
 const MODEL_O: &str = r#"<mujoco><option density="1.2" viscosity="0"/>
     <worldbody><body pos="0 0 1"><freejoint/>
-    <geom type="sphere" size="0.001" mass="1e-20"
+    <geom type="sphere" size="0.001" mass="1"
           fluidshape="ellipsoid"/>
     </body></worldbody></mujoco>"#;
 
@@ -185,7 +185,7 @@ const MODEL_Y: &str = r#"<mujoco><option density="1.2" viscosity="0.001"/>
 
 const MODEL_Z: &str = r#"<mujoco><option density="1.2" viscosity="0.001"/>
     <worldbody><body pos="0 0 1"><freejoint/>
-    <geom type="sphere" size="0.001" mass="1e-20"/>
+    <geom type="sphere" size="0.001" mass="1"/>
     </body></worldbody></mujoco>"#;
 
 const MODEL_AA: &str = r#"<mujoco><option density="1.2" viscosity="0.001"/>
@@ -202,6 +202,21 @@ const MODEL_AA: &str = r#"<mujoco><option density="1.2" viscosity="0.001"/>
 /// Load model, set qvel, run forward(), return (model, data).
 fn setup(mjcf: &str, qvel: &[f64]) -> (sim_core::Model, sim_core::Data) {
     let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+    for (i, &v) in qvel.iter().enumerate() {
+        data.qvel[i] = v;
+    }
+    data.forward(&model).expect("forward failed");
+    (model, data)
+}
+
+/// [`setup`] with body 1's mass set to 1e-20 after loading: MuJoCo 3.5.0
+/// refuses a moving body lighter than mjMINVAL in a document (book L22), and
+/// its fluid model skips one at run time (`engine_passive.c:532`), as
+/// sim-core's does.
+fn setup_light(mjcf: &str, qvel: &[f64]) -> (sim_core::Model, sim_core::Data) {
+    let mut model = load_model(mjcf).expect("should load");
+    model.body_mass[1] = 1e-20;
     let mut data = model.make_data();
     for (i, &v) in qvel.iter().enumerate() {
         data.qvel[i] = v;
@@ -513,7 +528,7 @@ fn t14_ellipsoid_combined_drag() {
 /// Near-zero mass body → zero fluid force (inertia-box path).
 #[test]
 fn t15_mass_guard_inertia_box() {
-    let (model, data) = setup(MODEL_Z, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+    let (model, data) = setup_light(MODEL_Z, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
     for i in 0..model.nv {
         assert_eq!(
             data.qfrc_fluid[i], 0.0,
@@ -938,7 +953,7 @@ fn t25_inertia_box_geom_offset() {
 /// Near-zero mass body with fluidshape="ellipsoid" → zero fluid force.
 #[test]
 fn t26_mass_guard_ellipsoid() {
-    let (model, data) = setup(MODEL_O, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+    let (model, data) = setup_light(MODEL_O, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
     for i in 0..model.nv {
         assert_eq!(
             data.qfrc_fluid[i], 0.0,

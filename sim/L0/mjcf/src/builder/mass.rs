@@ -2,8 +2,9 @@
 //!
 //! Computes body inertial properties from geoms (when no explicit `<inertial>`
 //! is provided), extracts explicit inertial specifications, and applies the
-//! post-processing mass pipeline: balanceinertia, boundmass/boundinertia,
-//! settotalmass.
+//! post-processing mass pipeline: each body's boundmass and boundinertia, a
+//! value still negative, the moments' triangle (balanced or recorded); then,
+//! after every check of the masses, settotalmass.
 
 use nalgebra::{Matrix3, Quaternion, UnitQuaternion, Vector3, Vector4};
 use sim_core::mesh::TriangleMeshData;
@@ -18,61 +19,57 @@ use super::orientation::quat_from_wxyz;
 use crate::error::{MjcfError, Result};
 use crate::types::{MeshInertia, MjcfGeom, MjcfInertial};
 
+/// MuJoCo's `mjMINVAL` (`mjtnum.h:26`).
+pub const MJ_MINVAL: f64 = 1e-15;
+
 impl ModelBuilder {
-    /// Apply the mass post-processing pipeline (MuJoCo §A6-A8).
-    ///
-    /// Steps (in order):
-    ///   1. inertiafromgeom — already handled during `process_body_with_world_frame`
-    ///   2. balanceinertia — triangle inequality correction
-    ///   3. boundmass / boundinertia — minimum clamping
-    ///   4. settotalmass — rescale to target total mass
+    /// Apply the mass post-processing pipeline: each body's `boundmass` and
+    /// `boundinertia`, then a mass or moment still negative, then its
+    /// principal moments' triangle, A + B >= C, made the moments' mean under
+    /// `balanceinertia`; each fault recorded for [`Self::check_bodies`] to
+    /// refuse, as MuJoCo 3.5.0's `mjCBody::Compile` does
+    /// (`user_objects.cc:2448-2469`).
     pub(crate) fn apply_mass_pipeline(&mut self) {
         let nbody = self.body_mass.len();
 
-        // Step 2: balanceinertia (A7)
-        // For each non-world body, check the triangle inequality on diagonal inertia.
-        // If violated (A + B < C for any permutation), set all three to their mean.
-        if self.compiler.balanceinertia {
-            for i in 1..nbody {
-                let inertia = &self.body_inertia[i];
-                let a = inertia.x;
-                let b = inertia.y;
-                let c = inertia.z;
-                if a + b < c || a + c < b || b + c < a {
+        for i in 1..nbody {
+            if self.body_mass[i] < self.compiler.boundmass {
+                self.body_mass[i] = self.compiler.boundmass;
+            }
+            let inertia = &mut self.body_inertia[i];
+            for moment in inertia.iter_mut() {
+                if *moment < self.compiler.boundinertia {
+                    *moment = self.compiler.boundinertia;
+                }
+            }
+            if self.body_mass[i] < 0.0 || inertia.iter().any(|&moment| moment < 0.0) {
+                self.body_faults[i].negative = true;
+            }
+            let (a, b, c) = (inertia.x, inertia.y, inertia.z);
+            if a + b < c || a + c < b || b + c < a {
+                if self.compiler.balanceinertia {
                     let mean = (a + b + c) / 3.0;
-                    self.body_inertia[i] = Vector3::new(mean, mean, mean);
+                    *inertia = Vector3::new(mean, mean, mean);
+                } else {
+                    self.body_faults[i].triangle = true;
                 }
             }
         }
+    }
 
-        // Step 3: boundmass / boundinertia (A6)
-        // Clamp every non-world body's mass and inertia to compiler minimums.
-        if self.compiler.boundmass > 0.0 {
-            for i in 1..nbody {
-                if self.body_mass[i] < self.compiler.boundmass {
-                    self.body_mass[i] = self.compiler.boundmass;
-                }
-            }
-        }
-        if self.compiler.boundinertia > 0.0 {
-            for i in 1..nbody {
-                let inertia = &mut self.body_inertia[i];
-                inertia.x = inertia.x.max(self.compiler.boundinertia);
-                inertia.y = inertia.y.max(self.compiler.boundinertia);
-                inertia.z = inertia.z.max(self.compiler.boundinertia);
-            }
-        }
-
-        // Step 4: settotalmass (A8)
-        // When positive, rescale all body masses and inertias so total == target.
+    /// `settotalmass`, as MuJoCo 3.5.0's `mj_setTotalmass` applies it once
+    /// the model is compiled (`engine_support.c:748-761`, called at
+    /// `user_model.cc:5040-5043`): every body's mass and moments, a
+    /// flexcomp's vertex bodies' too, times `max(mjMINVAL, new /
+    /// max(mjMINVAL, total))`. The caller runs it after every check of the
+    /// bodies' masses.
+    pub(crate) fn apply_settotalmass(&mut self) {
         if self.compiler.settotalmass > 0.0 {
-            let total_mass: f64 = (1..nbody).map(|i| self.body_mass[i]).sum();
-            if total_mass > 0.0 {
-                let scale = self.compiler.settotalmass / total_mass;
-                for i in 1..nbody {
-                    self.body_mass[i] *= scale;
-                    self.body_inertia[i] *= scale;
-                }
+            let total: f64 = self.body_mass[1..].iter().sum();
+            let scale = MJ_MINVAL.max(self.compiler.settotalmass / MJ_MINVAL.max(total));
+            for i in 1..self.body_mass.len() {
+                self.body_mass[i] *= scale;
+                self.body_inertia[i] *= scale;
             }
         }
     }
@@ -101,25 +98,19 @@ pub fn extract_inertial_properties(
                 "its principal moments or axes are not finite",
             ));
         }
+        // The principal frame is the inertial frame: MuJoCo's
+        // `mjuu_fullInertia` overwrites `iquat` (`user_objects.cc:2412-2416`),
+        // and the parser refuses an orientation written beside a
+        // `fullinertia`, as MuJoCo's reader does.
         let iquat =
             UnitQuaternion::new_unchecked(Quaternion::new(frame[0], frame[1], frame[2], frame[3]));
-
-        // Combine with any existing inertial frame orientation
-        let base_iquat = quat_from_wxyz(inertial.quat);
-        let final_iquat = base_iquat * iquat;
-
-        Ok((mass, Vector3::from(moments), ipos, final_iquat))
+        Ok((mass, Vector3::from(moments), ipos, iquat))
     } else if let Some(diag) = inertial.diaginertia {
         // Diagonal inertia already in principal axes
         Ok((mass, diag, ipos, quat_from_wxyz(inertial.quat)))
     } else {
-        // Default: small uniform inertia
-        Ok((
-            mass,
-            Vector3::new(0.001, 0.001, 0.001),
-            ipos,
-            quat_from_wxyz(inertial.quat),
-        ))
+        // MuJoCo's default inertia is 0 (`mjs_defaultBody`, `user_init.c:75-76`).
+        Ok((mass, Vector3::zeros(), ipos, quat_from_wxyz(inertial.quat)))
     }
 }
 
@@ -139,6 +130,42 @@ pub fn check_replaced_full_inertia(inertial: Option<&MjcfInertial>) -> Result<()
         principal_full_inertia(&full)?;
     }
     Ok(())
+}
+
+/// A mesh geom's mesh properties, by its mesh's inertia mode; `None` for
+/// any other geom.
+pub fn geom_mesh_props(
+    geom: &MjcfGeom,
+    mesh_lookup: &HashMap<String, usize>,
+    mesh_data: &[Arc<TriangleMeshData>],
+    mesh_inertia_modes: &[MeshInertia],
+) -> Option<MeshProps> {
+    resolve_mesh(geom, mesh_lookup, mesh_data).map(|mesh| {
+        let mesh_id = geom
+            .mesh
+            .as_ref()
+            .and_then(|name| mesh_lookup.get(name))
+            .copied()
+            .unwrap_or(0);
+        let mode = mesh_inertia_modes
+            .get(mesh_id)
+            .copied()
+            .unwrap_or(MeshInertia::Convex);
+        compute_mesh_inertia_by_mode(&mesh, mode)
+    })
+}
+
+/// A height-field geom's asset's four sizes; `None` for any other geom.
+pub fn geom_hfield_size<'a>(
+    geom: &MjcfGeom,
+    hfield_lookup: &HashMap<String, usize>,
+    hfield_size: &'a [[f64; 4]],
+) -> Option<&'a [f64; 4]> {
+    let id = geom
+        .hfield
+        .as_ref()
+        .and_then(|name| hfield_lookup.get(name))?;
+    hfield_size.get(*id)
 }
 
 /// Compute inertia from geoms (fallback when no explicit inertial).
@@ -179,31 +206,11 @@ pub fn compute_inertia_from_geoms(
     // Pre-compute mesh inertia once per geom (avoids 3× recomputation).
     let mesh_props: Vec<Option<MeshProps>> = geoms
         .iter()
-        .map(|geom| {
-            resolve_mesh(geom, mesh_lookup, mesh_data).map(|mesh| {
-                let mesh_id = geom
-                    .mesh
-                    .as_ref()
-                    .and_then(|name| mesh_lookup.get(name))
-                    .copied()
-                    .unwrap_or(0);
-                let mode = mesh_inertia_modes
-                    .get(mesh_id)
-                    .copied()
-                    .unwrap_or(MeshInertia::Convex);
-                compute_mesh_inertia_by_mode(&mesh, mode)
-            })
-        })
+        .map(|geom| geom_mesh_props(geom, mesh_lookup, mesh_data, mesh_inertia_modes))
         .collect();
     let hfields: Vec<Option<&[f64; 4]>> = geoms
         .iter()
-        .map(|geom| {
-            let id = geom
-                .hfield
-                .as_ref()
-                .and_then(|name| hfield_lookup.get(name))?;
-            hfield_size.get(*id)
-        })
+        .map(|geom| geom_hfield_size(geom, hfield_lookup, hfield_size))
         .collect();
 
     let mut total_mass = 0.0;
@@ -366,15 +373,14 @@ mod tests {
             <mujoco>
                 <compiler angle="radian"/>
                 <worldbody>
-                    <body name="b" pos="0 0 0">
-                        <joint type="hinge" axis="0 1 0"/>
-                    </body>
+                    <body name="b" pos="0 0 0"/>
                 </worldbody>
             </mujoco>
             "#,
         )
         .expect("should load");
-        // Auto mode with no geoms and no inertial -> zero mass
+        // Auto mode with no geoms and no inertial -> zero mass (a static
+        // body: MuJoCo refuses a moving one this light).
         assert!(
             model.body_mass[1].abs() < 1e-10,
             "empty body should have zero mass, got {}",
@@ -566,5 +572,25 @@ mod tests {
             (total - 5.0).abs() < 1e-10,
             "total mass should be 5.0, got {total}"
         );
+    }
+
+    /// A full inertia's principal frame is the inertial frame whatever
+    /// `quat` an `MjcfInertial` built in code carries, as MuJoCo's spec
+    /// overwrites `iquat` with it (`user_objects.cc:2412-2416`).
+    #[test]
+    fn a_full_inertias_frame_replaces_a_quat_built_in_code() {
+        let full = crate::types::MjcfInertial {
+            mass: 1.0,
+            fullinertia: Some([3.0, 2.0, 1.0, 0.1, 0.0, 0.0]),
+            ..Default::default()
+        };
+        let half = std::f64::consts::FRAC_1_SQRT_2;
+        let turned = crate::types::MjcfInertial {
+            quat: nalgebra::Vector4::new(half, 0.0, 0.0, half),
+            ..full
+        };
+        let (_, _, _, plain) = super::extract_inertial_properties(&full).expect("principal");
+        let (_, _, _, kept) = super::extract_inertial_properties(&turned).expect("principal");
+        assert_eq!(plain, kept);
     }
 }

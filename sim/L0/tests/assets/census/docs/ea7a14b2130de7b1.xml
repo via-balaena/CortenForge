@@ -1,0 +1,6 @@
+<mujoco>
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0"/>
+                </worldbody>
+            </mujoco>

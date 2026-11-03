@@ -407,6 +407,9 @@ fn sphere_plane_far_from_origin_1000km() {
 /// where relative precision is good but absolute values are tiny.
 #[test]
 fn sphere_sphere_microscale() {
+    // Each sphere's own moments (about 1.7e-27) are below mjMINVAL, which
+    // MuJoCo 3.5.0 refuses for a moving body (book L22): an explicit inertial
+    // keeps the contact the subject.
     let scale = 1e-6; // 1 micrometer
     let mjcf = format!(
         r#"
@@ -415,10 +418,12 @@ fn sphere_sphere_microscale() {
             <worldbody>
                 <body name="sph1" pos="0 0 0">
                     <joint type="free"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
                     <geom type="sphere" size="{}"/>
                 </body>
                 <body name="sph2" pos="{} 0 0">
                     <joint type="free"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
                     <geom type="sphere" size="{}"/>
                 </body>
             </worldbody>

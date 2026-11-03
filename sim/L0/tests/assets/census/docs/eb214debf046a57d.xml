@@ -1,0 +1,1 @@
+<mujoco><compiler balanceinertia="true"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.1 0.2 0.7"/></body></worldbody></mujoco>

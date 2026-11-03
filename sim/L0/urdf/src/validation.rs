@@ -231,10 +231,12 @@ fn validate_mass_properties(robot: &UrdfRobot) -> Result<()> {
                 ));
             }
 
-            // Note: the triangle inequality (Ixx + Iyy >= Izz and cyclic) is a
-            // necessary condition for a physical inertia tensor, but it is
-            // intentionally NOT enforced here — many real URDFs ship with
-            // slightly invalid inertias, so this is treated as acceptable input.
+            // The triangle inequality (A + B >= C on the principal moments) is
+            // not checked here: loading refuses a link that breaks it, as
+            // MuJoCo 3.5.0's own URDF import does. A link on a fixed joint is
+            // the exception: MuJoCo's import checks it before fusing it and
+            // refuses it, where `fusestatic` fuses it first here and it loads
+            // (ledger L373).
         }
     }
 
@@ -246,8 +248,7 @@ fn validate_mass_properties(robot: &UrdfRobot) -> Result<()> {
 /// Rejects non-finite (`NaN` or ±Inf) numeric fields at the URDF ingress
 /// boundary so that downstream mesh construction and collision code
 /// can assume finite geometry. Positivity is not checked here (some URDFs
-/// intentionally ship with degenerate shapes; see the triangle-inequality
-/// precedent in `validate_mass_properties`).
+/// intentionally ship with degenerate shapes).
 fn validate_geometry(robot: &UrdfRobot) -> Result<()> {
     for link in &robot.links {
         for visual in &link.visuals {

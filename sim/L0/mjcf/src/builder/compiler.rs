@@ -651,6 +651,7 @@ mod tests {
                 <worldbody>
                     <body name="parent">
                         <joint type="hinge"/>
+                        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
                         <body name="static_child" pos="0 0 1">
                             <site name="s" pos="0 0 0" axisangle="0 0 1 90"/>
                         </body>

@@ -1,0 +1,1 @@
+<mujoco><default><default class="d"><geom density="-1"/></default></default><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><geom class="d" type="sphere" size="0.1"/></body></worldbody></mujoco>

@@ -47,7 +47,7 @@ const MJCF: &str = r#"
   <worldbody>
     <body name="brick" pos="0 0 0.5">
       <freejoint name="free"/>
-      <inertial pos="0 0 0" mass="1.5" diaginertia="0.06 0.03 0.015"/>
+      <inertial pos="0 0 0" mass="1.5" diaginertia="0.06 0.045 0.02"/>
       <geom name="body" type="box" size="0.18 0.12 0.07"
             contype="0" conaffinity="0" rgba="0.40 0.55 0.75 1"/>
       <geom name="marker" type="sphere" size="0.025"

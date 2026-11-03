@@ -222,6 +222,11 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         ..
     } = front_end(mjcf)?;
 
+    // This crate's refusal of a negative `<inertial>` mass or moment, which
+    // MuJoCo raises to its bounds (`D-INERTIAL-NEGATIVE`), on every body the
+    // document writes, returned after the keyframes.
+    let negative_inertial = crate::validation::negative_inertial_fault(&mjcf);
+
     if mjcf.compiler.discardvisual {
         apply_discardvisual(&mut mjcf);
     }
@@ -282,29 +287,37 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Process contact pairs and excludes (must be after body tree for name-to-id maps)
     builder.process_contact(&mjcf.contact)?;
 
-    // Apply mass pipeline (balanceinertia, boundmass/boundinertia, settotalmass)
-    builder.apply_mass_pipeline();
-
-    // Process flex deformable bodies (after mass pipeline, before build)
+    // Process flex deformable bodies (before the mass pipeline, so that a
+    // flexcomp's vertex bodies are bounded as every body is)
     builder.process_flex_bodies(&mjcf.flex)?;
+
+    // Each body's boundmass and boundinertia, then a mass or moment still
+    // negative, then its moments' triangle
+    builder.apply_mass_pipeline();
 
     // Finalize user data: resolve nuser, validate, pad
     builder.finalize_user_data(&mjcf)?;
 
-    // MuJoCo 3.5.0's checks this crate did not make before RL-6a and RL-6b
-    // (book L19-L21), after every check above, so that a document refused
-    // before they existed is refused for the same fault (MuJoCo orders some
-    // of them before checks above). Among themselves in MuJoCo's order: each
-    // body's joints, the tendons, the actuators, the sensors, then the free
-    // joint below the world's children, as MuJoCo's `CopyTree` refuses it.
-    // An automatic range that does not increase is refused after the
-    // keyframes (`D-AUTO-RANGE`).
-    builder.check_joints()?;
+    // MuJoCo 3.5.0's checks this crate did not make before RL-6a, RL-6b and
+    // RL-6d (book L19-L22), after every check above, so that a document
+    // refused before they existed is refused for the same fault (MuJoCo
+    // orders some of them before checks above). Among themselves in MuJoCo's
+    // order: each body's inertia, geoms and joints, the height fields' sizes, the
+    // tendons, the actuators, the sensors, a moving body's mass and inertia,
+    // then the free joint below the world's children, as MuJoCo's
+    // `CopyTree` refuses it. An automatic range that does not increase is
+    // refused after the keyframes (`D-AUTO-RANGE`).
+    builder.check_bodies()?;
+    builder.check_hfield_sizes()?;
     builder.check_tendons()?;
     builder.check_actuators()?;
     builder.check_limit_sensors()?;
+    builder.check_moving_body_mass()?;
     builder.check_free_joints_on_top_level()?;
     let automatic = builder.automatic_range_fault();
+    let negative_inertial = negative_inertial.or_else(|| builder.kept_negative_inertial.take());
+    builder.apply_settotalmass();
+    builder.sync_flex_vertex_masses();
 
     // Build final model
     let mut model = builder.build();
@@ -335,10 +348,15 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // The refusals this crate makes and MuJoCo does not, after the
     // keyframes: a slide after a ball, a fixed tendon's negative armature,
     // an automatic range that does not increase (`D-AUTO-RANGE`, which
-    // MuJoCo leaves unlimited, as every check above has taken it).
+    // MuJoCo leaves unlimited), an `<inertial>`'s negative mass or moment
+    // (`D-INERTIAL-NEGATIVE`, which MuJoCo raises to its bounds); every
+    // check above has taken MuJoCo's value.
     joint::check_ball_then_slide(&model)?;
     tendon::check_fixed_tendon_armature(&model)?;
     if let Some(error) = automatic {
+        return Err(error);
+    }
+    if let Some(error) = negative_inertial {
         return Err(error);
     }
 
@@ -487,6 +505,13 @@ pub struct ModelBuilder {
     pub(crate) body_sleep_policy: Vec<Option<SleepPolicy>>,
     /// Per-body gravity compensation factor (0=none, 1=full).
     pub(crate) body_gravcomp: Vec<f64>,
+    /// Per body, what MuJoCo 3.5.0's compiler refuses in it
+    /// ([`Self::check_bodies`]).
+    pub(crate) body_faults: Vec<body::BodyFaults>,
+    /// Under `inertiafromgeom="true"`, `D-INERTIAL-NEGATIVE`'s refusal of
+    /// the first body whose negative `<inertial>` MuJoCo keeps, none of its
+    /// geoms being selected; returned after the keyframes.
+    pub(crate) kept_negative_inertial: Option<MjcfError>,
     pub(crate) nmocap: usize,
 
     // Joint arrays
@@ -497,10 +522,10 @@ pub struct ModelBuilder {
     pub(crate) jnt_pos: Vec<Vector3<f64>>,
     pub(crate) jnt_axis: Vec<Vector3<f64>>,
     /// Whether each joint's written axis was too small to make unit, which
-    /// `check_joints` refuses.
+    /// `check_body_joints` refuses.
     pub(crate) jnt_axis_too_small: Vec<bool>,
     pub(crate) jnt_limited: Vec<bool>,
-    /// Each joint's first `limited`/`range` fault, which `check_joints`
+    /// Each joint's first `limited`/`range` fault, which `check_body_joints`
     /// refuses.
     pub(crate) jnt_limit_fault: Vec<Option<limits::LimitFault>>,
     /// Each joint's range as MuJoCo compiles it: `0 0` when unwritten, and in
@@ -1289,7 +1314,7 @@ mod tests {
             <mujoco model="hfield_meshdir_test">
                 <compiler meshdir="hfields"/>
                 <asset>
-                    <hfield name="hill" file="hill.png" size="2 2 1 0"/>
+                    <hfield name="hill" file="hill.png" size="2 2 1 0.1"/>
                 </asset>
                 <worldbody>
                     <geom type="hfield" hfield="hill"/>
@@ -1311,7 +1336,7 @@ mod tests {
         let mjcf_content = r#"
             <mujoco model="hfield_missing">
                 <asset>
-                    <hfield name="gone" file="nonexistent.png" size="1 1 1 0"/>
+                    <hfield name="gone" file="nonexistent.png" size="1 1 1 0.1"/>
                 </asset>
                 <worldbody/>
             </mujoco>
@@ -1334,7 +1359,7 @@ mod tests {
             r#"
             <mujoco model="hfield_inline">
                 <asset>
-                    <hfield name="flat" size="1 1 0.5 0"
+                    <hfield name="flat" size="1 1 0.5 0.1"
                             nrow="2" ncol="2"
                             elevation="0 0 0 0"/>
                 </asset>
@@ -1360,7 +1385,7 @@ mod tests {
             r#"
             <mujoco>
                 <asset>
-                    <hfield name="bad" size="1 1 1 0"/>
+                    <hfield name="bad" size="1 1 1 0.1"/>
                 </asset>
                 <worldbody/>
             </mujoco>

@@ -159,7 +159,9 @@ files MuJoCo refuses too, and we load one it refuses
 (`dm_control/mjcf/test_assets/test_model.xml`: MuJoCo, "mass and inertia of
 moving bodies must be larger than mjMINVAL"). The rest are loader gaps: most of
 Menagerie's on `mesh '': duplicate mesh name`, many of the control suite's on a
-single-value `friction`. No test requires the submodules to load (one sim-mjcf test, behind
+single-value `friction`. Since Rigid-loading RL-6d (measured 2026-11-02),
+`test_model.xml` is refused as MuJoCo refuses it, for the same body; the other
+counts are still 2026-10-20's. No test requires the submodules to load (one sim-mjcf test, behind
 the `hfields` feature, opens a Menagerie scene if it is there and accepts a
 failure), and CI does not check them out. The tables below give each model's
 result.

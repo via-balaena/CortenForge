@@ -66,7 +66,7 @@ const MJCF: &str = r#"
 <mujoco model="heightfield">
   <option gravity="0 0 0" timestep="0.002"/>
   <asset>
-    <hfield name="terrain" nrow="4" ncol="4" size="4 4 0.5 0"
+    <hfield name="terrain" nrow="4" ncol="4" size="4 4 0.5 0.1"
             elevation="0 0 0 0  0 0 0 0  0 0 0 0  0 0 0 0"/>
   </asset>
   <worldbody>

@@ -1395,15 +1395,23 @@ fn t22_zero_velocity_zero_quadratic() {
 /// body_mass < MJ_MINVAL → no fluid derivative contribution.
 #[test]
 fn t23_massless_body_skipped() {
-    // Use a model where body mass is near zero, under Euler: the implicit
-    // step refuses its 1e-20 pivot, as MuJoCo's LU does (MuJoCo itself
-    // refuses the model at load, a moving body lighter than mjMINVAL).
+    // A body whose mass is set near zero after loading (MuJoCo 3.5.0 refuses
+    // a moving body lighter than mjMINVAL in a document, book L22, and its
+    // fluid derivatives skip one at run time, `engine_derivative.c:1706`),
+    // under Euler: the implicit step refuses its 1e-20 pivot, as MuJoCo's LU
+    // does.
     let mjcf = r#"<mujoco><option density="1.2" viscosity="0.001" integrator="Euler"/>
         <worldbody><body pos="0 0 1"><freejoint/>
-        <geom type="sphere" size="0.001" mass="1e-20"/>
+        <geom type="sphere" size="0.001" mass="1"/>
         </body></worldbody></mujoco>"#;
     let qvel = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3];
-    let (model, data) = setup(mjcf, &qvel);
+    let mut model = load_model(mjcf).expect("should load");
+    model.body_mass[1] = 1e-20;
+    let mut data = model.make_data();
+    for (i, &v) in qvel.iter().enumerate() {
+        data.qvel[i] = v;
+    }
+    data.forward(&model).expect("forward failed");
 
     // Fluid FD should be negligible for near-zero mass body
     let fd = qderiv_fd(&model, &data, 1e-6);
