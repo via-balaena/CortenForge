@@ -71,7 +71,8 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOCATOR: Counting = Counting;
 
 /// A worldbody holding a body, which holds a frame holding a body, and so
-/// on: `levels` bodies and frames in all, one of each per step down.
+/// on: `levels / 2` bodies and a frame between each two, `levels - 1` in
+/// all.
 fn alternating(levels: usize) -> MjcfModel {
     let mut model =
         parse_mjcf_str("<mujoco><worldbody><frame><body name='b'/></frame></worldbody></mujoco>")

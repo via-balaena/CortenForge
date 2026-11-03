@@ -120,6 +120,27 @@ const ORDER: &[(&str, &str, &str, &str, &str)] = &[
         "-@1 gA@2 gB@3 gC@4",
         "",
     ),
+    (
+        "ord_frame_site_nested_frame_site",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame pos="0 0 1"><site name="a"/><frame pos="1 0 0"><site name="n"/></frame><site name="c"/></frame></body></worldbody></mujoco>"#,
+        "world@0 b@0",
+        "-@1",
+        "a@1 n@1 c@1",
+    ),
+    (
+        "ord_two_worldbodies_frame_between",
+        r#"<mujoco><worldbody><geom name="a" size=".1"/></worldbody><worldbody><frame pos="0 0 1"><geom name="f" size=".1"/></frame><geom name="c" size=".1"/></worldbody></mujoco>"#,
+        "world@0",
+        "a@0 f@0 c@0",
+        "",
+    ),
+    (
+        "ord_world_site_frame_site",
+        r#"<mujoco><worldbody><site name="a"/><frame pos="0 0 1"><site name="f"/></frame><site name="c"/></worldbody></mujoco>"#,
+        "world@0",
+        "",
+        "a@0 f@0 c@0",
+    ),
 ];
 
 /// One kind's elements in id order, as `ORDER` writes them.
@@ -1204,52 +1225,66 @@ fn a_frame_composes_a_pose_as_mujocos_frameaccum() {
 }
 
 /// A5 §3.7's frame cases (book L24's must-fail): a fault inside a frame,
-/// refused as MuJoCo 3.5.0 refuses it. `(case, document, this crate's words,
-/// MuJoCo's)`. Each was refused at this pull request's parent (measured).
-/// The seventh, a geom's condim 2 in a frame, loads here and is book L25's.
-const REFUSED_IN_FRAMES: &[(&str, &str, &str, &str)] = &[
+/// refused for the fault MuJoCo 3.5.0 refuses it for. `(case, document,
+/// MuJoCo's words, this crate's where they are not MuJoCo's)`: four are
+/// refused in MuJoCo's words; a `NaN` size (at parse, registry
+/// `D-NONFINITE`) and a size 0 in this crate's. Each was refused at this
+/// pull request's parent (measured). The seventh, a geom's condim 2 in a
+/// frame, loads here and is book L25's.
+const REFUSED_IN_FRAMES: &[(&str, &str, &str, Option<&str>)] = &[
     (
         "s37_nan_size",
         r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><geom name="g" size="nan"/></frame></body></worldbody></mujoco>"#,
-        "size on <geom> is not finite (NaN)",
         "nan size in geom",
+        Some("size on <geom> is not finite (NaN)"),
     ),
     (
         "s37_zero_size",
         r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><geom name="g" size="0"/></frame></body></worldbody></mujoco>"#,
-        "size 0 must be positive",
         "size 0 must be positive in geom",
+        Some("size 0 must be positive"),
     ),
     (
         "s37_dup_joint",
         r#"<mujoco><worldbody><body name="b"><joint name="j"/><geom size=".1"/><frame><body name="c"><joint name="j"/><geom size=".1"/></body></frame></body></worldbody></mujoco>"#,
         "repeated name 'j' in joint",
-        "repeated name 'j' in joint",
+        None,
     ),
     (
         "s37_backwards_range",
         r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><body name="c"><joint name="j" limited="true" range="1 -1"/><geom size=".1"/></body></frame></body></worldbody></mujoco>"#,
         "range[0] should be smaller than range[1] in joint",
-        "range[0] should be smaller than range[1] in joint",
+        None,
     ),
     (
         "s37_massless_moving",
         r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><body name="c"><joint name="j"/></body></frame></body></worldbody></mujoco>"#,
         "mass and inertia of moving bodies must be larger than mjMINVAL",
-        "mass and inertia of moving bodies must be larger than mjMINVAL",
+        None,
     ),
     (
         "s37_free_below_top",
         r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><body name="c"><freejoint/><geom size=".1"/></body></frame></body></worldbody></mujoco>"#,
         "free joint can only be used on top level",
-        "free joint can only be used on top level",
+        None,
     ),
 ];
 
 #[test]
 fn a_fault_inside_a_frame_is_refused_as_outside_one() {
-    for &(case, xml, ours, _mujoco) in REFUSED_IN_FRAMES {
+    for &(case, xml, mujoco, ours) in REFUSED_IN_FRAMES {
         let err = load_model(xml).expect_err(case).to_string();
-        assert!(err.contains(ours), "{case}: {err}");
+        assert!(err.contains(ours.unwrap_or(mujoco)), "{case}: {err}");
     }
+}
+
+#[test]
+fn a_composites_fault_in_a_frame_names_the_body_holding_it() {
+    // MuJoCo 3.5.0 refuses the deprecated grid when it reads it (measured).
+    let err = load_model(
+        r#"<mujoco><worldbody><body name="p"><freejoint/><geom size=".1"/><frame><composite type="grid" count="2 2 1" prefix="c"><geom type="sphere" size=".01"/></composite></frame></body></worldbody></mujoco>"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.ends_with("(body 'p')"), "{err}");
 }

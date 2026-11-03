@@ -7,7 +7,7 @@
 
 use sim_mjcf::{
     MjcfBody, MjcfError, MjcfFrame, MjcfJoint, MjcfModel, load_model, load_model_from_file,
-    model_from_mjcf, validate,
+    model_from_mjcf, parse_mjcf_str, validate,
 };
 
 /// `n` bodies nested in the worldbody (the root `<mujoco>` at depth 1, the
@@ -263,12 +263,8 @@ fn a_wide_document_is_not_a_deep_one() {
     assert_eq!(load_model(&xml).unwrap().nbody, 601);
 }
 
-#[test]
-fn a_cable_that_nests_past_4096_below_its_body_is_refused_after_expansion() {
-    // 4097 vertices make 4096 bodies, each within the cable's own limit; in a
-    // body they nest to 4097, refused by the tree guard once expanded.
-    let err = load_model(
-        r#"<mujoco>
+/// A body holding a cable of 4097 vertices, which make 4096 bodies.
+const CABLE_OF_4096_BODIES: &str = r#"<mujoco>
             <worldbody>
                 <body name="holder">
                     <composite type="cable" count="4097 1 1" curve="s" size="1 0 0">
@@ -276,9 +272,40 @@ fn a_cable_that_nests_past_4096_below_its_body_is_refused_after_expansion() {
                     </composite>
                 </body>
             </worldbody>
-        </mujoco>"#,
-    )
-    .unwrap_err();
+        </mujoco>"#;
+
+#[test]
+fn a_cable_that_nests_past_4096_below_its_body_is_refused_after_expansion() {
+    // 4097 vertices make 4096 bodies, each within the cable's own limit; in a
+    // body they nest to 4097, refused by the tree guard once expanded.
+    let err = load_model(CABLE_OF_4096_BODIES).unwrap_err();
+    assert!(
+        matches!(err, MjcfError::TooDeep { limit: 4096, .. }),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_cable_below_a_tree_at_the_depth_limit_is_refused_for_its_depth() {
+    // A chain of 4095 bodies built in code, the innermost holding the cable:
+    // 8191 levels, which expanding frames walks before the depth guard.
+    let err = on_big_stack(|| {
+        let cable = parse_mjcf_str(CABLE_OF_4096_BODIES)
+            .unwrap()
+            .worldbody
+            .children
+            .remove(0)
+            .composites
+            .remove(0);
+        let mut inner = MjcfBody::new("b4094");
+        inner.composites.push(cable);
+        for k in (0..4094).rev() {
+            let mut outer = MjcfBody::new(format!("b{k}"));
+            outer.children.push(inner);
+            inner = outer;
+        }
+        model_from_mjcf(&MjcfModel::new("deep").with_body(inner), None).unwrap_err()
+    });
     assert!(
         matches!(err, MjcfError::TooDeep { limit: 4096, .. }),
         "{err}"

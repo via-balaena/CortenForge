@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1712
+# agree_floor 1717
 001bc4149d608b24	agree
 002cac6fc120ff66	both-refuse
 00308b83da9d8bab	agree
@@ -196,6 +196,7 @@
 0f1dd292de12918d	agree
 0f3223790e2e7f30	agree
 0f41e3a04385c92b	both-refuse
+0f49d79d049afb4b	both-refuse
 0f5f119bd7d59542	both-refuse
 0f7327704479234a	agree
 0f8aac1594db7c84	agree
@@ -256,6 +257,7 @@
 143a252455fd7272	both-refuse
 144254b62c5c1c46	agree
 145cc768e76735e4	agree
+1465d6cc115bcd23	ours-refused	divergence=D-FRAME-JOINT
 147c219f64d1c9f0	agree
 147de2997e362313	agree
 14963cdb02e61d2c	both-refuse
@@ -323,6 +325,7 @@
 1abf80643fbc72d2	both-refuse
 1ac6a23f3bc92c4c	both-refuse
 1acbae24764c8790	agree
+1acf7b807e16150b	agree
 1ad1721ca9766f0e	agree
 1ae573fd46cc9326	mj-refuses
 1b0408692d06c36e	agree
@@ -1827,6 +1830,7 @@
 983e5ee09818f196	agree
 98625688770862fc	agree
 986b0c6d5ebd5d76	agree
+986f65d5fa52c913	ours-refused	divergence=D-FRAME-JOINT
 987965676e8294fa	both-refuse
 98a5ef4a9ba419b4	agree
 98ae706077cf9627	both-refuse
@@ -1900,6 +1904,7 @@
 9eedd450102a079e	both-refuse
 9f08438c3689e3a8	both-refuse
 9f0e7f85ff7dd4e5	agree
+9f21f4f8512c9a69	agree
 9f4838570ef34459	agree
 9f785daed73d3ea8	both-refuse
 9f85995ede8af3c3	agree
@@ -2255,6 +2260,7 @@ bcd2080c5196a90a	agree
 bcec764289ca319c	both-refuse
 bced445aebd331cb	both-refuse
 bcfc3e4c6c04c963	both-refuse
+bcfc46da899a438b	agree
 bd0a81225241de7c	agree
 bd0efdf0e9a5354e	agree
 bd3180b529825072	agree
@@ -2581,6 +2587,7 @@ d8710a2541d989ce	agree
 d88e68f3ee4b4672	agree
 d8b90db6834fd79c	agree
 d92fea09f5da6a17	agree
+d94df77390a195bb	agree
 d94f75dbc0510e71	agree
 d9719dfce438910a	model:neq
 d985f32c6d905e89	agree
@@ -2891,6 +2898,7 @@ f3bcbaebf8598064	both-refuse
 f3c53212b50809d9	both-refuse
 f3d79d5bf27c4aec	agree
 f3f829981e954223	agree
+f3fb08f30bb7546e	agree
 f41d5df721388829	both-refuse
 f435c9d6070fa6f2	agree
 f464dde5857631f0	agree

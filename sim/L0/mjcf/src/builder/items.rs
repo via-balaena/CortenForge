@@ -261,4 +261,23 @@ mod tests {
         contents.put_into_frame(&mut frame);
         assert_eq!(frame, parsed);
     }
+
+    #[test]
+    fn a_bodys_elements_taken_out_go_back_whole() {
+        let mut model = crate::parse_mjcf_str(
+            r#"<mujoco><worldbody><body name="p"><joint name="j"/><composite type="cable" prefix="c" count="4 1 1" curve="s" size="1"><geom type="capsule" size=".01"/></composite><geom name="g" size="1"/><body name="b"/><site name="s"/><frame name="f"/></body></worldbody></mujoco>"#,
+        )
+        .unwrap();
+        let parsed = model.worldbody.children.pop().unwrap();
+        let mut body = parsed.clone();
+        let contents = Contents::take_from_body(&mut body);
+        let left = (body.joints.len(), body.geoms.len(), body.sites.len()) == (0, 0, 0)
+            && body.children.is_empty()
+            && body.frames.is_empty()
+            && body.composites.is_empty()
+            && body.items.is_empty();
+        assert!(left, "{body:?}");
+        contents.put_into_body(&mut body);
+        assert_eq!(body, parsed);
+    }
 }

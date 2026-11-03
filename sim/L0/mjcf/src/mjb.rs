@@ -58,7 +58,8 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
 ///
-/// 14 since Rigid-loading PR RL-7b: `MjcfBody` and `MjcfFrame` took `items`.
+/// 14 since Rigid-loading PR RL-7b: `MjcfBody` and `MjcfFrame` took `items`,
+/// and `MjcfFrame` `composites`.
 /// 13 since Rigid-loading PR RL-6a: `MjcfTendon` took `armature`.
 /// 12 since Rigid-loading PR RL-5c: `MjcfGeom`'s `size` optional, a prefix of
 /// up to three, and `MjcfGeomDefaults` took `size`.
@@ -539,6 +540,20 @@ mod tests {
             }
         }
         compare_bodies(&original.worldbody, &loaded.worldbody);
+    }
+
+    #[test]
+    fn a_model_read_back_keeps_its_elements_order() {
+        // `items` records a body's and a frame's elements in the document's
+        // order, which a model read back keeps.
+        let original = parse_mjcf_str(
+            r#"<mujoco><worldbody><site name="a"/><frame><site name="f"/><composite type="cable" prefix="c" count="4 1 1" curve="s" size="1"><geom type="capsule" size=".01"/></composite></frame><body name="b"><geom name="g" size="1"/><frame><geom name="h" size="1"/></frame><site name="s"/></body></worldbody></mujoco>"#,
+        )
+        .expect("should parse");
+        assert!(!original.worldbody.items.is_empty());
+        let bytes = save_mjb_bytes(&original).expect("should serialize");
+        let loaded = load_mjb_bytes(&bytes).expect("should deserialize");
+        assert_eq!(loaded, original);
     }
 
     #[test]

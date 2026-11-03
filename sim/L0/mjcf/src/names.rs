@@ -12,13 +12,15 @@
 //! [`check_names`] takes the sections in that order, then the world's tree,
 //! on the model with its classes applied and its frames and composites
 //! expanded, where this crate checked a body's, a joint's and an actuator's
-//! name before; a name a composite made is met after its parent's own
-//! children. In the tree MuJoCo reads a body's elements in document order,
-//! so of two repeats there this crate can name the other (L353).
-//! A frame's name, which expanding the frames drops, is collected first
-//! ([`frame_names`]) and checked after the tree: a frame's place among its
-//! body's children is not kept, and after the tree no document this crate
-//! refused before for MuJoCo's fault is refused for another. Where MuJoCo
+//! name before; a composite's bodies are met where the document writes it,
+//! among its parent's children. In the tree MuJoCo reads a body's elements
+//! in document order, and this crate a body's joints, geoms and sites
+//! before its children, so of two repeats there it can name the other
+//! (L353). A frame's name, which expanding the frames drops, is collected
+//! first ([`frame_names`]) and checked after the tree, where no document
+//! this crate refused before for MuJoCo's fault is refused for another; the
+//! check does not follow a frame's place among its body's elements, which
+//! `MjcfBody::items` records (L353). Where MuJoCo
 //! meets a repeated name before another fault and this crate meets the
 //! other first (a parse fault, an undefined class, a composite's, a frame
 //! repeated before a later name in the tree), this crate names the other
@@ -158,9 +160,9 @@ pub struct FrameName {
     body: String,
 }
 
-/// Every named `<frame>` of the tree, before its frames are expanded, in
-/// document order as far as this crate keeps it: a body's frames before its
-/// child bodies, a frame's nested frames before its bodies.
+/// Every named `<frame>` of the tree, before its frames are expanded: a
+/// body's frames before its child bodies, a frame's nested frames before its
+/// bodies (not the document's order, which `items` records: ledger L353).
 pub fn frame_names(worldbody: &MjcfBody) -> Vec<FrameName> {
     enum Next<'a> {
         Body(&'a MjcfBody),

@@ -299,9 +299,11 @@ fn a_repeated_joint_name_and_a_name_in_a_nested_body_are_refused() {
 /// A repeated frame name beside every section and a repeat in the tree, in
 /// nested bodies and frames; a repeat among a nested body's children in
 /// order; a plugin's repeat (checked when MuJoCo compiles) beside a body's;
-/// a site's repeat in a nested body, `(case, document, kind, name)`, each
-/// refused by MuJoCo 3.5.0 as its row says (measured 2026-11-03; review
-/// round 1's documents, RA and RB).
+/// a site's repeat in a nested body; a composite's first body and a later
+/// body of its name, `(case, document, kind, name)`, each refused by MuJoCo
+/// 3.5.0 as its row says (measured 2026-11-03; the RL-7a review's round-1
+/// documents, RA's and RB's, and the row RL-7b moved here from
+/// `TREE_ORDER_COSTS`).
 const REFUSED_FRAMES_AND_ORDERS: &[(&str, &str, ElementKind, &str)] = &[
     (
         "dup_site_nested_located",

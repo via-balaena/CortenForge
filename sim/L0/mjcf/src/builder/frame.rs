@@ -652,7 +652,8 @@ mod tests {
         );
     }
 
-    // AC17: Joint inside frame = error
+    // AC17: a joint inside a frame, which MuJoCo 3.5.0 loads (registry
+    // `D-FRAME-JOINT`; the body's geom gives it mass), refused.
     #[test]
     fn test_ac17_joint_inside_frame_error() {
         let result = load_model(
@@ -660,7 +661,8 @@ mod tests {
             <mujoco>
                 <worldbody>
                     <body name="b">
-                        <frame>
+                        <geom size="0.1"/>
+                        <frame pos="1 0 0">
                             <joint name="j" type="hinge"/>
                         </frame>
                     </body>
@@ -676,7 +678,8 @@ mod tests {
         );
     }
 
-    // AC18: Freejoint inside frame = error
+    // AC18: a free joint inside a frame, which MuJoCo 3.5.0 loads (registry
+    // `D-FRAME-JOINT`), refused.
     #[test]
     fn test_ac18_freejoint_inside_frame_error() {
         let result = load_model(
@@ -684,6 +687,7 @@ mod tests {
             <mujoco>
                 <worldbody>
                     <body name="b">
+                        <geom size="0.1"/>
                         <frame>
                             <freejoint/>
                         </frame>
@@ -692,7 +696,11 @@ mod tests {
             </mujoco>
         "#,
         );
-        assert!(result.is_err(), "freejoint inside frame should error");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, MjcfError::Unsupported { feature, .. } if feature == "<freejoint> inside <frame>"),
+            "{err}"
+        );
     }
 
     // AC19: Inertial inside frame = error

@@ -1,0 +1,1 @@
+<mujoco><worldbody><site name="a"/><frame pos="0 0 1"><site name="f"/></frame><site name="c"/></worldbody></mujoco>
