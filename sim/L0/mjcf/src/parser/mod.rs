@@ -259,13 +259,15 @@ fn parse_mujoco<R: BufRead>(
                     }
                     b"worldbody" => {
                         let wb = parse_worldbody(reader, child_empty)?;
-                        // Merge: append children, geoms, sites, frames, composites into existing worldbody
+                        // Merge: append its children, geoms, sites, frames and composites, and their
+                        // order, to the existing worldbody's
                         model.worldbody.children.extend(wb.children);
                         model.worldbody.geoms.extend(wb.geoms);
                         model.worldbody.sites.extend(wb.sites);
                         model.worldbody.joints.extend(wb.joints);
                         model.worldbody.frames.extend(wb.frames);
                         model.worldbody.composites.extend(wb.composites);
+                        model.worldbody.items.extend(wb.items);
                     }
                     b"actuator" => {
                         let actuators = parse_actuators(reader, child_empty)?;

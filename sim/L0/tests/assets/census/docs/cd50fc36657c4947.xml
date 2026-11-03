@@ -1,0 +1,1 @@
+<mujoco><worldbody><geom name="a" type="plane" size="1 1 1"/><frame pos="0 0 1"><geom name="f" size=".1"/></frame><geom name="c" size=".1"/></worldbody></mujoco>

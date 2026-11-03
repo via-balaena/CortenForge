@@ -8,7 +8,8 @@ use crate::error::{MjcfError, Result};
 use crate::keywords;
 
 use crate::types::{
-    MjcfBody, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfInertial, MjcfJoint, MjcfJointType, MjcfSite,
+    MjcfBody, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfInertial, MjcfItem, MjcfJoint, MjcfJointType,
+    MjcfSite,
 };
 
 use super::attrs::{Attrs, skip_element};
@@ -30,20 +31,29 @@ pub(super) fn parse_worldbody<R: BufRead>(reader: &mut Reader<R>, empty: bool) -
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
                 let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
-                    b"body" => worldbody.children.push(parse_body(reader, e, child_empty)?),
+                    b"body" => {
+                        worldbody.children.push(parse_body(reader, e, child_empty)?);
+                        worldbody.items.push(MjcfItem::Body);
+                    }
                     b"geom" => {
                         // Static geom attached to world
                         let geom = parse_leaf(reader, e, child_empty, parse_geom_attrs)?;
                         worldbody.geoms.push(geom);
+                        worldbody.items.push(MjcfItem::Geom);
                     }
                     b"site" => {
                         let site = parse_leaf(reader, e, child_empty, parse_site_attrs)?;
                         worldbody.sites.push(site);
+                        worldbody.items.push(MjcfItem::Site);
                     }
-                    b"frame" => worldbody.frames.push(parse_frame(reader, e, child_empty)?),
+                    b"frame" => {
+                        worldbody.frames.push(parse_frame(reader, e, child_empty)?);
+                        worldbody.items.push(MjcfItem::Frame);
+                    }
                     b"composite" => {
                         let composite = parse_composite(reader, e, child_empty)?;
                         worldbody.composites.push(composite);
+                        worldbody.items.push(MjcfItem::Composite);
                     }
                     tag @ (b"replicate" | b"attach") => return Err(attach_refusal(tag)),
                     name => skip_element(reader, name, child_empty)?,
@@ -80,7 +90,10 @@ pub(super) fn parse_body<R: BufRead>(
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
                 let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
-                    b"body" => body.children.push(parse_body(reader, e, child_empty)?),
+                    b"body" => {
+                        body.children.push(parse_body(reader, e, child_empty)?);
+                        body.items.push(MjcfItem::Body);
+                    }
                     tag @ (b"joint" | b"freejoint") => {
                         // <freejoint/> is MuJoCo shorthand for <joint type="free"/>
                         let read = if tag == b"joint" {
@@ -100,10 +113,12 @@ pub(super) fn parse_body<R: BufRead>(
                         }
                         joint.body = Some(body.name.clone());
                         body.joints.push(joint);
+                        body.items.push(MjcfItem::Joint);
                     }
                     b"geom" => {
                         let geom = parse_leaf(reader, e, child_empty, parse_geom_attrs)?;
                         body.geoms.push(geom);
+                        body.items.push(MjcfItem::Geom);
                     }
                     b"inertial" => {
                         body.inertial =
@@ -112,11 +127,16 @@ pub(super) fn parse_body<R: BufRead>(
                     b"site" => {
                         let site = parse_leaf(reader, e, child_empty, parse_site_attrs)?;
                         body.sites.push(site);
+                        body.items.push(MjcfItem::Site);
                     }
-                    b"frame" => body.frames.push(parse_frame(reader, e, child_empty)?),
+                    b"frame" => {
+                        body.frames.push(parse_frame(reader, e, child_empty)?);
+                        body.items.push(MjcfItem::Frame);
+                    }
                     b"composite" => {
                         let composite = parse_composite(reader, e, child_empty)?;
                         body.composites.push(composite);
+                        body.items.push(MjcfItem::Composite);
                     }
                     b"plugin" => body.plugin = Some(parse_plugin_ref(reader, e, child_empty)?),
                     tag @ (b"replicate" | b"attach") => return Err(attach_refusal(tag)),
@@ -364,16 +384,24 @@ pub(super) fn parse_frame<R: BufRead>(
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
                 let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
-                    b"body" => frame.bodies.push(parse_body(reader, e, child_empty)?),
+                    b"body" => {
+                        frame.bodies.push(parse_body(reader, e, child_empty)?);
+                        frame.items.push(MjcfItem::Body);
+                    }
                     b"geom" => {
                         let geom = parse_leaf(reader, e, child_empty, parse_geom_attrs)?;
                         frame.geoms.push(geom);
+                        frame.items.push(MjcfItem::Geom);
                     }
                     b"site" => {
                         let site = parse_leaf(reader, e, child_empty, parse_site_attrs)?;
                         frame.sites.push(site);
+                        frame.items.push(MjcfItem::Site);
                     }
-                    b"frame" => frame.frames.push(parse_frame(reader, e, child_empty)?),
+                    b"frame" => {
+                        frame.frames.push(parse_frame(reader, e, child_empty)?);
+                        frame.items.push(MjcfItem::Frame);
+                    }
                     tag @ (b"camera" | b"light") => {
                         tracing::warn!(
                             "skipping <{}> inside <frame>: camera/light not yet supported",

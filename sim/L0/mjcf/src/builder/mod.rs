@@ -20,6 +20,7 @@ pub mod fluid;
 pub mod frame;
 pub mod geom;
 mod init;
+mod items;
 pub mod joint;
 mod limits;
 pub mod mass;

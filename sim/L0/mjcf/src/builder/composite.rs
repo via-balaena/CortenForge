@@ -10,6 +10,7 @@ use nalgebra::{Rotation3, UnitQuaternion, Vector3};
 use std::f64::consts::PI;
 
 use super::geom::resolve_geom_fromto;
+use super::items::{Contents, Element};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::stack::MAX_BODY_TREE_DEPTH;
 use crate::types::{
@@ -25,25 +26,35 @@ pub fn expand_composites(body: &mut MjcfBody) -> Result<Vec<MjcfContactExclude>>
     Ok(excludes)
 }
 
+/// Each composite of `body` and of the bodies below it made, in the order
+/// the document writes them (`MjcfBody::items`), as MuJoCo 3.5.0 makes one
+/// when it reads it: its bodies take its place among `body`'s children, and a
+/// child body written before it has its own composites made first. An error
+/// names the body that holds the composite.
 fn expand_composites_recursive(
     body: &mut MjcfBody,
     excludes: &mut Vec<MjcfContactExclude>,
 ) -> Result<()> {
-    // First recurse into existing children
-    for child in &mut body.children {
-        expand_composites_recursive(child, excludes)?;
+    let mut placed = Contents::default();
+    for element in Contents::take_from_body(body).into_elements() {
+        match element {
+            Element::Body(mut child) => {
+                expand_composites_recursive(&mut child, excludes)?;
+                placed.push(Element::Body(child));
+            }
+            Element::Composite(composite) => {
+                let (bodies, excl) = expand_composite(&composite).map_err(|e| {
+                    e.with_location_if_unknown(Location::named(ElementKind::Body, &body.name))
+                })?;
+                for made in bodies {
+                    placed.push(Element::Body(made));
+                }
+                excludes.extend(excl);
+            }
+            other => placed.push(other),
+        }
     }
-
-    // Then expand composites on this body; an error names the body that
-    // holds the composite.
-    let composites = std::mem::take(&mut body.composites);
-    for composite in composites {
-        let (bodies, excl) = expand_composite(&composite).map_err(|e| {
-            e.with_location_if_unknown(Location::named(ElementKind::Body, &body.name))
-        })?;
-        body.children.extend(bodies);
-        excludes.extend(excl);
-    }
+    placed.put_into_body(body);
     Ok(())
 }
 

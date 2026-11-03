@@ -6,8 +6,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use sim_mjcf::{
-    MjcfBody, MjcfError, MjcfJoint, MjcfModel, load_model, load_model_from_file, model_from_mjcf,
-    validate,
+    MjcfBody, MjcfError, MjcfFrame, MjcfJoint, MjcfModel, load_model, load_model_from_file,
+    model_from_mjcf, validate,
 };
 
 /// `n` bodies nested in the worldbody (the root `<mujoco>` at depth 1, the
@@ -170,15 +170,12 @@ fn a_tree_built_in_code_deeper_than_4096_is_refused() {
 
 #[test]
 fn frames_count_toward_a_trees_depth() {
-    // 5000 frames, each in the one before, in the worldbody: past 4096. The
-    // frame type is not exported, so each is a clone of a parsed one.
+    // 5000 frames, each in the one before, in the worldbody: past 4096.
     on_big_stack(|| {
-        let mut model =
-            sim_mjcf::parse_mjcf_str("<mujoco><worldbody><frame/></worldbody></mujoco>").unwrap();
-        let empty = model.worldbody.frames.pop().unwrap();
-        let mut inner = empty.clone();
+        let mut model = MjcfModel::new("m");
+        let mut inner = MjcfFrame::default();
         for _ in 1..5000 {
-            let mut outer = empty.clone();
+            let mut outer = MjcfFrame::default();
             outer.frames.push(inner);
             inner = outer;
         }

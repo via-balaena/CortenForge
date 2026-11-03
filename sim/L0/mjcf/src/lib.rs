@@ -201,11 +201,11 @@ pub use types::{
     AngleUnit, CompositeGeom, CompositeJoint, CompositeShape, CompositeSite, CompositeType,
     EqualityKind, FluidShape, InertiaFromGeom, MjcfActuator, MjcfActuatorType, MjcfBody,
     MjcfCompiler, MjcfComposite, MjcfConeType, MjcfConnect, MjcfDefault, MjcfDistance,
-    MjcfEquality, MjcfEqualityDefaults, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType,
-    MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
-    MjcfJointEquality, MjcfJointType, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption,
-    MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendon, MjcfTendonDefaults,
-    MjcfTendonType, MjcfWeld, Prefix, SpatialPathElement, TfAuto,
+    MjcfEquality, MjcfEqualityDefaults, MjcfFlag, MjcfFrame, MjcfGeom, MjcfGeomDefaults,
+    MjcfGeomType, MjcfInertial, MjcfIntegrator, MjcfItem, MjcfJacobianType, MjcfJoint,
+    MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfMesh, MjcfMeshDefaults, MjcfModel,
+    MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendon,
+    MjcfTendonDefaults, MjcfTendonType, MjcfWeld, Prefix, SpatialPathElement, TfAuto,
 };
 pub use validation::{ValidationResult, validate};
 
