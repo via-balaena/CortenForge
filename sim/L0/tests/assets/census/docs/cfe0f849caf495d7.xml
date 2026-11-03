@@ -1,0 +1,1 @@
+<mujoco><extension><plugin plugin="mujoco.elasticity.cable"><instance name="p"/><instance name="p"/></plugin></extension><worldbody><body name="b"><joint/><geom size="0.1" mass="1"/></body><body name="b"><joint/><geom size="0.1" mass="1"/></body></worldbody></mujoco>

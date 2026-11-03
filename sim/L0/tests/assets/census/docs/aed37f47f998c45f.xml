@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="base"><joint type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><frame name="f"/><frame name="f"/><composite type="cable" count="4 2 1" curve="s" size="1"><geom type="capsule" size=".01" mass="0.1"/></composite></worldbody></mujoco>

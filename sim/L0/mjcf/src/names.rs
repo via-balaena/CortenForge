@@ -9,19 +9,25 @@
 //! the sections in its own order, the world's bodies last
 //! (`mjXReader::Parse`, `xml_native_reader.cc:990-1080`).
 //!
-//! [`check_names`] takes the kinds in that order, on the model with its
-//! classes applied and its frames and composites expanded, where this crate
-//! checked a body's, a joint's and an actuator's name before; so a name a
-//! composite makes is checked where the composite stood. A frame's name,
-//! which expanding the frames drops, is checked by [`check_frame_names`]
-//! before they are expanded. A fault MuJoCo's reader meets before a
-//! repeated name (an undefined class, a composite's) is refused here first
-//! wherever this crate meets it first (ledger L353).
+//! [`check_names`] takes the sections in that order, then the world's tree,
+//! on the model with its classes applied and its frames and composites
+//! expanded, where this crate checked a body's, a joint's and an actuator's
+//! name before; a name a composite made is met among its parent's children.
+//! A frame's name, which expanding the frames drops, is collected first
+//! ([`frame_names`]) and checked after the tree: a frame's place among its
+//! body's children is not kept, and after the tree no document this crate
+//! refused before for MuJoCo's fault is refused for another. Where MuJoCo
+//! meets a repeated name before another fault and this crate meets the
+//! other first (a parse fault, an undefined class, a composite's, a frame
+//! repeated before a later name in the tree), this crate names the other
+//! (ledger L353).
 //!
 //! This crate does not read a camera, light, material, texture or `<custom>`
 //! element, so their names are not checked (ledger L376). A mesh's and a
-//! height field's are checked by `builder::mesh::name_assets`, which names
-//! the unnamed ones by their files first.
+//! height field's are checked by `builder::mesh::name_assets` before any
+//! other name, where it names the unnamed ones by their files: it stays
+//! where this crate checked them, though MuJoCo checks a name it takes from
+//! a file only when it compiles (L353).
 
 use std::collections::{HashMap, HashSet};
 
@@ -52,12 +58,13 @@ impl Seen {
 /// flexes, then skins; the equalities in document order; the tendons,
 /// actuators, sensors and keyframes; then the world's tree, each body
 /// before its joints, geoms and sites, then its child bodies; then the
-/// extension's plugin instances, which MuJoCo checks only when it compiles.
+/// `frames` ([`frame_names`]); then the extension's plugin instances, which
+/// MuJoCo checks only when it compiles.
 ///
 /// Within a section and within a body this crate keeps each kind apart, so
 /// of two repeats there, the one it names can be another than MuJoCo's
 /// (ledger L353).
-pub fn check_names(model: &MjcfModel) -> Result<()> {
+pub fn check_names(model: &MjcfModel, frames: &[FrameName]) -> Result<()> {
     let mut seen = Seen::default();
     for pair in &model.contact.pairs {
         seen.add(
@@ -109,6 +116,11 @@ pub fn check_names(model: &MjcfModel) -> Result<()> {
         body_elements(body, &mut seen)?;
         stack.extend(body.children.iter().rev());
     }
+    for frame in frames {
+        seen.add(ElementKind::Frame, &frame.name, || {
+            Location::named(ElementKind::Frame, &frame.name).in_body(&frame.body)
+        })?;
+    }
     for plugin in model.extensions.iter().flat_map(|e| &e.plugins) {
         for instance in &plugin.instances {
             seen.add(ElementKind::Plugin, &instance.name, Location::unknown)?;
@@ -137,16 +149,21 @@ fn body_elements(body: &MjcfBody, seen: &mut Seen) -> Result<()> {
     Ok(())
 }
 
-/// Refuses the first `<frame>` whose name an earlier frame has, on the tree
-/// before its frames are expanded, read in document order as far as this
-/// crate keeps it: a body's frames before its child bodies, a frame's
-/// nested frames before its bodies.
-pub fn check_frame_names(worldbody: &MjcfBody) -> Result<()> {
+/// A `<frame>`'s name and the name of the body holding it.
+pub struct FrameName {
+    name: String,
+    body: String,
+}
+
+/// Every named `<frame>` of the tree, before its frames are expanded, in
+/// document order as far as this crate keeps it: a body's frames before its
+/// child bodies, a frame's nested frames before its bodies.
+pub fn frame_names(worldbody: &MjcfBody) -> Vec<FrameName> {
     enum Next<'a> {
         Body(&'a MjcfBody),
         Frame(&'a MjcfFrame, &'a str),
     }
-    let mut seen = Seen::default();
+    let mut names = Vec::new();
     let mut stack = vec![Next::Body(worldbody)];
     while let Some(next) = stack.pop() {
         let pending: Vec<Next<'_>> = match next {
@@ -155,15 +172,17 @@ pub fn check_frame_names(worldbody: &MjcfBody) -> Result<()> {
                 frames.chain(body.children.iter().map(Next::Body)).collect()
             }
             Next::Frame(frame, body) => {
-                let name = frame.name.as_deref().unwrap_or("");
-                seen.add(ElementKind::Frame, name, || {
-                    Location::named(ElementKind::Frame, name).in_body(body)
-                })?;
+                if let Some(name) = frame.name.as_deref().filter(|n| !n.is_empty()) {
+                    names.push(FrameName {
+                        name: name.to_owned(),
+                        body: body.to_owned(),
+                    });
+                }
                 let frames = frame.frames.iter().map(|f| Next::Frame(f, body));
                 frames.chain(frame.bodies.iter().map(Next::Body)).collect()
             }
         };
         stack.extend(pending.into_iter().rev());
     }
-    Ok(())
+    names
 }

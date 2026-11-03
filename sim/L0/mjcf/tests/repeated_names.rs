@@ -4,13 +4,17 @@
 //! frame, flex, skin or plugin instance; names in a frame, names a
 //! `discardvisual` pass would drop, and names a composite makes. Two kinds
 //! may share a name, and an empty name is no name. Where a document repeats
-//! two names, the one MuJoCo's reader meets first is named.
+//! two names in different sections, or in the world's tree, the one MuJoCo's
+//! reader meets first is named; within one section or one body this crate
+//! keeps the kinds apart and may name the other (ledger L353; the
+//! two-composite test and `FRAME_ORDER_COSTS` below).
 //!
 //! Every document was measured on MuJoCo 3.5.0, which refuses or loads it as
-//! its row says; the expected name and kind are MuJoCo's. At the parent each
-//! refused document but `order_actuator_then_sensor` loaded or named another
-//! repeat (main refused a repeated body, joint, actuator, mesh and height
-//! field only).
+//! its row says; the expected name and kind are MuJoCo's. At `b8a6ffba`,
+//! before this check, each of `REFUSED`'s documents loaded or named another
+//! repeat but `order_actuator_then_sensor`; it refused a repeated body,
+//! joint, actuator, mesh and height field only, so the rows of those kinds
+//! in the later tables passed there too.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -289,5 +293,156 @@ fn a_repeated_joint_name_and_a_name_in_a_nested_body_are_refused() {
             }) if k == kind && n == name => {}
             other => panic!("{case}: {:?} (MuJoCo: '{name}' in {kind})", other.err()),
         }
+    }
+}
+
+/// A repeated frame name beside every section and a repeat in the tree, in
+/// nested bodies and frames; a repeat among a nested body's children in
+/// order; a plugin's repeat (checked when MuJoCo compiles) beside a body's;
+/// a site's repeat in a nested body, `(case, document, kind, name)`, each
+/// refused by MuJoCo 3.5.0 as its row says (measured 2026-11-03; review
+/// round 1's documents, RA and RB).
+const REFUSED_FRAMES_AND_ORDERS: &[(&str, &str, ElementKind, &str)] = &[
+    (
+        "dup_site_nested_located",
+        r#"<mujoco><worldbody><body name="a"><joint/><geom size="0.1" mass="1"/><site name="s"/><body name="b"><joint/><geom size="0.1" mass="1"/><site name="s"/></body></body></worldbody></mujoco>"#,
+        ElementKind::Site,
+        "s",
+    ),
+    (
+        "f_actuator",
+        r#"<mujoco><worldbody><body name="b"><joint type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><frame name="f"/><frame name="f"/></worldbody><actuator><motor name="a" joint="j"/><motor name="a" joint="j"/></actuator></mujoco>"#,
+        ElementKind::Actuator,
+        "a",
+    ),
+    (
+        "f_actuator_fixed",
+        r#"<mujoco><worldbody><body name="b"><joint name="j" type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><frame name="f"/><frame name="f"/></worldbody><actuator><motor name="a" joint="j"/><motor name="a" joint="j"/></actuator></mujoco>"#,
+        ElementKind::Actuator,
+        "a",
+    ),
+    (
+        "f_body_before",
+        r#"<mujoco><worldbody><body name="b"><joint type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><body name="b"><joint type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><frame name="f"/><frame name="f"/></worldbody></mujoco>"#,
+        ElementKind::Body,
+        "b",
+    ),
+    (
+        "f_equality",
+        r#"<mujoco><worldbody><body name="b"><joint name="j" type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><body name="c"><joint name="k" type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><frame name="f"/><frame name="f"/></worldbody><equality><joint name="e" joint1="j" joint2="k"/><joint name="e" joint1="k" joint2="j"/></equality></mujoco>"#,
+        ElementKind::Equality,
+        "e",
+    ),
+    (
+        "f_in_body_vs_later_body",
+        r#"<mujoco><worldbody><body name="b"><joint type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><body name="b"><joint type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><body name="c"><joint type="hinge"/><geom type="sphere" size="0.1" mass="1"/><frame name="f"/><frame name="f"/></body></worldbody></mujoco>"#,
+        ElementKind::Body,
+        "b",
+    ),
+    (
+        "f_joint_before",
+        r#"<mujoco><worldbody><body name="b"><joint name="j" type="hinge"/><joint name="j" type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><frame name="f"/><frame name="f"/></worldbody></mujoco>"#,
+        ElementKind::Joint,
+        "j",
+    ),
+    (
+        "f_key",
+        r#"<mujoco><worldbody><body name="b"><joint type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><frame name="f"/><frame name="f"/></worldbody><keyframe><key name="k"/><key name="k"/></keyframe></mujoco>"#,
+        ElementKind::Keyframe,
+        "k",
+    ),
+    (
+        "f_pair",
+        r#"<mujoco><worldbody><geom name="g1" type="sphere" size="1"/><geom name="g2" type="sphere" size="1" pos="3 0 0"/><frame name="f"/><frame name="f"/></worldbody><contact><pair name="p" geom1="g1" geom2="g2"/><pair name="p" geom1="g2" geom2="g1"/></contact></mujoco>"#,
+        ElementKind::Pair,
+        "p",
+    ),
+    (
+        "f_sensor",
+        r#"<mujoco><worldbody><body name="b"><joint name="j" type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><frame name="f"/><frame name="f"/></worldbody><sensor><jointpos name="s" joint="j"/><jointpos name="s" joint="j"/></sensor></mujoco>"#,
+        ElementKind::Sensor,
+        "s",
+    ),
+    (
+        "f_tendon",
+        r#"<mujoco><worldbody><body name="b"><joint name="j" type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><frame name="f"/><frame name="f"/></worldbody><tendon><fixed name="t"><joint joint="j" coef="1"/></fixed><fixed name="t"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
+        ElementKind::Tendon,
+        "t",
+    ),
+    (
+        "f_world_body",
+        r#"<mujoco><worldbody><body name="world"><joint type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><frame name="f"/><frame name="f"/></worldbody></mujoco>"#,
+        ElementKind::Body,
+        "world",
+    ),
+    (
+        "fr_body_in_frame",
+        r#"<mujoco><worldbody><frame name="f"><body name="a"><joint/><geom type="sphere" size="0.1" mass="1"/><frame name="f"><site name="s1"/></frame></body></frame></worldbody></mujoco>"#,
+        ElementKind::Frame,
+        "f",
+    ),
+    (
+        "fr_two_bodies",
+        r#"<mujoco><worldbody><body name="a"><joint/><geom type="sphere" size="0.1" mass="1"/><frame name="f"><site name="s1"/></frame></body><body name="b" pos="1 0 0"><joint/><geom type="sphere" size="0.1" mass="1"/><frame name="f"><site name="s2"/></frame></body></worldbody></mujoco>"#,
+        ElementKind::Frame,
+        "f",
+    ),
+    (
+        "fr_world_and_grandchild",
+        r#"<mujoco><worldbody><frame name="f"/><body name="a"><joint/><geom type="sphere" size="0.1" mass="1"/><body name="c"><joint/><geom type="sphere" size="0.1" mass="1"/><frame name="f"><site name="s1"/></frame></body></body></worldbody></mujoco>"#,
+        ElementKind::Frame,
+        "f",
+    ),
+    (
+        "order_nested_children",
+        r#"<mujoco><worldbody><body name="p"><joint/><geom size="0.1" mass="1"/><body name="c1"><joint/><geom name="g" size="0.1" mass="1"/></body><body name="c2"><joint/><geom name="h" size="0.1" mass="1"/></body><body name="c3"><joint/><geom name="g" size="0.1" mass="1"/></body><body name="c4"><joint/><geom name="h" size="0.1" mass="1"/></body></body></worldbody></mujoco>"#,
+        ElementKind::Geom,
+        "g",
+    ),
+    (
+        "order_plugin_and_body",
+        r#"<mujoco><extension><plugin plugin="mujoco.elasticity.cable"><instance name="p"/><instance name="p"/></plugin></extension><worldbody><body name="b"><joint/><geom size="0.1" mass="1"/></body><body name="b"><joint/><geom size="0.1" mass="1"/></body></worldbody></mujoco>"#,
+        ElementKind::Body,
+        "b",
+    ),
+];
+
+#[test]
+fn a_repeated_frame_name_and_mujocos_order_of_repeats() {
+    for &(case, xml, kind, name) in REFUSED_FRAMES_AND_ORDERS {
+        match load_model(xml) {
+            Err(MjcfError::DuplicateName {
+                kind: k, name: n, ..
+            }) if k == kind && n == name => {}
+            other => panic!("{case}: {:?} (MuJoCo: '{name}' in {kind})", other.err()),
+        }
+    }
+}
+
+/// A frame repeated before a later fault in the world's tree: MuJoCo, which
+/// reads a frame where it stands, names the frame; this crate checks frames'
+/// names after the tree and names the later fault (ledger L353), as it did
+/// before it checked frames' names. `(case, document, MuJoCo's error, this
+/// crate's)`.
+const FRAME_ORDER_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "f_body_after",
+        r#"<mujoco><worldbody><frame name="f"/><frame name="f"/><body name="b"><joint type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><body name="b"><joint type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body></worldbody></mujoco>"#,
+        "repeated name 'f' in frame",
+        "repeated name 'b' in body",
+    ),
+    (
+        "f_comp_after",
+        r#"<mujoco><worldbody><body name="base"><joint type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><frame name="f"/><frame name="f"/><composite type="cable" count="4 2 1" curve="s" size="1"><geom type="capsule" size=".01" mass="0.1"/></composite></worldbody></mujoco>"#,
+        "repeated name 'f' in frame",
+        "Cable must be one-dimensional (body 'world')",
+    ),
+];
+
+#[test]
+fn a_frame_repeated_before_a_later_fault_names_the_later_one() {
+    for &(case, xml, _mujoco, ours) in FRAME_ORDER_COSTS {
+        let err = load_model(xml).expect_err(case);
+        assert_eq!(err.to_string(), ours, "{case}");
     }
 }

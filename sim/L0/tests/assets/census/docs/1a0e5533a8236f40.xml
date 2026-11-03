@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="b"><joint name="j" type="hinge"/><geom type="sphere" size="0.1" mass="1"/></body><frame name="f"/><frame name="f"/></worldbody><sensor><jointpos name="s" joint="j"/><jointpos name="s" joint="j"/></sensor></mujoco>

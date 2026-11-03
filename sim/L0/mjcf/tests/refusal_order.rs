@@ -29,9 +29,11 @@
 //! raised value. RL-7a's check of repeated names (book L23) runs where this
 //! crate checked a body's, a joint's and an actuator's name before, now
 //! ahead of the options too, as MuJoCo's reader meets a name before any
-//! check its compiler makes; a fault its reader meets before a name and this
-//! crate meets first (a parse fault, an undefined class, a composite's) is
-//! ledger L353's.
+//! check its compiler makes; a frame's name after the world's tree. Where
+//! MuJoCo's reader meets the repeated name first and this crate meets the
+//! other fault first (a parse fault, an undefined class, a composite's, a
+//! frame repeated before a later name), this crate names the other: ledger
+//! L353's.
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, for the fault its expected error names (RL-6a's measured
@@ -40,7 +42,8 @@
 //! four set the new checks against each other; RL-6b's set a limit's fault
 //! beside another, and RL-6d's a body's or a height field's.
 //! RL-7a's (measured 2026-11-03) set a repeated name beside a size, a
-//! reference, an axis and an option this crate refuses and MuJoCo does not.
+//! reference and an axis MuJoCo refuses too, and beside an option this crate
+//! refuses and MuJoCo does not.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

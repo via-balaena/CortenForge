@@ -120,9 +120,7 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 /// composite makes among its bodies.
 ///
 /// This checks:
-/// - No duplicate body names
-/// - No duplicate joint names
-/// - No duplicate actuator names
+/// - No name repeated within a kind (`names::check_names`)
 /// - Actuators reference valid joints
 /// - An inertial's mass and diagonal inertia finite (if present)
 /// - Valid simulation options
@@ -141,11 +139,15 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
 }
 
 /// [`validate`]'s checks, on a model whose classes are applied and whose
-/// frames and composites are expanded (`builder::front_end`).
-pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
-    // Every name but a frame's (`names::check_frame_names`), composites'
-    // included; then the options, whose checks MuJoCo does not make.
-    crate::names::check_names(model)?;
+/// frames and composites are expanded (`builder::front_end`); `frames` are
+/// the frames' names, collected before they were expanded.
+pub fn validate_resolved(
+    model: &MjcfModel,
+    frames: &[crate::names::FrameName],
+) -> Result<ValidationResult> {
+    // Every name, composites' and frames' included; then the options, whose
+    // checks MuJoCo does not make.
+    crate::names::check_names(model, frames)?;
     validate_option(&model.option)?;
     let mut joint_names = HashSet::new();
 
