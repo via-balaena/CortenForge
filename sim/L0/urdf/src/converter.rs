@@ -1598,18 +1598,85 @@ mod tests {
         assert!(!mjcf.contains(r#"name="""#), "{mjcf}");
     }
 
-    /// A name holding `&`, `<`, `"` reaches the model as the URDF held it: the
-    /// reader unescapes the URDF's entities, the converter writes them again.
+    /// Every name and path the converter writes reaches sim-mjcf's reader as
+    /// the URDF held it: the model's, a body's, a joint's, a planar joint's
+    /// three, a mimic's two joints, a mesh's name and file, and a geom's name
+    /// and mesh. Each ends in `"&lt;` as the reader gives it, which written
+    /// unescaped would end its attribute at the `"`.
     #[test]
     fn names_with_markup_characters_round_trip() {
-        let urdf = format!(
-            r#"<robot name="r"><link name="a&amp;b"/>{}{}</robot>"#,
-            massive_link("c&lt;d", &collision(Some("g&quot;1"), 0.1)),
-            hinge("j&amp;k", "a&amp;b", "c&lt;d"),
+        // A name as the URDF writes it, and as the reader gives it.
+        let written = |stem: &str| format!("{stem}&quot;&amp;lt;");
+        let read = |stem: &str| format!("{stem}\u{22}&lt;");
+        let mesh = format!(
+            r#"<collision name="{}"><geometry><mesh filename="{}.stl"/></geometry></collision>"#,
+            written("gm"),
+            written("m"),
         );
-        let model = sim_mjcf::load_model(&urdf_to_mjcf(&urdf).expect("converts")).expect("loads");
-        assert_eq!(model.body_name[1].as_deref(), Some("c<d"));
-        assert_eq!(model.jnt_name[0].as_deref(), Some("j&k"));
-        assert_eq!(model.geom_name[0].as_deref(), Some("g\"1"));
+        let urdf = format!(
+            r#"<robot name="{}">{}{}{}{}{}<joint name="{}" type="planar"><parent link="{}"/><child link="{}"/><axis xyz="0 0 1"/></joint><joint name="{}" type="revolute"><parent link="{}"/><child link="{}"/><axis xyz="0 0 1"/><limit lower="-1" upper="1"/><mimic joint="{}"/></joint></robot>"#,
+            written("r"),
+            massive_link(&written("b"), ""),
+            massive_link(&written("a"), &mesh),
+            massive_link(&written("c"), &collision(Some(&written("gs")), 0.1)),
+            massive_link(&written("d"), ""),
+            hinge(&written("j"), &written("b"), &written("a")),
+            written("p"),
+            written("a"),
+            written("c"),
+            written("f"),
+            written("b"),
+            written("d"),
+            written("j"),
+        );
+        let model =
+            sim_mjcf::parse_mjcf_str(&urdf_to_mjcf(&urdf).expect("converts")).expect("parses");
+        let (mut bodies, mut joints, mut geoms) = (Vec::new(), Vec::new(), Vec::new());
+        let mut stack: Vec<_> = model.worldbody.children.iter().collect();
+        while let Some(body) = stack.pop() {
+            bodies.push(body.name.clone());
+            joints.extend(body.joints.iter().map(|joint| joint.name.clone()));
+            geoms.extend(
+                body.geoms
+                    .iter()
+                    .map(|geom| (geom.name.clone(), geom.mesh.clone())),
+            );
+            stack.extend(&body.children);
+        }
+        for list in [&mut bodies, &mut joints] {
+            list.sort();
+        }
+        geoms.sort();
+        assert_eq!(model.name, read("r"));
+        assert_eq!(
+            model
+                .meshes
+                .iter()
+                .map(|mesh| (mesh.name.clone(), mesh.file.clone()))
+                .collect::<Vec<_>>(),
+            [(read("m"), Some(format!("{}.stl", read("m"))))]
+        );
+        assert_eq!(bodies, ["a", "b", "c", "d"].map(read));
+        let planar = read("p");
+        let mut expected = vec![read("f"), read("j")];
+        expected.extend(["_RZ", "_TX", "_TY"].map(|axis| format!("{planar}{axis}")));
+        expected.sort();
+        assert_eq!(joints, expected);
+        assert_eq!(
+            geoms,
+            [
+                (Some(read("gm")), Some(read("m"))),
+                (Some(read("gs")), None)
+            ]
+        );
+        assert_eq!(
+            model
+                .equality
+                .joints
+                .iter()
+                .map(|equality| (equality.joint1.clone(), equality.joint2.clone()))
+                .collect::<Vec<_>>(),
+            [(read("f"), Some(read("j")))]
+        );
     }
 }
