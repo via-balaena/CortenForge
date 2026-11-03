@@ -446,3 +446,32 @@ fn a_frame_repeated_before_a_later_fault_names_the_later_one() {
         assert_eq!(err.to_string(), ours, "{case}");
     }
 }
+
+/// A repeat among a body's joints, geoms or sites is located by its body,
+/// as this crate locates an element it refuses; MuJoCo names the element by
+/// the line it is on. `(case, document, this crate's error)`.
+const LOCATED: &[(&str, &str, &str)] = &[
+    (
+        "joint in a nested body",
+        r#"<mujoco><worldbody><body name="a"><joint name="j"/><geom size="0.1" mass="1"/><body name="b"><joint name="j"/><geom size="0.1" mass="1"/></body></body></worldbody></mujoco>"#,
+        "repeated name 'j' in joint (joint 'j' in body 'b')",
+    ),
+    (
+        "geom in a nested body",
+        r#"<mujoco><worldbody><body name="a"><joint/><geom name="g" size="0.1" mass="1"/><body name="b"><joint/><geom name="g" size="0.1" mass="1"/></body></body></worldbody></mujoco>"#,
+        "repeated name 'g' in geom (geom 'g' in body 'b')",
+    ),
+    (
+        "site in a nested body",
+        r#"<mujoco><worldbody><body name="a"><joint/><geom size="0.1" mass="1"/><site name="s"/><body name="b"><joint/><geom size="0.1" mass="1"/><site name="s"/></body></body></worldbody></mujoco>"#,
+        "repeated name 's' in site (site 's' in body 'b')",
+    ),
+];
+
+#[test]
+fn a_repeat_in_a_body_is_located_by_its_body() {
+    for &(case, xml, expected) in LOCATED {
+        let err = load_model(xml).expect_err(case);
+        assert_eq!(err.to_string(), expected, "{case}");
+    }
+}
