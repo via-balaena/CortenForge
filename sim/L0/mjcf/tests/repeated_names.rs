@@ -4,10 +4,10 @@
 //! frame, flex, skin or plugin instance; names in a frame, names a
 //! `discardvisual` pass would drop, and names a composite makes. Two kinds
 //! may share a name, and an empty name is no name. Where a document repeats
-//! two names in different sections, or in the world's tree, the one MuJoCo's
-//! reader meets first is named; within one section or one body this crate
-//! keeps the kinds apart and may name the other (ledger L353; the
-//! two-composite test and `FRAME_ORDER_COSTS` below).
+//! two names in different sections, the one MuJoCo's reader meets first is
+//! named. Within one section, and in the world's tree, this crate's order is
+//! not MuJoCo's, and it can name the other repeat (ledger L353): the
+//! two-composite test, `FRAME_ORDER_COSTS` and `TREE_ORDER_COSTS` below.
 //!
 //! Every document was measured on MuJoCo 3.5.0, which refuses or loads it as
 //! its row says; the expected name and kind are MuJoCo's. At `b8a6ffba`,
@@ -442,6 +442,40 @@ const FRAME_ORDER_COSTS: &[(&str, &str, &str, &str)] = &[
 #[test]
 fn a_frame_repeated_before_a_later_fault_names_the_later_one() {
     for &(case, xml, _mujoco, ours) in FRAME_ORDER_COSTS {
+        let err = load_model(xml).expect_err(case);
+        assert_eq!(err.to_string(), ours, "{case}");
+    }
+}
+
+/// Repeats in the world's tree that MuJoCo 3.5.0 meets in another order (ledger L353): it reads a body's
+/// elements in document order (`mjXReader::Body`, `xml_native_reader.cc:3511-3824`), a child body's at its
+/// place and a composite's bodies where the composite stands; this crate a body's joints, geoms and sites before its child bodies, and a composite's bodies
+/// after the body's own. Review RA-S6's documents (measured). `(case, document, MuJoCo's error, this
+/// crate's)`.
+const TREE_ORDER_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "tree_child_before_sites",
+        r#"<mujoco><worldbody><body name="p"><joint/><geom size="0.1" mass="1"/><body name="c"><joint/><geom name="x" size="0.1" mass="1"/><geom name="x" size="0.1" mass="1"/></body><site name="s"/><site name="s"/></body></worldbody></mujoco>"#,
+        "repeated name 'x' in geom",
+        "repeated name 's' in site (site 's' in body 'p')",
+    ),
+    (
+        "tree_child_then_sibling_vs_parent_sites",
+        r#"<mujoco><worldbody><body name="p"><joint/><geom size="0.1" mass="1"/><body name="c"><joint/><geom name="x" size="0.1" mass="1"/></body><body name="d"><joint/><geom name="x" size="0.1" mass="1"/></body><site name="s"/><site name="s"/></body></worldbody></mujoco>"#,
+        "repeated name 'x' in geom",
+        "repeated name 's' in site (site 's' in body 'p')",
+    ),
+    (
+        "comp_made_then_later_repeat",
+        r#"<mujoco><worldbody><body name="p"><joint/><geom size="0.1" mass="1"/><composite prefix="c" type="cable" count="3 1 1" curve="s" size="1"><geom type="capsule" size=".01" mass="0.1"/></composite><body name="cB_first"><joint/><geom size="0.1" mass="1"/></body><body name="z"><joint/><geom size="0.1" mass="1"/></body><body name="z"><joint/><geom size="0.1" mass="1"/></body></body></worldbody></mujoco>"#,
+        "repeated name 'cB_first' in body",
+        "repeated name 'z' in body",
+    ),
+];
+
+#[test]
+fn a_repeat_in_the_tree_is_named_in_this_crates_order() {
+    for &(case, xml, _mujoco, ours) in TREE_ORDER_COSTS {
         let err = load_model(xml).expect_err(case);
         assert_eq!(err.to_string(), ours, "{case}");
     }

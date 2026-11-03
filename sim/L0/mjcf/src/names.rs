@@ -12,7 +12,9 @@
 //! [`check_names`] takes the sections in that order, then the world's tree,
 //! on the model with its classes applied and its frames and composites
 //! expanded, where this crate checked a body's, a joint's and an actuator's
-//! name before; a name a composite made is met among its parent's children.
+//! name before; a name a composite made is met after its parent's own
+//! children. In the tree MuJoCo reads a body's elements in document order,
+//! so of two repeats there this crate can name the other (L353).
 //! A frame's name, which expanding the frames drops, is collected first
 //! ([`frame_names`]) and checked after the tree: a frame's place among its
 //! body's children is not kept, and after the tree no document this crate
@@ -54,10 +56,11 @@ impl Seen {
 }
 
 /// Refuses the first element whose name an earlier one of its kind has, in
-/// MuJoCo 3.5.0's reading order: the contact pairs, then exclusions; the
-/// flexes, then skins; the equalities in document order; the tendons,
-/// actuators, sensors and keyframes; then the world's tree, each body
-/// before its joints, geoms and sites, then its child bodies; then the
+/// this order, MuJoCo 3.5.0's between sections: the contact pairs, then
+/// exclusions; the flexes, then skins; the equalities in document order; the
+/// tendons, actuators, sensors and keyframes; then the world's tree, each
+/// body, then its joints, geoms and sites, then its child bodies (MuJoCo
+/// reads a body's elements in document order); then the
 /// `frames` ([`frame_names`]); then the extension's plugin instances, which
 /// MuJoCo checks only when it compiles.
 ///
