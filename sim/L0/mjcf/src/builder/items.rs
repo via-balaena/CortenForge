@@ -247,4 +247,18 @@ mod tests {
         assert_eq!(body.items, [MjcfItem::Geom, MjcfItem::Body, MjcfItem::Geom]);
         assert_eq!((body.geoms.len(), body.children.len()), (2, 1));
     }
+
+    #[test]
+    fn a_frames_elements_taken_out_go_back_whole() {
+        let mut model = crate::parse_mjcf_str(
+            r#"<mujoco><worldbody><frame><composite type="cable" prefix="c" count="4 1 1" curve="s" size="1"><geom type="capsule" size=".01"/></composite><geom name="g" size="1"/><body name="b"/><site name="s"/><frame name="f"/></frame></worldbody></mujoco>"#,
+        )
+        .unwrap();
+        let parsed = model.worldbody.frames.pop().unwrap();
+        let mut frame = parsed.clone();
+        let contents = Contents::take_from_frame(&mut frame);
+        assert_eq!(frame, MjcfFrame::default());
+        contents.put_into_frame(&mut frame);
+        assert_eq!(frame, parsed);
+    }
 }

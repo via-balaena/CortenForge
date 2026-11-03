@@ -3090,3 +3090,4 @@ d0663fa9a18d9138	sim/L0/mjcf/tests/frame_contents.rs:81
 7b82401d8f567b92	sim/L0/mjcf/tests/frame_contents.rs:238
 8171548486fd82ac	sim/L0/mjcf/tests/frame_contents.rs:231
 9102447d3a4b1eb6	sim/L0/mjcf/tests/frame_contents.rs:295
+9235d4b50419ec68	sim/L0/mjcf/src/builder/items.rs:254
