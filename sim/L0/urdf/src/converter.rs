@@ -20,11 +20,11 @@
 //! | URDF | MJCF |
 //! |------|------|
 //! | `<robot>` | `<mujoco>` |
-//! | `<link>` | `<body>` |
-//! | `<joint>` | `<joint>` (inside child body) |
+//! | `<link>` | `<body>` (the link named `world`: `<worldbody>`) |
+//! | `<joint>` | `<joint>` (inside child body; a planar one: two slides and a hinge) |
 //! | `<inertial>` | `<inertial>` |
 //! | `<collision>` | `<geom>` |
-//! | `<visual>` | `<geom class="visual">` (optional) |
+//! | `<visual>` | not written (MuJoCo's importer discards visuals under URDF's `discardvisual`) |
 //!
 //! ## Key Differences
 //!
@@ -138,7 +138,7 @@ fn dynamics_attrs(joint: &UrdfJoint) -> String {
 }
 
 /// A planar joint's two slide axes, as MuJoCo 3.5.0's importer makes them
-/// from the axis as written (`xml_urdf.cc:445-446`): the first two columns
+/// from the axis as written (`xml_urdf.cc:448-449`): the first two columns
 /// of `mjuu_quat2mat(mjuu_z2quat(axis))` (`user_util.cc:203-240`, `:395-408`),
 /// in their operations and order.
 // `mjuu_quat2mat`'s identity shortcut is an exact `==` (a zero of either
@@ -199,7 +199,7 @@ struct MeshAssetEntry {
 
 /// A mesh file's name stem: its text past the last `/` or `\`, cut at the
 /// last `.`, as MuJoCo 3.5.0's importer names a mesh (`mjuu_strippath`,
-/// `mjuu_stripext`, `xml_urdf.cc:592-593`).
+/// `mjuu_stripext`, `xml_urdf.cc:593-594`).
 fn mesh_stem(file: &str) -> &str {
     let base = file.rsplit(['/', '\\']).next().unwrap_or(file);
     base.rfind('.').map_or(base, |dot| &base[..dot])
@@ -1221,7 +1221,7 @@ mod tests {
     /// document that has it and the later geom is unnamed, as MuJoCo 3.5.0's
     /// importer names them (measured: the child link `arm`, written first,
     /// keeps `c`; geom names `[None, 'c']` in body order, its radius-0.2 geom
-    /// named). At the parent both kept `c`.
+    /// named). `b8a6ffba` kept `c` on both.
     #[test]
     fn a_repeated_collision_name_is_kept_by_the_first_link_written() {
         let urdf = format!(
@@ -1269,7 +1269,7 @@ mod tests {
 
     /// The link named `world` is the world body, as MuJoCo 3.5.0's importer
     /// makes it (measured: bodies `['world', 'base']`, geoms `['floor', 'b']`
-    /// on bodies 0 and 1). At the parent it was written as a body named
+    /// on bodies 0 and 1). `b8a6ffba` wrote it as a body named
     /// `world`, which only fusion folded into the world. Its `<inertial>` is
     /// dropped, where MuJoCo stores it as the world body's mass (measured:
     /// `body_mass[0]` 1; `D-URDF-WORLD-INERTIAL`).
@@ -1320,8 +1320,9 @@ mod tests {
     /// geom of a stem and scale met before names that asset (measured: one
     /// file at scales 1, 2, 1, 3 → meshes `['part', 'part1', 'part2']`, geoms'
     /// meshes 0, 1, 0, 2; two files under one collision name → meshes
-    /// `['a', 'b']`, which at the parent were both named `c` and refused).
-    /// A `\` separates a path's parts too (`mjuu_strippath`).
+    /// `['a', 'b']`, which `b8a6ffba` named both `c` and refused). Here two
+    /// files give meshes by their stems, `a` and `b`, a `\` separating a
+    /// path's parts too (`mjuu_strippath`).
     #[test]
     fn meshes_are_named_by_file_stem_and_scale() {
         let mesh = |name: &str, file: &str, scale: &str| {
@@ -1395,7 +1396,7 @@ mod tests {
 
     /// A joint without an `<axis>` turns about (1, 0, 0), as URDF and
     /// MuJoCo 3.5.0's importer define it (measured: `jnt_axis` [1, 0, 0] for
-    /// a revolute, a prismatic and a continuous joint); the parent took z.
+    /// a revolute, a prismatic and a continuous joint); `b8a6ffba` took z.
     #[test]
     fn a_joint_without_an_axis_turns_about_x() {
         for kind in ["revolute", "prismatic", "continuous"] {
@@ -1415,7 +1416,7 @@ mod tests {
     /// An axis is kept as written, so the MJCF loader refuses one too small,
     /// as MuJoCo 3.5.0 refuses it (measured: "axis too small in joint", a
     /// revolute's and a planar's), and normalises the rest as MuJoCo does;
-    /// the parent made a zero axis z.
+    /// `b8a6ffba` made a zero axis z.
     #[test]
     fn an_axis_is_kept_as_written() {
         for kind in ["revolute", "planar"] {
@@ -1432,12 +1433,12 @@ mod tests {
     /// A planar joint's axes are MuJoCo 3.5.0's, from the axis as written
     /// (`mjuu_z2quat`; each case's `jnt_axis` measured, as bits): an axis
     /// written short of unit length within about 1e-7 of z gives `_TY`
-    /// (0, 1, 0), where the parent, from the unit axis, gave
+    /// (0, 1, 0), where `b8a6ffba`, from the unit axis, gave
     /// (0, 0.99999999999987, -5e-7) (ledger L316); an axis whose product
     /// with z is within mjEPS of unit length keeps it unscaled
-    /// (`mjuu_normvec`), and so do MuJoCo's slide axes. The rows through `sin`
-    /// and `cos` are compared bit for bit on macOS arm64 only, elsewhere to
-    /// 1e-15.
+    /// (`mjuu_normvec`), and so do MuJoCo's slide axes. Every row is compared
+    /// bit for bit on macOS arm64 (the rows through `sin` and `cos` round by
+    /// the platform's library), to 1e-15 elsewhere.
     // MuJoCo's values as bit patterns, compared exactly.
     #[allow(clippy::unreadable_literal)]
     #[test]

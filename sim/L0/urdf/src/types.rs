@@ -290,10 +290,10 @@ impl UrdfJointType {
 /// Joint limits from `<limit>` element.
 ///
 /// **Note on effort and velocity:** These are parsed from URDF but not mapped
-/// to MJCF joint attributes. `MuJoCo` enforces effort limits via actuator
-/// `forcerange` and has no joint-level velocity limit. Since the URDF converter
-/// does not auto-generate actuators, these fields are preserved for inspection
-/// but do not affect the compiled Model.
+/// to MJCF joint attributes. MuJoCo 3.5.0's importer makes a nonzero `effort`
+/// the joint's actuator force range, plus and minus its magnitude, which this
+/// crate's model does not have (`D-URDF-EFFORT`); it does not read `velocity`.
+/// Both are kept for inspection and do not affect the compiled Model.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct UrdfJointLimit {
@@ -369,7 +369,7 @@ pub struct UrdfJoint {
     /// Joint axis in the joint frame, as written: the MJCF loader normalises
     /// it, and refuses one too small, as MuJoCo 3.5.0 does when it compiles
     /// the model. Default (1, 0, 0), URDF's and MuJoCo's importer's
-    /// (`xml_urdf.cc:412`).
+    /// (`xml_urdf.cc:411`).
     pub axis: Vector3<f64>,
     /// Joint limits (required for revolute and prismatic).
     pub limit: Option<UrdfJointLimit>,

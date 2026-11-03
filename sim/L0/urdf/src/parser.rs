@@ -799,13 +799,14 @@ mod tests {
     /// `origin` and `extra`.
     fn two_links(origin: &str, extra: &str) -> String {
         format!(
-            r#"<robot name="r"><link name="base"/><link name="arm"/><joint name="j1" type="revolute"><parent link="base"/><child link="arm"/>{origin}{extra}</joint></robot>"#
+            r#"<robot name="r"><link name="base"/><link name="arm"><inertial><mass value="1"/><inertia {I6}/></inertial></link><joint name="j1" type="revolute"><parent link="base"/><child link="arm"/>{origin}{extra}</joint></robot>"#
         )
     }
 
-    /// Every document below MuJoCo 3.5.0's importer refuses (measured), for
-    /// the attribute or element, or in MuJoCo's words, named; this reader
-    /// refuses each. Before `a7ac2c20` 23 of the 32 loaded, 8 were refused
+    /// Every document below MuJoCo 3.5.0's importer refuses (measured) but the
+    /// two `NaN` rows, which it loads with a warning and this reader refuses
+    /// (`D-NONFINITE`), for the attribute or element, or in MuJoCo's words,
+    /// named; this reader refuses each. At `b8a6ffba` 23 of the 32 loaded, 8 were refused
     /// otherwise (a vector of other than three numbers, `1 2` and `nan(1)`
     /// as not a number, an empty `<geometry/>` read to the end of its link)
     /// and `mass empty` as here (run there).
@@ -843,13 +844,13 @@ mod tests {
             ("sphere no radius", one_link("<collision><geometry><sphere/></geometry></collision>"), "radius"),
             ("box two", one_link(r#"<collision><geometry><box size="1 1"/></geometry></collision>"#), "does not have enough data"),
             ("cylinder no length", one_link(r#"<collision><geometry><cylinder radius="0.1"/></geometry></collision>"#), "length"),
-            ("mesh scale two", one_link(r#"<collision><geometry><mesh filename="a.stl" scale="1 1"/></geometry></collision>"#), "scale"),
+            ("mesh scale two", one_link(r#"<collision><geometry><mesh filename="a.stl" scale="1 1"/></geometry></collision>"#), "does not have enough data"),
             ("collision no geometry", one_link(r#"<collision><origin xyz="0 0 0"/></collision>"#), "geometry"),
             ("collision no shape", one_link("<collision><geometry/></collision>"), "shape"),
             ("empty collision", one_link("<collision/>"), "geometry"),
-            ("visual color three", one_link(r#"<visual><geometry><sphere radius="0.1"/></geometry><material name="m"><color rgba="1 0 0"/></material></visual>"#), "rgba"),
+            ("visual color three", one_link(r#"<visual><geometry><sphere radius="0.1"/></geometry><material name="m"><color rgba="1 0 0"/></material></visual>"#), "does not have enough data"),
             ("visual material unnamed", one_link(r#"<visual><geometry><sphere radius="0.1"/></geometry><material/></visual>"#), "name"),
-            ("robot material color", r#"<robot name="r"><material name="m"><color rgba="1 0"/></material><link name="base"/></robot>"#.to_string(), "rgba"),
+            ("robot material color", r#"<robot name="r"><material name="m"><color rgba="1 0"/></material><link name="base"/></robot>"#.to_string(), "does not have enough data"),
         ];
         let mut missed = Vec::new();
         for (case, urdf, what) in &cases {
@@ -865,7 +866,7 @@ mod tests {
     /// What MuJoCo 3.5.0's importer does not read loads (measured): a
     /// `velocity`, a visual's origin and geometry (the visual dropped), and
     /// an unnamed robot-level material; an empty number list is the
-    /// attribute not written (the parent refused `xyz=""`, run there).
+    /// attribute not written (`b8a6ffba` refused `xyz=""`, run there).
     #[test]
     fn what_mujocos_importer_does_not_read_loads() {
         let cases = [
@@ -882,6 +883,57 @@ mod tests {
                 robot.links[0].visuals.is_empty() || !case.starts_with("visual"),
                 "{case}"
             );
+        }
+    }
+
+    /// A mesh's `scale` is read as MuJoCo 3.5.0's `ReadAttrArr` reads it
+    /// (measured): empty, blank or unreadable, "problem reading attribute";
+    /// too many or too few numbers in `ReadAttr`'s words. A hexadecimal float,
+    /// which MuJoCo's stream reads, is refused (`D-HEX-FLOAT`).
+    #[test]
+    fn a_mesh_scale_is_read_as_mujocos_stream_reads_it() {
+        let cases = [
+            ("", "problem reading attribute"),
+            ("   ", "problem reading attribute"),
+            ("a 1 1", "problem reading attribute"),
+            ("1e-310 1 1", "problem reading attribute"),
+            ("1e400 1 1", "problem reading attribute"),
+            ("1.5x 1 1", "problem reading attribute"),
+            ("1 1 1 1", "has too much data"),
+            ("1 1", "does not have enough data"),
+            ("0x1p0 1 1", "problem reading attribute"),
+        ];
+        for (scale, words) in cases {
+            let urdf = one_link(&format!(
+                r#"<collision><geometry><mesh filename="a.stl" scale="{scale}"/></geometry></collision>"#
+            ));
+            let err = parse_urdf_str(&urdf).expect_err(scale);
+            assert!(err.to_string().contains(words), "{scale:?}: {err}");
+        }
+        let urdf = one_link(
+            r#"<collision><geometry><mesh filename="a.stl" scale=" +2 2 2 "/></geometry></collision>"#,
+        );
+        let robot = parse_urdf_str(&urdf).expect("parses");
+        let UrdfGeometry::Mesh { scale, .. } = &robot.links[0].collisions[0].geometry else {
+            panic!("a mesh");
+        };
+        assert_eq!(scale.map(|s| s.x.to_bits()), Some(2.0_f64.to_bits()));
+    }
+
+    /// A `<mimic>`'s numbers are read as every other (`D-URDF-MIMIC`: MuJoCo
+    /// 3.5.0's importer does not read `<mimic>`, so it loads these).
+    #[test]
+    fn a_mimics_numbers_are_read_as_every_other() {
+        for (attrs, words) in [
+            (r#"joint="j1" multiplier="x""#, "bad format"),
+            (r#"joint="j1" offset="1 2""#, "has too much data"),
+            (r#"multiplier="2""#, "missing required attribute: joint"),
+        ] {
+            let urdf = format!(
+                r#"<robot name="r"><link name="base"/><link name="a"/><link name="b"/><joint name="j1" type="revolute"><parent link="base"/><child link="a"/></joint><joint name="j2" type="revolute"><parent link="base"/><child link="b"/><mimic {attrs}/></joint></robot>"#
+            );
+            let err = parse_urdf_str(&urdf).expect_err(attrs);
+            assert!(err.to_string().contains(words), "{attrs}: {err}");
         }
     }
 
