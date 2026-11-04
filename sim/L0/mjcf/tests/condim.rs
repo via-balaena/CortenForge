@@ -181,4 +181,11 @@ fn a_pair_naming_no_geom_is_refused() {
     )
     .expect_err("an empty geom name beside a size 0");
     assert_eq!(before_a_size.to_string(), "unknown geom '' (pair #0)");
+    // A geom written `name=""` is unnamed here as in MuJoCo, which binds the
+    // pair to it (measured).
+    let written_empty = load_model(
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom name="" size=".2"/></body><body name="c"><freejoint/><geom name="z" size="0"/></body></worldbody><contact><pair geom1="" geom2="g"/></contact></mujoco>"#,
+    )
+    .expect_err("an empty geom name beside a geom named empty");
+    assert_eq!(written_empty.to_string(), "unknown geom '' (pair #0)");
 }
