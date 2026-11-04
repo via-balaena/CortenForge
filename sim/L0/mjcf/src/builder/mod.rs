@@ -964,14 +964,7 @@ fn finalize_user_type(
     explicit_nuser: i32,
     raw: &mut [Vec<f64>],
 ) -> Result<()> {
-    if explicit_nuser < -1 {
-        return Err(MjcfError::invalid_value(
-            "size",
-            format!("nuser_{suffix}"),
-            format!("must be >= -1, got {explicit_nuser}"),
-        ));
-    }
-
+    // Below -1 is refused by validation (`check_user_sizes`).
     let nuser = if explicit_nuser >= 0 {
         let nuser = explicit_nuser as usize;
         for user in raw.iter() {

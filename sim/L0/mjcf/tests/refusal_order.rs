@@ -42,8 +42,11 @@
 //! before frames, as MuJoCo's reader meets them. `FRAME_AND_COMPOSITE_COSTS`
 //! pins the orders found unlike MuJoCo's (ledger L353). RL-7c's check of a
 //! geom's condim (book L25) runs with RL-6d's, geom by geom from the
-//! world's, before its plane check; `CONDIM_COSTS` pins the faults this
-//! crate meets first that MuJoCo meets after it.
+//! world's, before its plane check; a pair's condim, then its geoms, after
+//! the assets and before the sizes, where MuJoCo compiles pairs, and a
+//! `<size>` `nuser_` below -1 after the names, where its reader refuses it;
+//! `CONDIM_COSTS` pins the faults this crate meets first that MuJoCo meets
+//! after a condim.
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, for the fault its expected error names (RL-6a's measured
@@ -55,8 +58,8 @@
 //! reference and an axis MuJoCo refuses too, and beside an option this crate
 //! refuses and MuJoCo does not. RL-7b's (measured 2026-11-03; review round
 //! 1's documents, RA and RW) set a fault in a frame or a cable beside
-//! another. RL-7c's (measured 2026-11-04) set a geom's condim beside
-//! another.
+//! another. RL-7c's (measured 2026-11-04) set a geom's or a pair's condim,
+//! a pair's unknown geom or a `nuser_` below -1 beside another.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1128,6 +1131,90 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "invalid condim in geom",
         "invalid condim in geom (geom 'w' in body 'world')",
     ),
+    (
+        "a pair's condim then its geom",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="nope" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "a pair's unknown geom then a later pair's condim",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="nope" geom2="floor"/><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "geom 'nope' not found in collision 0",
+        "unknown geom 'nope' (pair #0)",
+    ),
+    (
+        "a pair's condim then a later pair's unknown geom",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/><pair geom1="nope" geom2="floor"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "a pair's condim then a geom's",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "a pair's condim then a size",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom name="z" size="0"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "a pair's unknown geom then a size",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom name="z" size="0"/></body></worldbody><contact><pair geom1="nope" geom2="floor"/></contact></mujoco>"#,
+        "geom 'nope' not found in collision 0",
+        "unknown geom 'nope' (pair #0)",
+    ),
+    (
+        "a pair's condim then a mesh",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/></asset><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom type="mesh" mesh="m"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "a pair's condim then a tendon's joint",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact><tendon><fixed name="t"><joint joint="nope" coef="1"/></fixed></tendon></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "a pair's unknown geom then an actuator's joint",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="nope" geom2="floor"/></contact><actuator><motor joint="nope"/></actuator></mujoco>"#,
+        "geom 'nope' not found in collision 0",
+        "unknown geom 'nope' (pair #0)",
+    ),
+    (
+        "a pair's condim then a massless moving body",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body><body name="c"><joint type="slide"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "a pair's condim then a keyframe",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact><keyframe><key qpos="0 0 0 1 0 0 0 0"/></keyframe></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "a repeated name then a pair's condim",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "repeated name 'g' in geom",
+        "repeated name 'g' in geom (geom 'g' in body 'b')",
+    ),
+    (
+        "a nuser below -1 then a pair's condim",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2",
+    ),
+    (
+        "a nuser below -1 then a geom's mesh",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom type="mesh" mesh="nope"/></body></worldbody><contact><pair geom1="g" geom2="floor"/></contact></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2",
+    ),
 ];
 
 #[test]
@@ -1241,10 +1328,10 @@ fn a_fault_in_a_frame_or_a_composite_beside_another_is_named_as_ledgered() {
     assert!(moved.is_empty(), "{}", moved.join("\n"));
 }
 
-/// Two faults, one a geom's condim, where this crate names the other: the
-/// condim is checked with the checks RL-6a added, after every check this
-/// crate makes before building the model, and MuJoCo 3.5.0 checks it
-/// before these (ledger L353). `(what, document, MuJoCo's reason, this
+/// Two faults, one a geom's or a pair's condim, where this crate names the
+/// other: a geom's condim is checked with the checks RL-6a added, after
+/// every check this crate makes before building the model, a pair's after
+/// the assets, and MuJoCo 3.5.0 checks each before these (ledger L353). `(what, document, MuJoCo's reason, this
 /// crate's error)`, measured 2026-11-04.
 const CONDIM_COSTS: &[(&str, &str, &str, &str)] = &[
     (
@@ -1313,10 +1400,22 @@ const CONDIM_COSTS: &[(&str, &str, &str, &str)] = &[
         "invalid condim in geom",
         "invalid user on <body>: user data exceeds nuser_body=0",
     ),
+    (
+        "a pair's condim then a frame's xyaxes",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><frame xyaxes="1 0 0 1 0 0"><geom size=".1"/></frame></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid xyaxes on <frame>: yaxis too small (frame in body 'b')",
+    ),
+    (
+        "a pair's condim then a fromto",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".1" fromto="0 0 0 0 0 1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid fromto on <geom>: fromto requires a capsule, cylinder, ellipsoid or box (geom in body 'b')",
+    ),
 ];
 
 #[test]
-fn a_geom_s_condim_beside_another_fault_is_named_as_ledgered() {
+fn a_condim_beside_another_fault_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in CONDIM_COSTS {
         match load_model(xml) {

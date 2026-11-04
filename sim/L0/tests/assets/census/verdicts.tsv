@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1718
+# agree_floor 1719
 001bc4149d608b24	agree
 002cac6fc120ff66	both-refuse
 00308b83da9d8bab	agree
@@ -20,6 +20,7 @@
 0154f63cc2087987	agree
 01628221d75930e5	agree
 01754d97eae6606c	agree
+01818060441b981a	agree
 0184724e473fb444	agree
 01a127b85811261b	agree
 01acb803c047ad69	agree
@@ -85,6 +86,7 @@
 054600e688bc1a42	agree
 05655ddc84ea971a	both-refuse
 056c452cd19e14e6	agree
+05732efc8fedd337	both-refuse
 057ff37072813640	agree
 05879ff081030785	mj-refuses
 058dc5822ba73cab	agree
@@ -164,6 +166,7 @@
 0bbe286818ee35e0	model:actuator_lengthrange;dyn:agree
 0bbed3425322648d	both-refuse
 0bdc0659d08bc0aa	agree
+0be35e6cd5bf514b	both-refuse
 0be7eb69e3942d0a	agree
 0c01513b90cedcac	model:neq
 0c2386dbaebc3f15	both-refuse
@@ -211,6 +214,7 @@
 106da4fe4fa450d8	mj-refuses
 107302b3a42d4647	both-refuse
 107e51ecee0158fc	agree
+10ce448e2b4b03e2	both-refuse
 10d41092b86ca59e	agree
 10d89f7d31aa2115	agree
 110676bf88258907	agree
@@ -312,6 +316,7 @@
 197c964948cf1c3c	both-refuse
 19849e313a0d2680	both-refuse
 198643ede2d6359e	mj-refuses
+1996d91dc0a3bb25	both-refuse
 19d6e335d11b81f2	agree
 19e2a2d46a432f7d	agree
 19e99c3473884443	agree
@@ -331,12 +336,14 @@
 1ad1721ca9766f0e	agree
 1ae573fd46cc9326	mj-refuses
 1b0408692d06c36e	agree
+1b2034a5b9f7f92d	both-refuse
 1b2240d2a0e817c1	agree
 1b347ddebfd5b94f	agree
 1b4ffaab887da954	both-refuse
 1b533efc63a89893	agree
 1b5cc0b82bb9c59f	agree
 1b773f4738cc05cc	both-refuse
+1b9aff7e39343cee	both-refuse
 1b9d1e3bc4e9ae8f	agree
 1baccb7b1ca1213d	agree
 1bdff3f44d9ba2f9	agree
@@ -552,6 +559,7 @@
 2e33aa8344ee7a12	agree
 2e46d83a17baad64	agree
 2e5a5a12879b381b	agree
+2e5d9415cde2f4c1	both-refuse
 2e65ca21a113f307	agree
 2e6922c86dfcec79	agree
 2e6b9435afa024ad	both-refuse
@@ -648,6 +656,7 @@
 34f23cc1753b0e81	agree
 3514416898dc1b03	agree
 3536c7249ba8ac62	agree
+3542cbe23a67d08a	ours-refused	divergence=D-PAIR-NO-GEOM
 3577a24aa8ebab4a	both-refuse
 359708c0779784ff	agree
 35a1ad3f3e822ab6	both-refuse
@@ -710,6 +719,7 @@
 3a2b70da5051b0f7	ours-refused	divergence=D-REPLICATE
 3a2fb4d1b2d991a2	ours-refused	divergence=D-NONFINITE
 3a36709226ba29e0	agree
+3a37e1879248a32a	both-refuse
 3a45d59a8a1ecaad	agree
 3a5b4d1f92139f8c	agree
 3a663b1deb4a7f30	agree
@@ -924,6 +934,7 @@
 4a4409fcea6ad260	ours-refused	divergence=D-HEX-FLOAT
 4a538b81a7348181	both-refuse
 4a7a6c7ccf0c3ada	model:neq
+4a8b5c8c68a700ec	both-refuse
 4abd2b0bc1113a92	both-refuse
 4ad219cb8536a164	agree
 4ae019a39fde8e00	agree
@@ -1022,6 +1033,7 @@
 51e8993b88f71a17	agree
 51f7eb4734af2aee	agree
 5204a339ca3e3e24	agree
+522f95a9b49660e3	both-refuse
 523302880e97a6f5	agree
 524b90e618bdc706	agree
 526258fcd83604d3	both-refuse
@@ -1191,6 +1203,7 @@
 5f171c1db4e378ee	both-refuse
 5f4d496192067864	model:body_mass;dyn:agree
 5f546b79f61c53c6	mj-refuses
+5f56fbc3bef1c2d8	both-refuse
 5f5a91dc0adf00a5	both-refuse
 5f68ad705c5fa3ab	model:neq
 5f7144f037e6e57a	both-refuse
@@ -1324,6 +1337,7 @@
 69dbb70919a7b5fe	agree
 69ea2038c26e5bce	agree
 6a0280071dd67a59	both-refuse
+6a0462810da6921d	both-refuse
 6a122ded2f7e60e9	agree
 6a1c03dabed649d2	both-refuse
 6a337ddb5edc9d16	ours-refused	divergence=D-MUSCLE-NEGATIVE
@@ -1510,6 +1524,7 @@
 79f1fc77f4fb8fc7	agree
 7a507d5829d3f4a3	both-refuse
 7a5723063accb0ec	agree
+7a77467364da3855	both-refuse
 7aaa924c2ac1a2d2	both-refuse
 7ab34229ac72d329	both-refuse
 7ad5a27cd99555d3	agree
@@ -1525,10 +1540,12 @@
 7ba14e29eb3bcc22	agree
 7ba403f209020405	both-refuse
 7bb34ebef86428a0	both-refuse
+7bbf342163564e8f	both-refuse
 7bc46dc0fb79dbf5	agree
 7bd6b6fd49ca6dbc	agree
 7bfc13532ae2f980	agree
 7c0a97b671e639c9	agree
+7c0b19e3fd43f2f6	both-refuse
 7c287ea854e18e97	model:neq
 7c781c060da0ecfe	both-refuse
 7c8e5b144882c516	both-refuse
@@ -1601,6 +1618,7 @@
 81929e60ca84febe	ours-refused	divergence=D-NONFINITE
 81a35c74f6cc4dd9	agree
 81c5efc976a88811	model:neq
+82186474d29e2d3a	both-refuse
 821bb80cce49388a	both-refuse
 82232967ed3512e7	agree
 822c875e59b0db75	both-refuse
@@ -1873,6 +1891,7 @@
 99bcee914d100760	model:neq
 99c698b70d9622b7	mj-refuses
 99cacfea74cdb20c	agree
+99d914080a77f850	both-refuse
 99e9006e1aab02fe	agree
 99ed5f46d683612b	agree
 99f17a3b77243de5	agree
@@ -1921,6 +1940,7 @@
 9e053095b19e3cb3	mj-refuses
 9e32d899178cf487	both-refuse
 9e3e15a9b647d4af	both-refuse
+9e4414d50e693c3b	both-refuse
 9e7f5e02165fb4c6	both-refuse
 9ea0facb35a5f41b	agree
 9eb86ba723df3a22	agree
@@ -1986,10 +2006,12 @@ a33d7f84dc5e9eb0	agree
 a35628ccd9c8e411	agree
 a3625025a16c97d3	agree
 a37a7c967413fbb2	both-refuse
+a384846793de214f	both-refuse
 a38a7859e8ba16fb	agree
 a3943538b6868780	both-refuse
 a3a80e68d8b95804	agree
 a3b1e8810607076d	both-refuse
+a3b5ae68224c398b	both-refuse
 a3c6e774308b82aa	both-refuse
 a3cc093e3832a0cf	agree
 a412b68231fac065	agree
@@ -1998,6 +2020,7 @@ a45554417b10d186	agree
 a46fe5f21d90b24a	both-refuse
 a471409f7847657f	both-refuse
 a478ee6ac7fc453e	agree
+a4a09efb00404429	ours-refused	divergence=D-PAIR-NO-GEOM
 a4a69b6b5718a06d	agree
 a4a8a02cb4db9694	agree
 a4b1e607ac6c0fe6	agree
@@ -2227,6 +2250,7 @@ b6d3dd4ad0664fb7	e1:t0:ncon
 b6dac25a7cc1452e	agree
 b6e14b6469126088	agree
 b71be52f3d580539	both-refuse
+b73c71c2c7851f39	both-refuse
 b74e8abfa13f6391	agree
 b7988ede9c4a5ad3	agree
 b79ab18fe4595f3b	both-refuse
@@ -2545,6 +2569,7 @@ d10be4f5c12c06d5	agree
 d10da4fab847e3b9	agree
 d118c1da40826c5e	both-refuse
 d11a58d07743b97b	agree
+d12203710ba5f746	both-refuse
 d12545a9166b2374	agree
 d15b355038b576fd	both-refuse
 d15d3a25eca670a3	both-refuse
@@ -2628,6 +2653,7 @@ d94f75dbc0510e71	agree
 d9719dfce438910a	model:neq
 d985f32c6d905e89	agree
 d997cb5b91477365	agree
+d9b2dfa7b1fd3aa5	both-refuse
 d9bebd8c179a03e0	both-refuse
 d9ddc00a8b14d4a1	agree
 d9e5e883cc56b235	agree
@@ -2811,6 +2837,7 @@ e9af8cfbee14fb75	both-refuse
 e9bafd359e2095f3	both-refuse
 e9c9311a16b1bb15	agree
 e9f9e30a78367c7e	both-refuse
+ea1543e4f1469866	both-refuse
 ea1f28f2996b7857	agree
 ea73c8f39893034f	agree
 ea7a14b2130de7b1	agree
@@ -3019,6 +3046,7 @@ f9565b889eb0c113	both-refuse
 f95c2711bf32bf74	agree
 f95fc135a90fc5d0	agree
 f9d500533077430a	agree
+f9d520c8669450cb	both-refuse
 f9e537e1759ad272	agree
 f9e771ef1479a759	agree
 f9ec5b23da64bc77	agree

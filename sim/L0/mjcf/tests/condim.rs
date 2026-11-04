@@ -1,11 +1,11 @@
-//! A geom's condim checked as MuJoCo 3.5.0's compiler checks it (book L25):
-//! a value other than 1, 3, 4 or 6 is refused ('invalid condim in geom',
-//! `mjCGeom::Compile`, `user_objects.cc:3651-3654`), whether written on the
-//! geom, by its class, the root class, a composite's template, inside a
-//! frame or on a body `fusestatic` fuses. Each document was run on MuJoCo
-//! 3.5.0 as written (2026-11-04):
-//! every refused one is refused there for the same geom, every loaded one
-//! loads there with the same condims.
+//! A geom's and a pair's condim checked as MuJoCo 3.5.0's compiler checks
+//! them (book L25): a value other than 1, 3, 4 or 6 is refused ('invalid
+//! condim in geom', `mjCGeom::Compile`, `user_objects.cc:3651-3654`; 'invalid
+//! condim in contact pair', `mjCPair::Compile`, `:5666-5669`), whether written
+//! on the element, by its class, the root class, a composite's template,
+//! inside a frame or on a body `fusestatic` fuses. Each document was run on
+//! MuJoCo 3.5.0 as written (2026-11-04): every refused one is refused there
+//! for the same element, every loaded one loads there with the same condims.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -79,4 +79,106 @@ fn a_geom_s_valid_condims_load_as_written() {
     )
     .expect("loads");
     assert_eq!(model.geom_condim, [1, 3, 4, 6, 3]);
+}
+
+/// `(case, document, this crate's error)`; MuJoCo's is 'invalid condim in
+/// contact pair' for the same pair in each (`mjCPair::Compile`,
+/// `user_objects.cc:5666-5669`), whether the pair, its class or the root
+/// class wrote it.
+const PAIR_CONDIMS: &[(&str, &str, &str)] = &[
+    (
+        "0",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="0"/></contact></mujoco>"#,
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "2",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "2 through the root class",
+        r#"<mujoco><default><pair condim="2"/></default><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor"/></contact></mujoco>"#,
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "2 through a class",
+        r#"<mujoco><default><default class="c"><pair condim="2"/></default></default><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair class="c" geom1="g" geom2="floor"/></contact></mujoco>"#,
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "5",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="5"/></contact></mujoco>"#,
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "7",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="7"/></contact></mujoco>"#,
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "-1",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="-1"/></contact></mujoco>"#,
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "the second pair's",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor"/><pair name="p" geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "invalid condim in contact pair (pair 'p')",
+    ),
+];
+
+#[test]
+fn a_pair_s_condim_checked_as_mujoco() {
+    let mut wrong = Vec::new();
+    for &(case, xml, expected) in PAIR_CONDIMS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == expected => {}
+            Err(e) => wrong.push(format!("{case}: {e}")),
+            Ok(_) => wrong.push(format!("{case}: loads")),
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// A pair's condims 1, 4 and 6 load as written, and a pair class no pair
+/// uses is not checked: MuJoCo 3.5.0 loads this document with the same
+/// three.
+#[test]
+fn a_pair_s_valid_condims_load_as_written() {
+    let model = load_model(
+        r#"<mujoco><default><default class="c"><pair condim="2"/></default></default><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body><body name="c"><freejoint/><geom name="h" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="1"/><pair geom1="h" geom2="floor" condim="4"/><pair geom1="g" geom2="h" condim="6"/></contact></mujoco>"#,
+    )
+    .expect("loads");
+    let condims: Vec<i32> = model.contact_pairs.iter().map(|p| p.condim).collect();
+    assert_eq!(condims, [1, 4, 6]);
+}
+
+/// A pair whose `geom1` is empty or not written is refused (registry
+/// `D-PAIR-NO-GEOM`), where MuJoCo 3.5.0 binds it to an unnamed geom of
+/// the model (measured on these two documents: the body's unnamed sphere).
+#[test]
+fn a_pair_naming_no_geom_is_refused() {
+    let empty = load_model(
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".2"/></body></worldbody><contact><pair geom1="" geom2="g"/></contact></mujoco>"#,
+    )
+    .expect_err("an empty geom name");
+    assert_eq!(empty.to_string(), "unknown geom '' (pair #0)");
+    let unwritten = load_model(
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".2"/></body></worldbody><contact><pair geom2="g"/></contact></mujoco>"#,
+    )
+    .expect_err("no geom1");
+    assert!(
+        unwritten
+            .to_string()
+            .starts_with("required attribute missing: 'geom1' on <pair>"),
+        "{unwritten}"
+    );
+    // Refused where the pairs are checked, before a later body's size, which
+    // MuJoCo 3.5.0 names here (measured), having bound the pair.
+    let before_a_size = load_model(
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".2"/></body><body name="c"><freejoint/><geom name="z" size="0"/></body></worldbody><contact><pair geom1="" geom2="g"/></contact></mujoco>"#,
+    )
+    .expect_err("an empty geom name beside a size 0");
+    assert_eq!(before_a_size.to_string(), "unknown geom '' (pair #0)");
 }

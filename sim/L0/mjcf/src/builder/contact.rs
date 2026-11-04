@@ -29,7 +29,8 @@ impl ModelBuilder {
             let pair = mjcf_pair;
             let at = || Location::nth(ElementKind::Pair, pair.name.as_deref(), i);
 
-            // Resolve geom names to indices
+            // Validation found both (`check_pairs`); `discardvisual` may
+            // have removed one since (ledger L342).
             let g1 = *self
                 .geom_name_to_id
                 .get(&pair.geom1)
