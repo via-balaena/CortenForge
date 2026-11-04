@@ -3282,3 +3282,8 @@ cf6981ebebf8b99b	sim/L0/mjcf/tests/contact_pairs.rs:235
 dd2775bf5d116551	sim/L0/mjcf/tests/contact_pairs.rs:115
 dc960c6ac9cae4f8	sim/L0/mjcf/tests/contact_pairs.rs:251
 b21889fe1f7476d6	sim/L0/mjcf/tests/condim.rs:244
+156c6d604a4d1b79	sim/L0/mjcf/tests/refusal_order.rs:1666
+1a50f6aa1b4b5c0d	sim/L0/mjcf/tests/refusal_order.rs:1684
+68a24da4f11da4b7	sim/L0/mjcf/tests/refusal_order.rs:1690
+efdbfce25c79d47d	sim/L0/mjcf/tests/refusal_order.rs:1678
+fe31238dc1296c81	sim/L0/mjcf/tests/refusal_order.rs:1672

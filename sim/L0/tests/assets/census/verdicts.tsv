@@ -282,6 +282,7 @@
 153b4200cee99686	both-refuse
 153da4ad9b74593b	both-refuse
 1568a784dedb5e83	agree
+156c6d604a4d1b79	both-refuse
 157c48ad9ccb5bd6	agree
 15b24bda2c612fe6	model:neq
 15c648d8b16a40c2	model:neq
@@ -332,6 +333,7 @@
 1a0e5533a8236f40	both-refuse
 1a3c960cfc22deae	agree
 1a42c10cb886ee78	agree
+1a50f6aa1b4b5c0d	both-refuse
 1a5a8641f6b1dda8	agree
 1a5e322350d37230	both-refuse
 1a756fb81ba661cf	ours-refused	divergence=D-NONFINITE
@@ -1344,6 +1346,7 @@
 686feeaad175af49	agree
 687304a04e694390	mj-refuses
 6882502697d4d101	agree
+68a24da4f11da4b7	both-refuse
 68a35ea3ea6583ab	model:body_ipos;dyn:agree
 68c0928ea382a0fa	both-refuse
 68cf0b17c073aa15	agree
@@ -2974,6 +2977,7 @@ efbf4abaf622d9c4	agree
 efc20d922b21a45e	both-refuse
 efd37210c96c2187	both-refuse
 efd8bab297bd7922	both-refuse
+efdbfce25c79d47d	both-refuse
 efed67461e1078d6	agree
 f0100b3541730ef7	agree
 f01e5e2d1650cab3	agree
@@ -3157,6 +3161,7 @@ fde0cc38ce9cf888	model:neq
 fde9185fcd85cc26	agree
 fdfe95aea78c5174	both-refuse
 fe287cb8338b0ac0	agree
+fe31238dc1296c81	both-refuse
 fe3f3578803afa20	agree
 fe6ae49a76e765d4	mj-refuses
 fe794748d22e4f25	agree
