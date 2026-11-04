@@ -120,8 +120,8 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 /// composite makes among its bodies.
 ///
 /// This checks:
-/// - Each `nuser_` size at least -1, before anything else (a parsed
-///   `<size>`'s are refused as they are read)
+/// - Each `nuser_` size at least -1, after the tree's depth and before the
+///   rest (a parsed `<size>`'s are refused while parsing)
 /// - No name repeated within a kind (`names::check_names`)
 /// - Each pair's condim one of 1, 3, 4 or 6, then the geoms it names, after
 ///   the assets (a geom named "" only where the model has no unnamed geom)
@@ -458,7 +458,7 @@ fn check_geom_assets(model: &MjcfModel) -> Result<()> {
 
 /// Each `nuser_` size this crate keeps at least -1, in the order MuJoCo
 /// 3.5.0's reader reads them (`xml_native_reader.cc:1408-1430`), for a model
-/// whose `<size>` was not parsed: a parsed one's are refused as they are read
+/// whose `<size>` was not parsed: a parsed one's are refused while parsing
 /// (`parser::options::parse_size_attrs`).
 pub fn check_user_sizes(model: &MjcfModel) -> Result<()> {
     let sizes = [

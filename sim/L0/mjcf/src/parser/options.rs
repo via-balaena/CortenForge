@@ -17,9 +17,10 @@ use crate::error::ValueCount;
 
 /// Parse `<size>` element attributes into MjcfModel nuser_* fields.
 /// Multiple `<size>` elements merge with last-writer-wins per attribute.
-/// Each `nuser_` below -1 is refused as it is read, in the order MuJoCo
-/// 3.5.0's reader reads them (`xml_native_reader.cc:1408-1430`), `nuser_cam`
-/// included, which this crate checks and does not keep (DT-126).
+/// Each `nuser_` below -1 is refused, the first in the order MuJoCo 3.5.0's
+/// reader reads them (`xml_native_reader.cc:1408-1430`), `nuser_cam`
+/// included, which this crate checks and does not keep (DT-126); the parser
+/// keeps the refusal until the document is read (`parse_mujoco`).
 pub(super) fn parse_size_attrs(e: &BytesStart, model: &mut MjcfModel) -> Result<()> {
     let a = Attrs::new(e)?;
     let nuser = |name: &str| match a.int(name)? {

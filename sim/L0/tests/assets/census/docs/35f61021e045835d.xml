@@ -1,0 +1,1 @@
+<mujoco><size nuser_tendon="-2" nuser_cam="-3"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="g" size=".1"/></body></worldbody></mujoco>

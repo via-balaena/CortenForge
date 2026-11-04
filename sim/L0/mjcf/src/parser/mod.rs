@@ -63,7 +63,8 @@ pub fn parse_mjcf_unwrapped(xml: &str) -> Result<MjcfModel> {
     check_xml_depth(xml)?;
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
-    parse_mjcf_reader(&mut reader).map_err(|e| {
+    let locate_at = |position: u64| locate(xml, offset_of(position, xml));
+    parse_mjcf_reader(&mut reader, &locate_at).map_err(|e| {
         // A syntax error stops the reader where it was found, so it is named
         // there; any other error was raised after the reader read the element
         // it is about.
@@ -189,8 +190,11 @@ fn line_at(xml: &str, offset: usize) -> usize {
     xml[..offset].matches('\n').count() + 1
 }
 
-/// Parse MJCF from a reader.
-fn parse_mjcf_reader<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfModel> {
+/// Parse MJCF from a reader; `locate_at` locates a reader position.
+fn parse_mjcf_reader<R: BufRead>(
+    reader: &mut Reader<R>,
+    locate_at: &dyn Fn(u64) -> Location,
+) -> Result<MjcfModel> {
     let mut buf = Vec::new();
     let mut model: Option<MjcfModel> = None;
 
@@ -203,7 +207,7 @@ fn parse_mjcf_reader<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfModel> {
                 // MuJoCo 3.5.0 reads the first root element (tinyxml2's
                 // `RootElement`); a later one is skipped.
                 if model.is_none() {
-                    model = Some(parse_mujoco(reader, e, empty)?);
+                    model = Some(parse_mujoco(reader, e, empty, locate_at)?);
                 } else {
                     skip_element(reader, b"mujoco", empty)?;
                 }
@@ -219,11 +223,17 @@ fn parse_mjcf_reader<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfModel> {
 }
 
 /// Parse the mujoco root element and its children (`empty`: it closed
-/// itself, so the model is empty, as MuJoCo 3.5.0 loads it).
+/// itself, so the model is empty, as MuJoCo 3.5.0 loads it). MuJoCo's reader
+/// reads every `<compiler>`, then every `<option>`, then every `<size>`,
+/// before any other section (`xml_native_reader.cc:990-1003`): the first
+/// fault in a `<size>` is kept, located at its `<size>` (`locate_at`, a
+/// reader position), and returned once the document is read, or in place of
+/// a later fault outside `<compiler>` and `<option>`.
 fn parse_mujoco<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
     empty: bool,
+    locate_at: &dyn Fn(u64) -> Location,
 ) -> Result<MjcfModel> {
     let name = Attrs::new(start)?
         .string("model")
@@ -233,6 +243,7 @@ fn parse_mujoco<R: BufRead>(
         return Ok(model);
     }
     let mut buf = Vec::new();
+    let mut size_fault: Option<MjcfError> = None;
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -240,97 +251,21 @@ fn parse_mujoco<R: BufRead>(
             // one arm reads both forms (MuJoCo's reader does not tell them apart).
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
                 let child_empty = matches!(event, Event::Empty(_));
-                match e.name().as_ref() {
-                    b"option" => {
-                        parse_option(reader, e, &mut model.option, child_empty)?;
+                let section = e.name();
+                if section.as_ref() == b"size" {
+                    if let Err(fault) = parse_size_attrs(e, &mut model)
+                        && size_fault.is_none()
+                    {
+                        let at = locate_at(reader.buffer_position());
+                        size_fault = Some(fault.with_location_if_unknown(at));
                     }
-                    b"compiler" => {
-                        parse_compiler_attrs(e, &mut model.compiler)?;
-                        skip_element(reader, b"compiler", child_empty)?;
-                    }
-                    b"default" => {
-                        let defaults = parse_default(reader, e, None, child_empty)?;
-                        model.defaults.extend(defaults);
-                    }
-                    b"asset" => {
-                        let (meshes, hfields) = parse_asset(reader, child_empty)?;
-                        model.meshes.extend(meshes);
-                        model.hfields.extend(hfields);
-                    }
-                    b"worldbody" => {
-                        let wb = parse_worldbody(reader, child_empty)?;
-                        // Merge: append its children, geoms, sites, frames and composites, and their
-                        // order, to the existing worldbody's
-                        model.worldbody.children.extend(wb.children);
-                        model.worldbody.geoms.extend(wb.geoms);
-                        model.worldbody.sites.extend(wb.sites);
-                        model.worldbody.joints.extend(wb.joints);
-                        model.worldbody.frames.extend(wb.frames);
-                        model.worldbody.composites.extend(wb.composites);
-                        model.worldbody.items.extend(wb.items);
-                    }
-                    b"actuator" => {
-                        let actuators = parse_actuators(reader, child_empty)?;
-                        model.actuators.extend(actuators);
-                    }
-                    b"equality" => {
-                        let eq = parse_equality(reader, child_empty)?;
-                        // Offset order indices before merging (indices are relative
-                        // to the parsed block's vecs, but must reference positions
-                        // in the merged vecs).
-                        let co = model.equality.connects.len();
-                        let wo = model.equality.welds.len();
-                        let jo = model.equality.joints.len();
-                        let do_ = model.equality.distances.len();
-                        let to = model.equality.tendons.len();
-                        for &(kind, idx) in &eq.order {
-                            let offset_idx = match kind {
-                                EqualityKind::Connect => idx + co,
-                                EqualityKind::Weld => idx + wo,
-                                EqualityKind::Joint => idx + jo,
-                                EqualityKind::Distance => idx + do_,
-                                EqualityKind::Tendon => idx + to,
-                            };
-                            model.equality.order.push((kind, offset_idx));
-                        }
-                        model.equality.connects.extend(eq.connects);
-                        model.equality.welds.extend(eq.welds);
-                        model.equality.joints.extend(eq.joints);
-                        model.equality.distances.extend(eq.distances);
-                        model.equality.tendons.extend(eq.tendons);
-                    }
-                    b"deformable" => {
-                        let (skins, flex) = parse_deformable(reader, child_empty)?;
-                        model.skins.extend(skins);
-                        model.flex.extend(flex);
-                    }
-                    b"tendon" => {
-                        let tendons = parse_tendons(reader, child_empty)?;
-                        model.tendons.extend(tendons);
-                    }
-                    b"sensor" => {
-                        let sensors = parse_sensors(reader, child_empty)?;
-                        model.sensors.extend(sensors);
-                    }
-                    b"contact" => {
-                        let ct = parse_contact(reader, child_empty)?;
-                        model.contact.pairs.extend(ct.pairs);
-                        model.contact.excludes.extend(ct.excludes);
-                    }
-                    b"keyframe" => {
-                        let kfs = parse_keyframes(reader, child_empty)?;
-                        model.keyframes.extend(kfs);
-                    }
-                    b"size" => {
-                        parse_size_attrs(e, &mut model)?;
-                        skip_element(reader, b"size", child_empty)?;
-                    }
-                    b"extension" => {
-                        let ext = parse_extension(reader, child_empty)?;
-                        model.extensions.push(ext);
-                    }
-                    // Skip other elements
-                    name => skip_element(reader, name, child_empty)?,
+                    skip_element(reader, b"size", child_empty)?;
+                } else if let Err(error) = parse_section(reader, e, child_empty, &mut model) {
+                    let read_first = matches!(section.as_ref(), b"compiler" | b"option");
+                    return Err(match size_fault {
+                        Some(fault) if !read_first => fault,
+                        _ => error,
+                    });
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"mujoco" => break,
@@ -341,5 +276,104 @@ fn parse_mujoco<R: BufRead>(
         buf.clear();
     }
 
-    Ok(model)
+    size_fault.map_or(Ok(model), Err)
+}
+
+/// One section of the root, other than `<size>`, read onto `model`
+/// (`empty`: it closed itself).
+fn parse_section<R: BufRead>(
+    reader: &mut Reader<R>,
+    e: &BytesStart,
+    empty: bool,
+    model: &mut MjcfModel,
+) -> Result<()> {
+    match e.name().as_ref() {
+        b"option" => {
+            parse_option(reader, e, &mut model.option, empty)?;
+        }
+        b"compiler" => {
+            parse_compiler_attrs(e, &mut model.compiler)?;
+            skip_element(reader, b"compiler", empty)?;
+        }
+        b"default" => {
+            let defaults = parse_default(reader, e, None, empty)?;
+            model.defaults.extend(defaults);
+        }
+        b"asset" => {
+            let (meshes, hfields) = parse_asset(reader, empty)?;
+            model.meshes.extend(meshes);
+            model.hfields.extend(hfields);
+        }
+        b"worldbody" => {
+            let wb = parse_worldbody(reader, empty)?;
+            // Merge: append its children, geoms, sites, frames and composites, and their
+            // order, to the existing worldbody's
+            model.worldbody.children.extend(wb.children);
+            model.worldbody.geoms.extend(wb.geoms);
+            model.worldbody.sites.extend(wb.sites);
+            model.worldbody.joints.extend(wb.joints);
+            model.worldbody.frames.extend(wb.frames);
+            model.worldbody.composites.extend(wb.composites);
+            model.worldbody.items.extend(wb.items);
+        }
+        b"actuator" => {
+            let actuators = parse_actuators(reader, empty)?;
+            model.actuators.extend(actuators);
+        }
+        b"equality" => {
+            let eq = parse_equality(reader, empty)?;
+            // Offset order indices before merging (indices are relative
+            // to the parsed block's vecs, but must reference positions
+            // in the merged vecs).
+            let co = model.equality.connects.len();
+            let wo = model.equality.welds.len();
+            let jo = model.equality.joints.len();
+            let do_ = model.equality.distances.len();
+            let to = model.equality.tendons.len();
+            for &(kind, idx) in &eq.order {
+                let offset_idx = match kind {
+                    EqualityKind::Connect => idx + co,
+                    EqualityKind::Weld => idx + wo,
+                    EqualityKind::Joint => idx + jo,
+                    EqualityKind::Distance => idx + do_,
+                    EqualityKind::Tendon => idx + to,
+                };
+                model.equality.order.push((kind, offset_idx));
+            }
+            model.equality.connects.extend(eq.connects);
+            model.equality.welds.extend(eq.welds);
+            model.equality.joints.extend(eq.joints);
+            model.equality.distances.extend(eq.distances);
+            model.equality.tendons.extend(eq.tendons);
+        }
+        b"deformable" => {
+            let (skins, flex) = parse_deformable(reader, empty)?;
+            model.skins.extend(skins);
+            model.flex.extend(flex);
+        }
+        b"tendon" => {
+            let tendons = parse_tendons(reader, empty)?;
+            model.tendons.extend(tendons);
+        }
+        b"sensor" => {
+            let sensors = parse_sensors(reader, empty)?;
+            model.sensors.extend(sensors);
+        }
+        b"contact" => {
+            let ct = parse_contact(reader, empty)?;
+            model.contact.pairs.extend(ct.pairs);
+            model.contact.excludes.extend(ct.excludes);
+        }
+        b"keyframe" => {
+            let kfs = parse_keyframes(reader, empty)?;
+            model.keyframes.extend(kfs);
+        }
+        b"extension" => {
+            let ext = parse_extension(reader, empty)?;
+            model.extensions.push(ext);
+        }
+        // Skip other elements
+        name => skip_element(reader, name, empty)?,
+    }
+    Ok(())
 }

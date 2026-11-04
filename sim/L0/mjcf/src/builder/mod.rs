@@ -394,7 +394,7 @@ pub struct FrontEnd {
 /// composites expanded, then validated (`validate_resolved`), before the compiler passes remove any
 /// element. The caller has checked the tree's depth.
 pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
-    // Before anything else, as MuJoCo's reader reads `<size>` first.
+    // A model built in code: a parsed `<size>`'s are refused while parsing.
     crate::validation::check_user_sizes(mjcf)?;
     let mut mjcf = mjcf.clone();
     mesh::name_assets(&mut mjcf)?;

@@ -48,9 +48,11 @@
 //! then its geoms, after the assets and before the sizes, where MuJoCo
 //! compiles pairs; `CONDIM_COSTS` pins the faults this crate meets first
 //! that MuJoCo meets after a condim. A `<size>` `nuser_` below -1 is refused
-//! as the parser reads it, and a model built in code has its checked before
-//! anything else: MuJoCo's reader reads `<size>` before any other section;
-//! `NUSER_COSTS` pins a fault the parser meets before a later `<size>`. A
+//! once the document is parsed, or when a fault outside `<compiler>` and
+//! `<option>` stops the parser first, as MuJoCo's reader reads `<compiler>`,
+//! `<option>` and then `<size>` before the other sections; `NUSER_COSTS`
+//! pins a fault the parser meets before a later `<size>`. A model built in
+//! code has its `nuser_` sizes checked before its names. A
 //! flex's condim outside 1 to 6, which MuJoCo loads, and a pair naming a
 //! geom "" where the model has an unnamed geom, which MuJoCo binds to it,
 //! are refused after the keyframes (`D-FLEX-CONDIM-RANGE`,
@@ -1367,7 +1369,7 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
     ),
     (
-        "a nuser below -1 then a class's fromto",
+        "a nuser below -1 then a sphere's fromto",
         r#"<mujoco><size nuser_geom="-2"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom type="sphere" size=".1" fromto="0 0 0 0 0 1"/></body></worldbody></mujoco>"#,
         "nuser_geom must be >= -1",
         "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
@@ -1419,6 +1421,66 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body></worldbody><contact><pair geom1="ga" geom2=""/></contact><keyframe><key qpos="0 0 0 1 0 0 0 9"/></keyframe></mujoco>"#,
         "geom '' not found in collision 0",
         "unknown geom '' (pair #0)",
+    ),
+    (
+        "a <size>'s nuser below -1, then a <compiler>'s angle",
+        r#"<mujoco><size nuser_geom="-2"/><compiler angle="foo"/><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "invalid keyword: 'foo'",
+        "invalid keyword \"foo\" in attribute 'angle' on <compiler> (line 1: compiler)",
+    ),
+    (
+        "a <size>'s nuser below -1, then an <option>'s integrator",
+        r#"<mujoco><size nuser_geom="-2"/><option integrator="bogus"/><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "invalid keyword: 'bogus'",
+        "invalid keyword \"bogus\" in attribute 'integrator' on <option> (line 1: option)",
+    ),
+    (
+        "a <size>'s nuser below -1, then an <option>'s timestep",
+        r#"<mujoco><size nuser_geom="-2"/><option timestep="abc"/><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "bad format in attribute 'timestep'",
+        "bad number \"abc\" in attribute 'timestep' on <option> (line 1: option)",
+    ),
+    (
+        "a <size>'s nuser below -1, then a <compiler>'s inertiafromgeom",
+        r#"<mujoco><size nuser_geom="-2"/><compiler inertiafromgeom="maybe"/><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "invalid keyword: 'maybe'",
+        "invalid keyword \"maybe\" in attribute 'inertiafromgeom' on <compiler> (line 1: compiler)",
+    ),
+    (
+        "a <size>'s nuser below -1, then an <option>'s flag",
+        r#"<mujoco><size nuser_geom="-2"/><option><flag gravity="maybe"/></option><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "invalid keyword: 'maybe'",
+        "invalid keyword \"maybe\" in attribute 'gravity' on <flag> (line 1: option > flag)",
+    ),
+    (
+        "a <size>'s nuser below -1, then a <compiler>'s boundmass",
+        r#"<mujoco><size nuser_geom="-2"/><compiler boundmass="x"/><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "bad format in attribute 'boundmass'",
+        "bad number \"x\" in attribute 'boundmass' on <compiler> (line 1: compiler)",
+    ),
+    (
+        "a <size>'s nuser below -1, then an <option>'s gravity",
+        r#"<mujoco><size nuser_geom="-2"/><option gravity="0 0"/><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "attribute 'gravity' does not have enough data",
+        "expected exactly 3 values, found 2 in attribute 'gravity' on <option> (line 1: option)",
+    ),
+    (
+        "a <size>'s nuser below -1, then an <option>'s cone",
+        r#"<mujoco><size nuser_geom="-2"/><option cone="round"/><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "invalid keyword: 'round'",
+        "invalid keyword \"round\" in attribute 'cone' on <option> (line 1: option)",
+    ),
+    (
+        "one <size>'s nuser_geom then nuser_body below -1",
+        r#"<mujoco><size nuser_geom="-2" nuser_body="-3"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="g" size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_body must be >= -1",
+        "invalid nuser_body on <size>: must be >= -1, got -3 (line 1: size)",
+    ),
+    (
+        "one <size>'s nuser_tendon then nuser_cam below -1",
+        r#"<mujoco><size nuser_tendon="-2" nuser_cam="-3"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="g" size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_cam must be >= -1",
+        "invalid nuser_cam on <size>: must be >= -1, got -3 (line 1: size)",
     ),
 ];
 
@@ -1534,8 +1596,9 @@ fn a_fault_in_a_frame_or_a_composite_beside_another_is_named_as_ledgered() {
 }
 
 /// A `<size>` `nuser_` below -1 written after a fault this crate's parser
-/// meets first: MuJoCo 3.5.0 reads the whole document, then `<size>` before
-/// any other section; this crate reads the document in order (ledger L353).
+/// meets first: MuJoCo 3.5.0 reads the whole document, then `<compiler>`,
+/// `<option>` and `<size>` before the other sections; this crate's parser
+/// stops at the earlier fault (ledger L353).
 /// `(what, document, MuJoCo's reason, this crate's error)`, measured
 /// 2026-11-04.
 const NUSER_COSTS: &[(&str, &str, &str, &str)] = &[(

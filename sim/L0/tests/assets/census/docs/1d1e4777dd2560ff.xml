@@ -1,0 +1,1 @@
+<mujoco><size nuser_geom="-2"/><option timestep="abc"/><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>
