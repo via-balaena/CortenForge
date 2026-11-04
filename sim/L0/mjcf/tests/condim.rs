@@ -218,9 +218,11 @@ fn a_pair_naming_no_geom_is_refused() {
 
 /// `(condim, document, this crate's error)`: a sphere on a flex sheet whose
 /// contact condim is outside 1 to 6, refused (registry
-/// `D-FLEX-CONDIM-RANGE`). MuJoCo 3.5.0 loads each and stops at the first
-/// contact that takes the value (measured: 7 at the first step; 0 and -1 run
-/// here as the sphere's 3).
+/// `D-FLEX-CONDIM-RANGE`). MuJoCo 3.5.0 loads each and stops only at a
+/// contact whose condim, the higher priority side's or at equal priority the
+/// larger, is outside 1 to 6 (measured: 7 at the first step; 0 and -1 run
+/// here as the sphere's 3, and so does 7 where the sphere's priority is the
+/// higher).
 const FLEX_CONDIMS: &[(&str, &str, &str)] = &[
     (
         "0",
@@ -236,6 +238,11 @@ const FLEX_CONDIMS: &[(&str, &str, &str)] = &[
         "-1",
         r#"<mujoco><worldbody><body name="s" pos="0 0 0.105"><freejoint/><geom name="gs" type="sphere" size="0.1" condim="3"/></body><body name="v0" pos="-0.5 -0.5 0"/><body name="v1" pos="0.5 -0.5 0"/><body name="v2" pos="0.5 0.5 0"/><body name="v3" pos="-0.5 0.5 0"/></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2 0 2 3" radius="0.01"><contact condim="-1"/></flex></deformable></mujoco>"#,
         "invalid condim on <flex>: -1 is outside 1 to 6 (flex 'f')",
+    ),
+    (
+        "7, the sphere's priority higher",
+        r#"<mujoco><worldbody><body name="s" pos="0 0 0.105"><freejoint/><geom name="gs" type="sphere" size="0.1" condim="3" priority="1"/></body><body name="v0" pos="-0.5 -0.5 0"/><body name="v1" pos="0.5 -0.5 0"/><body name="v2" pos="0.5 0.5 0"/><body name="v3" pos="-0.5 0.5 0"/></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2 0 2 3" radius="0.01"><contact condim="7"/></flex></deformable></mujoco>"#,
+        "invalid condim on <flex>: 7 is outside 1 to 6 (flex 'f')",
     ),
 ];
 
