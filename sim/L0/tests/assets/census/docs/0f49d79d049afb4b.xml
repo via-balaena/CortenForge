@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="p"><freejoint/><geom size=".1"/><frame><composite type="grid" count="2 2 1" prefix="c"><geom type="sphere" size=".01"/></composite></frame></body></worldbody></mujoco>

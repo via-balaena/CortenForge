@@ -33,7 +33,14 @@
 //! MuJoCo's reader meets the repeated name first and this crate meets the
 //! other fault first (a parse fault, an undefined class, a composite's, a
 //! frame repeated before a later name), this crate names the other: ledger
-//! L353's.
+//! L353's. RL-7b's faults inside frames are named as MuJoCo compiles bodies,
+//! one at a time in preorder: a body's frames' own orientations, then its
+//! own where a frame holds it, then its frames' geoms', then their sites',
+//! each kind's first in document order, then a cable's segment too short in
+//! it, before the next body's; all before any fault the builder finds
+//! outside frames. A composite's other faults are met when it is made,
+//! before frames, as MuJoCo's reader meets them. `FRAME_AND_COMPOSITE_COSTS`
+//! pins the orders found unlike MuJoCo's (ledger L353).
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, for the fault its expected error names (RL-6a's measured
@@ -43,7 +50,9 @@
 //! beside another, and RL-6d's a body's or a height field's.
 //! RL-7a's (measured 2026-11-03) set a repeated name beside a size, a
 //! reference and an axis MuJoCo refuses too, and beside an option this crate
-//! refuses and MuJoCo does not.
+//! refuses and MuJoCo does not. RL-7b's (measured 2026-11-03; review round
+//! 1's documents, RA and RW) set a fault in a frame or a cable beside
+//! another.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -923,6 +932,144 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "repeated name 'gg' in geom",
         "repeated name 'gg' in geom (geom 'gg' in body 'g2')",
     ),
+    (
+        "site then geom in frame",
+        r#"<mujoco><worldbody><frame><site name="s" zaxis="0 0 0"/><geom name="g" size=".1" zaxis="0 0 0"/></frame></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in geom 0",
+        "invalid zaxis on <geom>: zaxis too small (geom 'g' in body 'world')",
+    ),
+    (
+        "site then geom in frame in body",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><site name="s" zaxis="0 0 0"/><geom name="g" size=".1" zaxis="0 0 0"/></frame></body></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in geom 1",
+        "invalid zaxis on <geom>: zaxis too small (geom 'g' in body 'b')",
+    ),
+    (
+        "body then geom in frame",
+        r#"<mujoco><worldbody><frame><body name="c" zaxis="0 0 0"><geom size=".1"/></body><geom name="g" size=".1" zaxis="0 0 0"/></frame></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in geom 0",
+        "invalid zaxis on <geom>: zaxis too small (geom 'g' in body 'world')",
+    ),
+    (
+        "frame site xyaxes then geom xyaxes",
+        r#"<mujoco><worldbody><frame><site name="s" xyaxes="1 0 0 1 0 0"/><geom name="g" size=".1" xyaxes="1 0 0 1 0 0"/></frame></worldbody></mujoco>"#,
+        "orientation specification error 'yaxis too small' in geom 0",
+        "invalid xyaxes on <geom>: yaxis too small (geom 'g' in body 'world')",
+    ),
+    (
+        "frame body then site zaxis",
+        r#"<mujoco><worldbody><frame><body name="c" zaxis="0 0 0"><geom size=".1"/></body><site name="s" zaxis="0 0 0"/></frame></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in site 0",
+        "invalid zaxis on <site>: zaxis too small (site 's' in body 'world')",
+    ),
+    (
+        "geom zaxis in frame1 then frame2 zaxis",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><geom name="g" size=".1" zaxis="0 0 0"/></frame><frame name="f2" zaxis="0 0 0"><geom size=".1"/></frame></body></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in site -1",
+        "invalid zaxis on <frame>: zaxis too small (frame 'f2' in body 'b')",
+    ),
+    (
+        "frame zaxis then zeroseg cable in frame",
+        r#"<mujoco><worldbody><frame zaxis="0 0 0"><geom size=".1"/></frame><frame pos="0 0 1"><composite type="cable" prefix="v" vertex="0 0 0  0.3 0 0  0.3 0 0  0.9 0 0"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></frame></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in site -1",
+        "invalid zaxis on <frame>: zaxis too small (frame in body 'world')",
+    ),
+    (
+        "world frame zaxis then zeroseg cable",
+        r#"<mujoco><worldbody><frame zaxis="0 0 0"><geom size=".1"/></frame><composite type="cable" prefix="v" vertex="0 0 0  0.3 0 0  0.3 0 0  0.9 0 0"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in site -1",
+        "invalid zaxis on <frame>: zaxis too small (frame in body 'world')",
+    ),
+    (
+        "zeroseg cable then world frame zaxis",
+        r#"<mujoco><worldbody><composite type="cable" prefix="v" vertex="0 0 0  0.3 0 0  0.3 0 0  0.9 0 0"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite><frame zaxis="0 0 0"><geom size=".1"/></frame></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in site -1",
+        "invalid zaxis on <frame>: zaxis too small (frame in body 'world')",
+    ),
+    (
+        "body frame xyaxes then zeroseg cable",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame xyaxes="1 0 0 2 0 0"><geom size=".1"/></frame><composite type="cable" prefix="v" vertex="0 0 0  0.3 0 0  0.3 0 0  0.9 0 0"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></body></worldbody></mujoco>"#,
+        "orientation specification error 'yaxis too small' in site -1",
+        "invalid xyaxes on <frame>: yaxis too small (frame in body 'b')",
+    ),
+    (
+        "geom in frame zaxis then zeroseg cable",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><geom name="g" size=".1" zaxis="0 0 0"/></frame><composite type="cable" prefix="v" vertex="0 0 0  0.3 0 0  0.3 0 0  0.9 0 0"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></body></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in geom 1",
+        "invalid zaxis on <geom>: zaxis too small (geom 'g' in body 'b')",
+    ),
+    (
+        "frame zaxis then bad cable",
+        r#"<mujoco><worldbody><frame zaxis="0 0 0"><geom size=".1"/></frame><composite type="cable" count="4 2 1" curve="s" size="1" prefix="k"><geom type="capsule" size=".01"/></composite></worldbody></mujoco>"#,
+        "Cable must be one-dimensional",
+        "Cable must be one-dimensional (body 'world')",
+    ),
+    (
+        "bad frame holding bad cable",
+        r#"<mujoco><worldbody><frame zaxis="0 0 0"><composite type="cable" count="4 2 1" curve="s" size="1" prefix="k"><geom type="capsule" size=".01"/></composite></frame></worldbody></mujoco>"#,
+        "Cable must be one-dimensional",
+        "Cable must be one-dimensional (body 'world')",
+    ),
+    (
+        "nested geom then outer geom",
+        r#"<mujoco><worldbody><frame><frame><geom name="a" size=".1" zaxis="0 0 0"/></frame><geom name="b" size=".1" zaxis="0 0 0"/></frame></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in geom 0",
+        "invalid zaxis on <geom>: zaxis too small (geom 'a' in body 'world')",
+    ),
+    (
+        "frame geom size0 then body geom size0",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><frame><geom name="a" size="0"/></frame><geom name="b" size="0"/></body></worldbody></mujoco>"#,
+        "size 0 must be positive in geom",
+        "invalid size on <geom>: size 0 must be positive (geom 'a' in body 'b')",
+    ),
+    (
+        "zeroseg cable in frame then later geom size0",
+        r#"<mujoco><worldbody><frame pos="0 0 1"><composite type="cable" prefix="v" vertex="0 0 0  0.3 0 0  0.3 0 0  0.9 0 0"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></frame><body name="a"><freejoint/><geom name="z" size="0"/></body></worldbody></mujoco>"#,
+        "fromto points too close in geom",
+        "invalid fromto on <geom>: fromto points too close (geom 'vG1' in body 'vB_1')",
+    ),
+    (
+        "cable in bodyA then bodyB frame zaxis",
+        r#"<mujoco><worldbody><body name="a"><composite type="cable" prefix="v" vertex="0 0 0  0.3 0 0  0.3 0 0  0.9 0 0"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></body><body name="b"><freejoint/><geom size=".1"/><frame name="fb" zaxis="0 0 0"><geom size=".1"/></frame></body></worldbody></mujoco>"#,
+        "fromto points too close in geom",
+        "invalid fromto on <geom>: fromto points too close (geom 'vG1' in body 'vB_1')",
+    ),
+    (
+        "cable world then world frame body zaxis",
+        r#"<mujoco><worldbody><composite type="cable" prefix="v" vertex="0 0 0  0.3 0 0  0.3 0 0  0.9 0 0"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite><frame><body name="c" zaxis="0 0 0"><freejoint/><geom size=".1"/></body></frame></worldbody></mujoco>"#,
+        "fromto points too close in geom",
+        "invalid fromto on <geom>: fromto points too close (geom 'vG1' in body 'vB_1')",
+    ),
+    (
+        "earlier child frame geom then frame body zaxis",
+        r#"<mujoco><worldbody><body name="p"><freejoint/><geom size=".1"/><body name="d"><joint/><geom size=".1"/><frame><geom name="gd" size=".1" zaxis="0 0 0"/></frame></body><frame><body name="c" zaxis="0 0 0"><joint/><geom size=".1"/></body></frame></body></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in geom 2",
+        "invalid zaxis on <geom>: zaxis too small (geom 'gd' in body 'd')",
+    ),
+    (
+        "frame body zaxis holding frame zaxis",
+        r#"<mujoco><worldbody><body name="p"><freejoint/><geom size=".1"/><frame><body name="c" zaxis="0 0 0"><joint/><geom size=".1"/><frame name="fc" zaxis="0 0 0"><geom size=".1"/></frame></body></frame></body></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in site -1",
+        "invalid zaxis on <frame>: zaxis too small (frame 'fc' in body 'c')",
+    ),
+    (
+        "held body zaxis then later body size0",
+        r#"<mujoco><worldbody><body name="p"><freejoint/><geom size=".1"/><frame><body name="c" zaxis="0 0 0"><joint/><geom size=".1"/></body></frame></body><body name="q"><freejoint/><geom name="z" size="0"/></body></worldbody></mujoco>"#,
+        "error 'zaxis too small' in frame alternative",
+        "invalid zaxis on <body>: zaxis too small (body 'c')",
+    ),
+    (
+        "held body zaxis then next held bodys frame geom",
+        r#"<mujoco><worldbody><body name="p"><freejoint/><geom size=".1"/><frame><body name="c1" zaxis="0 0 0"><joint/><geom size=".1"/></body><body name="c2"><joint/><geom size=".1"/><frame><geom name="g2" size=".1" zaxis="0 0 0"/></frame></body></frame></body></worldbody></mujoco>"#,
+        "error 'zaxis too small' in frame alternative",
+        "invalid zaxis on <body>: zaxis too small (body 'c1')",
+    ),
+    (
+        "cable two zero segments",
+        r#"<mujoco><worldbody><body name="a"><composite type="cable" prefix="v" vertex="0 0 0  0.3 0 0  0.3 0 0  0.9 0 0  0.9 0 0"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></body></worldbody></mujoco>"#,
+        "fromto points too close in geom",
+        "invalid fromto on <geom>: fromto points too close (geom 'vG1' in body 'vB_1')",
+    ),
 ];
 
 #[test]
@@ -936,4 +1083,102 @@ fn a_document_with_two_faults_is_refused_for_mujocos() {
         }
     }
     assert!(missed.is_empty(), "{}", missed.join("\n"));
+}
+
+/// Two faults, one in a frame or a composite, where this crate names the
+/// other: ledger L353 holds each. `(what, document, MuJoCo 3.5.0's reason,
+/// this crate's error)`, measured 2026-11-03 (the documents of review round
+/// 1, RA's and RW's, and of its fix-diff pass).
+const FRAME_AND_COMPOSITE_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "parent geom zaxis then body in frame zaxis",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" zaxis="0 0 0"/><frame><body name="c" zaxis="0 0 0"><joint/><geom size=".1"/></body></frame></body></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in geom 0",
+        "invalid zaxis on <body>: zaxis too small (body 'c')",
+    ),
+    (
+        "body zaxis and geom zaxis in frame",
+        r#"<mujoco><worldbody><body name="b" zaxis="0 0 0"><freejoint/><geom size=".1"/><frame><geom name="g" size=".1" zaxis="0 0 0"/></frame></body></worldbody></mujoco>"#,
+        "error 'zaxis too small' in frame alternative",
+        "invalid zaxis on <geom>: zaxis too small (geom 'g' in body 'b')",
+    ),
+    (
+        "body zaxis then later frame geom zaxis",
+        r#"<mujoco><worldbody><body name="b" zaxis="0 0 0"><freejoint/><geom size=".1"/></body><body name="a"><freejoint/><geom size=".1"/><frame><geom name="g" size=".1" zaxis="0 0 0"/></frame></body></worldbody></mujoco>"#,
+        "error 'zaxis too small' in frame alternative",
+        "invalid zaxis on <geom>: zaxis too small (geom 'g' in body 'a')",
+    ),
+    (
+        "frame site then geom zaxis body level",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><site name="s" zaxis="0 0 0"/></frame><geom name="g" size=".1" zaxis="0 0 0"/></body></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in geom 1",
+        "invalid zaxis on <site>: zaxis too small (site 's' in body 'b')",
+    ),
+    (
+        "geom size0 then zeroseg cable in frame",
+        r#"<mujoco><worldbody><body name="a"><freejoint/><geom name="z" size="0"/></body><frame pos="0 0 1"><composite type="cable" prefix="v" vertex="0 0 0  0.3 0 0  0.3 0 0  0.9 0 0"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></frame></worldbody></mujoco>"#,
+        "size 0 must be positive in geom",
+        "invalid fromto on <geom>: fromto points too close (geom 'vG1' in body 'vB_1')",
+    ),
+    (
+        "geom size0 then zeroseg cable no frame",
+        r#"<mujoco><worldbody><body name="a"><freejoint/><geom name="z" size="0"/></body><composite type="cable" prefix="v" vertex="0 0 0  0.3 0 0  0.3 0 0  0.9 0 0"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></worldbody></mujoco>"#,
+        "size 0 must be positive in geom",
+        "invalid fromto on <geom>: fromto points too close (geom 'vG1' in body 'vB_1')",
+    ),
+    (
+        "body zaxis then zeroseg cable in frame",
+        r#"<mujoco><worldbody><body name="a" zaxis="0 0 0"><freejoint/><geom size=".1"/></body><frame pos="0 0 1"><composite type="cable" prefix="v" vertex="0 0 0  0.3 0 0  0.3 0 0  0.9 0 0"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></frame></worldbody></mujoco>"#,
+        "error 'zaxis too small' in frame alternative",
+        "invalid fromto on <geom>: fromto points too close (geom 'vG1' in body 'vB_1')",
+    ),
+    (
+        "repeated frame then bad comp in frame",
+        r#"<mujoco><worldbody><frame name="f"/><frame name="f"><composite type="grid" count="4 4 1" prefix="c"><geom type="sphere" size=".01"/></composite></frame></worldbody></mujoco>"#,
+        "repeated name 'f' in frame",
+        r#"invalid type on <composite>: The "grid" composite type is deprecated. Please use "flex" instead. (body 'world')"#,
+    ),
+    (
+        "comp in frame then bad childclass",
+        r#"<mujoco><default><default class="k"><geom size=".2"/></default></default><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><composite type="grid" count="4 4 1" spacing=".1" prefix="c"><geom type="sphere" size=".01"/></composite></frame><frame childclass="nope"><geom size=".1"/></frame></body></worldbody></mujoco>"#,
+        r#"The "grid" composite type is deprecated. Please use "flex" instead."#,
+        "unknown default class name 'nope' (frame in body 'b')",
+    ),
+    (
+        "comp in frame then fromto close",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><composite type="grid" count="4 4 1" spacing=".1" prefix="c"><geom type="sphere" size=".01"/></composite></frame><frame><geom type="capsule" size=".1" fromto="0 0 0 0 0 0"/></frame></body></worldbody></mujoco>"#,
+        r#"The "grid" composite type is deprecated. Please use "flex" instead."#,
+        "invalid fromto on <geom>: fromto points too close (geom in body 'b')",
+    ),
+    (
+        "comp deep in frame then parse fault",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><composite type="grid" count="4 4 1" spacing=".1" prefix="c"><geom type="sphere" size=".01"/></composite></frame><geom name="x" type="nosuchtype" size=".1"/></body></worldbody></mujoco>"#,
+        r#"The "grid" composite type is deprecated. Please use "flex" instead."#,
+        r#"invalid keyword "nosuchtype" in attribute 'type' on <geom> (line 1: worldbody > body 'b' > geom 'x')"#,
+    ),
+    (
+        "frame zaxis then fromto close",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame name="f" zaxis="0 0 0"><geom size=".1"/></frame><geom type="capsule" size=".1" fromto="0 0 0 0 0 0"/></body></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in site -1",
+        "invalid fromto on <geom>: fromto points too close (geom in body 'b')",
+    ),
+    (
+        "frame zaxis then repeated body",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame name="f" zaxis="0 0 0"><geom size=".1"/></frame></body><body name="b"><freejoint/><geom size=".1"/></body></worldbody></mujoco>"#,
+        "repeated name 'b' in body",
+        "invalid zaxis on <frame>: zaxis too small (frame 'f' in body 'b')",
+    ),
+];
+
+#[test]
+fn a_fault_in_a_frame_or_a_composite_beside_another_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in FRAME_AND_COMPOSITE_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
 }

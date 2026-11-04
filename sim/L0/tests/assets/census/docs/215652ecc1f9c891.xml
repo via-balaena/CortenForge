@@ -1,0 +1,1 @@
+<mujoco><compiler angle="degree"/><worldbody><frame pos="0 1 0" euler="0 0 90"><composite type="cable" count="4 1 1" curve="s" size="1" prefix="c"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></frame></worldbody></mujoco>

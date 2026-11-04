@@ -299,9 +299,11 @@ fn a_repeated_joint_name_and_a_name_in_a_nested_body_are_refused() {
 /// A repeated frame name beside every section and a repeat in the tree, in
 /// nested bodies and frames; a repeat among a nested body's children in
 /// order; a plugin's repeat (checked when MuJoCo compiles) beside a body's;
-/// a site's repeat in a nested body, `(case, document, kind, name)`, each
-/// refused by MuJoCo 3.5.0 as its row says (measured 2026-11-03; review
-/// round 1's documents, RA and RB).
+/// a site's repeat in a nested body; a composite's first body and a later
+/// body of its name, `(case, document, kind, name)`, each refused by MuJoCo
+/// 3.5.0 as its row says (measured 2026-11-03; the RL-7a review's round-1
+/// documents, RA's and RB's, and the row RL-7b moved here from
+/// `TREE_ORDER_COSTS`).
 const REFUSED_FRAMES_AND_ORDERS: &[(&str, &str, ElementKind, &str)] = &[
     (
         "dup_site_nested_located",
@@ -405,6 +407,12 @@ const REFUSED_FRAMES_AND_ORDERS: &[(&str, &str, ElementKind, &str)] = &[
         ElementKind::Body,
         "b",
     ),
+    (
+        "comp_made_then_later_repeat",
+        r#"<mujoco><worldbody><body name="p"><joint/><geom size="0.1" mass="1"/><composite prefix="c" type="cable" count="3 1 1" curve="s" size="1"><geom type="capsule" size=".01" mass="0.1"/></composite><body name="cB_first"><joint/><geom size="0.1" mass="1"/></body><body name="z"><joint/><geom size="0.1" mass="1"/></body><body name="z"><joint/><geom size="0.1" mass="1"/></body></body></worldbody></mujoco>"#,
+        ElementKind::Body,
+        "cB_first",
+    ),
 ];
 
 #[test]
@@ -447,11 +455,12 @@ fn a_frame_repeated_before_a_later_fault_names_the_later_one() {
     }
 }
 
-/// Repeats in the world's tree that MuJoCo 3.5.0 meets in another order (ledger L353): it reads a body's
-/// elements in document order (`mjXReader::Body`, `xml_native_reader.cc:3511-3824`), a child body's at its
-/// place and a composite's bodies where the composite stands; this crate a body's joints, geoms and sites before its child bodies, and a composite's bodies
-/// after the body's own. Review RA-S6's documents (measured). `(case, document, MuJoCo's error, this
-/// crate's)`.
+/// Repeats in the world's tree that MuJoCo 3.5.0 meets in another order
+/// (ledger L353): it reads a body's elements in document order
+/// (`mjXReader::Body`, `xml_native_reader.cc:3511-3824`), a child body's at
+/// its place; this crate checks a body's joints, geoms and sites before its
+/// child bodies. Review RA-S6's documents (measured). `(case, document,
+/// MuJoCo's error, this crate's)`.
 const TREE_ORDER_COSTS: &[(&str, &str, &str, &str)] = &[
     (
         "tree_child_before_sites",
@@ -464,12 +473,6 @@ const TREE_ORDER_COSTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><worldbody><body name="p"><joint/><geom size="0.1" mass="1"/><body name="c"><joint/><geom name="x" size="0.1" mass="1"/></body><body name="d"><joint/><geom name="x" size="0.1" mass="1"/></body><site name="s"/><site name="s"/></body></worldbody></mujoco>"#,
         "repeated name 'x' in geom",
         "repeated name 's' in site (site 's' in body 'p')",
-    ),
-    (
-        "comp_made_then_later_repeat",
-        r#"<mujoco><worldbody><body name="p"><joint/><geom size="0.1" mass="1"/><composite prefix="c" type="cable" count="3 1 1" curve="s" size="1"><geom type="capsule" size=".01" mass="0.1"/></composite><body name="cB_first"><joint/><geom size="0.1" mass="1"/></body><body name="z"><joint/><geom size="0.1" mass="1"/></body><body name="z"><joint/><geom size="0.1" mass="1"/></body></body></worldbody></mujoco>"#,
-        "repeated name 'cB_first' in body",
-        "repeated name 'z' in body",
     ),
 ];
 

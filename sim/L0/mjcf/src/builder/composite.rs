@@ -10,6 +10,7 @@ use nalgebra::{Rotation3, UnitQuaternion, Vector3};
 use std::f64::consts::PI;
 
 use super::geom::resolve_geom_fromto;
+use super::items::{Contents, Element};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::stack::MAX_BODY_TREE_DEPTH;
 use crate::types::{
@@ -25,26 +26,79 @@ pub fn expand_composites(body: &mut MjcfBody) -> Result<Vec<MjcfContactExclude>>
     Ok(excludes)
 }
 
+/// `body`'s geoms a composite made, each `fromto` made into its pose: every
+/// geom of `body` whose `fromto` is still written (`resolve::apply_defaults`
+/// resolved the document's own). `frame::expand_frames` calls it for each
+/// body once that body's frames are dissolved, before the bodies below it:
+/// MuJoCo 3.5.0 compiles bodies one by one (`user_model.cc:4933`), each its
+/// frames before its geoms (`user_objects.cc:2376-2378`, `:2427-2433`), and
+/// refuses a cable's segment too short when it compiles the geom (`:3700`).
+///
+/// # Errors
+///
+/// A `fromto` [`resolve_geom_fromto`] refuses, naming the geom and its body.
+pub fn resolve_made_fromtos(body: &mut MjcfBody) -> Result<()> {
+    for geom in &mut body.geoms {
+        if geom.fromto.is_some() {
+            let name = geom.name.clone().unwrap_or_default();
+            resolve_geom_fromto(geom).map_err(|e| {
+                e.with_location_if_unknown(
+                    Location::named(ElementKind::Geom, &name).in_body(&body.name),
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Each composite of `body` and of the bodies and frames below it made, in
+/// the order the document writes them (`MjcfBody::items`), as MuJoCo 3.5.0
+/// makes one when it reads it: its bodies take its place among the children
+/// of the body or frame holding it, and a body written before it has its own
+/// composites made first.
 fn expand_composites_recursive(
     body: &mut MjcfBody,
     excludes: &mut Vec<MjcfContactExclude>,
 ) -> Result<()> {
-    // First recurse into existing children
-    for child in &mut body.children {
-        expand_composites_recursive(child, excludes)?;
-    }
-
-    // Then expand composites on this body; an error names the body that
-    // holds the composite.
-    let composites = std::mem::take(&mut body.composites);
-    for composite in composites {
-        let (bodies, excl) = expand_composite(&composite).map_err(|e| {
-            e.with_location_if_unknown(Location::named(ElementKind::Body, &body.name))
-        })?;
-        body.children.extend(bodies);
-        excludes.extend(excl);
-    }
+    let contents = Contents::take_from_body(body);
+    make_in_place(contents, &body.name, excludes)?.put_into_body(body);
     Ok(())
+}
+
+/// `contents`, a body's or a frame's elements in `holder`, with each
+/// composite made into its bodies where it stands, and each body and frame
+/// among them made the same way. An error names `holder`, the body that
+/// holds the composite.
+fn make_in_place(
+    contents: Contents,
+    holder: &str,
+    excludes: &mut Vec<MjcfContactExclude>,
+) -> Result<Contents> {
+    let mut placed = Contents::default();
+    for element in contents.into_elements() {
+        match element {
+            Element::Body(mut child) => {
+                expand_composites_recursive(&mut child, excludes)?;
+                placed.push(Element::Body(child));
+            }
+            Element::Frame(mut frame) => {
+                let inner = Contents::take_from_frame(&mut frame);
+                make_in_place(inner, holder, excludes)?.put_into_frame(&mut frame);
+                placed.push(Element::Frame(frame));
+            }
+            Element::Composite(composite) => {
+                let (bodies, excl) = expand_composite(&composite).map_err(|e| {
+                    e.with_location_if_unknown(Location::named(ElementKind::Body, holder))
+                })?;
+                for made in bodies {
+                    placed.push(Element::Body(made));
+                }
+                excludes.extend(excl);
+            }
+            other => placed.push(other),
+        }
+    }
+    Ok(placed)
 }
 
 /// One composite's bodies and contact excludes: a cable's, or MuJoCo's
@@ -389,13 +443,9 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
             )
         };
 
-        // Build geom from template; a refusal of its `fromto` names it and
-        // its body.
-        let geom = build_cable_geom(composite, &geom_name, length).map_err(|e| {
-            e.with_location_if_unknown(
-                Location::named(ElementKind::Geom, &geom_name).in_body(&body_name),
-            )
-        })?;
+        // Build geom from template; its `fromto` is made into its pose with
+        // its body's turn in `expand_frames` (`resolve_made_fromtos`).
+        let geom = build_cable_geom(composite, &geom_name, length);
 
         // Build joint
         let joint = build_cable_joint(composite, &joint_name, is_first);
@@ -464,11 +514,10 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
 }
 
 /// Build an `MjcfGeom` from the composite's geom template.
-/// Matches `AddCableBody:392-403` in `user_composite.cc`. Its `fromto` is
-/// made into its pose here, as for every geom before frames and fusion
-/// (`resolve::apply_defaults`), which ran before the composite made it.
+/// Matches `AddCableBody:392-403` in `user_composite.cc`. Its `fromto` stays
+/// written until [`resolve_made_fromtos`].
 #[allow(clippy::unreachable)] // unwrap_or_else fallback: geom presence validated by validate_cable() upstream
-fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> Result<MjcfGeom> {
+fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> MjcfGeom {
     // geom presence validated by validate_cable() before this point
     let template = composite
         .geom
@@ -526,8 +575,7 @@ fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> Resul
         _ => {} // Validated earlier — unreachable
     }
 
-    resolve_geom_fromto(&mut geom)?;
-    Ok(geom)
+    geom
 }
 
 /// Build an `MjcfJoint` for a cable body.

@@ -12,10 +12,8 @@
 //! so they are compared bit for bit everywhere; `euler`, `axisangle` and `zaxis`
 //! pass through `sin`, `cos` and `atan2`, whose last bit another platform's libm
 //! may round otherwise, so off macOS arm64 they are compared within 1e-14.
-//!
-//! A frame composes its turn with nalgebra's arithmetic, not
-//! `mjuu_frameaccumChild` (ledger L255), so `FRAME_CASES` are compared within
-//! 1e-14 only.
+//! `FRAME_CASES` compose a frame's turn as `mjuu_frameaccumChild` does, each
+//! through `sin` and `cos`, so they are compared the same way.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 // The cases are bit patterns, written as MuJoCo's values' raw bits.
@@ -2037,8 +2035,7 @@ fn a_joint_axis_is_made_unit_once_as_mujocos_is() {
     );
 }
 
-/// A frame's turn and its geom's: MuJoCo 3.5.0's `geom_quat`, within 1e-14 (the
-/// composition is not MuJoCo's arithmetic: ledger L255).
+/// A frame's turn and its geom's: MuJoCo 3.5.0's `geom_quat`.
 const FRAME_CASES: &[(&str, &str, [u64; 4])] = &[
     // frame_quat_1234_geom
     (
@@ -2077,6 +2074,7 @@ const FRAME_CASES: &[(&str, &str, [u64; 4])] = &[
 
 #[test]
 fn a_frames_turn_is_composed_with_its_geoms() {
+    let here = cfg!(all(target_os = "macos", target_arch = "aarch64"));
     for &(what, frame, bits) in FRAME_CASES {
         let model = load_model(&format!(
             r#"<mujoco><worldbody><body name="b"><joint type="hinge"/><geom type="sphere" size="0.1"/>{frame}</body></worldbody></mujoco>"#
@@ -2086,7 +2084,7 @@ fn a_frames_turn_is_composed_with_its_geoms() {
         let got = [q.w, q.i, q.j, q.k];
         let mujoco = bits.map(f64::from_bits);
         assert!(
-            is_mujocos(got, mujoco, Some(1e-14)),
+            is_mujocos(got, mujoco, (!here).then_some(1e-14)),
             "{what}: {got:?}, MuJoCo {mujoco:?}"
         );
     }

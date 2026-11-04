@@ -73,6 +73,47 @@ pub fn mulquat(qa: &[f64; 4], qb: &[f64; 4]) -> [f64; 4] {
     r
 }
 
+/// `mjuu_quat2mat` (`user_util.cc:203-241`): the rotation matrix (row-major)
+/// of the quaternion, exactly the identity for (1, 0, 0, 0).
+pub fn quat2mat(q: &[f64; 4]) -> [f64; 9] {
+    // MuJoCo's exact test for the identity, which skips the products.
+    #[allow(clippy::float_cmp)]
+    if *q == [1.0, 0.0, 0.0, 0.0] {
+        return [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    }
+    let q00 = q[0] * q[0];
+    let q01 = q[0] * q[1];
+    let q02 = q[0] * q[2];
+    let q03 = q[0] * q[3];
+    let q11 = q[1] * q[1];
+    let q12 = q[1] * q[2];
+    let q13 = q[1] * q[3];
+    let q22 = q[2] * q[2];
+    let q23 = q[2] * q[3];
+    let q33 = q[3] * q[3];
+    [
+        q00 + q11 - q22 - q33,
+        2.0 * (q12 - q03),
+        2.0 * (q13 + q02),
+        2.0 * (q12 + q03),
+        q00 - q11 + q22 - q33,
+        2.0 * (q23 - q01),
+        2.0 * (q13 - q02),
+        2.0 * (q23 + q01),
+        q00 - q11 - q22 + q33,
+    ]
+}
+
+/// `mjuu_mulvecmat` (`user_util.cc:257-266`): the row-major matrix `mat`
+/// times `vec`, each row's sum from its first product.
+pub fn mulvecmat(vec: &[f64; 3], mat: &[f64; 9]) -> [f64; 3] {
+    [
+        mat[0] * vec[0] + mat[1] * vec[1] + mat[2] * vec[2],
+        mat[3] * vec[0] + mat[4] * vec[1] + mat[5] * vec[2],
+        mat[6] * vec[0] + mat[7] * vec[1] + mat[8] * vec[2],
+    ]
+}
+
 /// `mjuu_frame2quat` (`user_util.cc:412-448`): the quaternion of the frame
 /// whose columns are `x`, `y` and `z`, taken from its largest component, made
 /// unit by `normvec`.
@@ -122,10 +163,7 @@ impl OrientationError {
     }
 }
 
-/// `q` (w, x, y, z) as a `UnitQuaternion`, as MuJoCo's arithmetic left it: unit,
-/// or not where `normvec` kept a quaternion whose squared norm is below mjEPS
-/// (frames and fusion then turn by it with nalgebra's unit-only arithmetic,
-/// where MuJoCo's does not normalise: ledger L255).
+/// `q` (w, x, y, z) as a `UnitQuaternion`, not made unit here.
 fn unit(q: [f64; 4]) -> UnitQuaternion<f64> {
     UnitQuaternion::new_unchecked(Quaternion::new(q[0], q[1], q[2], q[3]))
 }
@@ -135,24 +173,46 @@ pub fn quat_from_wxyz(q: nalgebra::Vector4<f64>) -> UnitQuaternion<f64> {
     UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]))
 }
 
-/// A site's orientation as MuJoCo's compiler holds it before composing the
-/// site's frame (`user_objects.cc:3976-3985`): its alternative where it has
-/// one, else its quaternion as written, not yet made unit.
+/// An orientation as MuJoCo's compiler holds it before composing the frame
+/// holding its element (a site's, `user_objects.cc:3976-3985`; a frame's,
+/// `mjCFrame::Compile`, `:2734-2743`): its alternative where it has one, else
+/// its quaternion as written, not yet made unit.
+pub fn quat_as_written(
+    quat: Vector4<f64>,
+    euler: Option<Vector3<f64>>,
+    axisangle: Option<Vector4<f64>>,
+    xyaxes: Option<[f64; 6]>,
+    zaxis: Option<Vector3<f64>>,
+    compiler: &MjcfCompiler,
+) -> Result<UnitQuaternion<f64>, OrientationError> {
+    if let Some(q) = alternative(euler, axisangle, xyaxes, zaxis, compiler)? {
+        return Ok(unit(q));
+    }
+    Ok(unit([quat[0], quat[1], quat[2], quat[3]]))
+}
+
+/// A site's orientation as written ([`quat_as_written`]).
 pub fn site_quat_as_written(
     site: &MjcfSite,
     compiler: &MjcfCompiler,
 ) -> Result<UnitQuaternion<f64>, OrientationError> {
-    if let Some(q) = alternative(
+    quat_as_written(
+        site.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
         site.euler,
         site.axisangle,
         site.xyaxes,
         site.zaxis,
         compiler,
-    )? {
-        return Ok(unit(q));
-    }
-    let quat = site.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0));
-    Ok(unit([quat[0], quat[1], quat[2], quat[3]]))
+    )
+}
+
+/// `q` made unit by [`normvec`], as MuJoCo's compiler makes an orientation it
+/// composed (`user_objects.cc:2745`, `:3988`).
+pub fn made_unit(q: &UnitQuaternion<f64>) -> UnitQuaternion<f64> {
+    let q = q.into_inner();
+    let mut q = [q.w, q.i, q.j, q.k];
+    normvec(&mut q);
+    unit(q)
 }
 
 /// A site's orientation made unit as MuJoCo's compiler makes it (`normvec`,
@@ -162,10 +222,7 @@ pub fn site_orientation(
     site: &MjcfSite,
     compiler: &MjcfCompiler,
 ) -> Result<UnitQuaternion<f64>, OrientationError> {
-    let q = site_quat_as_written(site, compiler)?.into_inner();
-    let mut q = [q.w, q.i, q.j, q.k];
-    normvec(&mut q);
-    Ok(unit(q))
+    Ok(made_unit(&site_quat_as_written(site, compiler)?))
 }
 
 /// Convert a `UnitQuaternion` back to MJCF `Vector4<f64>` (w, x, y, z order).
@@ -277,10 +334,10 @@ fn alternative(
     Ok(None)
 }
 
-/// A body's, geom's or frame's orientation as MuJoCo 3.5.0's compiler makes it
+/// A body's or geom's orientation as MuJoCo 3.5.0's compiler makes it
 /// (`mjCBody::Compile`, `user_objects.cc:2387-2402`; `mjCGeom::Compile`,
-/// `:3673-3724`; `mjCFrame::Compile`, `:2734-2746`): its alternative where it
-/// has one, else its quaternion made unit by `normvec`.
+/// `:3673-3724`): its alternative where it has one, else its quaternion made
+/// unit by `normvec`.
 pub fn resolve_orientation(
     quat: Vector4<f64>,
     euler: Option<Vector3<f64>>,

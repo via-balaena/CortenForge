@@ -1,0 +1,1 @@
+<mujoco><default><default class="k"><geom size=".3"/></default></default><worldbody><body name="b"><freejoint/><frame childclass="k"><geom name="g"/></frame><geom name="h" size=".2"/></body></worldbody></mujoco>

@@ -2337,6 +2337,25 @@ impl MjcfEquality {
 // Frame
 // ============================================================================
 
+/// One element a body or a frame holds, as its `items` ([`MjcfBody::items`],
+/// [`MjcfFrame::items`]) list them in the order the document writes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum MjcfItem {
+    /// The holder's next joint.
+    Joint,
+    /// Its next geom.
+    Geom,
+    /// Its next site.
+    Site,
+    /// Its next body.
+    Body,
+    /// Its next frame.
+    Frame,
+    /// Its next composite.
+    Composite,
+}
+
 /// A coordinate frame transformation from `<frame>` element.
 ///
 /// Frames provide local coordinate system offsets for child elements.
@@ -2370,6 +2389,13 @@ pub struct MjcfFrame {
     pub sites: Vec<MjcfSite>,
     /// Nested child frames.
     pub frames: Vec<MjcfFrame>,
+    /// Composites within this frame: each one's first body is one of the
+    /// frame's bodies.
+    pub composites: Vec<MjcfComposite>,
+    /// Its geoms, sites, bodies, frames and composites in the order the
+    /// document writes them, one entry each, as [`MjcfBody::items`] lists a
+    /// body's: the frame's contents take its place among its holder's.
+    pub items: Vec<MjcfItem>,
 }
 
 impl Default for MjcfFrame {
@@ -2387,6 +2413,8 @@ impl Default for MjcfFrame {
             geoms: Vec::new(),
             sites: Vec::new(),
             frames: Vec::new(),
+            composites: Vec::new(),
+            items: Vec::new(),
         }
     }
 }
@@ -2572,6 +2600,16 @@ pub struct MjcfBody {
     pub composites: Vec<MjcfComposite>,
     /// Child bodies.
     pub children: Vec<MjcfBody>,
+    /// Its joints, geoms, sites, child bodies, frames and composites in the
+    /// order the document writes them, one entry each: the k-th
+    /// [`MjcfItem::Geom`] is `geoms[k]`, and so on. MuJoCo 3.5.0 numbers a
+    /// body's elements as it reads them, so the builder puts a frame's
+    /// contents and a composite's bodies where the frame or composite is
+    /// written. An entry past the end of its list is skipped; an element no
+    /// entry reaches comes after the listed ones, each list in its own order,
+    /// a frame's contents and then a composite's bodies last, so a body built
+    /// in code with no entries keeps each list's order.
+    pub items: Vec<MjcfItem>,
     /// Parent body name (set during flattening).
     pub parent: Option<String>,
     /// Default class for child elements (geoms, joints, sites).
@@ -2606,6 +2644,7 @@ impl Default for MjcfBody {
             frames: Vec::new(),
             composites: Vec::new(),
             children: Vec::new(),
+            items: Vec::new(),
             parent: None,
             childclass: None,
             mocap: false,

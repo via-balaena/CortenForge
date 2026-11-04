@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><composite type="grid" count="4 4 1" spacing=".1" prefix="c"><geom type="sphere" size=".01"/></composite></frame><frame><geom type="capsule" size=".1" fromto="0 0 0 0 0 0"/></frame></body></worldbody></mujoco>

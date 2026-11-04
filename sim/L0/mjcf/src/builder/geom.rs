@@ -41,8 +41,7 @@ impl ModelBuilder {
             .map_err(|e| e.with_location_if_unknown(at()))?;
 
         // A geom's `fromto` is already its `pos`, `quat` and `size`
-        // (`resolve_geom_fromto`, once its class is applied:
-        // `resolve::apply_defaults`).
+        // (`resolve_geom_fromto`).
         let quat = resolve_orientation(
             geom.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
             geom.euler,

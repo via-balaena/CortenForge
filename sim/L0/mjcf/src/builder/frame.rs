@@ -2,175 +2,266 @@
 //!
 //! `<frame>` elements are coordinate-system wrappers that compose their SE(3)
 //! transform into each child element and then disappear.  This module expands
-//! all frames before the builder processes bodies, matching MuJoCo's ordering.
+//! all frames before the builder processes bodies.
 //!
-//! Each element reaches it with its class applied and its `fromto` resolved
-//! (`resolve::apply_defaults`), so a frame composes the element's own pose.
+//! Each element a frame holds reaches it with its class applied and its
+//! `fromto` resolved (`resolve::apply_defaults`), so a frame composes the
+//! element's own pose.
 
-use nalgebra::{UnitQuaternion, Vector3, Vector4};
+use nalgebra::{Quaternion, UnitQuaternion, Vector3, Vector4};
 
-use super::orientation::{quat_to_wxyz, resolve_orientation, site_quat_as_written};
-use crate::error::{ElementKind, Location, Result};
+use super::composite::resolve_made_fromtos;
+use super::items::{Contents, Element};
+use super::orientation::{
+    made_unit, mulquat, mulvecmat, quat_as_written, quat_to_wxyz, quat2mat, resolve_orientation,
+    site_quat_as_written,
+};
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{MjcfBody, MjcfCompiler, MjcfFrame};
 
-/// Core SE(3) composition — direct translation of MuJoCo's `mjuu_frameaccumChild`.
-///
-/// Composes a parent frame transform into a child's pos/quat:
-/// - `child_pos_new = frame_pos + frame_quat * child_pos_old`
-/// - `child_quat_new = frame_quat * child_quat_old`
+/// A frame's transform composed into a child's pose, in MuJoCo 3.5.0's
+/// arithmetic (`mjuu_frameaccumChild`, `user_util.cc:483-490`, through
+/// `mjuu_frameaccum`, `:469-479`): the child's position turned by the frame's
+/// rotation matrix (`quat2mat`, `mulvecmat`) and added to the frame's, and
+/// its quaternion the frame's times its own, made unit (`mulquat`).
 fn frame_accum_child(
     frame_pos: &Vector3<f64>,
     frame_quat: &UnitQuaternion<f64>,
     child_pos: &mut Vector3<f64>,
     child_quat: &mut UnitQuaternion<f64>,
 ) {
-    *child_pos = *frame_pos + frame_quat.transform_vector(child_pos);
-    *child_quat = *frame_quat * *child_quat;
+    let frame = wxyz(frame_quat);
+    let turned = mulvecmat(&[child_pos.x, child_pos.y, child_pos.z], &quat2mat(&frame));
+    *child_pos = Vector3::new(
+        frame_pos.x + turned[0],
+        frame_pos.y + turned[1],
+        frame_pos.z + turned[2],
+    );
+    let [w, x, y, z] = mulquat(&frame, &wxyz(child_quat));
+    *child_quat = UnitQuaternion::new_unchecked(Quaternion::new(w, x, y, z));
 }
 
-/// Recursively expand all `<frame>` elements in a body tree.
+/// `q`'s components, (w, x, y, z).
+fn wxyz(q: &UnitQuaternion<f64>) -> [f64; 4] {
+    [q.w, q.i, q.j, q.k]
+}
+
+/// Expand every `<frame>` of a body tree.
 ///
 /// Frames are coordinate-system wrappers that compose their transform into
-/// each child element and then disappear. This runs before `discardvisual`/`fusestatic`
-/// (matching MuJoCo's order) and before `ModelBuilder` processes bodies.
+/// each element they hold and then disappear. A frame's contents take its
+/// place among its body's elements, in the order the document writes them
+/// (`MjcfBody::items`), as MuJoCo 3.5.0 adds each element to its body when it
+/// reads it. This runs before `discardvisual`/`fusestatic` and before
+/// `ModelBuilder` processes bodies.
 ///
-/// Each geom and site reaches it resolved (`resolve::apply_defaults`): its
-/// class's values applied and its `fromto` made into its `pos`, `quat` and
-/// `size`.
+/// Each geom and site a frame holds reaches it resolved
+/// (`resolve::apply_defaults`): its class's values applied and its `fromto`
+/// made into its `pos`, `quat` and `size`. Once a body's frames are
+/// dissolved, the geoms a composite made in it are resolved
+/// ([`resolve_made_fromtos`]), before the bodies below it. Elements are
+/// moved, never copied, so expanding takes memory in proportion to the tree.
 ///
 /// # Errors
 ///
 /// An orientation alternative `ResolveOrientation` refuses, on a frame or on
-/// an element in one.
+/// an element in one: of one body's, the one MuJoCo 3.5.0 names first
+/// ([`Faults`]); and a `fromto` of a geom a composite made.
 pub fn expand_frames(body: &mut MjcfBody, compiler: &MjcfCompiler) -> Result<()> {
-    // Take frames out of the body to avoid borrow issues
-    let frames = std::mem::take(&mut body.frames);
+    expand_body(body, None, compiler)
+}
 
-    for frame in &frames {
-        expand_single_frame(
-            body,
-            frame,
-            &Vector3::zeros(),
-            &UnitQuaternion::identity(),
-            compiler,
-        )?;
+/// [`expand_frames`] for `body`, with `own` the refusal of its own
+/// orientation when the frame holding it was dissolved, if one was.
+fn expand_body(body: &mut MjcfBody, own: Option<MjcfError>, compiler: &MjcfCompiler) -> Result<()> {
+    let mut placed = Contents::default();
+    let mut faults = Faults::default();
+    for element in Contents::take_from_body(body).into_elements() {
+        match element {
+            Element::Frame(frame) => {
+                dissolve(frame, None, &mut placed, &mut faults, &body.name, compiler);
+            }
+            other => placed.push(other),
+        }
     }
-
-    // Recursively expand frames in child bodies
-    for child in &mut body.children {
-        expand_frames(child, compiler)?;
+    faults.first(own)?;
+    placed.put_into_body(body);
+    resolve_made_fromtos(body)?;
+    let mut held = faults.held.into_iter().peekable();
+    for (index, child) in body.children.iter_mut().enumerate() {
+        let own = held.next_if(|(i, _)| *i == index).map(|(_, fault)| fault);
+        expand_body(child, own, compiler)?;
     }
     Ok(())
 }
 
-/// Expand a single frame, composing its transform into children and lifting
-/// them onto the parent body.
-fn expand_single_frame(
-    body: &mut MjcfBody,
-    frame: &MjcfFrame,
-    accumulated_pos: &Vector3<f64>,
-    accumulated_quat: &UnitQuaternion<f64>,
+/// The orientations one body's frames and the elements in them refuse, kept
+/// to name the one MuJoCo 3.5.0 names first. MuJoCo compiles bodies one by
+/// one (`user_model.cc:4933`), each its frames, then its own orientation,
+/// then its geoms, then its sites (`mjCBody::Compile`,
+/// `user_objects.cc:2376-2378`, `:2396-2402`, `:2427-2433`, `:2551-2552`).
+/// Of each kind, the first in document order. A body a frame holds is one of
+/// the body's children: its own orientation's refusal is named in its own
+/// turn.
+#[derive(Default)]
+struct Faults {
+    frame: Option<MjcfError>,
+    geom: Option<MjcfError>,
+    site: Option<MjcfError>,
+    /// Each held body's own refusal, by its index among the body's children.
+    held: Vec<(usize, MjcfError)>,
+}
+
+impl Faults {
+    /// `fault` kept in `slot`, unless an earlier one is.
+    fn keep(slot: &mut Option<MjcfError>, fault: MjcfError) {
+        slot.get_or_insert(fault);
+    }
+
+    /// The fault MuJoCo names first in the body's turn, with `own` its own
+    /// orientation's refusal, if any.
+    fn first(&mut self, own: Option<MjcfError>) -> Result<()> {
+        self.frame
+            .take()
+            .or(own)
+            .or_else(|| self.geom.take())
+            .or_else(|| self.site.take())
+            .map_or(Ok(()), Err)
+    }
+}
+
+/// One frame's contents, in its document order, composed with its transform
+/// (itself composed with `outer`'s, the pose of the frame holding it, where a
+/// frame holds it) and added to `placed`, the elements of `body`; a nested
+/// frame's at its place. An orientation refused is kept in `faults`, and its
+/// element left out (a frame's with its contents), or, a body's, placed as
+/// written.
+fn dissolve(
+    mut frame: MjcfFrame,
+    outer: Option<(&Vector3<f64>, &UnitQuaternion<f64>)>,
+    placed: &mut Contents,
+    faults: &mut Faults,
+    body: &str,
     compiler: &MjcfCompiler,
-) -> Result<()> {
+) {
     let in_body =
-        |kind, name: Option<&str>| Location::named(kind, name.unwrap_or("")).in_body(&body.name);
-    // 1. Resolve the frame's own orientation
-    let frame_quat = resolve_orientation(
+        |kind, name: Option<&str>| Location::named(kind, name.unwrap_or("")).in_body(body);
+    // The frame's own orientation as written, composed with the frame holding
+    // it where one does, then made unit, as `mjCFrame::Compile` makes it
+    // (`user_objects.cc:2734-2745`); a frame no frame holds keeps its
+    // position as written.
+    let written = match quat_as_written(
         frame.quat,
         frame.euler,
         frame.axisangle,
         frame.xyaxes,
         frame.zaxis,
         compiler,
-    )
-    .map_err(|e| {
-        e.on("frame")
-            .at(in_body(ElementKind::Frame, frame.name.as_deref()))
-    })?;
-
-    // 2. Compose with accumulated parent-frame transform
-    let mut composed_pos = frame.pos;
-    let mut composed_quat = frame_quat;
-    frame_accum_child(
-        accumulated_pos,
-        accumulated_quat,
-        &mut composed_pos,
-        &mut composed_quat,
-    );
-
-    // 3. Process child geoms: each one's orientation (a `fromto` resolved
-    // already gives its `quat`), composed with the frame's.
-    for geom in &frame.geoms {
-        let mut g = geom.clone();
-        let geom_quat = resolve_orientation(
-            g.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
-            g.euler,
-            g.axisangle,
-            g.xyaxes,
-            g.zaxis,
-            compiler,
-        )
-        .map_err(|e| {
-            e.on("geom")
-                .at(in_body(ElementKind::Geom, g.name.as_deref()))
-        })?;
-        let mut pos = g.pos.unwrap_or_else(Vector3::zeros);
-        let mut quat = geom_quat;
-        frame_accum_child(&composed_pos, &composed_quat, &mut pos, &mut quat);
-        g.pos = Some(pos);
-        g.quat = Some(quat_to_wxyz(&quat));
-        // Clear alternative orientations (already resolved)
-        g.euler = None;
-        g.axisangle = None;
-        g.xyaxes = None;
-        g.zaxis = None;
-
-        body.geoms.push(g);
+    ) {
+        Ok(q) => q,
+        Err(e) => {
+            let at = in_body(ElementKind::Frame, frame.name.as_deref());
+            Faults::keep(&mut faults.frame, e.on("frame").at(at));
+            return;
+        }
+    };
+    let mut pos = frame.pos;
+    let mut quat = written;
+    if let Some((outer_pos, outer_quat)) = outer {
+        frame_accum_child(outer_pos, outer_quat, &mut pos, &mut quat);
     }
+    let quat = made_unit(&quat);
 
-    // 4. Process child sites (resolved already). The frame is
-    // composed with the site's quaternion as written; the builder makes the
-    // product unit, as MuJoCo does (`user_objects.cc:3984-3988`).
-    for site in &frame.sites {
-        let mut s = site.clone();
-        let mut pos = s.pos.unwrap_or_else(Vector3::zeros);
-        let mut quat = site_quat_as_written(&s, compiler)
-            .map_err(|e| e.on("site").at(in_body(ElementKind::Site, Some(&s.name))))?;
-        frame_accum_child(&composed_pos, &composed_quat, &mut pos, &mut quat);
-        s.pos = Some(pos);
-        s.quat = Some(quat_to_wxyz(&quat));
-        s.euler = None;
-        s.axisangle = None;
-        s.xyaxes = None;
-        s.zaxis = None;
-
-        body.sites.push(s);
+    for element in Contents::take_from_frame(&mut frame).into_elements() {
+        let element = match element {
+            // Each geom's orientation (a `fromto` resolved already gives its
+            // `quat`), composed with the frame's.
+            Element::Geom(mut g) => {
+                let geom_quat = match resolve_orientation(
+                    g.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
+                    g.euler,
+                    g.axisangle,
+                    g.xyaxes,
+                    g.zaxis,
+                    compiler,
+                ) {
+                    Ok(q) => q,
+                    Err(e) => {
+                        let at = in_body(ElementKind::Geom, g.name.as_deref());
+                        Faults::keep(&mut faults.geom, e.on("geom").at(at));
+                        continue;
+                    }
+                };
+                let mut gpos = g.pos.unwrap_or_else(Vector3::zeros);
+                let mut gquat = geom_quat;
+                frame_accum_child(&pos, &quat, &mut gpos, &mut gquat);
+                g.pos = Some(gpos);
+                g.quat = Some(quat_to_wxyz(&gquat));
+                g.euler = None;
+                g.axisangle = None;
+                g.xyaxes = None;
+                g.zaxis = None;
+                Element::Geom(g)
+            }
+            // Each site's quaternion as written, composed with the frame's,
+            // as MuJoCo composes a site's (`user_objects.cc:3976-3988`).
+            Element::Site(mut s) => {
+                let mut squat = match site_quat_as_written(&s, compiler) {
+                    Ok(q) => q,
+                    Err(e) => {
+                        let at = in_body(ElementKind::Site, Some(&s.name));
+                        Faults::keep(&mut faults.site, e.on("site").at(at));
+                        continue;
+                    }
+                };
+                let mut spos = s.pos.unwrap_or_else(Vector3::zeros);
+                frame_accum_child(&pos, &quat, &mut spos, &mut squat);
+                s.pos = Some(spos);
+                s.quat = Some(quat_to_wxyz(&squat));
+                s.euler = None;
+                s.axisangle = None;
+                s.xyaxes = None;
+                s.zaxis = None;
+                Element::Site(s)
+            }
+            Element::Body(mut b) => {
+                let body_quat = match resolve_orientation(
+                    b.quat,
+                    b.euler,
+                    b.axisangle,
+                    b.xyaxes,
+                    b.zaxis,
+                    compiler,
+                ) {
+                    Ok(q) => q,
+                    Err(e) => {
+                        let at = Location::named(ElementKind::Body, &b.name);
+                        faults.held.push((placed.body_count(), e.on("body").at(at)));
+                        placed.push(Element::Body(b));
+                        continue;
+                    }
+                };
+                let mut bpos = b.pos;
+                let mut bquat = body_quat;
+                frame_accum_child(&pos, &quat, &mut bpos, &mut bquat);
+                b.pos = bpos;
+                b.quat = quat_to_wxyz(&bquat);
+                b.euler = None;
+                b.axisangle = None;
+                b.xyaxes = None;
+                b.zaxis = None;
+                Element::Body(b)
+            }
+            Element::Frame(nested) => {
+                dissolve(nested, Some((&pos, &quat)), placed, faults, body, compiler);
+                continue;
+            }
+            // A frame holds no joint (the reader refuses one), and its
+            // composites were made into bodies before frames.
+            other @ (Element::Joint(_) | Element::Composite(_)) => other,
+        };
+        placed.push(element);
     }
-
-    // 5. Process child bodies
-    for child_body in &frame.bodies {
-        let mut b = child_body.clone();
-        let body_quat =
-            resolve_orientation(b.quat, b.euler, b.axisangle, b.xyaxes, b.zaxis, compiler)
-                .map_err(|e| e.on("body").at(Location::named(ElementKind::Body, &b.name)))?;
-        let mut pos = b.pos;
-        let mut quat = body_quat;
-        frame_accum_child(&composed_pos, &composed_quat, &mut pos, &mut quat);
-        b.pos = pos;
-        b.quat = quat_to_wxyz(&quat);
-        b.euler = None;
-        b.axisangle = None;
-        b.xyaxes = None;
-        b.zaxis = None;
-
-        body.children.push(b);
-    }
-
-    // 6. Recurse into nested frames
-    for nested in &frame.frames {
-        expand_single_frame(body, nested, &composed_pos, &composed_quat, compiler)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -581,7 +672,8 @@ mod tests {
         );
     }
 
-    // AC17: Joint inside frame = error
+    // AC17: a joint inside a frame, which MuJoCo 3.5.0 loads (registry
+    // `D-FRAME-JOINT`; the body's geom gives it mass), refused.
     #[test]
     fn test_ac17_joint_inside_frame_error() {
         let result = load_model(
@@ -589,7 +681,8 @@ mod tests {
             <mujoco>
                 <worldbody>
                     <body name="b">
-                        <frame>
+                        <geom size="0.1"/>
+                        <frame pos="1 0 0">
                             <joint name="j" type="hinge"/>
                         </frame>
                     </body>
@@ -605,7 +698,8 @@ mod tests {
         );
     }
 
-    // AC18: Freejoint inside frame = error
+    // AC18: a free joint inside a frame, which MuJoCo 3.5.0 loads (registry
+    // `D-FRAME-JOINT`), refused.
     #[test]
     fn test_ac18_freejoint_inside_frame_error() {
         let result = load_model(
@@ -613,6 +707,7 @@ mod tests {
             <mujoco>
                 <worldbody>
                     <body name="b">
+                        <geom size="0.1"/>
                         <frame>
                             <freejoint/>
                         </frame>
@@ -621,7 +716,11 @@ mod tests {
             </mujoco>
         "#,
         );
-        assert!(result.is_err(), "freejoint inside frame should error");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, MjcfError::Unsupported { feature, .. } if feature == "<freejoint> inside <frame>"),
+            "{err}"
+        );
     }
 
     // AC19: Inertial inside frame = error
