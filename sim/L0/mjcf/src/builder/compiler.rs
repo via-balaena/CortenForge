@@ -146,11 +146,12 @@ pub fn apply_fusestatic(mjcf: &mut MjcfModel) -> Result<CompileTurns> {
     // Recursively fuse static children in the worldbody tree, each body's
     // turn and its geoms' moved beside it.
     let mut name = Vec::new();
-    let mut turns = Turns::number(&mjcf.worldbody, &mut name);
+    let mut turns = Turns::number(&mjcf.worldbody, &mut name, &mut 0);
     fuse_static_body(&mut mjcf.worldbody, &mut turns, &protected, &mjcf.compiler)?;
     let mut compile_turns = CompileTurns {
         body: Vec::new(),
         geom: Vec::new(),
+        geom_index: Vec::new(),
         name,
     };
     turns.flatten(&mut compile_turns);
@@ -170,6 +171,8 @@ pub struct CompileTurns {
     /// Each geom, in the builder's order (body by body, as written), its
     /// body's turn.
     pub geom: Vec<usize>,
+    /// Each geom, in the builder's order, its index before fusion.
+    pub geom_index: Vec<usize>,
     /// Each turn's body, its name as written.
     pub name: Vec<String>,
 }
@@ -178,24 +181,29 @@ pub struct CompileTurns {
 /// body's own ([`fuse_static_body`]).
 struct Turns {
     turn: usize,
-    geoms: Vec<usize>,
+    /// Each geom's turn and its index before fusion.
+    geoms: Vec<(usize, usize)>,
     children: Vec<Turns>,
 }
 
 impl Turns {
     /// `body`'s tree numbered in preorder from `name.len()`, each body's
-    /// name pushed at its turn.
-    fn number(body: &MjcfBody, name: &mut Vec<String>) -> Self {
+    /// name pushed at its turn, its geoms numbered from `geoms`.
+    fn number(body: &MjcfBody, name: &mut Vec<String>, geoms: &mut usize) -> Self {
         let turn = name.len();
         name.push(body.name.clone());
+        let first = *geoms;
+        *geoms += body.geoms.len();
         let children = body
             .children
             .iter()
-            .map(|child| Self::number(child, name))
+            .map(|child| Self::number(child, name, geoms))
             .collect();
         Self {
             turn,
-            geoms: vec![turn; body.geoms.len()],
+            geoms: (first..first + body.geoms.len())
+                .map(|index| (turn, index))
+                .collect(),
             children,
         }
     }
@@ -204,7 +212,9 @@ impl Turns {
     /// makes them (`ModelBuilder::process_body`).
     fn flatten(&self, out: &mut CompileTurns) {
         out.body.push(self.turn);
-        out.geom.extend(&self.geoms);
+        out.geom.extend(self.geoms.iter().map(|&(turn, _)| turn));
+        out.geom_index
+            .extend(self.geoms.iter().map(|&(_, index)| index));
         for child in &self.children {
             child.flatten(out);
         }

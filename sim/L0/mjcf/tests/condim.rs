@@ -60,6 +60,11 @@ const GEOM_CONDIMS: &[(&str, &str, &str)] = &[
         r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s"><geom name="g" size=".1" condim="2"/></body></worldbody></mujoco>"#,
         "invalid condim in geom (geom 'g' in body 's')",
     ),
+    (
+        "unnamed, on a body fusestatic fuses",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body><body name="s" pos="2 0 0"><geom size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom (geom #1 in body 's')",
+    ),
 ];
 
 #[test]

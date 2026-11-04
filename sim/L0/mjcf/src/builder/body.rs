@@ -387,9 +387,13 @@ impl ModelBuilder {
         // Stable: one body's geoms as written.
         moved.sort_by_key(|&geom| geom_turn(geom));
         let mut moved = moved.into_iter().peekable();
+        // A moved geom by its index and its body before fusion, as a check
+        // of the model before fusion names a geom.
         let written_in = |geom: usize| {
-            let name = turns.map_or("", |t| t.name[geom_turn(geom)].as_str());
-            Location::nth(ElementKind::Geom, self.geom_name[geom].as_deref(), geom).in_body(name)
+            let (name, index) = turns.map_or(("", geom), |t| {
+                (t.name[geom_turn(geom)].as_str(), t.geom_index[geom])
+            });
+            Location::nth(ElementKind::Geom, self.geom_name[geom].as_deref(), index).in_body(name)
         };
         for body in 0..nbody {
             while let Some(geom) = moved.next_if(|&geom| geom_turn(geom) < body_turn(body)) {

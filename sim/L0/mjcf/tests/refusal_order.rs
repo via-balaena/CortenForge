@@ -43,8 +43,9 @@
 //! pins the orders found unlike MuJoCo's (ledger L353). RL-7c's check of a
 //! geom's condim (book L25) runs with RL-6d's, geom by geom from the
 //! world's, before its plane check; a geom `fusestatic` moves into an
-//! earlier body is checked, its condim, plane and mass, at its own body's
-//! turn, as MuJoCo compiles every body before it fuses; a pair's condim,
+//! earlier body has its condim, plane and negative-density checks at its own
+//! body's turn, as MuJoCo compiles every body before it fuses (the density
+//! is judged by its new body's inertia rule: ledger L388); a pair's condim,
 //! then its geoms, after the assets and before the sizes, where MuJoCo
 //! compiles pairs; `CONDIM_COSTS` pins the faults this crate meets first
 //! that MuJoCo meets after a condim. A `<size>` `nuser_` below -1 is refused

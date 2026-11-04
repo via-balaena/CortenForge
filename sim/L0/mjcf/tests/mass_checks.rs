@@ -376,6 +376,11 @@ const GEOMS: &[(&str, &str, Expect)] = &[
         Expect::Refused("plane only allowed in static bodies"),
     ),
     (
+        "plane_fused_into_moving_the_last_body",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/><body name="s" pos="0 0 .3"><geom name="gp" type="plane" size="1 1 .1"/></body></body></worldbody></mujoco>"#,
+        Expect::Refused("plane only allowed in static bodies"),
+    ),
+    (
         "plane_static_child_of_moving",
         r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/><body name="c" pos="0 0 0"><geom type="plane" size="1 1 0.1"/></body></body></worldbody></mujoco>"#,
         Expect::Refused("plane only allowed in static bodies"),
