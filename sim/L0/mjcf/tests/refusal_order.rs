@@ -1106,7 +1106,7 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "condim then a keyframe",
-        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><keyframe><key qpos="0 0"/></keyframe></mujoco>"#,
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><keyframe><key qpos="0 0 0 1 0 0 0 0"/></keyframe></mujoco>"#,
         "invalid condim in geom",
         "invalid condim in geom (geom 'g' in body 'b')",
     ),
