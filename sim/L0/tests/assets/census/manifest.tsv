@@ -3299,3 +3299,6 @@ fe31238dc1296c81	sim/L0/mjcf/tests/refusal_order.rs:1672
 da87e8a5fc365193	sim/L0/mjcf/tests/refusal_order.rs:1427
 a6e48aea2a52e0b5	sim/L0/mjcf/tests/condim.rs:65
 b72fbd2207eefae7	sim/L0/mjcf/tests/mass_checks.rs:380
+73fa18aa2757735f	sim/L0/mjcf/tests/refusal_order.rs:1773
+9f5c2a11759c5f48	sim/L0/mjcf/tests/refusal_order.rs:1767
+c8c92b02796d00cf	sim/L0/mjcf/tests/refusal_order.rs:1761
