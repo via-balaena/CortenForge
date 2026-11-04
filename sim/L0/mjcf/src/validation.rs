@@ -120,12 +120,19 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 /// composite makes among its bodies.
 ///
 /// This checks:
+/// - Each `nuser_` size at least -1, before anything else (a parsed
+///   `<size>`'s are refused as they are read)
 /// - No name repeated within a kind (`names::check_names`)
+/// - Each pair's condim one of 1, 3, 4 or 6, then the geoms it names, after
+///   the assets (a geom named "" only where the model has no unnamed geom)
 /// - Actuators reference valid joints
 /// - An inertial's mass and diagonal inertia finite (if present)
 /// - Valid simulation options
 /// - Tendons reference valid joints, sites and geoms, with valid parameters
 /// - A body and frame tree no deeper than the loader takes
+///
+/// A geom's condim is checked when the model is built
+/// ([`crate::model_from_mjcf`]), not here.
 ///
 /// # Errors
 ///

@@ -59,9 +59,11 @@ impl ModelBuilder {
             // A value its class or the pair writes lies over MuJoCo's pair
             // default (`mjs_defaultPair`, `user_init.c:288-297`; measured on
             // 3.5.0: `friction="0.7"` is 0.7 1 0.005 0.0001 0.0001); an
-            // unwritten one is the default, never the two geoms'
-            // (`mjCPair::Compile`'s geom fallbacks read values its XML reader
-            // always defines; ledger L147, L241).
+            // unwritten one is the default, never the two geoms' (ledger
+            // L147, L241): `mjCPair::Compile` takes the geoms' value only
+            // for one left undefined, which its XML reader leaves only where
+            // `nan` is written (measured), and this crate refuses `nan`
+            // (`D-NONFINITE`).
             let condim = pair.condim.unwrap_or(3);
             let friction = pair
                 .friction
