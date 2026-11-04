@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="a"><freejoint/><geom name="g1" type="sphere" size="0.1"/></body><body name="b"><freejoint/><geom name="g2" type="sphere" size="0.1"/></body></worldbody><contact><pair geom1="g2" geom2="g1"/></contact></mujoco>

@@ -169,3 +169,64 @@ fn repeated_pairs_are_each_kept_and_each_collides() {
         assert_eq!(got, want, "{case}: contacts");
     }
 }
+
+/// A pair names the lower body's geom first, and the pairs are stored by
+/// their bodies, stably, as MuJoCo 3.5.0 compiles them
+/// (`mjCPair::ResolveReferences`, `user_objects.cc:5645-5657`;
+/// `user_model.cc:4969-4972`): MuJoCo's pairs for this document (measured),
+/// where two pairs on one body and the world keep the order written.
+#[test]
+fn pairs_are_stored_in_mujoco_s_order() {
+    let model = load_model(
+        r#"<mujoco><option gravity="0 0 0"/><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="a" pos="0 0 0.3"><freejoint/><geom name="ga" type="sphere" size="0.1"/><geom name="ga2" type="sphere" size="0.05" pos="0 0 0.1"/></body><body name="b" pos="0.15 0.05 0.3"><freejoint/><geom name="gb" type="sphere" size="0.1"/></body><body name="c" pos="0.3 -0.02 0.09"><freejoint/><geom name="gc" type="sphere" size="0.1"/></body></worldbody><contact><pair geom1="gb" geom2="ga" condim="1"/><pair geom1="gc" geom2="floor" condim="4"/><pair geom1="ga2" geom2="floor" condim="6"/><pair geom1="gc" geom2="gb" condim="6"/><pair geom1="ga" geom2="floor" condim="3"/></contact></mujoco>"#,
+    )
+    .expect("loads");
+    let name = |g: usize| model.geom_name[g].clone().expect("named");
+    let got: Vec<(String, String, i32)> = model
+        .contact_pairs
+        .iter()
+        .map(|p| (name(p.geom1), name(p.geom2), p.condim))
+        .collect();
+    let want: Vec<(String, String, i32)> = [
+        ("floor", "ga2", 6),
+        ("floor", "ga", 3),
+        ("floor", "gc", 4),
+        ("ga", "gb", 1),
+        ("gb", "gc", 6),
+    ]
+    .iter()
+    .map(|&(a, b, c)| (a.to_string(), b.to_string(), c))
+    .collect();
+    assert_eq!(got, want);
+}
+
+/// Two concentric spheres leave the contact normal to the collision
+/// function, which takes the geoms in the pair's order. Under a pair naming
+/// the higher body's sphere first, MuJoCo 3.5.0's normal is +x, and after 50
+/// steps the first body is at x = -0.17956204793888816 and the second at
+/// x = 0.17956204793888816 (measured).
+#[test]
+fn a_pair_naming_the_higher_body_first_collides_as_mujoco() {
+    let model = load_model(
+        r#"<mujoco><worldbody><body name="a"><freejoint/><geom name="g1" type="sphere" size="0.1"/></body><body name="b"><freejoint/><geom name="g2" type="sphere" size="0.1"/></body></worldbody><contact><pair geom1="g2" geom2="g1"/></contact></mujoco>"#,
+    )
+    .expect("loads");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    assert_eq!(data.contacts.len(), 1);
+    let normal = data.contacts[0].normal;
+    assert!(
+        (normal.x - 1.0).abs() < 1e-12 && normal.y.abs() < 1e-12 && normal.z.abs() < 1e-12,
+        "{normal:?}"
+    );
+    for _ in 0..50 {
+        data.step(&model).expect("step");
+    }
+    let x = 0.179_562_047_938_888_16;
+    assert!(
+        (data.qpos[0] + x).abs() < 1e-9 && (data.qpos[7] - x).abs() < 1e-9,
+        "{} {}",
+        data.qpos[0],
+        data.qpos[7]
+    );
+}

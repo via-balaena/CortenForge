@@ -2,7 +2,8 @@
 //!
 //! Converts MJCF `<contact>` elements (pairs and excludes) into Model arrays.
 //! Handles geom/body name resolution, a pair's unwritten values from its class
-//! or MuJoCo's pair defaults, and every pair kept, a repeated one too.
+//! or MuJoCo's pair defaults, every pair kept, a repeated one too, and the
+//! pairs stored in MuJoCo's order.
 
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
 use crate::error::{ElementKind, Location, MjcfError, Result};
@@ -18,7 +19,9 @@ impl ModelBuilder {
     /// For each `<pair>`: resolve geom names to indices and build a
     /// `ContactPair` whose unwritten values are its class's, else MuJoCo's
     /// pair defaults. A pair on the geoms of an earlier one is kept beside
-    /// it, as MuJoCo 3.5.0 keeps it.
+    /// it, as MuJoCo 3.5.0 keeps it. Each pair names the lower body's geom
+    /// first, and the pairs are sorted by their bodies, stably, as MuJoCo
+    /// compiles them.
     ///
     /// For each `<exclude>`: resolve body names to indices and insert into the
     /// exclude set.
@@ -39,6 +42,13 @@ impl ModelBuilder {
                 .geom_name_to_id
                 .get(&pair.geom2)
                 .ok_or_else(|| MjcfError::undefined(ElementKind::Geom, &pair.geom2).at(at()))?;
+            // The geom of the lower body first, as MuJoCo compiles a pair
+            // (`mjCPair::ResolveReferences`, `user_objects.cc:5645-5654`).
+            let (g1, g2) = if self.geom_body[g1] > self.geom_body[g2] {
+                (g2, g1)
+            } else {
+                (g1, g2)
+            };
 
             // A value its class or the pair writes lies over MuJoCo's pair
             // default (`mjs_defaultPair`, `user_init.c:288-297`; measured on
@@ -85,6 +95,11 @@ impl ModelBuilder {
             self.contact_pair_set.insert((g1.min(g2), g1.max(g2)));
             self.contact_pairs.push(contact_pair);
         }
+        // By their bodies, stably: MuJoCo's order (`user_model.cc:4969-4972`,
+        // signature `(body1 << 16) + body2`, `user_objects.cc:5657`).
+        let geom_body = &self.geom_body;
+        self.contact_pairs
+            .sort_by_key(|pair| (geom_body[pair.geom1], geom_body[pair.geom2]));
 
         // Process excludes
         for (i, mjcf_exclude) in contact.excludes.iter().enumerate() {

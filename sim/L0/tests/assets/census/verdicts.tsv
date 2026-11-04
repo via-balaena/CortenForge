@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1729
+# agree_floor 1732
 001bc4149d608b24	agree
 002cac6fc120ff66	both-refuse
 00308b83da9d8bab	agree
@@ -1498,6 +1498,7 @@
 76e1ce8a1c63bd1d	agree
 76ea6583d9d41920	agree
 76fec8498442f3ad	agree
+77094ad605953893	agree
 772aec50296b7787	agree
 776e9eaac77c0bf5	ours-refused	divergence=D-FLEX-VERTEX-BODY
 777168f761ba0f27	ours-refused	divergence=D-MUSCLE-SENTINEL
@@ -2253,7 +2254,7 @@ b6ad1797c0bd8448	model:body_mass;dyn:agree
 b6af1a7ec7f9c6dc	agree
 b6c26327d8eadfb2	agree
 b6cf674e352a380a	agree
-b6d3dd4ad0664fb7	e1:t0:con_normal
+b6d3dd4ad0664fb7	agree
 b6dac25a7cc1452e	agree
 b6e14b6469126088	agree
 b71be52f3d580539	both-refuse
@@ -3013,6 +3014,7 @@ f5e362d2178a7d93	agree
 f5f3c05e62882a2b	agree
 f60abd53f94d04c9	both-refuse
 f61a86172b2801cc	both-refuse
+f628a395aa454aca	agree
 f6381d51f75b2ee1	both-refuse
 f6619ff4933c7768	both-refuse
 f6881ce2578560ae	mj-refuses	divergence=D-CABLE-TWO-BODY
