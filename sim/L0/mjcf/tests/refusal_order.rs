@@ -1064,6 +1064,12 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "error 'zaxis too small' in frame alternative",
         "invalid zaxis on <body>: zaxis too small (body 'c1')",
     ),
+    (
+        "cable two zero segments",
+        r#"<mujoco><worldbody><body name="a"><composite type="cable" prefix="v" vertex="0 0 0  0.3 0 0  0.3 0 0  0.9 0 0  0.9 0 0"><joint kind="main" damping="0.1"/><geom type="capsule" size=".01" mass="0.1"/></composite></body></worldbody></mujoco>"#,
+        "fromto points too close in geom",
+        "invalid fromto on <geom>: fromto points too close (geom 'vG1' in body 'vB_1')",
+    ),
 ];
 
 #[test]
