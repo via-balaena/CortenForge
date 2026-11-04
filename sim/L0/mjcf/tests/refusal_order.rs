@@ -46,7 +46,8 @@
 //! the assets and before the sizes, where MuJoCo compiles pairs, and a
 //! `<size>` `nuser_` below -1 after the names, where its reader refuses it;
 //! `CONDIM_COSTS` pins the faults this crate meets first that MuJoCo meets
-//! after a condim.
+//! after a condim. A flex's condim outside 1 to 6, which MuJoCo loads, is
+//! refused after the keyframes (`D-FLEX-CONDIM-RANGE`).
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, for the fault its expected error names (RL-6a's measured
@@ -59,7 +60,8 @@
 //! refuses and MuJoCo does not. RL-7b's (measured 2026-11-03; review round
 //! 1's documents, RA and RW) set a fault in a frame or a cable beside
 //! another. RL-7c's (measured 2026-11-04) set a geom's or a pair's condim,
-//! a pair's unknown geom or a `nuser_` below -1 beside another.
+//! a pair's unknown geom, a `nuser_` below -1 or a flex's condim beside
+//! another.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1220,6 +1222,18 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><size nuser_geom="-2"/><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom type="mesh" mesh="nope"/></body></worldbody><contact><pair geom1="g" geom2="floor"/></contact></mujoco>"#,
         "nuser_geom must be >= -1",
         "invalid nuser_geom on <size>: must be >= -1, got -2",
+    ),
+    (
+        "a flex's condim 7 then a keyframe",
+        r#"<mujoco><worldbody><body name="s" pos="0 0 0.105"><freejoint/><geom name="gs" type="sphere" size="0.1" condim="3"/></body><body name="v0" pos="-0.5 -0.5 0"/><body name="v1" pos="0.5 -0.5 0"/><body name="v2" pos="0.5 0.5 0"/><body name="v3" pos="-0.5 0.5 0"/></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2 0 2 3" radius="0.01"><contact condim="7"/></flex></deformable><keyframe><key qpos="0 0 0 1 0 0 0 0"/></keyframe></mujoco>"#,
+        "keyframe '': invalid qpos size, expected 7, got 8",
+        "invalid qpos on <key>: length 8 does not match 7 (key #0)",
+    ),
+    (
+        "a flex's condim 7 then a body's mass",
+        r#"<mujoco><worldbody><body name="s" pos="0 0 0.105"><freejoint/><geom name="gs" type="sphere" size="0.1" condim="3"/></body><body name="v0" pos="-0.5 -0.5 0"/><body name="v1" pos="0.5 -0.5 0"/><body name="v2" pos="0.5 0.5 0"/><body name="v3" pos="-0.5 0.5 0"/><body name="c"><freejoint/></body></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2 0 2 3" radius="0.01"><contact condim="7"/></flex></deformable></mujoco>"#,
+        "mass and inertia of moving bodies must be larger than mjMINVAL",
+        "mass and inertia of moving bodies must be larger than mjMINVAL (body 'c')",
     ),
 ];
 

@@ -350,7 +350,8 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // keyframes: a slide after a ball, a fixed tendon's negative armature,
     // an automatic range that does not increase (`D-AUTO-RANGE`, which
     // MuJoCo leaves unlimited), an `<inertial>`'s negative mass or moment
-    // (`D-INERTIAL-NEGATIVE`, which MuJoCo raises to its bounds); every
+    // (`D-INERTIAL-NEGATIVE`, which MuJoCo raises to its bounds), a flex's
+    // condim outside 1 to 6 (`D-FLEX-CONDIM-RANGE`, which MuJoCo loads); every
     // check above has taken MuJoCo's value.
     joint::check_ball_then_slide(&model)?;
     tendon::check_fixed_tendon_armature(&model)?;
@@ -360,6 +361,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     if let Some(error) = negative_inertial {
         return Err(error);
     }
+    flex::check_flex_condims(&mjcf.flex)?;
 
     Ok(model)
 }

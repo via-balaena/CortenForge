@@ -3229,3 +3229,14 @@ db368462b6cbc012	sim/L0/mjcf/tests/contact_pairs.rs:63
 c73322fe722675f3	sim/L0/mjcf/tests/contact_pairs.rs:141
 77094ad605953893	sim/L0/mjcf/tests/contact_pairs.rs:181
 f628a395aa454aca	sim/L0/mjcf/tests/contact_pairs.rs:211
+06dbdd5bf0b50131	sim/L0/mjcf/tests/condim.rs:255
+15c648d8b16a40c2	sim/L0/mjcf/tests/condim.rs:239
+216b3de02a0616b1	sim/L0/mjcf/tests/condim.rs:247
+33b6792b57d7d902	sim/L0/mjcf/tests/condim.rs:206
+6169b4fe118e920d	sim/L0/mjcf/tests/condim.rs:259
+61883fea4f6bc7bf	sim/L0/mjcf/tests/condim.rs:211
+7ca7d65f9f07a428	sim/L0/mjcf/tests/refusal_order.rs:1234
+c54528fe0317c391	sim/L0/mjcf/tests/refusal_order.rs:1228
+c5b88ff3a051ab0c	sim/L0/mjcf/tests/condim.rs:216
+cbad522db8e2d604	sim/L0/mjcf/tests/condim.rs:243
+d03eae4de6bed1ed	sim/L0/mjcf/tests/condim.rs:251

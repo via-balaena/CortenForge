@@ -827,6 +827,25 @@ fn check_flexcomp(flex: &MjcfFlex) -> Result<()> {
     Ok(())
 }
 
+/// A flex's condim outside 1 to 6, refused (registry `D-FLEX-CONDIM-RANGE`):
+/// MuJoCo 3.5.0 checks a geom's and a pair's condim but not a flex's, loads
+/// it and stops at the first contact that takes it ('Invalid condim value',
+/// `mj_contactParam`, `engine_collision_driver.c:1394-1397`). The caller runs
+/// it after the keyframes, as a refusal MuJoCo does not make.
+pub fn check_flex_condims(flexes: &[MjcfFlex]) -> Result<()> {
+    for (i, flex) in flexes.iter().enumerate() {
+        if !(1..=6).contains(&flex.condim) {
+            return Err(MjcfError::invalid_value(
+                "flex",
+                "condim",
+                format!("{} is outside 1 to 6", flex.condim),
+            )
+            .at(Location::nth(ElementKind::Flex, Some(&flex.name), i)));
+        }
+    }
+    Ok(())
+}
+
 /// With `vertcollide`, a sphere's radius, the flex's, positive, as MuJoCo's
 /// compiler requires of the spheres its flexcomp makes ("size 0 must be
 /// positive in geom", `checksize`, `user_objects.cc:152-167`), when it makes

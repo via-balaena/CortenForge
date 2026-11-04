@@ -3,9 +3,14 @@
 //! condim in geom', `mjCGeom::Compile`, `user_objects.cc:3651-3654`; 'invalid
 //! condim in contact pair', `mjCPair::Compile`, `:5666-5669`), whether written
 //! on the element, by its class, the root class, a composite's template,
-//! inside a frame or on a body `fusestatic` fuses. Each document was run on
-//! MuJoCo 3.5.0 as written (2026-11-04): every refused one is refused there
-//! for the same element, every loaded one loads there with the same condims.
+//! inside a frame or on a body `fusestatic` fuses. Each geom and pair
+//! document was run on MuJoCo 3.5.0 as written (2026-11-04): every refused
+//! one is refused there for the same element, every loaded one loads there
+//! with the same condims.
+//!
+//! A flex's condim, which MuJoCo does not check, is refused outside 1 to 6
+//! (ledger L234, registry `D-FLEX-CONDIM-RANGE`); MuJoCo loads each of its
+//! documents (run 2026-11-04).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -188,4 +193,77 @@ fn a_pair_naming_no_geom_is_refused() {
     )
     .expect_err("an empty geom name beside a geom named empty");
     assert_eq!(written_empty.to_string(), "unknown geom '' (pair #0)");
+}
+
+/// `(condim, document, this crate's error)`: a sphere on a flex sheet whose
+/// contact condim is outside 1 to 6, refused (registry
+/// `D-FLEX-CONDIM-RANGE`). MuJoCo 3.5.0 loads each and stops at the first
+/// contact that takes the value (measured: 7 at the first step; 0 and -1 run
+/// here as the sphere's 3).
+const FLEX_CONDIMS: &[(&str, &str, &str)] = &[
+    (
+        "0",
+        r#"<mujoco><worldbody><body name="s" pos="0 0 0.105"><freejoint/><geom name="gs" type="sphere" size="0.1" condim="3"/></body><body name="v0" pos="-0.5 -0.5 0"/><body name="v1" pos="0.5 -0.5 0"/><body name="v2" pos="0.5 0.5 0"/><body name="v3" pos="-0.5 0.5 0"/></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2 0 2 3" radius="0.01"><contact condim="0"/></flex></deformable></mujoco>"#,
+        "invalid condim on <flex>: 0 is outside 1 to 6 (flex 'f')",
+    ),
+    (
+        "7",
+        r#"<mujoco><worldbody><body name="s" pos="0 0 0.105"><freejoint/><geom name="gs" type="sphere" size="0.1" condim="3"/></body><body name="v0" pos="-0.5 -0.5 0"/><body name="v1" pos="0.5 -0.5 0"/><body name="v2" pos="0.5 0.5 0"/><body name="v3" pos="-0.5 0.5 0"/></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2 0 2 3" radius="0.01"><contact condim="7"/></flex></deformable></mujoco>"#,
+        "invalid condim on <flex>: 7 is outside 1 to 6 (flex 'f')",
+    ),
+    (
+        "-1",
+        r#"<mujoco><worldbody><body name="s" pos="0 0 0.105"><freejoint/><geom name="gs" type="sphere" size="0.1" condim="3"/></body><body name="v0" pos="-0.5 -0.5 0"/><body name="v1" pos="0.5 -0.5 0"/><body name="v2" pos="0.5 0.5 0"/><body name="v3" pos="-0.5 0.5 0"/></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2 0 2 3" radius="0.01"><contact condim="-1"/></flex></deformable></mujoco>"#,
+        "invalid condim on <flex>: -1 is outside 1 to 6 (flex 'f')",
+    ),
+];
+
+#[test]
+fn a_flex_s_condim_outside_1_to_6_is_refused() {
+    let mut wrong = Vec::new();
+    for &(case, xml, expected) in FLEX_CONDIMS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == expected => {}
+            Err(e) => wrong.push(format!("{case}: {e}")),
+            Ok(_) => wrong.push(format!("{case}: loads")),
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// The same document with a flex condim of 1 to 6 loads as written, as
+/// MuJoCo 3.5.0 loads it (measured).
+const FLEX_CONDIMS_LOADED: &[(i32, &str)] = &[
+    (
+        1,
+        r#"<mujoco><worldbody><body name="s" pos="0 0 0.105"><freejoint/><geom name="gs" type="sphere" size="0.1" condim="3"/></body><body name="v0" pos="-0.5 -0.5 0"/><body name="v1" pos="0.5 -0.5 0"/><body name="v2" pos="0.5 0.5 0"/><body name="v3" pos="-0.5 0.5 0"/></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2 0 2 3" radius="0.01"><contact condim="1"/></flex></deformable></mujoco>"#,
+    ),
+    (
+        2,
+        r#"<mujoco><worldbody><body name="s" pos="0 0 0.105"><freejoint/><geom name="gs" type="sphere" size="0.1" condim="3"/></body><body name="v0" pos="-0.5 -0.5 0"/><body name="v1" pos="0.5 -0.5 0"/><body name="v2" pos="0.5 0.5 0"/><body name="v3" pos="-0.5 0.5 0"/></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2 0 2 3" radius="0.01"><contact condim="2"/></flex></deformable></mujoco>"#,
+    ),
+    (
+        3,
+        r#"<mujoco><worldbody><body name="s" pos="0 0 0.105"><freejoint/><geom name="gs" type="sphere" size="0.1" condim="3"/></body><body name="v0" pos="-0.5 -0.5 0"/><body name="v1" pos="0.5 -0.5 0"/><body name="v2" pos="0.5 0.5 0"/><body name="v3" pos="-0.5 0.5 0"/></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2 0 2 3" radius="0.01"><contact condim="3"/></flex></deformable></mujoco>"#,
+    ),
+    (
+        4,
+        r#"<mujoco><worldbody><body name="s" pos="0 0 0.105"><freejoint/><geom name="gs" type="sphere" size="0.1" condim="3"/></body><body name="v0" pos="-0.5 -0.5 0"/><body name="v1" pos="0.5 -0.5 0"/><body name="v2" pos="0.5 0.5 0"/><body name="v3" pos="-0.5 0.5 0"/></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2 0 2 3" radius="0.01"><contact condim="4"/></flex></deformable></mujoco>"#,
+    ),
+    (
+        5,
+        r#"<mujoco><worldbody><body name="s" pos="0 0 0.105"><freejoint/><geom name="gs" type="sphere" size="0.1" condim="3"/></body><body name="v0" pos="-0.5 -0.5 0"/><body name="v1" pos="0.5 -0.5 0"/><body name="v2" pos="0.5 0.5 0"/><body name="v3" pos="-0.5 0.5 0"/></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2 0 2 3" radius="0.01"><contact condim="5"/></flex></deformable></mujoco>"#,
+    ),
+    (
+        6,
+        r#"<mujoco><worldbody><body name="s" pos="0 0 0.105"><freejoint/><geom name="gs" type="sphere" size="0.1" condim="3"/></body><body name="v0" pos="-0.5 -0.5 0"/><body name="v1" pos="0.5 -0.5 0"/><body name="v2" pos="0.5 0.5 0"/><body name="v3" pos="-0.5 0.5 0"/></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2 0 2 3" radius="0.01"><contact condim="6"/></flex></deformable></mujoco>"#,
+    ),
+];
+
+#[test]
+fn a_flex_s_condims_1_to_6_load_as_written() {
+    for &(condim, xml) in FLEX_CONDIMS_LOADED {
+        let model = load_model(xml).expect("loads");
+        assert_eq!(model.flex_condim, [condim], "{condim}");
+    }
 }
