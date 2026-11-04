@@ -1,0 +1,1 @@
+<mujoco><size nuser_geom="-2"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom class="nope" size=".1"/></body></worldbody></mujoco>

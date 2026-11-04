@@ -1,0 +1,1 @@
+<mujoco><size nuser_geom="-2"/><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body></worldbody><contact><pair name="p" geom1="ga" geom2="floor"/><pair name="p" geom1="ga" geom2="floor"/></contact></mujoco>

@@ -45,15 +45,17 @@
 //! world's, before its plane check; a geom `fusestatic` moves into an
 //! earlier body is checked, its condim, plane and mass, at its own body's
 //! turn, as MuJoCo compiles every body before it fuses; a pair's condim,
-//! then its geoms, after
-//! the assets and before the sizes, where MuJoCo compiles pairs, and a
-//! `<size>` `nuser_` below -1 after the names, where its reader refuses it;
-//! `CONDIM_COSTS` pins the faults this crate meets first that MuJoCo meets
-//! after a condim. A flex's condim outside 1 to 6, which MuJoCo loads, is
-//! refused after the keyframes (`D-FLEX-CONDIM-RANGE`).
+//! then its geoms, after the assets and before the sizes, where MuJoCo
+//! compiles pairs; `CONDIM_COSTS` pins the faults this crate meets first
+//! that MuJoCo meets after a condim. A `<size>` `nuser_` below -1 is refused
+//! as the parser reads it, and a model built in code has its checked before
+//! anything else: MuJoCo's reader reads `<size>` before any other section;
+//! `NUSER_COSTS` pins a fault the parser meets before a later `<size>`. A
+//! flex's condim outside 1 to 6, which MuJoCo loads, is refused after the
+//! keyframes (`D-FLEX-CONDIM-RANGE`).
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
-//! oracle, for the fault its expected error names (RL-6a's measured
+//! oracle, with the reason its row gives as MuJoCo's (RL-6a's measured
 //! 2026-10-31, RL-6b's 2026-11-01, RL-6d's 2026-11-02). Eleven are the RL-6a
 //! review's first round, three its fix-diff pass's (a keyframe's fault), and
 //! four set the new checks against each other; RL-6b's set a limit's fault
@@ -65,7 +67,8 @@
 //! another. RL-7c's (measured 2026-11-04) set a geom's or a pair's condim,
 //! a pair's unknown geom, a `nuser_` below -1 or a flex's condim beside
 //! another; its review's first round's, a geom `fusestatic` moves beside an
-//! earlier body's fault.
+//! earlier body's fault, and a `nuser_` below -1 beside a repeated name, a
+//! class's fault or a parse fault.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1219,13 +1222,13 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "a nuser below -1 then a pair's condim",
         r#"<mujoco><size nuser_geom="-2"/><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
         "nuser_geom must be >= -1",
-        "invalid nuser_geom on <size>: must be >= -1, got -2",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
     ),
     (
         "a nuser below -1 then a geom's mesh",
         r#"<mujoco><size nuser_geom="-2"/><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom type="mesh" mesh="nope"/></body></worldbody><contact><pair geom1="g" geom2="floor"/></contact></mujoco>"#,
         "nuser_geom must be >= -1",
-        "invalid nuser_geom on <size>: must be >= -1, got -2",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
     ),
     (
         "a flex's condim 7 then a keyframe",
@@ -1310,6 +1313,78 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/><body name="s" pos="0 0 .3"><geom name="gp" type="plane" size="1 1 .1"/></body></body><body name="c" pos="2 0 1"><freejoint/><geom name="gc" size=".1" condim="2"/></body></worldbody></mujoco>"#,
         "plane only allowed in static bodies",
         "plane only allowed in static bodies (geom 'gp' in body 's')",
+    ),
+    (
+        "a nuser below -1 then a repeated body name",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body><body name="a" pos="1 0 1"><freejoint/><geom size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then a repeated pair name",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body></worldbody><contact><pair name="p" geom1="ga" geom2="floor"/><pair name="p" geom1="ga" geom2="floor"/></contact></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then a repeated geom name",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><geom name="ga" type="plane" size="1 1 .1"/><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then an undefined class",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom class="nope" size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "two <size>, the first's nuser below -1",
+        r#"<mujoco><size nuser_geom="-3"/><size nuser_body="-2"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -3 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then a repeated actuator name",
+        r#"<mujoco><size nuser_sensor="-2"/><worldbody><body name="a" pos="0 0 1"><joint name="j" type="hinge"/><geom name="ga" size=".1"/></body></worldbody><actuator><motor name="m" joint="j"/><motor name="m" joint="j"/></actuator></mujoco>"#,
+        "nuser_sensor must be >= -1",
+        "invalid nuser_sensor on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then a repeated tendon name",
+        r#"<mujoco><size nuser_tendon="-2"/><worldbody><body name="a" pos="0 0 1"><joint name="j" type="hinge"/><geom name="ga" size=".1"/></body></worldbody><tendon><fixed name="t"><joint joint="j" coef="1"/></fixed><fixed name="t"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
+        "nuser_tendon must be >= -1",
+        "invalid nuser_tendon on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then a repeated frame name",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><frame name="f"/><frame name="f"/><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then a class's fromto",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom type="sphere" size=".1" fromto="0 0 0 0 0 1"/></body></worldbody></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then a parse fault",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><body name="b"><freejoint/><geom name="g" type="nosuch" size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1, written last, then a repeated name",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1"/><geom name="g" size=".1"/></body></worldbody><size nuser_geom="-2"/></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a camera's nuser below -1 then a repeated name",
+        r#"<mujoco><size nuser_cam="-2"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="g" size=".1"/><geom name="g" size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_cam must be >= -1",
+        "invalid nuser_cam on <size>: must be >= -1, got -2 (line 1: size)",
     ),
 ];
 
@@ -1422,6 +1497,47 @@ fn a_fault_in_a_frame_or_a_composite_beside_another_is_named_as_ledgered() {
         }
     }
     assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// A `<size>` `nuser_` below -1 written after a fault this crate's parser
+/// meets first: MuJoCo 3.5.0 reads the whole document, then `<size>` before
+/// any other section; this crate reads the document in order (ledger L353).
+/// `(what, document, MuJoCo's reason, this crate's error)`, measured
+/// 2026-11-04.
+const NUSER_COSTS: &[(&str, &str, &str, &str)] = &[(
+    "a parse fault then a nuser below -1",
+    r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" type="nosuch" size=".1"/></body></worldbody><size nuser_geom="-2"/></mujoco>"#,
+    "nuser_geom must be >= -1",
+    "invalid keyword \"nosuch\" in attribute 'type' on <geom> (line 1: worldbody > body 'b' > geom 'g')",
+)];
+
+#[test]
+fn a_nuser_after_a_parse_fault_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in NUSER_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// A model built in code, its `<size>` not parsed, has its `nuser_` sizes
+/// checked before anything else too: before a repeated name here.
+#[test]
+fn a_nuser_below_minus_1_set_in_code_is_refused_first() {
+    let mut mjcf = sim_mjcf::parse_mjcf_str(
+        r#"<mujoco><worldbody><body name="a"><freejoint/><geom name="g" size=".1"/><geom name="g" size=".1"/></body></worldbody></mujoco>"#,
+    )
+    .expect("parses");
+    mjcf.nuser_body = -2;
+    let error = sim_mjcf::model_from_mjcf(&mjcf, None).expect_err("nuser_body -2");
+    assert_eq!(
+        error.to_string(),
+        "invalid nuser_body on <size>: must be >= -1, got -2"
+    );
 }
 
 /// Two faults, one a geom's or a pair's condim, where this crate names the

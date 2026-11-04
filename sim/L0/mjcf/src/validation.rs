@@ -148,7 +148,6 @@ pub fn validate_resolved(
     // Every name, composites' and frames' included; then the options, whose
     // checks MuJoCo does not make.
     crate::names::check_names(model, frames)?;
-    check_user_sizes(model)?;
     validate_option(&model.option)?;
     let mut joint_names = HashSet::new();
 
@@ -450,10 +449,11 @@ fn check_geom_assets(model: &MjcfModel) -> Result<()> {
     Ok(())
 }
 
-/// Each `<size>` `nuser_` attribute at least -1, in the order MuJoCo 3.5.0's
-/// reader reads them (`xml_native_reader.cc:1408-1430`), before any check
-/// its compiler makes.
-fn check_user_sizes(model: &MjcfModel) -> Result<()> {
+/// Each `nuser_` size this crate keeps at least -1, in the order MuJoCo
+/// 3.5.0's reader reads them (`xml_native_reader.cc:1408-1430`), for a model
+/// whose `<size>` was not parsed: a parsed one's are refused as they are read
+/// (`parser::options::parse_size_attrs`).
+pub fn check_user_sizes(model: &MjcfModel) -> Result<()> {
     let sizes = [
         ("body", model.nuser_body),
         ("jnt", model.nuser_jnt),
