@@ -231,12 +231,15 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     if mjcf.compiler.discardvisual {
         apply_discardvisual(&mut mjcf);
     }
-    if mjcf.compiler.fusestatic {
-        apply_fusestatic(&mut mjcf)?;
-    }
+    let compile_turns = if mjcf.compiler.fusestatic {
+        Some(apply_fusestatic(&mut mjcf)?)
+    } else {
+        None
+    };
 
     let mut builder = ModelBuilder::new();
     builder.resolver = resolver;
+    builder.compile_turns = compile_turns;
     builder.compiler = mjcf.compiler.clone();
 
     // Set model name
@@ -264,6 +267,9 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     for child in &mjcf.worldbody.children {
         builder.process_body(child, 0, None)?;
     }
+    debug_assert!(builder.compile_turns.as_ref().is_none_or(|turns| {
+        turns.body.len() == builder.body_parent.len() && turns.geom.len() == builder.geom_type.len()
+    }));
 
     // Process tendons (must be before actuators, since actuators may reference tendons)
     builder.process_tendons(&mjcf.tendons)?;
@@ -520,6 +526,9 @@ pub struct ModelBuilder {
     /// the first body whose negative `<inertial>` MuJoCo keeps, none of its
     /// geoms being selected; returned after the keyframes.
     pub(crate) kept_negative_inertial: Option<MjcfError>,
+    /// Under `fusestatic`, where MuJoCo checks each body and geom
+    /// ([`Self::check_bodies`]); `None`, each where it is.
+    pub(crate) compile_turns: Option<compiler::CompileTurns>,
     pub(crate) nmocap: usize,
 
     // Joint arrays

@@ -41,6 +41,7 @@ impl ModelBuilder {
             body_gravcomp: vec![0.0], // world body has no gravcomp
             body_faults: vec![super::body::BodyFaults::default()], // the world's are not checked
             kept_negative_inertial: None,
+            compile_turns: None,
             nmocap: 0,
 
             jnt_type: vec![],

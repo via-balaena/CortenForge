@@ -60,14 +60,15 @@ pub fn apply_discardvisual(mjcf: &mut MjcfModel) {
 /// Bodies without joints are "static" relative to their parent. Fusing them
 /// transfers their geoms, sites, and children to the parent, reducing the body
 /// count. Bodies referenced by equality constraints, sensors, or actuators are
-/// not fused (their names must remain valid).
+/// not fused (their names must remain valid). Returns each body's and
+/// geom's turn in MuJoCo's compile ([`CompileTurns`]).
 ///
 /// # Errors
 ///
 /// An orientation alternative `ResolveOrientation` refuses on a fused body,
 /// or on a geom, site or child body whose turn the fusion composes: MuJoCo
 /// compiles each before it fuses (`user_model.cc:4931-4938`).
-pub fn apply_fusestatic(mjcf: &mut MjcfModel) -> Result<()> {
+pub fn apply_fusestatic(mjcf: &mut MjcfModel) -> Result<CompileTurns> {
     // Collect names of bodies referenced by constraints, sensors, actuators, skins
     let mut protected: HashSet<String> = HashSet::new();
 
@@ -142,8 +143,72 @@ pub fn apply_fusestatic(mjcf: &mut MjcfModel) -> Result<()> {
         }
     }
 
-    // Recursively fuse static children in the worldbody tree.
-    fuse_static_body(&mut mjcf.worldbody, &protected, &mjcf.compiler)
+    // Recursively fuse static children in the worldbody tree, each body's
+    // turn and its geoms' moved beside it.
+    let mut name = Vec::new();
+    let mut turns = Turns::number(&mjcf.worldbody, &mut name);
+    fuse_static_body(&mut mjcf.worldbody, &mut turns, &protected, &mjcf.compiler)?;
+    let mut compile_turns = CompileTurns {
+        body: Vec::new(),
+        geom: Vec::new(),
+        name,
+    };
+    turns.flatten(&mut compile_turns);
+    Ok(compile_turns)
+}
+
+/// Where MuJoCo 3.5.0 checks each body and geom of a fused tree: its turn,
+/// the place in the tree's preorder, before fusion, of the body it was
+/// written in (the world's 0). MuJoCo compiles every body, its geoms
+/// included, before it fuses (`user_model.cc:4931-4938`), so a geom moved
+/// into an earlier body is checked at its own body's turn
+/// (`ModelBuilder::check_bodies`).
+pub struct CompileTurns {
+    /// Each body of the fused tree, in the builder's order (the world's
+    /// first, then preorder), its turn.
+    pub body: Vec<usize>,
+    /// Each geom, in the builder's order (body by body, as written), its
+    /// body's turn.
+    pub geom: Vec<usize>,
+    /// Each turn's body, its name as written.
+    pub name: Vec<String>,
+}
+
+/// A body's turn, its geoms' and its children's, moved as fusion moves the
+/// body's own ([`fuse_static_body`]).
+struct Turns {
+    turn: usize,
+    geoms: Vec<usize>,
+    children: Vec<Turns>,
+}
+
+impl Turns {
+    /// `body`'s tree numbered in preorder from `name.len()`, each body's
+    /// name pushed at its turn.
+    fn number(body: &MjcfBody, name: &mut Vec<String>) -> Self {
+        let turn = name.len();
+        name.push(body.name.clone());
+        let children = body
+            .children
+            .iter()
+            .map(|child| Self::number(child, name))
+            .collect();
+        Self {
+            turn,
+            geoms: vec![turn; body.geoms.len()],
+            children,
+        }
+    }
+
+    /// Each body's turn and its geoms' into `out`, in the order the builder
+    /// makes them (`ModelBuilder::process_body`).
+    fn flatten(&self, out: &mut CompileTurns) {
+        out.body.push(self.turn);
+        out.geom.extend(&self.geoms);
+        for child in &self.children {
+            child.flatten(out);
+        }
+    }
 }
 
 /// Recursively fuse jointless, unprotected children into their parent body.
@@ -152,12 +217,14 @@ pub fn apply_fusestatic(mjcf: &mut MjcfModel) -> Result<()> {
 /// to the parent, adjusting positions and orientations by the fused body's frame.
 fn fuse_static_body(
     parent: &mut MjcfBody,
+    turns: &mut Turns,
     protected: &HashSet<String>,
     compiler: &MjcfCompiler,
 ) -> Result<()> {
+    debug_assert_eq!(parent.children.len(), turns.children.len());
     // Depth-first: fuse within each child first
-    for child in &mut parent.children {
-        fuse_static_body(child, protected, compiler)?;
+    for (child, child_turns) in parent.children.iter_mut().zip(&mut turns.children) {
+        fuse_static_body(child, child_turns, protected, compiler)?;
     }
 
     // Now fuse static children into this parent
@@ -168,6 +235,7 @@ fn fuse_static_body(
 
         if is_static {
             let mut removed = parent.children.remove(i);
+            let removed_turns = turns.children.remove(i);
             let body_pos = removed.pos;
             let body_quat = resolve_orientation(
                 removed.quat,
@@ -262,11 +330,14 @@ fn fuse_static_body(
 
             // Transfer geoms and sites to parent
             parent.geoms.extend(removed.geoms);
+            turns.geoms.extend(removed_turns.geoms);
             parent.sites.extend(removed.sites);
 
             // Splice grandchildren at position i
-            for (j, gc) in removed.children.into_iter().enumerate() {
+            let grandchildren = removed.children.into_iter().zip(removed_turns.children);
+            for (j, (gc, gc_turns)) in grandchildren.enumerate() {
                 parent.children.insert(i + j, gc);
+                turns.children.insert(i + j, gc_turns);
             }
             // Don't increment i — re-check from the same position
         } else {

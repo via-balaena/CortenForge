@@ -42,7 +42,10 @@
 //! before frames, as MuJoCo's reader meets them. `FRAME_AND_COMPOSITE_COSTS`
 //! pins the orders found unlike MuJoCo's (ledger L353). RL-7c's check of a
 //! geom's condim (book L25) runs with RL-6d's, geom by geom from the
-//! world's, before its plane check; a pair's condim, then its geoms, after
+//! world's, before its plane check; a geom `fusestatic` moves into an
+//! earlier body is checked, its condim, plane and mass, at its own body's
+//! turn, as MuJoCo compiles every body before it fuses; a pair's condim,
+//! then its geoms, after
 //! the assets and before the sizes, where MuJoCo compiles pairs, and a
 //! `<size>` `nuser_` below -1 after the names, where its reader refuses it;
 //! `CONDIM_COSTS` pins the faults this crate meets first that MuJoCo meets
@@ -61,7 +64,8 @@
 //! 1's documents, RA and RW) set a fault in a frame or a cable beside
 //! another. RL-7c's (measured 2026-11-04) set a geom's or a pair's condim,
 //! a pair's unknown geom, a `nuser_` below -1 or a flex's condim beside
-//! another.
+//! another; its review's first round's, a geom `fusestatic` moves beside an
+//! earlier body's fault.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1234,6 +1238,72 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><worldbody><body name="s" pos="0 0 0.105"><freejoint/><geom name="gs" type="sphere" size="0.1" condim="3"/></body><body name="v0" pos="-0.5 -0.5 0"/><body name="v1" pos="0.5 -0.5 0"/><body name="v2" pos="0.5 0.5 0"/><body name="v3" pos="-0.5 0.5 0"/><body name="c"><freejoint/></body></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2 0 2 3" radius="0.01"><contact condim="7"/></flex></deformable></mujoco>"#,
         "mass and inertia of moving bodies must be larger than mjMINVAL",
         "mass and inertia of moving bodies must be larger than mjMINVAL (body 'c')",
+    ),
+    (
+        "fusestatic: a plane in a moving body, then a fused body's condim",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/><geom name="gp" type="plane" size="1 1 .1"/></body><body name="s" pos="2 0 0"><geom name="gs" size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "plane only allowed in static bodies",
+        "plane only allowed in static bodies (geom 'gp' in body 'a')",
+    ),
+    (
+        "fusestatic: a moving body's condim, then a fused body's",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1" condim="5"/></body><body name="s" pos="2 0 0"><geom name="gs" size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'ga' in body 'a')",
+    ),
+    (
+        "fusestatic: a negative density, then a fused body's condim",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1" density="-1"/></body><body name="s" pos="2 0 0"><geom name="gs" size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "mass, inertia or density are negative in geom",
+        "mass, inertia or density are negative in geom (geom 'ga' in body 'a')",
+    ),
+    (
+        "fusestatic: a child's plane, then the condim of a body fused into the parent",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/><body name="c" pos="0 0 .3"><joint type="hinge"/><geom name="gc" type="plane" size="1 1 .1"/></body><body name="s" pos="0 .3 0"><geom name="gs" size=".1" condim="2"/></body></body></worldbody></mujoco>"#,
+        "plane only allowed in static bodies",
+        "plane only allowed in static bodies (geom 'gc' in body 'c')",
+    ),
+    (
+        "fusestatic: a fused body's condim, then a later body's plane",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="2 0 0"><geom name="gs" size=".1" condim="2"/></body><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/><geom name="gp" type="plane" size="1 1 .1"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'gs' in body 's')",
+    ),
+    (
+        "fusestatic: a joint's axis, then a fused body's condim",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><joint type="hinge" axis="0 0 0"/><geom name="ga" size=".1"/></body><body name="s" pos="2 0 0"><geom name="gs" size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'a_joint0' in body 'a')",
+    ),
+    (
+        "fusestatic: a fullinertia, then a fused body's condim",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><inertial pos="0 0 0" mass="1" fullinertia="1 1 1 0 0 0" diaginertia="1 1 1"/><geom name="ga" size=".1"/></body><body name="s" pos="2 0 0"><geom name="gs" size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "fullinertia and diagonal inertia cannot both be specified",
+        "invalid fullinertia on <inertial>: fullinertia and diagonal inertia cannot both be specified (body 'a')",
+    ),
+    (
+        "fusestatic: a joint's axis, then a plane fused into its body",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><joint type="hinge" axis="0 0 0"/><geom name="ga" size=".1"/><body name="s" pos="0 0 .3"><geom name="gp" type="plane" size="1 1 .1"/></body></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'a_joint0' in body 'a')",
+    ),
+    (
+        "fusestatic: a joint's axis, then a negative density fused into its body",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><joint type="hinge" axis="0 0 0"/><geom name="ga" size=".1"/><body name="s" pos="0 0 .3"><geom name="gn" size=".1" density="-1"/></body></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'a_joint0' in body 'a')",
+    ),
+    (
+        "fusestatic: two fused bodies' condims, the first fused into a moving body",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/><body name="s1" pos="0 0 .3"><geom name="g1" size=".1" condim="2"/></body></body><body name="s2" pos="2 0 0"><geom name="g2" size=".1" condim="5"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'g1' in body 's1')",
+    ),
+    (
+        "fusestatic: a condim fused through two bodies, then a later joint's axis",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="2 0 0"><geom name="gs" size=".1"/><body name="t" pos="0 0 .3"><geom name="gt" size=".1" condim="2"/></body></body><body name="a" pos="0 0 1"><joint type="hinge" axis="0 0 0"/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'gt' in body 't')",
     ),
 ];
 
