@@ -3217,3 +3217,10 @@ ea1543e4f1469866	sim/L0/mjcf/tests/condim.rs:111
 f9d520c8669450cb	sim/L0/mjcf/tests/condim.rs:96
 6e3cc74d7d8cb7c7	sim/L0/mjcf/tests/condim.rs:187
 f5d670fa10f158a4	sim/L0/mjcf/tests/refusal_order.rs:1172
+31bace11e35e2d03	sim/L0/mjcf/tests/contact_pairs.rs:59
+6def76e400ccf072	sim/L0/mjcf/tests/contact_pairs.rs:55
+7b9dc9dda9e13473	sim/L0/mjcf/tests/contact_pairs.rs:47
+a52177167d0a85a8	sim/L0/mjcf/tests/contact_pairs.rs:51
+c1704aae6272e8f3	sim/L0/mjcf/tests/contact_pairs.rs:90
+c4d70ed475dab93d	sim/L0/mjcf/tests/contact_pairs.rs:75
+db368462b6cbc012	sim/L0/mjcf/tests/contact_pairs.rs:63
