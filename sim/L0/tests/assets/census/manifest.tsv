@@ -3269,3 +3269,10 @@ dede2afcb5e45fea	sim/L0/mjcf/tests/refusal_order.rs:1367
 e4d58df7443831ca	sim/L0/mjcf/tests/refusal_order.rs:1509
 e79f3c6868e549ee	sim/L0/mjcf/tests/refusal_order.rs:1337
 fd93c71f51acdfed	sim/L0/mjcf/tests/refusal_order.rs:1532
+2494a7efba16b204	sim/L0/mjcf/tests/condim.rs:213
+2494a7efba16b204	sim/L0/mjcf/tests/refusal_order.rs:1413
+2e8456331417d35e	sim/L0/mjcf/tests/condim.rs:176
+85aa274b03f04557	sim/L0/mjcf/tests/refusal_order.rs:1401
+8828d21af4003fda	sim/L0/mjcf/tests/refusal_order.rs:1419
+a5c5df6b9944a616	sim/L0/mjcf/tests/refusal_order.rs:1395
+f26179fd4c423c05	sim/L0/mjcf/tests/refusal_order.rs:1407

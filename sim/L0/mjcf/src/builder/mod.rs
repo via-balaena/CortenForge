@@ -357,8 +357,10 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // an automatic range that does not increase (`D-AUTO-RANGE`, which
     // MuJoCo leaves unlimited), an `<inertial>`'s negative mass or moment
     // (`D-INERTIAL-NEGATIVE`, which MuJoCo raises to its bounds), a flex's
-    // condim outside 1 to 6 (`D-FLEX-CONDIM-RANGE`, which MuJoCo loads); every
-    // check above has taken MuJoCo's value.
+    // condim outside 1 to 6 (`D-FLEX-CONDIM-RANGE`, which MuJoCo loads), a
+    // pair naming a geom "" where the model has an unnamed geom
+    // (`D-PAIR-NO-GEOM`, which MuJoCo binds to it); every check above has
+    // taken MuJoCo's value.
     joint::check_ball_then_slide(&model)?;
     tendon::check_fixed_tendon_armature(&model)?;
     if let Some(error) = automatic {
@@ -368,6 +370,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         return Err(error);
     }
     flex::check_flex_condims(&mjcf.flex)?;
+    contact::check_pair_geom_names(&mjcf.contact)?;
 
     Ok(model)
 }

@@ -4,9 +4,10 @@
 //! condim in contact pair', `mjCPair::Compile`, `:5666-5669`), whether written
 //! on the element, by its class, the root class, a composite's template,
 //! inside a frame or on a body `fusestatic` fuses. Each geom and pair
-//! document was run on MuJoCo 3.5.0 as written (2026-11-04): every refused
-//! one is refused there for the same element, every loaded one loads there
-//! with the same condims.
+//! condim document was run on MuJoCo 3.5.0 as written (2026-11-04): every
+//! refused one is refused there for the same element, every loaded one loads
+//! there with the same condims. A pair naming no geom, which MuJoCo binds to
+//! an unnamed geom, is refused here (registry `D-PAIR-NO-GEOM`).
 //!
 //! A flex's condim, which MuJoCo does not check, is refused outside 1 to 6
 //! (ledger L234, registry `D-FLEX-CONDIM-RANGE`); MuJoCo loads each of its
@@ -161,7 +162,9 @@ fn a_pair_s_valid_condims_load_as_written() {
 
 /// A pair whose `geom1` is empty or not written is refused (registry
 /// `D-PAIR-NO-GEOM`), where MuJoCo 3.5.0 binds it to an unnamed geom of
-/// the model (measured on these two documents: the body's unnamed sphere).
+/// the model (measured on these documents: the body's unnamed sphere, or
+/// the geom written `name=""`); an empty one after the keyframes, so that
+/// MuJoCo's own fault beside it is named.
 #[test]
 fn a_pair_naming_no_geom_is_refused() {
     let empty = load_model(
@@ -169,6 +172,11 @@ fn a_pair_naming_no_geom_is_refused() {
     )
     .expect_err("an empty geom name");
     assert_eq!(empty.to_string(), "unknown geom '' (pair #0)");
+    let empty_geom2 = load_model(
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".2"/></body></worldbody><contact><pair geom1="floor" geom2=""/></contact></mujoco>"#,
+    )
+    .expect_err("an empty geom2");
+    assert_eq!(empty_geom2.to_string(), "unknown geom '' (pair #0)");
     let unwritten = load_model(
         r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".2"/></body></worldbody><contact><pair geom2="g"/></contact></mujoco>"#,
     )
@@ -179,20 +187,33 @@ fn a_pair_naming_no_geom_is_refused() {
             .starts_with("required attribute missing: 'geom1' on <pair>"),
         "{unwritten}"
     );
-    // Refused where the pairs are checked, before a later body's size, which
-    // MuJoCo 3.5.0 names here (measured), having bound the pair.
+    // A later body's size 0, which MuJoCo 3.5.0 names here (measured),
+    // having bound the pair, is named first.
     let before_a_size = load_model(
         r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".2"/></body><body name="c"><freejoint/><geom name="z" size="0"/></body></worldbody><contact><pair geom1="" geom2="g"/></contact></mujoco>"#,
     )
     .expect_err("an empty geom name beside a size 0");
-    assert_eq!(before_a_size.to_string(), "unknown geom '' (pair #0)");
+    assert_eq!(
+        before_a_size.to_string(),
+        "invalid size on <geom>: size 0 must be positive (geom 'z' in body 'c')"
+    );
     // A geom written `name=""` is unnamed here as in MuJoCo, which binds the
     // pair to it (measured).
     let written_empty = load_model(
         r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom name="" size=".2"/></body><body name="c"><freejoint/><geom name="z" size="0"/></body></worldbody><contact><pair geom1="" geom2="g"/></contact></mujoco>"#,
     )
     .expect_err("an empty geom name beside a geom named empty");
-    assert_eq!(written_empty.to_string(), "unknown geom '' (pair #0)");
+    assert_eq!(
+        written_empty.to_string(),
+        "invalid size on <geom>: size 0 must be positive (geom 'z' in body 'c')"
+    );
+    // With every geom named, MuJoCo refuses the pair too, where it compiles
+    // pairs ('geom '' not found', measured): before the later size here.
+    let all_named = load_model(
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body><body name="c" pos="1 0 1"><freejoint/><geom name="z" size="0"/></body></worldbody><contact><pair geom1="" geom2="ga"/></contact></mujoco>"#,
+    )
+    .expect_err("an empty geom name, every geom named");
+    assert_eq!(all_named.to_string(), "unknown geom '' (pair #0)");
 }
 
 /// `(condim, document, this crate's error)`: a sphere on a flex sheet whose

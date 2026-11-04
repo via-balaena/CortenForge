@@ -476,19 +476,29 @@ pub fn check_user_sizes(model: &MjcfModel) -> Result<()> {
 /// Each `<pair>` in order, as MuJoCo 3.5.0 compiles pairs, after the names
 /// and the assets and before any body (`user_model.cc:4903`): its condim,
 /// one of 1, 3, 4 or 6 (`mjCPair::Compile`, `user_objects.cc:5666-5669`),
-/// then its two geoms, which the model names (`:5617-5636`).
+/// then its two geoms, which the model names (`:5618-5638`). A geom named
+/// "", which MuJoCo binds to an unnamed geom (registry `D-PAIR-NO-GEOM`), is
+/// refused here only where the model has none, as MuJoCo refuses it; else
+/// after the keyframes (`builder::contact::check_pair_geom_names`).
 fn check_pairs(model: &MjcfModel) -> Result<()> {
     let geoms: HashSet<&str> = bodies_in_order(&model.worldbody)
         .into_iter()
         .flat_map(|(_, _, body)| &body.geoms)
         .filter_map(|geom| geom.name.as_deref().filter(|name| !name.is_empty()))
         .collect();
+    let unnamed = bodies_in_order(&model.worldbody)
+        .into_iter()
+        .flat_map(|(_, _, body)| &body.geoms)
+        .any(|geom| geom.name.as_deref().is_none_or(str::is_empty));
     for (i, pair) in model.contact.pairs.iter().enumerate() {
         let at = || Location::nth(ElementKind::Pair, pair.name.as_deref(), i);
         if pair.condim.is_some_and(|c| !matches!(c, 1 | 3 | 4 | 6)) {
             return Err(MjcfError::invalid_model("invalid condim in contact pair").at(at()));
         }
         for geom in [&pair.geom1, &pair.geom2] {
+            if geom.is_empty() && unnamed {
+                continue;
+            }
             if !geoms.contains(geom.as_str()) {
                 return Err(MjcfError::undefined(ElementKind::Geom, geom).at(at()));
             }

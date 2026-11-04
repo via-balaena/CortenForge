@@ -32,6 +32,12 @@ impl ModelBuilder {
             let pair = mjcf_pair;
             let at = || Location::nth(ElementKind::Pair, pair.name.as_deref(), i);
 
+            // A geom named "" where the model has an unnamed geom, which
+            // MuJoCo binds to it, is refused after the keyframes
+            // ([`check_pair_geom_names`]).
+            if pair.geom1.is_empty() || pair.geom2.is_empty() {
+                continue;
+            }
             // Validation found both (`check_pairs`); `discardvisual` may
             // have removed one since (ledger L342).
             let g1 = *self
@@ -120,6 +126,29 @@ impl ModelBuilder {
 
         Ok(())
     }
+}
+
+/// A pair naming a geom "", which MuJoCo 3.5.0 binds to an unnamed geom of
+/// the model (registry `D-PAIR-NO-GEOM`): refused, the first in order, after
+/// the keyframes with the other refusals MuJoCo does not make. Where the
+/// model has no unnamed geom, MuJoCo refuses the pair too and validation has
+/// refused it where the pairs are checked.
+pub fn check_pair_geom_names(contact: &MjcfContact) -> Result<()> {
+    for (i, pair) in contact.pairs.iter().enumerate() {
+        if let Some(geom) = [&pair.geom1, &pair.geom2]
+            .into_iter()
+            .find(|g| g.is_empty())
+        {
+            return Err(
+                MjcfError::undefined(ElementKind::Geom, geom).at(Location::nth(
+                    ElementKind::Pair,
+                    pair.name.as_deref(),
+                    i,
+                )),
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

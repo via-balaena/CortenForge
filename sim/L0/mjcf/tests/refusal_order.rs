@@ -51,8 +51,11 @@
 //! as the parser reads it, and a model built in code has its checked before
 //! anything else: MuJoCo's reader reads `<size>` before any other section;
 //! `NUSER_COSTS` pins a fault the parser meets before a later `<size>`. A
-//! flex's condim outside 1 to 6, which MuJoCo loads, is refused after the
-//! keyframes (`D-FLEX-CONDIM-RANGE`).
+//! flex's condim outside 1 to 6, which MuJoCo loads, and a pair naming a
+//! geom "" where the model has an unnamed geom, which MuJoCo binds to it,
+//! are refused after the keyframes (`D-FLEX-CONDIM-RANGE`,
+//! `D-PAIR-NO-GEOM`); where it has none, MuJoCo refuses that pair where it
+//! compiles pairs, and so does this crate.
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, with the reason its row gives as MuJoCo's (RL-6a's measured
@@ -67,8 +70,9 @@
 //! another. RL-7c's (measured 2026-11-04) set a geom's or a pair's condim,
 //! a pair's unknown geom, a `nuser_` below -1 or a flex's condim beside
 //! another; its review's first round's, a geom `fusestatic` moves beside an
-//! earlier body's fault, and a `nuser_` below -1 beside a repeated name, a
-//! class's fault or a parse fault.
+//! earlier body's fault, a `nuser_` below -1 beside a repeated name, a
+//! class's fault or a parse fault, and a pair naming a geom "" beside
+//! another fault.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1385,6 +1389,36 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><size nuser_cam="-2"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="g" size=".1"/><geom name="g" size=".1"/></body></worldbody></mujoco>"#,
         "nuser_cam must be >= -1",
         "invalid nuser_cam on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a pair naming an empty geom, then a joint's axis",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".2"/></body><body name="c"><joint type="hinge" axis="0 0 0"/><geom size=".1"/></body></worldbody><contact><pair geom1="" geom2="g"/></contact></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'c_joint0' in body 'c')",
+    ),
+    (
+        "a pair naming an empty geom, then a keyframe",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".2"/></body></worldbody><contact><pair geom1="" geom2="g"/></contact><keyframe><key qpos="1 2 3 4 5 6 7 8"/></keyframe></mujoco>"#,
+        "invalid qpos size, expected 7, got 8",
+        "invalid qpos on <key>: length 8 does not match 7 (key #0)",
+    ),
+    (
+        "a pair naming an empty geom, then an actuator's joint",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".2"/></body></worldbody><contact><pair geom1="" geom2="g"/></contact><actuator><motor joint="nope"/></actuator></mujoco>"#,
+        "unknown transmission target 'nope' for actuator id = 0",
+        "unknown joint 'nope' (actuator #0)",
+    ),
+    (
+        "a pair naming an empty geom, every geom named, then a size",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body><body name="c" pos="1 0 1"><freejoint/><geom name="z" size="0"/></body></worldbody><contact><pair geom1="" geom2="ga"/></contact></mujoco>"#,
+        "geom '' not found in collision 0",
+        "unknown geom '' (pair #0)",
+    ),
+    (
+        "a pair's empty geom2, every geom named, then a keyframe",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body></worldbody><contact><pair geom1="ga" geom2=""/></contact><keyframe><key qpos="0 0 0 1 0 0 0 9"/></keyframe></mujoco>"#,
+        "geom '' not found in collision 0",
+        "unknown geom '' (pair #0)",
     ),
 ];
 
