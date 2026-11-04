@@ -40,7 +40,10 @@
 //! it, before the next body's; all before any fault the builder finds
 //! outside frames. A composite's other faults are met when it is made,
 //! before frames, as MuJoCo's reader meets them. `FRAME_AND_COMPOSITE_COSTS`
-//! pins the orders found unlike MuJoCo's (ledger L353).
+//! pins the orders found unlike MuJoCo's (ledger L353). RL-7c's check of a
+//! geom's condim (book L25) runs with RL-6d's, geom by geom from the
+//! world's, before its plane check; `CONDIM_COSTS` pins the faults this
+//! crate meets first that MuJoCo meets after it.
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, for the fault its expected error names (RL-6a's measured
@@ -52,6 +55,7 @@
 //! reference and an axis MuJoCo refuses too, and beside an option this crate
 //! refuses and MuJoCo does not. RL-7b's (measured 2026-11-03; review round
 //! 1's documents, RA and RW) set a fault in a frame or a cable beside
+//! another. RL-7c's (measured 2026-11-04) set a geom's condim beside
 //! another.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -1070,6 +1074,60 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "fromto points too close in geom",
         "invalid fromto on <geom>: fromto points too close (geom 'vG1' in body 'vB_1')",
     ),
+    (
+        "condim then its plane",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><geom name="g" type="plane" size="1 1 .1" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'g' in body 'b')",
+    ),
+    (
+        "condim then its negative mass",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><geom name="g" size=".1" mass="-1" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'g' in body 'b')",
+    ),
+    (
+        "condim then its body's axis",
+        r#"<mujoco><worldbody><body name="b"><joint type="hinge" axis="0 0 0"/><geom name="g" size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'g' in body 'b')",
+    ),
+    (
+        "an earlier body's axis then condim",
+        r#"<mujoco><worldbody><body name="a"><joint type="hinge" axis="0 0 0"/><geom size=".1"/></body><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'a_joint0' in body 'a')",
+    ),
+    (
+        "condim then a massless moving body",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body><body name="c"><joint type="slide"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'g' in body 'b')",
+    ),
+    (
+        "condim then a keyframe",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><keyframe><key qpos="0 0"/></keyframe></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'g' in body 'b')",
+    ),
+    (
+        "its user data then condim",
+        r#"<mujoco><size nuser_geom="0"/><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2" user="1"/></body></worldbody></mujoco>"#,
+        "user has more values than nuser_geom in geom 'g' (id = 0)",
+        "invalid user on <geom>: user data exceeds nuser_geom=0",
+    ),
+    (
+        "condim then a free joint below the top",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/><body name="c"><freejoint/><geom size=".1"/></body></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'g' in body 'b')",
+    ),
+    (
+        "the world's condim then a body's plane",
+        r#"<mujoco><worldbody><geom name="w" size=".1" condim="2"/><body name="b"><freejoint/><geom type="plane" size="1 1 .1"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'w' in body 'world')",
+    ),
 ];
 
 #[test]
@@ -1174,6 +1232,93 @@ const FRAME_AND_COMPOSITE_COSTS: &[(&str, &str, &str, &str)] = &[
 fn a_fault_in_a_frame_or_a_composite_beside_another_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in FRAME_AND_COMPOSITE_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, one a geom's condim, where this crate names the other: the
+/// condim is checked with the checks RL-6a added, after every check this
+/// crate makes before building the model, and MuJoCo 3.5.0 checks it
+/// before these (ledger L353). `(what, document, MuJoCo's reason, this
+/// crate's error)`, measured 2026-11-04.
+const CONDIM_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "condim then its size",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><geom name="g" size="0" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid size on <geom>: size 0 must be positive (geom 'g' in body 'b')",
+    ),
+    (
+        "condim then a later body's size",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body><body name="c"><freejoint/><geom name="z" size="0"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid size on <geom>: size 0 must be positive (geom 'z' in body 'c')",
+    ),
+    (
+        "condim then its fromto",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><geom name="g" size=".1" fromto="0 0 0 0 0 1" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid fromto on <geom>: fromto requires a capsule, cylinder, ellipsoid or box (geom 'g' in body 'b')",
+    ),
+    (
+        "condim then a later frame's xyaxes",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body><body name="c"><freejoint/><geom size=".1"/><frame xyaxes="1 0 0 1 0 0"><geom size=".1"/></frame></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid xyaxes on <frame>: yaxis too small (frame in body 'c')",
+    ),
+    (
+        "condim then a tendon's joint",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><tendon><fixed name="t"><joint joint="nope" coef="1"/></fixed></tendon></mujoco>"#,
+        "invalid condim in geom",
+        "unknown joint 'nope' (tendon 't')",
+    ),
+    (
+        "condim then an actuator's joint",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><actuator><motor joint="nope"/></actuator></mujoco>"#,
+        "invalid condim in geom",
+        "unknown joint 'nope' (actuator #0)",
+    ),
+    (
+        "condim then a sensor's joint",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><sensor><jointpos joint="nope"/></sensor></mujoco>"#,
+        "invalid condim in geom",
+        "unknown joint 'nope' (sensor #0)",
+    ),
+    (
+        "condim then an equality's body",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><equality><connect body1="nope" body2="b" anchor="0 0 0"/></equality></mujoco>"#,
+        "invalid condim in geom",
+        "unknown body 'nope' (equality #0)",
+    ),
+    (
+        "condim then an exclude's body",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><contact><exclude body1="nope" body2="b"/></contact></mujoco>"#,
+        "invalid condim in geom",
+        "unknown body 'nope' (exclude #0)",
+    ),
+    (
+        "the world's condim then a body's size",
+        r#"<mujoco><worldbody><geom name="w" size=".1" condim="2"/><body name="b"><freejoint/><geom name="z" size="0"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid size on <geom>: size 0 must be positive (geom 'z' in body 'b')",
+    ),
+    (
+        "the world's condim then a body's user data",
+        r#"<mujoco><size nuser_body="0"/><worldbody><geom name="w" size=".1" condim="2"/><body name="b" user="1"><freejoint/><geom size=".1"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid user on <body>: user data exceeds nuser_body=0",
+    ),
+];
+
+#[test]
+fn a_geom_s_condim_beside_another_fault_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in CONDIM_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),

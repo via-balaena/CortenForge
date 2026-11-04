@@ -1226,11 +1226,9 @@ fn a_frame_composes_a_pose_as_mujocos_frameaccum() {
 
 /// A5 §3.7's frame cases (book L24's must-fail): a fault inside a frame,
 /// refused for the fault MuJoCo 3.5.0 refuses it for. `(case, document,
-/// MuJoCo's words, this crate's where they are not MuJoCo's)`: four are
+/// MuJoCo's words, this crate's where they are not MuJoCo's)`: five are
 /// refused in MuJoCo's words; a `NaN` size (at parse, registry
-/// `D-NONFINITE`) and a size 0 in this crate's. Each was refused at this
-/// pull request's parent (measured). The seventh, a geom's condim 2 in a
-/// frame, loads here and is book L25's.
+/// `D-NONFINITE`) and a size 0 in this crate's.
 const REFUSED_IN_FRAMES: &[(&str, &str, &str, Option<&str>)] = &[
     (
         "s37_nan_size",
@@ -1266,6 +1264,12 @@ const REFUSED_IN_FRAMES: &[(&str, &str, &str, Option<&str>)] = &[
         "s37_free_below_top",
         r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><body name="c"><freejoint/><geom size=".1"/></body></frame></body></worldbody></mujoco>"#,
         "free joint can only be used on top level",
+        None,
+    ),
+    (
+        "s37_condim_2",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><frame><geom name="g" size=".1" condim="2"/></frame></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
         None,
     ),
 ];

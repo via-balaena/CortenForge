@@ -350,20 +350,21 @@ impl ModelBuilder {
         compute_geom_mass(geom, mesh.as_ref(), hfield)
     }
 
-    /// MuJoCo 3.5.0's checks of each body, body by body in its order, as
-    /// `mjCBody::Compile` makes them: a `fullinertia` beside a diagonal
-    /// inertia (`user_objects.cc:2408-2409`); geom by geom, a plane only in a
-    /// static body, one with no joint on it or a body above it
-    /// (`mjCGeom::Compile`, `:3666-3668`), then a negative mass or density
+    /// MuJoCo 3.5.0's checks of each body, body by body in its order from the
+    /// world, as `mjCBody::Compile` makes them: a `fullinertia` beside a
+    /// diagonal inertia (`user_objects.cc:2408-2409`); geom by geom, a condim
+    /// other than 1, 3, 4 or 6 (`mjCGeom::Compile`, `:3651-3654`), a plane
+    /// only in a static body, one with no joint on it or a body above it
+    /// (`:3666-3668`), then a negative mass or density
     /// ([`Self::negative_mass`], `:3805-3807`); a mass or moment negative
     /// after the bounds (`:2457-2459`), then the moments' triangle
     /// ([`Self::apply_mass_pipeline`], `:2461-2469`); then the body's joints
-    /// ([`Self::check_body_joints`]). The caller runs it with the checks
-    /// RL-6a added, after every check this crate makes before building the
-    /// model.
+    /// ([`Self::check_body_joints`]). The world's geoms can fail only their
+    /// condim. The caller runs it with the checks RL-6a added, after every
+    /// check this crate makes before building the model.
     pub(crate) fn check_bodies(&self) -> Result<()> {
         let mut moving = vec![false; self.body_parent.len()];
-        for body in 1..self.body_parent.len() {
+        for body in 0..self.body_parent.len() {
             moving[body] = self.body_jnt_num[body] > 0 || moving[self.body_parent[body]];
             let faults = self.body_faults[body];
             if faults.full_and_diagonal {
@@ -380,6 +381,9 @@ impl ModelBuilder {
                     Location::nth(ElementKind::Geom, self.geom_name[geom].as_deref(), geom)
                         .within_nth(ElementKind::Body, self.body_name[body].as_deref(), body)
                 };
+                if !matches!(self.geom_condim[geom], 1 | 3 | 4 | 6) {
+                    return Err(MjcfError::invalid_model("invalid condim in geom").at(at()));
+                }
                 if moving[body] && self.geom_type[geom] == GeomType::Plane {
                     return Err(
                         MjcfError::invalid_model("plane only allowed in static bodies").at(at()),
