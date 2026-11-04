@@ -2,7 +2,7 @@
 //!
 //! Converts MJCF `<contact>` elements (pairs and excludes) into Model arrays.
 //! Handles geom/body name resolution, a pair's unwritten values from its class
-//! or MuJoCo's pair defaults, and deduplication with last-wins semantics.
+//! or MuJoCo's pair defaults, and every pair kept, a repeated one too.
 
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
 use crate::error::{ElementKind, Location, MjcfError, Result};
@@ -17,8 +17,8 @@ impl ModelBuilder {
     ///
     /// For each `<pair>`: resolve geom names to indices and build a
     /// `ContactPair` whose unwritten values are its class's, else MuJoCo's
-    /// pair defaults. Duplicate pairs (same geom pair) use last-wins
-    /// semantics.
+    /// pair defaults. A pair on the geoms of an earlier one is kept beside
+    /// it, as MuJoCo 3.5.0 keeps it.
     ///
     /// For each `<exclude>`: resolve body names to indices and insert into the
     /// exclude set.
@@ -79,19 +79,11 @@ impl ModelBuilder {
                 gap,
             };
 
-            // Deduplicate: canonical key (min, max) for symmetry. The set holds
-            // exactly the keys of `contact_pairs`, so a key already in it has
-            // its pair there, which the last one replaces.
-            let key = (g1.min(g2), g1.max(g2));
-            if self.contact_pair_set.insert(key) {
-                self.contact_pairs.push(contact_pair);
-            } else if let Some(existing) = self
-                .contact_pairs
-                .iter_mut()
-                .find(|p| (p.geom1.min(p.geom2), p.geom1.max(p.geom2)) == key)
-            {
-                *existing = contact_pair;
-            }
+            // Each pair is kept, as MuJoCo keeps it, and each makes its own
+            // contacts; the set holds a geom pair's key once, for the
+            // automatic contacts an explicit pair replaces.
+            self.contact_pair_set.insert((g1.min(g2), g1.max(g2)));
+            self.contact_pairs.push(contact_pair);
         }
 
         // Process excludes
@@ -203,11 +195,11 @@ mod tests {
         );
     }
 
-    /// Two `<pair>` elements with the same geom pair (in either order) are
-    /// deduplicated under the canonical (min, max) key with last-wins
-    /// semantics; only the most-recently-set attributes survive.
+    /// Two `<pair>` elements on the same geoms (in either order) are both
+    /// kept, in the order written, as MuJoCo 3.5.0 keeps them (measured:
+    /// npair 2, condims 3 and 6).
     #[test]
-    fn pair_dedup_last_wins_under_canonical_key() {
+    fn repeated_pairs_both_kept() {
         let xml = r#"
             <mujoco model="m">
                 <worldbody>
@@ -221,8 +213,9 @@ mod tests {
             </mujoco>
         "#;
         let model = load_model(xml).expect("load");
-        assert_eq!(model.contact_pairs.len(), 1, "duplicates collapsed");
-        assert_eq!(model.contact_pairs[0].condim, 6, "last-wins");
+        let condims: Vec<i32> = model.contact_pairs.iter().map(|p| p.condim).collect();
+        assert_eq!(condims, [3, 6]);
+        assert_eq!(model.contact_pair_set.len(), 1);
     }
 
     /// `<exclude>` resolves both body names and inserts under a canonical

@@ -3224,3 +3224,6 @@ a52177167d0a85a8	sim/L0/mjcf/tests/contact_pairs.rs:51
 c1704aae6272e8f3	sim/L0/mjcf/tests/contact_pairs.rs:90
 c4d70ed475dab93d	sim/L0/mjcf/tests/contact_pairs.rs:75
 db368462b6cbc012	sim/L0/mjcf/tests/contact_pairs.rs:63
+00e16c83a76796ed	sim/L0/mjcf/tests/contact_pairs.rs:127
+0fe24a9303cfcba4	sim/L0/mjcf/tests/contact_pairs.rs:115
+c73322fe722675f3	sim/L0/mjcf/tests/contact_pairs.rs:141

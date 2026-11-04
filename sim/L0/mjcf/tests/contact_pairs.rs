@@ -102,3 +102,70 @@ fn a_pair_s_class_values_lie_over_the_defaults() {
         )
     );
 }
+
+/// Each `<pair>` is kept, one on the geoms of an earlier pair too, in either
+/// geom order or another `<contact>` block (book L26, ledger L348), and
+/// each makes its own contacts: MuJoCo 3.5.0's pairs and, after one forward
+/// pass, its contacts, `(geom1, geom2, dim)` in its order (measured).
+#[test]
+fn repeated_pairs_are_each_kept_and_each_collides() {
+    let cases: [(&str, &str, &[i32], &[(&str, &str, usize)]); 3] = [
+        (
+            "two, in reversed geom order",
+            r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="a" pos="0 0 0.09"><freejoint/><geom name="ga" type="sphere" size="0.1"/></body><body name="b" pos="0.5 0 0.09"><freejoint/><geom name="gb" type="box" size="0.1 0.1 0.1"/></body></worldbody><contact><pair geom1="ga" geom2="gb" condim="3"/><pair geom1="gb" geom2="ga" condim="6"/></contact></mujoco>"#,
+            &[3, 6],
+            &[
+                ("floor", "ga", 3),
+                ("floor", "gb", 3),
+                ("floor", "gb", 3),
+                ("floor", "gb", 3),
+                ("floor", "gb", 3),
+            ],
+        ),
+        (
+            "three on the floor",
+            r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="a" pos="0 0 0.09"><freejoint/><geom name="ga" type="sphere" size="0.1"/></body><body name="b" pos="0.5 0 0.09"><freejoint/><geom name="gb" type="box" size="0.1 0.1 0.1"/></body></worldbody><contact><pair geom1="ga" geom2="floor" condim="1"/><pair geom1="ga" geom2="floor" condim="4"/><pair geom1="floor" geom2="ga" condim="6"/></contact></mujoco>"#,
+            &[1, 4, 6],
+            &[
+                ("floor", "ga", 1),
+                ("floor", "ga", 4),
+                ("floor", "ga", 6),
+                ("floor", "gb", 3),
+                ("floor", "gb", 3),
+                ("floor", "gb", 3),
+                ("floor", "gb", 3),
+            ],
+        ),
+        (
+            "across blocks, an empty one between",
+            r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="a" pos="0 0 0.09"><freejoint/><geom name="ga" type="sphere" size="0.1"/></body><body name="b" pos="0.5 0 0.09"><freejoint/><geom name="gb" type="box" size="0.1 0.1 0.1"/></body></worldbody><contact><pair geom1="ga" geom2="floor" condim="3"/></contact><contact/><contact><pair geom1="ga" geom2="floor" condim="6"/></contact></mujoco>"#,
+            &[3, 6],
+            &[
+                ("floor", "ga", 3),
+                ("floor", "ga", 6),
+                ("floor", "gb", 3),
+                ("floor", "gb", 3),
+                ("floor", "gb", 3),
+                ("floor", "gb", 3),
+            ],
+        ),
+    ];
+    for (case, xml, condims, contacts) in cases {
+        let model = load_model(xml).expect(case);
+        let got: Vec<i32> = model.contact_pairs.iter().map(|p| p.condim).collect();
+        assert_eq!(got, condims, "{case}: pairs");
+        let mut data = model.make_data();
+        data.forward(&model).expect(case);
+        let name = |g: Option<usize>| model.geom_name[g.expect("a geom")].clone().expect("named");
+        let got: Vec<(String, String, usize)> = data
+            .contacts
+            .iter()
+            .map(|c| (name(c.geom[0]), name(c.geom[1]), c.dim))
+            .collect();
+        let want: Vec<(String, String, usize)> = contacts
+            .iter()
+            .map(|&(a, b, d)| (a.to_string(), b.to_string(), d))
+            .collect();
+        assert_eq!(got, want, "{case}: contacts");
+    }
+}
