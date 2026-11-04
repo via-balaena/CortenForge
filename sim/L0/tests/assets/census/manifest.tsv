@@ -3240,3 +3240,6 @@ c54528fe0317c391	sim/L0/mjcf/tests/refusal_order.rs:1228
 c5b88ff3a051ab0c	sim/L0/mjcf/tests/condim.rs:216
 cbad522db8e2d604	sim/L0/mjcf/tests/condim.rs:243
 d03eae4de6bed1ed	sim/L0/mjcf/tests/condim.rs:251
+4e2c4ca8207954e0	sim/L0/tests/integration/same_body_pair.rs:14
+b1b3e0dd4fd59671	sim/L0/tests/integration/same_body_pair.rs:20
+feb8b9e54529858c	sim/L0/tests/integration/same_body_pair.rs:17
