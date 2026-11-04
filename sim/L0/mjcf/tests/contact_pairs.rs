@@ -112,7 +112,7 @@ fn repeated_pairs_are_each_kept_and_each_collides() {
     let cases: [(&str, &str, &[i32], &[(&str, &str, usize)]); 3] = [
         (
             "two, in reversed geom order",
-            r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="a" pos="0 0 0.09"><freejoint/><geom name="ga" type="sphere" size="0.1"/></body><body name="b" pos="0.5 0 0.09"><freejoint/><geom name="gb" type="box" size="0.1 0.1 0.1"/></body></worldbody><contact><pair geom1="ga" geom2="gb" condim="3"/><pair geom1="gb" geom2="ga" condim="6"/></contact></mujoco>"#,
+            r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="a" pos="0 0 0.09"><freejoint/><geom name="ga" type="sphere" size="0.1"/></body><body name="b" pos="0.19 0 0.09"><freejoint/><geom name="gb" type="box" size="0.1 0.1 0.1"/></body></worldbody><contact><pair geom1="ga" geom2="gb" condim="3"/><pair geom1="gb" geom2="ga" condim="6"/></contact></mujoco>"#,
             &[3, 6],
             &[
                 ("floor", "ga", 3),
@@ -120,6 +120,8 @@ fn repeated_pairs_are_each_kept_and_each_collides() {
                 ("floor", "gb", 3),
                 ("floor", "gb", 3),
                 ("floor", "gb", 3),
+                ("ga", "gb", 3),
+                ("ga", "gb", 6),
             ],
         ),
         (
@@ -221,6 +223,49 @@ fn a_fused_model_s_pair_holds_the_geoms_it_names() {
     assert_eq!(got, [("floor".to_string(), "g1".to_string())]);
     let mut data = model.make_data();
     data.step(&model).expect("steps");
+}
+
+/// Two geoms of one body, or two of the world, are kept in the order a pair
+/// writes them, MuJoCo 3.5.0 swapping only where the first geom's body is the
+/// higher; and 25 pairs on the same two bodies stay in the order written, as
+/// MuJoCo's stable sort keeps them (measured on both documents).
+#[test]
+fn pairs_on_one_body_and_many_on_two_are_stored_as_mujoco_stores_them() {
+    let model = load_model(
+        r#"<mujoco><worldbody><geom name="w1" type="plane" size="1 1 .1"/><geom name="w2" type="box" size=".1 .1 .1" pos="3 0 0"/><body name="b" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/><geom name="gb" size=".1" pos=".5 0 0"/></body></worldbody><contact><pair geom1="gb" geom2="ga"/><pair geom1="w2" geom2="w1"/><pair geom1="ga" geom2="w1"/></contact></mujoco>"#,
+    )
+    .expect("loads");
+    let name = |g: usize| model.geom_name[g].clone().expect("named");
+    let got: Vec<(String, String)> = model
+        .contact_pairs
+        .iter()
+        .map(|p| (name(p.geom1), name(p.geom2)))
+        .collect();
+    let want: Vec<(String, String)> = [("w2", "w1"), ("w1", "ga"), ("gb", "ga")]
+        .iter()
+        .map(|&(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+    assert_eq!(got, want);
+    let model = load_model(
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body><body name="b" pos="1 0 1"><freejoint/><geom name="gb" size=".1"/></body></worldbody><contact><pair geom1="gb" geom2="ga" margin="0.025"/><pair geom1="ga" geom2="gb" margin="0.024"/><pair geom1="gb" geom2="ga" margin="0.023"/><pair geom1="ga" geom2="gb" margin="0.022"/><pair geom1="gb" geom2="ga" margin="0.021"/><pair geom1="ga" geom2="gb" margin="0.02"/><pair geom1="gb" geom2="ga" margin="0.019"/><pair geom1="ga" geom2="gb" margin="0.018"/><pair geom1="gb" geom2="ga" margin="0.017"/><pair geom1="ga" geom2="gb" margin="0.016"/><pair geom1="gb" geom2="ga" margin="0.015"/><pair geom1="ga" geom2="gb" margin="0.014"/><pair geom1="gb" geom2="ga" margin="0.013"/><pair geom1="ga" geom2="gb" margin="0.012"/><pair geom1="gb" geom2="ga" margin="0.011"/><pair geom1="ga" geom2="gb" margin="0.01"/><pair geom1="gb" geom2="ga" margin="0.009"/><pair geom1="ga" geom2="gb" margin="0.008"/><pair geom1="gb" geom2="ga" margin="0.007"/><pair geom1="ga" geom2="gb" margin="0.006"/><pair geom1="gb" geom2="ga" margin="0.005"/><pair geom1="ga" geom2="gb" margin="0.004"/><pair geom1="gb" geom2="ga" margin="0.003"/><pair geom1="ga" geom2="gb" margin="0.002"/><pair geom1="gb" geom2="ga" margin="0.001"/></contact></mujoco>"#,
+    )
+    .expect("loads");
+    let name = |g: usize| model.geom_name[g].clone().expect("named");
+    assert!(
+        model
+            .contact_pairs
+            .iter()
+            .all(|p| (name(p.geom1), name(p.geom2)) == ("ga".to_string(), "gb".to_string()))
+    );
+    let margins: Vec<f64> = model.contact_pairs.iter().map(|p| p.margin).collect();
+    assert_eq!(
+        margins,
+        [
+            0.025, 0.024, 0.023, 0.022, 0.021, 0.02, 0.019, 0.018, 0.017, 0.016, 0.015, 0.014,
+            0.013, 0.012, 0.011, 0.01, 0.009, 0.008, 0.007, 0.006, 0.005, 0.004, 0.003, 0.002,
+            0.001
+        ]
+    );
 }
 
 /// Two concentric spheres leave the contact normal to the collision
