@@ -227,10 +227,11 @@ fn a_fused_model_s_pair_holds_the_geoms_it_names() {
 
 /// Two geoms of one body, or two of the world, are kept in the order a pair
 /// writes them, MuJoCo 3.5.0 swapping only where the first geom's body is the
-/// higher; and 25 pairs on the same two bodies stay in the order written, as
+/// higher; and 30 pairs on three bodies' geoms and the floor, written in
+/// turn, are stored body by body, each body's in the order written, as
 /// MuJoCo's stable sort keeps them (measured on both documents).
 #[test]
-fn pairs_on_one_body_and_many_on_two_are_stored_as_mujoco_stores_them() {
+fn pairs_of_one_body_and_many_interleaved_are_stored_as_mujoco_stores_them() {
     let model = load_model(
         r#"<mujoco><worldbody><geom name="w1" type="plane" size="1 1 .1"/><geom name="w2" type="box" size=".1 .1 .1" pos="3 0 0"/><body name="b" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/><geom name="gb" size=".1" pos=".5 0 0"/></body></worldbody><contact><pair geom1="gb" geom2="ga"/><pair geom1="w2" geom2="w1"/><pair geom1="ga" geom2="w1"/></contact></mujoco>"#,
     )
@@ -247,25 +248,32 @@ fn pairs_on_one_body_and_many_on_two_are_stored_as_mujoco_stores_them() {
         .collect();
     assert_eq!(got, want);
     let model = load_model(
-        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body><body name="b" pos="1 0 1"><freejoint/><geom name="gb" size=".1"/></body></worldbody><contact><pair geom1="gb" geom2="ga" margin="0.025"/><pair geom1="ga" geom2="gb" margin="0.024"/><pair geom1="gb" geom2="ga" margin="0.023"/><pair geom1="ga" geom2="gb" margin="0.022"/><pair geom1="gb" geom2="ga" margin="0.021"/><pair geom1="ga" geom2="gb" margin="0.02"/><pair geom1="gb" geom2="ga" margin="0.019"/><pair geom1="ga" geom2="gb" margin="0.018"/><pair geom1="gb" geom2="ga" margin="0.017"/><pair geom1="ga" geom2="gb" margin="0.016"/><pair geom1="gb" geom2="ga" margin="0.015"/><pair geom1="ga" geom2="gb" margin="0.014"/><pair geom1="gb" geom2="ga" margin="0.013"/><pair geom1="ga" geom2="gb" margin="0.012"/><pair geom1="gb" geom2="ga" margin="0.011"/><pair geom1="ga" geom2="gb" margin="0.01"/><pair geom1="gb" geom2="ga" margin="0.009"/><pair geom1="ga" geom2="gb" margin="0.008"/><pair geom1="gb" geom2="ga" margin="0.007"/><pair geom1="ga" geom2="gb" margin="0.006"/><pair geom1="gb" geom2="ga" margin="0.005"/><pair geom1="ga" geom2="gb" margin="0.004"/><pair geom1="gb" geom2="ga" margin="0.003"/><pair geom1="ga" geom2="gb" margin="0.002"/><pair geom1="gb" geom2="ga" margin="0.001"/></contact></mujoco>"#,
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body><body name="b" pos="1 0 1"><freejoint/><geom name="gb" size=".1"/></body><body name="c" pos="2 0 1"><freejoint/><geom name="gc" size=".1"/></body></worldbody><contact><pair geom1="ga" geom2="floor" margin="0.001"/><pair geom1="gb" geom2="floor" margin="0.002"/><pair geom1="gc" geom2="floor" margin="0.003"/><pair geom1="ga" geom2="floor" margin="0.004"/><pair geom1="gb" geom2="floor" margin="0.005"/><pair geom1="gc" geom2="floor" margin="0.006"/><pair geom1="ga" geom2="floor" margin="0.007"/><pair geom1="gb" geom2="floor" margin="0.008"/><pair geom1="gc" geom2="floor" margin="0.009"/><pair geom1="ga" geom2="floor" margin="0.010"/><pair geom1="gb" geom2="floor" margin="0.011"/><pair geom1="gc" geom2="floor" margin="0.012"/><pair geom1="ga" geom2="floor" margin="0.013"/><pair geom1="gb" geom2="floor" margin="0.014"/><pair geom1="gc" geom2="floor" margin="0.015"/><pair geom1="ga" geom2="floor" margin="0.016"/><pair geom1="gb" geom2="floor" margin="0.017"/><pair geom1="gc" geom2="floor" margin="0.018"/><pair geom1="ga" geom2="floor" margin="0.019"/><pair geom1="gb" geom2="floor" margin="0.020"/><pair geom1="gc" geom2="floor" margin="0.021"/><pair geom1="ga" geom2="floor" margin="0.022"/><pair geom1="gb" geom2="floor" margin="0.023"/><pair geom1="gc" geom2="floor" margin="0.024"/><pair geom1="ga" geom2="floor" margin="0.025"/><pair geom1="gb" geom2="floor" margin="0.026"/><pair geom1="gc" geom2="floor" margin="0.027"/><pair geom1="ga" geom2="floor" margin="0.028"/><pair geom1="gb" geom2="floor" margin="0.029"/><pair geom1="gc" geom2="floor" margin="0.030"/></contact></mujoco>"#,
     )
     .expect("loads");
     let name = |g: usize| model.geom_name[g].clone().expect("named");
-    assert!(
-        model
-            .contact_pairs
-            .iter()
-            .all(|p| (name(p.geom1), name(p.geom2)) == ("ga".to_string(), "gb".to_string()))
-    );
-    let margins: Vec<f64> = model.contact_pairs.iter().map(|p| p.margin).collect();
-    assert_eq!(
-        margins,
-        [
-            0.025, 0.024, 0.023, 0.022, 0.021, 0.02, 0.019, 0.018, 0.017, 0.016, 0.015, 0.014,
-            0.013, 0.012, 0.011, 0.01, 0.009, 0.008, 0.007, 0.006, 0.005, 0.004, 0.003, 0.002,
-            0.001
-        ]
-    );
+    let got: Vec<(String, String, f64)> = model
+        .contact_pairs
+        .iter()
+        .map(|p| (name(p.geom1), name(p.geom2), p.margin))
+        .collect();
+    let margins = [
+        0.001, 0.004, 0.007, 0.01, 0.013, 0.016, 0.019, 0.022, 0.025, 0.028, 0.002, 0.005, 0.008,
+        0.011, 0.014, 0.017, 0.02, 0.023, 0.026, 0.029, 0.003, 0.006, 0.009, 0.012, 0.015, 0.018,
+        0.021, 0.024, 0.027, 0.03,
+    ];
+    let want: Vec<(String, String, f64)> = margins
+        .iter()
+        .enumerate()
+        .map(|(k, &m)| {
+            (
+                "floor".to_string(),
+                ["ga", "gb", "gc"][k / 10].to_string(),
+                m,
+            )
+        })
+        .collect();
+    assert_eq!(got, want);
 }
 
 /// Two concentric spheres leave the contact normal to the collision
