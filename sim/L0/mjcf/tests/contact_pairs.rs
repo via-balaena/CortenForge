@@ -200,6 +200,29 @@ fn pairs_are_stored_in_mujoco_s_order() {
     assert_eq!(got, want);
 }
 
+/// Under `fusestatic`, a pair holds the geoms it names (registry
+/// `D-FUSESTATIC-PAIR-GEOM`). MuJoCo 3.5.0 binds it through its geom names'
+/// indices from before the fusion, which moving a fused body's geoms
+/// renumbers: for this document it holds `gs0` and the floor, both the
+/// world's, and stops at the first step ('contact 0 is between two static
+/// bodies', measured).
+#[test]
+fn a_fused_model_s_pair_holds_the_geoms_it_names() {
+    let model = load_model(
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="m1" pos="0 0 .09"><freejoint/><geom name="g1" size=".1"/></body><body name="s0" pos="2 0 0"><geom name="gs0" size=".1"/></body></worldbody><contact><pair geom1="g1" geom2="floor" condim="1"/></contact></mujoco>"#,
+    )
+    .expect("loads");
+    let name = |g: usize| model.geom_name[g].clone().expect("named");
+    let got: Vec<(String, String)> = model
+        .contact_pairs
+        .iter()
+        .map(|p| (name(p.geom1), name(p.geom2)))
+        .collect();
+    assert_eq!(got, [("floor".to_string(), "g1".to_string())]);
+    let mut data = model.make_data();
+    data.step(&model).expect("steps");
+}
+
 /// Two concentric spheres leave the contact normal to the collision
 /// function, which takes the geoms in the pair's order. Under a pair naming
 /// the higher body's sphere first, MuJoCo 3.5.0's normal is +x, and after 50

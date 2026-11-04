@@ -3276,3 +3276,4 @@ fd93c71f51acdfed	sim/L0/mjcf/tests/refusal_order.rs:1532
 8828d21af4003fda	sim/L0/mjcf/tests/refusal_order.rs:1419
 a5c5df6b9944a616	sim/L0/mjcf/tests/refusal_order.rs:1395
 f26179fd4c423c05	sim/L0/mjcf/tests/refusal_order.rs:1407
+d922dd77f09865f4	sim/L0/mjcf/tests/contact_pairs.rs:212
