@@ -407,7 +407,6 @@ pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
     let frame_names = crate::names::frame_names(&mjcf.worldbody);
     expand_frames(&mut mjcf.worldbody, &mjcf.compiler)?;
     crate::validation::check_tree_depth(&mjcf.worldbody)?;
-    composite::resolve_made_fromtos(&mut mjcf.worldbody)?;
 
     // Every name, reference and value check, on the model as resolved and
     // expanded, before fusion or discarding hides an element (MuJoCo 3.5.0

@@ -200,8 +200,7 @@ pub fn compute_inertia_from_geoms(
         ));
     }
 
-    // Each geom's `fromto` is already its pos, quat and size (`resolve_geom_fromto`,
-    // once its class is applied: `resolve::apply_defaults`).
+    // Each geom's `fromto` is already its pos, quat and size (`resolve_geom_fromto`).
 
     // Pre-compute mesh inertia once per geom (avoids 3× recomputation).
     let mesh_props: Vec<Option<MeshProps>> = geoms

@@ -2,13 +2,15 @@
 //!
 //! `<frame>` elements are coordinate-system wrappers that compose their SE(3)
 //! transform into each child element and then disappear.  This module expands
-//! all frames before the builder processes bodies, matching MuJoCo's ordering.
+//! all frames before the builder processes bodies.
 //!
-//! Each element reaches it with its class applied and its `fromto` resolved
-//! (`resolve::apply_defaults`), so a frame composes the element's own pose.
+//! Each element a frame holds reaches it with its class applied and its
+//! `fromto` resolved (`resolve::apply_defaults`), so a frame composes the
+//! element's own pose.
 
 use nalgebra::{Quaternion, UnitQuaternion, Vector3, Vector4};
 
+use super::composite::resolve_made_fromtos;
 use super::items::{Contents, Element};
 use super::orientation::{
     made_unit, mulquat, mulvecmat, quat_as_written, quat_to_wxyz, quat2mat, resolve_orientation,
@@ -53,17 +55,25 @@ fn wxyz(q: &UnitQuaternion<f64>) -> [f64; 4] {
 /// reads it. This runs before `discardvisual`/`fusestatic` and before
 /// `ModelBuilder` processes bodies.
 ///
-/// Each geom and site reaches it resolved (`resolve::apply_defaults`): its
-/// class's values applied and its `fromto` made into its `pos`, `quat` and
-/// `size`. Elements are moved, never copied, so expanding takes memory in
-/// proportion to the tree.
+/// Each geom and site a frame holds reaches it resolved
+/// (`resolve::apply_defaults`): its class's values applied and its `fromto`
+/// made into its `pos`, `quat` and `size`. Once a body's frames are
+/// dissolved, the geoms a composite made in it are resolved
+/// ([`resolve_made_fromtos`]), before the bodies below it. Elements are
+/// moved, never copied, so expanding takes memory in proportion to the tree.
 ///
 /// # Errors
 ///
 /// An orientation alternative `ResolveOrientation` refuses, on a frame or on
 /// an element in one: of one body's, the one MuJoCo 3.5.0 names first
-/// ([`Faults`]).
+/// ([`Faults`]); and a `fromto` of a geom a composite made.
 pub fn expand_frames(body: &mut MjcfBody, compiler: &MjcfCompiler) -> Result<()> {
+    expand_body(body, None, compiler)
+}
+
+/// [`expand_frames`] for `body`, with `own` the refusal of its own
+/// orientation when the frame holding it was dissolved, if one was.
+fn expand_body(body: &mut MjcfBody, own: Option<MjcfError>, compiler: &MjcfCompiler) -> Result<()> {
     let mut placed = Contents::default();
     let mut faults = Faults::default();
     for element in Contents::take_from_body(body).into_elements() {
@@ -74,26 +84,32 @@ pub fn expand_frames(body: &mut MjcfBody, compiler: &MjcfCompiler) -> Result<()>
             other => placed.push(other),
         }
     }
-    faults.first()?;
+    faults.first(own)?;
     placed.put_into_body(body);
-    for child in &mut body.children {
-        expand_frames(child, compiler)?;
+    resolve_made_fromtos(body)?;
+    let mut held = faults.held.into_iter().peekable();
+    for (index, child) in body.children.iter_mut().enumerate() {
+        let own = held.next_if(|(i, _)| *i == index).map(|(_, fault)| fault);
+        expand_body(child, own, compiler)?;
     }
     Ok(())
 }
 
 /// The orientations one body's frames and the elements in them refuse, kept
 /// to name the one MuJoCo 3.5.0 names first. MuJoCo compiles bodies one by
-/// one (`user_model.cc:4933`), each its frames, then its geoms, then its
-/// sites (`mjCBody::Compile`, `user_objects.cc:2376-2378`, `:2427-2433`,
-/// `:2551-2552`); a body a frame holds is compiled after them, as one of its
-/// children. Of each kind, the first in document order.
+/// one (`user_model.cc:4933`), each its frames, then its own orientation,
+/// then its geoms, then its sites (`mjCBody::Compile`,
+/// `user_objects.cc:2376-2378`, `:2396-2402`, `:2427-2433`, `:2551-2552`).
+/// Of each kind, the first in document order. A body a frame holds is one of
+/// the body's children: its own orientation's refusal is named in its own
+/// turn.
 #[derive(Default)]
 struct Faults {
     frame: Option<MjcfError>,
     geom: Option<MjcfError>,
     site: Option<MjcfError>,
-    body: Option<MjcfError>,
+    /// Each held body's own refusal, by its index among the body's children.
+    held: Vec<(usize, MjcfError)>,
 }
 
 impl Faults {
@@ -102,12 +118,14 @@ impl Faults {
         slot.get_or_insert(fault);
     }
 
-    /// The fault MuJoCo names first, if any.
-    fn first(self) -> Result<()> {
+    /// The fault MuJoCo names first in the body's turn, with `own` its own
+    /// orientation's refusal, if any.
+    fn first(&mut self, own: Option<MjcfError>) -> Result<()> {
         self.frame
-            .or(self.geom)
-            .or(self.site)
-            .or(self.body)
+            .take()
+            .or(own)
+            .or_else(|| self.geom.take())
+            .or_else(|| self.site.take())
             .map_or(Ok(()), Err)
     }
 }
@@ -115,8 +133,9 @@ impl Faults {
 /// One frame's contents, in its document order, composed with its transform
 /// (itself composed with `outer`'s, the pose of the frame holding it, where a
 /// frame holds it) and added to `placed`, the elements of `body`; a nested
-/// frame's at its place. An orientation refused is kept in `faults` and its
-/// element left out (a frame's with its contents).
+/// frame's at its place. An orientation refused is kept in `faults`, and its
+/// element left out (a frame's with its contents), or, a body's, placed as
+/// written.
 fn dissolve(
     mut frame: MjcfFrame,
     outer: Option<(&Vector3<f64>, &UnitQuaternion<f64>)>,
@@ -129,8 +148,8 @@ fn dissolve(
         |kind, name: Option<&str>| Location::named(kind, name.unwrap_or("")).in_body(body);
     // The frame's own orientation as written, composed with the frame holding
     // it where one does, then made unit, as `mjCFrame::Compile` makes it
-    // (`user_objects.cc:2734-2745`); a frame no frame holds keeps its pose as
-    // written.
+    // (`user_objects.cc:2734-2745`); a frame no frame holds keeps its
+    // position as written.
     let written = match quat_as_written(
         frame.quat,
         frame.euler,
@@ -217,7 +236,8 @@ fn dissolve(
                     Ok(q) => q,
                     Err(e) => {
                         let at = Location::named(ElementKind::Body, &b.name);
-                        Faults::keep(&mut faults.body, e.on("body").at(at));
+                        faults.held.push((placed.body_count(), e.on("body").at(at)));
+                        placed.push(Element::Body(b));
                         continue;
                     }
                 };

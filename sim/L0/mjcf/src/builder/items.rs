@@ -124,6 +124,11 @@ impl Contents {
         self.items.push(item);
     }
 
+    /// How many bodies are placed: the index the next one takes.
+    pub(super) fn body_count(&self) -> usize {
+        self.bodies.len()
+    }
+
     /// The elements put back into `body`, whose lists `take_from_body`
     /// emptied.
     pub(super) fn put_into_body(self, body: &mut MjcfBody) {

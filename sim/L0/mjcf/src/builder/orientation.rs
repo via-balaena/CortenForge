@@ -163,8 +163,7 @@ impl OrientationError {
     }
 }
 
-/// `q` (w, x, y, z) as a `UnitQuaternion`, as MuJoCo's arithmetic left it: unit,
-/// or not where `normvec` kept a quaternion whose squared norm is below mjEPS.
+/// `q` (w, x, y, z) as a `UnitQuaternion`, not made unit here.
 fn unit(q: [f64; 4]) -> UnitQuaternion<f64> {
     UnitQuaternion::new_unchecked(Quaternion::new(q[0], q[1], q[2], q[3]))
 }
@@ -207,9 +206,8 @@ pub fn site_quat_as_written(
     )
 }
 
-/// `q` made unit as MuJoCo's compiler makes an orientation it composed
-/// (`normvec`, `user_objects.cc:2745`, `:3988`): left as it is where its norm
-/// lies within mjEPS of 1.
+/// `q` made unit by [`normvec`], as MuJoCo's compiler makes an orientation it
+/// composed (`user_objects.cc:2745`, `:3988`).
 pub fn made_unit(q: &UnitQuaternion<f64>) -> UnitQuaternion<f64> {
     let q = q.into_inner();
     let mut q = [q.w, q.i, q.j, q.k];
