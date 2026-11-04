@@ -1305,6 +1305,12 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "invalid condim in geom",
         "invalid condim in geom (geom 'gt' in body 't')",
     ),
+    (
+        "fusestatic: a plane fused into a moving body, then a later body's condim",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/><body name="s" pos="0 0 .3"><geom name="gp" type="plane" size="1 1 .1"/></body></body><body name="c" pos="2 0 1"><freejoint/><geom name="gc" size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "plane only allowed in static bodies",
+        "plane only allowed in static bodies (geom 'gp' in body 's')",
+    ),
 ];
 
 #[test]

@@ -3243,3 +3243,15 @@ d03eae4de6bed1ed	sim/L0/mjcf/tests/condim.rs:251
 4e2c4ca8207954e0	sim/L0/tests/integration/same_body_pair.rs:14
 b1b3e0dd4fd59671	sim/L0/tests/integration/same_body_pair.rs:20
 feb8b9e54529858c	sim/L0/tests/integration/same_body_pair.rs:17
+06c30085bc1ad601	sim/L0/mjcf/tests/refusal_order.rs:1250
+171f11fe84f080e6	sim/L0/mjcf/tests/refusal_order.rs:1298
+28531644cef9c059	sim/L0/mjcf/tests/refusal_order.rs:1280
+350b72e8324146f5	sim/L0/mjcf/tests/refusal_order.rs:1256
+35943e18d586519a	sim/L0/mjcf/tests/refusal_order.rs:1292
+4d503b0320a3832e	sim/L0/mjcf/tests/refusal_order.rs:1274
+6f0e43e00ee48a07	sim/L0/mjcf/tests/refusal_order.rs:1304
+862035bc153a5f0a	sim/L0/mjcf/tests/refusal_order.rs:1262
+ae5d1d0d951515ee	sim/L0/mjcf/tests/refusal_order.rs:1286
+b119108d9bb6378d	sim/L0/mjcf/tests/refusal_order.rs:1268
+c481249b616bb25b	sim/L0/mjcf/tests/refusal_order.rs:1310
+d1041f3e7c2eca78	sim/L0/mjcf/tests/refusal_order.rs:1244
