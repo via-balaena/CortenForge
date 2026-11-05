@@ -345,6 +345,16 @@ pub enum MjcfError {
         /// What the decoder reported.
         message: String,
     },
+
+    /// An MJB file's strings and byte buffers claim more bytes, together,
+    /// than the readers take ([`crate::MJB_DECODE_LIMIT`]).
+    #[cfg(feature = "mjb")]
+    #[error("MJB data claims more than {limit} bytes")]
+    #[non_exhaustive]
+    MjbTooLarge {
+        /// The most bytes the readers take.
+        limit: usize,
+    },
 }
 
 /// Which kind of element an error is about.
@@ -876,7 +886,8 @@ impl MjcfError {
             Self::MjbMagic { .. }
             | Self::MjbVersion { .. }
             | Self::MjbEncode { .. }
-            | Self::MjbDecode { .. } => None,
+            | Self::MjbDecode { .. }
+            | Self::MjbTooLarge { .. } => None,
         }
     }
 }

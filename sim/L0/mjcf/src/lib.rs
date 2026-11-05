@@ -215,8 +215,9 @@ pub use builder::{load_model, load_model_from_file, model_from_mjcf};
 // MJB binary format support (requires "mjb" feature)
 #[cfg(feature = "mjb")]
 pub use mjb::{
-    MJB_HEADER_SIZE, MJB_MAGIC, MJB_VERSION, MjbHeader, is_mjb_bytes, is_mjb_file, load_mjb_bytes,
-    load_mjb_file, load_mjb_reader, save_mjb_bytes, save_mjb_file, save_mjb_writer,
+    MJB_DECODE_LIMIT, MJB_HEADER_SIZE, MJB_MAGIC, MJB_VERSION, MjbHeader, is_mjb_bytes,
+    is_mjb_file, load_mjb_bytes, load_mjb_file, load_mjb_reader, save_mjb_bytes, save_mjb_file,
+    save_mjb_writer,
 };
 
 #[cfg(test)]

@@ -2382,12 +2382,14 @@ pub struct MjcfFrame {
     /// Default class for child elements.
     pub childclass: Option<String>,
     /// Child bodies within this frame.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "crate::stack::nested"))]
     pub bodies: Vec<MjcfBody>,
     /// Child geoms within this frame.
     pub geoms: Vec<MjcfGeom>,
     /// Child sites within this frame.
     pub sites: Vec<MjcfSite>,
     /// Nested child frames.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "crate::stack::nested"))]
     pub frames: Vec<MjcfFrame>,
     /// Composites within this frame: each one's first body is one of the
     /// frame's bodies.
@@ -2595,10 +2597,12 @@ pub struct MjcfBody {
     /// Sites attached to this body.
     pub sites: Vec<MjcfSite>,
     /// Frames within this body (expanded during model building).
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "crate::stack::nested"))]
     pub frames: Vec<MjcfFrame>,
     /// Composite elements to be expanded during builder phase.
     pub composites: Vec<MjcfComposite>,
     /// Child bodies.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "crate::stack::nested"))]
     pub children: Vec<MjcfBody>,
     /// Its joints, geoms, sites, child bodies, frames and composites in the
     /// order the document writes them, one entry each: the k-th
