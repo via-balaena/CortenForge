@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><equality><connect body1="nope" body2="b" anchor="0 0 0"/></equality></mujoco>

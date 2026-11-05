@@ -1,0 +1,1 @@
+<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".2"/></body></worldbody><contact><pair geom1="" geom2="g"/></contact><keyframe><key qpos="1 2 3 4 5 6 7 8"/></keyframe></mujoco>

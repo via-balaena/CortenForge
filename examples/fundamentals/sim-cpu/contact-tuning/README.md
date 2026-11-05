@@ -66,4 +66,4 @@ penetration. `gap` subtracts from margin: `includemargin = margin - gap`.
 ### Pair Overrides
 
 The `<contact><pair>` element overrides auto-combined parameters for a
-specific geom pair. Parameter hierarchy: `<pair>` > combination > defaults.
+specific geom pair.

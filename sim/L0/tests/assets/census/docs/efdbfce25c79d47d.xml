@@ -1,0 +1,1 @@
+<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="a" pos="0 0 .09"><freejoint/><geom name="ga" size=".1"/></body><body name="h" pos="1 0 1"><freejoint/><geom type="sphere" size=".1" fromto="0 0 0 0 0 1"/></body></worldbody><contact><pair geom1="zz" geom2="floor"/></contact></mujoco>

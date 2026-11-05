@@ -311,23 +311,22 @@ impl Contact {
         // condim=4: normal + 2 sliding + 1 torsional
         // condim=6: normal + 2 sliding + 1 torsional + 2 rolling
         //
-        // Note: condim is validated and clamped in the MJCF loader (builder/mod.rs)
-        // to {1, 3, 4, 6}. This fallback handles test code that constructs contacts
-        // directly without going through the loader.
+        // sim-mjcf refuses a geom's or a pair's condim other than 1, 3, 4 or
+        // 6, as MuJoCo 3.5.0's compiler does; another value comes only from a
+        // contact or a Model built in code, and is mapped below where MuJoCo
+        // would make a contact of that dimension or stop (ledger L385).
         //
-        // Explicit match arms document valid values; clippy::match_same_arms allowed
-        // because the structure mirrors the MJCF loader's validation pattern.
-        // cast_sign_loss is safe because all arms return positive values.
+        // clippy::match_same_arms: one arm per value; cast_sign_loss: every
+        // arm is positive.
         #[allow(clippy::match_same_arms, clippy::cast_sign_loss)]
         let dim = match condim {
             1 => 1,
             3 => 3,
             4 => 4,
             6 => 6,
-            // Round up invalid values (matches MJCF loader behavior)
             0 | 2 => 3,
             5 => 6,
-            _ => 6, // >6 clamps to 6
+            _ => 6,
         } as usize;
 
         Self {

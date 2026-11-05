@@ -451,7 +451,9 @@ impl fmt::Display for ValueCount {
 /// where the pass knows it (`actuator #1`), else by its kind alone. A body's
 /// index counts the world as #0; a geom's is its id in the built model, and
 /// its body the one it was built into (after `discardvisual` and
-/// `fusestatic`).
+/// `fusestatic`), except in a check of the model before fusion (validation,
+/// and a geom `fusestatic` moved, checked at its own body's turn), which
+/// names a geom by its index and its body before fusion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Location(Option<Box<Place>>);
 

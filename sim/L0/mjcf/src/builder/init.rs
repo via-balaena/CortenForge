@@ -39,8 +39,9 @@ impl ModelBuilder {
             body_sleep_policy: vec![None], // world body has no sleep policy
             site_connects: vec![],
             body_gravcomp: vec![0.0], // world body has no gravcomp
-            body_faults: vec![super::body::BodyFaults::default()], // the world's are not checked
+            body_faults: vec![super::body::BodyFaults::default()], // the world has none of these
             kept_negative_inertial: None,
+            compile_turns: None,
             nmocap: 0,
 
             jnt_type: vec![],

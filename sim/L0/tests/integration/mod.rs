@@ -253,6 +253,10 @@ pub mod mass_factor_parity;
 /// none.
 pub mod empty_rows_parity;
 
+/// An explicit pair of two geoms on one simple body: MuJoCo 3.5.0 stops at
+/// the sparse size and runs at the dense one (registry `D-SAME-BODY-PAIR`).
+pub mod same_body_pair;
+
 /// Each row's velocity `J·qvel`, reference acceleration and `efc_b` against
 /// MuJoCo 3.5.0, bit for bit.
 pub mod reference_rows_parity;

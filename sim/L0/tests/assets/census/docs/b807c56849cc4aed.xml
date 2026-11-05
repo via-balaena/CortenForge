@@ -1,0 +1,1 @@
+<mujoco><size nuser_sensor="-2"/><worldbody><body name="a" pos="0 0 1"><joint name="j" type="hinge"/><geom name="ga" size=".1"/></body></worldbody><actuator><motor name="m" joint="j"/><motor name="m" joint="j"/></actuator></mujoco>

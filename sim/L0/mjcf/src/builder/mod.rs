@@ -231,12 +231,15 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     if mjcf.compiler.discardvisual {
         apply_discardvisual(&mut mjcf);
     }
-    if mjcf.compiler.fusestatic {
-        apply_fusestatic(&mut mjcf)?;
-    }
+    let compile_turns = if mjcf.compiler.fusestatic {
+        Some(apply_fusestatic(&mut mjcf)?)
+    } else {
+        None
+    };
 
     let mut builder = ModelBuilder::new();
     builder.resolver = resolver;
+    builder.compile_turns = compile_turns;
     builder.compiler = mjcf.compiler.clone();
 
     // Set model name
@@ -264,6 +267,9 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     for child in &mjcf.worldbody.children {
         builder.process_body(child, 0, None)?;
     }
+    debug_assert!(builder.compile_turns.as_ref().is_none_or(|turns| {
+        turns.body.len() == builder.body_parent.len() && turns.geom.len() == builder.geom_type.len()
+    }));
 
     // Process tendons (must be before actuators, since actuators may reference tendons)
     builder.process_tendons(&mjcf.tendons)?;
@@ -350,8 +356,11 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // keyframes: a slide after a ball, a fixed tendon's negative armature,
     // an automatic range that does not increase (`D-AUTO-RANGE`, which
     // MuJoCo leaves unlimited), an `<inertial>`'s negative mass or moment
-    // (`D-INERTIAL-NEGATIVE`, which MuJoCo raises to its bounds); every
-    // check above has taken MuJoCo's value.
+    // (`D-INERTIAL-NEGATIVE`, which MuJoCo raises to its bounds), a flex's
+    // condim outside 1 to 6 (`D-FLEX-CONDIM-RANGE`, which MuJoCo loads), a
+    // pair naming a geom "" where the model has an unnamed geom
+    // (`D-PAIR-NO-GEOM`, which MuJoCo binds to it); every check above has
+    // taken MuJoCo's value.
     joint::check_ball_then_slide(&model)?;
     tendon::check_fixed_tendon_armature(&model)?;
     if let Some(error) = automatic {
@@ -360,6 +369,8 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     if let Some(error) = negative_inertial {
         return Err(error);
     }
+    flex::check_flex_condims(&mjcf.flex)?;
+    contact::check_pair_geom_names(&mjcf.contact)?;
 
     Ok(model)
 }
@@ -383,6 +394,8 @@ pub struct FrontEnd {
 /// composites expanded, then validated (`validate_resolved`), before the compiler passes remove any
 /// element. The caller has checked the tree's depth.
 pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
+    // A model built in code: a parsed `<size>`'s are refused while parsing.
+    crate::validation::check_user_sizes(mjcf)?;
     let mut mjcf = mjcf.clone();
     mesh::name_assets(&mut mjcf)?;
 
@@ -518,6 +531,9 @@ pub struct ModelBuilder {
     /// the first body whose negative `<inertial>` MuJoCo keeps, none of its
     /// geoms being selected; returned after the keyframes.
     pub(crate) kept_negative_inertial: Option<MjcfError>,
+    /// Under `fusestatic`, where MuJoCo checks each body and geom
+    /// ([`Self::check_bodies`]); `None`, each where it is.
+    pub(crate) compile_turns: Option<compiler::CompileTurns>,
     pub(crate) nmocap: usize,
 
     // Joint arrays
@@ -964,14 +980,7 @@ fn finalize_user_type(
     explicit_nuser: i32,
     raw: &mut [Vec<f64>],
 ) -> Result<()> {
-    if explicit_nuser < -1 {
-        return Err(MjcfError::invalid_value(
-            "size",
-            format!("nuser_{suffix}"),
-            format!("must be >= -1, got {explicit_nuser}"),
-        ));
-    }
-
+    // Below -1 is refused by validation (`check_user_sizes`).
     let nuser = if explicit_nuser >= 0 {
         let nuser = explicit_nuser as usize;
         for user in raw.iter() {

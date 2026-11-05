@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="a"><freejoint/><geom name="ga" size=".1" condim="6"/></body><body name="b" pos="1 0 0"><freejoint/><geom name="gb" size=".1" condim="6"/></body></worldbody><contact><pair geom1="ga" geom2="gb" /></contact></mujoco>

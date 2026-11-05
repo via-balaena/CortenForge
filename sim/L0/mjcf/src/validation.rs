@@ -120,12 +120,19 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 /// composite makes among its bodies.
 ///
 /// This checks:
+/// - Each `nuser_` size at least -1, after the tree's depth and before the
+///   rest (a parsed `<size>`'s are refused while parsing)
 /// - No name repeated within a kind (`names::check_names`)
+/// - Each pair's condim one of 1, 3, 4 or 6, then the geoms it names, after
+///   the assets (a geom named "" only where the model has no unnamed geom)
 /// - Actuators reference valid joints
 /// - An inertial's mass and diagonal inertia finite (if present)
 /// - Valid simulation options
 /// - Tendons reference valid joints, sites and geoms, with valid parameters
 /// - A body and frame tree no deeper than the loader takes
+///
+/// A geom's condim is checked when the model is built
+/// ([`crate::model_from_mjcf`]), not here.
 ///
 /// # Errors
 ///
@@ -237,10 +244,11 @@ pub fn validate_resolved(
     }
 
     // After the body and joint names: the assets each geom
-    // names (`IndexAssets`), then the bodies from the world down, a body's
-    // geoms, then its sites, then its children (each order measured on a
-    // document with two faults).
+    // names (`IndexAssets`), then the pairs, then the bodies from the world
+    // down, a body's geoms, then its sites, then its children (each order
+    // measured on a document with two faults).
     check_geom_assets(model)?;
+    check_pairs(model)?;
     check_sizes(model)?;
 
     // Collect site names from body tree for actuator validation.
@@ -442,6 +450,64 @@ fn check_geom_assets(model: &MjcfModel) -> Result<()> {
             if let Some(h) = named(geom.hfield.as_deref()).filter(|h| !hfields.contains(h.as_str()))
             {
                 return Err(MjcfError::undefined(ElementKind::Hfield, h).at(at()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Each `nuser_` size this crate keeps at least -1, in the order MuJoCo
+/// 3.5.0's reader reads them (`xml_native_reader.cc:1408-1430`), for a model
+/// whose `<size>` was not parsed: a parsed one's are refused while parsing
+/// (`parser::options::parse_size_attrs`).
+pub fn check_user_sizes(model: &MjcfModel) -> Result<()> {
+    let sizes = [
+        ("body", model.nuser_body),
+        ("jnt", model.nuser_jnt),
+        ("geom", model.nuser_geom),
+        ("site", model.nuser_site),
+        ("tendon", model.nuser_tendon),
+        ("actuator", model.nuser_actuator),
+        ("sensor", model.nuser_sensor),
+    ];
+    match sizes.into_iter().find(|&(_, n)| n < -1) {
+        Some((suffix, n)) => Err(MjcfError::invalid_value(
+            "size",
+            format!("nuser_{suffix}"),
+            format!("must be >= -1, got {n}"),
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Each `<pair>` in order, as MuJoCo 3.5.0 compiles pairs, after the names
+/// and the assets and before any body (`user_model.cc:4903`): its condim,
+/// one of 1, 3, 4 or 6 (`mjCPair::Compile`, `user_objects.cc:5666-5669`),
+/// then its two geoms, which the model names (`:5618-5638`). A geom named
+/// "", which MuJoCo binds to an unnamed geom (registry `D-PAIR-NO-GEOM`), is
+/// refused here only where the model has none, as MuJoCo refuses it; else
+/// after the keyframes (`builder::contact::check_pair_geom_names`).
+fn check_pairs(model: &MjcfModel) -> Result<()> {
+    let geoms: HashSet<&str> = bodies_in_order(&model.worldbody)
+        .into_iter()
+        .flat_map(|(_, _, body)| &body.geoms)
+        .filter_map(|geom| geom.name.as_deref().filter(|name| !name.is_empty()))
+        .collect();
+    let unnamed = bodies_in_order(&model.worldbody)
+        .into_iter()
+        .flat_map(|(_, _, body)| &body.geoms)
+        .any(|geom| geom.name.as_deref().is_none_or(str::is_empty));
+    for (i, pair) in model.contact.pairs.iter().enumerate() {
+        let at = || Location::nth(ElementKind::Pair, pair.name.as_deref(), i);
+        if pair.condim.is_some_and(|c| !matches!(c, 1 | 3 | 4 | 6)) {
+            return Err(MjcfError::invalid_model("invalid condim in contact pair").at(at()));
+        }
+        for geom in [&pair.geom1, &pair.geom2] {
+            if geom.is_empty() && unnamed {
+                continue;
+            }
+            if !geoms.contains(geom.as_str()) {
+                return Err(MjcfError::undefined(ElementKind::Geom, geom).at(at()));
             }
         }
     }

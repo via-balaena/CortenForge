@@ -1,8 +1,9 @@
 //! Contact pair and exclude processing.
 //!
 //! Converts MJCF `<contact>` elements (pairs and excludes) into Model arrays.
-//! Handles geom/body name resolution, geom-combination fallbacks for unspecified
-//! pair attributes, and deduplication with last-wins semantics.
+//! Handles geom/body name resolution, a pair's unwritten values from its class
+//! or MuJoCo's pair defaults, every pair kept, a repeated one too, and the
+//! pairs stored in MuJoCo's order.
 
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
 use crate::error::{ElementKind, Location, MjcfError, Result};
@@ -15,10 +16,12 @@ const PAIR_FRICTION: [f64; 5] = [1.0, 1.0, 0.005, 0.0001, 0.0001];
 impl ModelBuilder {
     /// Process `<contact>` element: resolve `<pair>` and `<exclude>` entries.
     ///
-    /// For each `<pair>`: apply defaults class, resolve geom names to indices,
-    /// compute geom-combination fallbacks for unspecified attributes, and build
-    /// a fully-resolved `ContactPair`. Duplicate pairs (same geom pair) use
-    /// last-wins semantics.
+    /// For each `<pair>`: resolve geom names to indices and build a
+    /// `ContactPair` whose unwritten values are its class's, else MuJoCo's
+    /// pair defaults. A pair on the geoms of an earlier one is kept beside
+    /// it, as MuJoCo 3.5.0 keeps it. Each pair names the lower body's geom
+    /// first, and the pairs are sorted by their bodies, stably, as MuJoCo
+    /// compiles them.
     ///
     /// For each `<exclude>`: resolve body names to indices and insert into the
     /// exclude set.
@@ -29,7 +32,14 @@ impl ModelBuilder {
             let pair = mjcf_pair;
             let at = || Location::nth(ElementKind::Pair, pair.name.as_deref(), i);
 
-            // Resolve geom names to indices
+            // A geom named "" where the model has an unnamed geom, which
+            // MuJoCo binds to it, is refused after the keyframes
+            // ([`check_pair_geom_names`]).
+            if pair.geom1.is_empty() || pair.geom2.is_empty() {
+                continue;
+            }
+            // Validation found both (`check_pairs`); `discardvisual` may
+            // have removed one since (ledger L342).
             let g1 = *self
                 .geom_name_to_id
                 .get(&pair.geom1)
@@ -38,54 +48,32 @@ impl ModelBuilder {
                 .geom_name_to_id
                 .get(&pair.geom2)
                 .ok_or_else(|| MjcfError::undefined(ElementKind::Geom, &pair.geom2).at(at()))?;
+            // The geom of the lower body first, as MuJoCo compiles a pair
+            // (`mjCPair::ResolveReferences`, `user_objects.cc:5645-5654`).
+            let (g1, g2) = if self.geom_body[g1] > self.geom_body[g2] {
+                (g2, g1)
+            } else {
+                (g1, g2)
+            };
 
-            // Stage 2: geom-combination fallbacks for unspecified attributes
-            let condim = pair
-                .condim
-                .unwrap_or_else(|| self.geom_condim[g1].max(self.geom_condim[g2]));
-
-            // A written value lies over MuJoCo's pair default (`mjs_defaultPair`;
-            // measured on 3.5.0: `friction="0.7"` is 0.7 1 0.005 0.0001 0.0001);
-            // an unwritten one comes from the two geoms (ledger L147).
+            // A value its class or the pair writes lies over MuJoCo's pair
+            // default (`mjs_defaultPair`, `user_init.c:288-297`; measured on
+            // 3.5.0: `friction="0.7"` is 0.7 1 0.005 0.0001 0.0001); an
+            // unwritten one is the default, never the two geoms' (ledger
+            // L147, L241): `mjCPair::Compile` takes the geoms' value only
+            // for one left undefined, which its XML reader leaves only where
+            // `nan` is written (measured), and this crate refuses `nan`
+            // (`D-NONFINITE`).
+            let condim = pair.condim.unwrap_or(3);
             let friction = pair
                 .friction
-                .map(|f| f.over(PAIR_FRICTION))
-                .unwrap_or_else(|| {
-                    let f1 = self.geom_friction[g1];
-                    let f2 = self.geom_friction[g2];
-                    // Geometric mean in 3D, then expand to 5D: [s, s, t, r, r]
-                    let s = (f1.x * f2.x).sqrt();
-                    let t = (f1.y * f2.y).sqrt();
-                    let r = (f1.z * f2.z).sqrt();
-                    [s, s, t, r, r]
-                });
-
+                .map_or(PAIR_FRICTION, |f| f.over(PAIR_FRICTION));
             let solref = pair
                 .solref
-                .map(|s| s.over(DEFAULT_SOLREF))
-                .unwrap_or_else(|| {
-                    // Element-wise min (our standing approximation)
-                    [
-                        self.geom_solref[g1][0].min(self.geom_solref[g2][0]),
-                        self.geom_solref[g1][1].min(self.geom_solref[g2][1]),
-                    ]
-                });
-
+                .map_or(DEFAULT_SOLREF, |s| s.over(DEFAULT_SOLREF));
             let solimp = pair
                 .solimp
-                .map(|s| s.over(DEFAULT_SOLIMP))
-                .unwrap_or_else(|| {
-                    // Element-wise max (our standing approximation)
-                    let s1 = self.geom_solimp[g1];
-                    let s2 = self.geom_solimp[g2];
-                    [
-                        s1[0].max(s2[0]),
-                        s1[1].max(s2[1]),
-                        s1[2].max(s2[2]),
-                        s1[3].max(s2[3]),
-                        s1[4].max(s2[4]),
-                    ]
-                });
+                .map_or(DEFAULT_SOLIMP, |s| s.over(DEFAULT_SOLIMP));
 
             // solreffriction: [0,0] sentinel means "use solref" (MuJoCo convention).
             // Only explicit <pair solreffriction="..."/> sets a nonzero value.
@@ -93,7 +81,7 @@ impl ModelBuilder {
                 .solreffriction
                 .map_or([0.0, 0.0], |s| s.over([0.0, 0.0]));
 
-            // margin/gap: geom-level not yet parsed, default to 0.0
+            // margin/gap: MuJoCo's pair default 0, not the geoms'.
             let margin = pair.margin.unwrap_or(0.0);
             let gap = pair.gap.unwrap_or(0.0);
 
@@ -109,20 +97,17 @@ impl ModelBuilder {
                 gap,
             };
 
-            // Deduplicate: canonical key (min, max) for symmetry. The set holds
-            // exactly the keys of `contact_pairs`, so a key already in it has
-            // its pair there, which the last one replaces.
-            let key = (g1.min(g2), g1.max(g2));
-            if self.contact_pair_set.insert(key) {
-                self.contact_pairs.push(contact_pair);
-            } else if let Some(existing) = self
-                .contact_pairs
-                .iter_mut()
-                .find(|p| (p.geom1.min(p.geom2), p.geom1.max(p.geom2)) == key)
-            {
-                *existing = contact_pair;
-            }
+            // Each pair is kept, as MuJoCo keeps it, and each makes its own
+            // contacts; the set holds a geom pair's key once, for the
+            // automatic contacts an explicit pair replaces.
+            self.contact_pair_set.insert((g1.min(g2), g1.max(g2)));
+            self.contact_pairs.push(contact_pair);
         }
+        // By their bodies, stably: MuJoCo's order (`user_model.cc:4969-4972`,
+        // signature `(body1 << 16) + body2`, `user_objects.cc:5657`).
+        let geom_body = &self.geom_body;
+        self.contact_pairs
+            .sort_by_key(|pair| (geom_body[pair.geom1], geom_body[pair.geom2]));
 
         // Process excludes
         for (i, mjcf_exclude) in contact.excludes.iter().enumerate() {
@@ -145,6 +130,29 @@ impl ModelBuilder {
     }
 }
 
+/// A pair naming a geom "", which MuJoCo 3.5.0 binds to an unnamed geom of
+/// the model (registry `D-PAIR-NO-GEOM`): refused, the first in order, after
+/// the keyframes with the other refusals MuJoCo does not make. Where the
+/// model has no unnamed geom, MuJoCo refuses the pair too and validation has
+/// refused it where the pairs are checked.
+pub fn check_pair_geom_names(contact: &MjcfContact) -> Result<()> {
+    for (i, pair) in contact.pairs.iter().enumerate() {
+        if let Some(geom) = [&pair.geom1, &pair.geom2]
+            .into_iter()
+            .find(|g| g.is_empty())
+        {
+            return Err(
+                MjcfError::undefined(ElementKind::Geom, geom).at(Location::nth(
+                    ElementKind::Pair,
+                    pair.name.as_deref(),
+                    i,
+                )),
+            );
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -152,9 +160,8 @@ mod tests {
     use crate::error::{ElementKind, MjcfError};
     use approx::assert_relative_eq;
 
-    /// `<pair>` with explicit `friction`/`condim`/`solref`/`solimp` skips
-    /// the geom-combination fallbacks; the supplied values land verbatim
-    /// in the resulting `ContactPair`.
+    /// `<pair>` with explicit `friction`/`condim`/`solref`/`solimp`: the
+    /// supplied values land verbatim in the resulting `ContactPair`.
     #[test]
     fn pair_explicit_attrs_pass_through() {
         let xml = r#"
@@ -194,19 +201,12 @@ mod tests {
         assert_relative_eq!(p.gap, 0.005, epsilon = 1e-12);
     }
 
-    /// `<pair>` with no overrides applies geom-combination fallbacks per
-    /// `process_contact`: condim = max, friction = sqrt(componentwise) ×
-    /// 5-element expansion `[s,s,t,r,r]`, solref = elementwise min, solimp
-    /// = elementwise max. Each side carries distinct values so the asserts
-    /// fail under any other commutative combinator (e.g., max-vs-min swap).
+    /// `<pair>` with no overrides takes MuJoCo 3.5.0's pair defaults, not its
+    /// geoms' values: each geom writes its own condim, friction, solref and
+    /// solimp, and MuJoCo gives this pair condim 3 and the defaults
+    /// (measured).
     #[test]
-    fn pair_geom_combination_fallbacks_applied() {
-        // Distinct per-geom values that make the combination behavior
-        // observable: friction means are non-trivial; solref min picks
-        // [0.01, 1.0] from g1; solimp max picks [0.9, 0.95, 0.005, 0.6,
-        // 3.0] (componentwise across the two geoms — not all from one
-        // side, so a "first-wins" or "last-wins" implementation would
-        // fail too).
+    fn pair_unwritten_values_are_mujoco_s_defaults() {
         let xml = r#"
             <mujoco model="m">
                 <worldbody>
@@ -226,34 +226,26 @@ mod tests {
         "#;
         let model = load_model(xml).expect("load");
         let p = &model.contact_pairs[0];
-        // condim: max(3, 6) = 6.
-        assert_eq!(p.condim, 6);
-        // friction: geometric mean per component, then expand to [s,s,t,r,r].
-        let s = (1.0_f64 * 4.0).sqrt(); // 2.0
-        let t = (0.04_f64 * 0.16).sqrt(); // 0.08
-        let r = (0.001_f64 * 0.004).sqrt(); // ≈0.002
-        for (got, want) in p.friction.iter().zip([s, s, t, r, r].iter()) {
-            assert_relative_eq!(got, want, epsilon = 1e-12);
-        }
-        // solref: elementwise min. min(0.01, 0.05) = 0.01; min(1.0, 2.0) = 1.0.
-        // Both come from g1 — a swapped (max-instead-of-min) implementation
-        // would yield [0.05, 2.0] and fail the first assert.
-        for (got, want) in p.solref.iter().zip([0.01, 1.0].iter()) {
-            assert_relative_eq!(got, want, epsilon = 1e-12);
-        }
-        // solimp: elementwise max. Components 2 and 3 come from g1 (0.005,
-        // 0.6); components 0, 1, 4 come from g2 (0.9, 0.95, 3.0) —
-        // mixed-side outcome rules out any "single-side wins" alias.
-        for (got, want) in p.solimp.iter().zip([0.9, 0.95, 0.005, 0.6, 3.0].iter()) {
-            assert_relative_eq!(got, want, epsilon = 1e-12);
-        }
+        assert_eq!(p.condim, 3);
+        assert_eq!(
+            p.friction.map(f64::to_bits),
+            super::PAIR_FRICTION.map(f64::to_bits)
+        );
+        assert_eq!(
+            p.solref.map(f64::to_bits),
+            super::DEFAULT_SOLREF.map(f64::to_bits)
+        );
+        assert_eq!(
+            p.solimp.map(f64::to_bits),
+            super::DEFAULT_SOLIMP.map(f64::to_bits)
+        );
     }
 
-    /// Two `<pair>` elements with the same geom pair (in either order) are
-    /// deduplicated under the canonical (min, max) key with last-wins
-    /// semantics; only the most-recently-set attributes survive.
+    /// Two `<pair>` elements on the same geoms (in either order) are both
+    /// kept, in the order written, as MuJoCo 3.5.0 keeps them (measured:
+    /// npair 2, condims 3 and 6).
     #[test]
-    fn pair_dedup_last_wins_under_canonical_key() {
+    fn repeated_pairs_both_kept() {
         let xml = r#"
             <mujoco model="m">
                 <worldbody>
@@ -267,8 +259,9 @@ mod tests {
             </mujoco>
         "#;
         let model = load_model(xml).expect("load");
-        assert_eq!(model.contact_pairs.len(), 1, "duplicates collapsed");
-        assert_eq!(model.contact_pairs[0].condim, 6, "last-wins");
+        let condims: Vec<i32> = model.contact_pairs.iter().map(|p| p.condim).collect();
+        assert_eq!(condims, [3, 6]);
+        assert_eq!(model.contact_pair_set.len(), 1);
     }
 
     /// `<exclude>` resolves both body names and inserts under a canonical

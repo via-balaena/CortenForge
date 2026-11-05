@@ -439,7 +439,8 @@ pub struct Model {
     pub flex_solref: Vec<[f64; 2]>,
     /// Per-flex: contact solver impedance.
     pub flex_solimp: Vec<[f64; 5]>,
-    /// Per-flex: contact condim (1, 3, 4, or 6).
+    /// Per-flex: contact condim, 1 to 6 from sim-mjcf, which refuses any
+    /// other (a model built in code may hold any value: ledger L385).
     pub flex_condim: Vec<i32>,
     /// Per-flex: contact collision margin for broadphase expansion.
     pub flex_margin: Vec<f64>,

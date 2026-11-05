@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><tendon><fixed name="t"><joint joint="nope" coef="1"/></fixed></tendon></mujoco>

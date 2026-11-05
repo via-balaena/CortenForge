@@ -350,21 +350,55 @@ impl ModelBuilder {
         compute_geom_mass(geom, mesh.as_ref(), hfield)
     }
 
-    /// MuJoCo 3.5.0's checks of each body, body by body in its order, as
-    /// `mjCBody::Compile` makes them: a `fullinertia` beside a diagonal
-    /// inertia (`user_objects.cc:2408-2409`); geom by geom, a plane only in a
-    /// static body, one with no joint on it or a body above it
-    /// (`mjCGeom::Compile`, `:3666-3668`), then a negative mass or density
-    /// ([`Self::negative_mass`], `:3805-3807`); a mass or moment negative
-    /// after the bounds (`:2457-2459`), then the moments' triangle
+    /// MuJoCo 3.5.0's checks of each body, body by body in its order from the
+    /// world, as `mjCBody::Compile` makes them: a `fullinertia` beside a
+    /// diagonal inertia (`user_objects.cc:2408-2409`); geom by geom, its
+    /// checks ([`Self::check_geom`]); a mass or moment negative after the
+    /// bounds (`:2457-2459`), then the moments' triangle
     /// ([`Self::apply_mass_pipeline`], `:2461-2469`); then the body's joints
-    /// ([`Self::check_body_joints`]). The caller runs it with the checks
-    /// RL-6a added, after every check this crate makes before building the
-    /// model.
+    /// ([`Self::check_body_joints`]). A geom `fusestatic` moved into an
+    /// earlier body is checked at its own body's turn, before the first body
+    /// MuJoCo compiles after that one ([`super::compiler::CompileTurns`]):
+    /// MuJoCo compiles every body before it fuses. The caller runs it with
+    /// the checks RL-6a added, after every check this crate makes before
+    /// building the model.
     pub(crate) fn check_bodies(&self) -> Result<()> {
-        let mut moving = vec![false; self.body_parent.len()];
-        for body in 1..self.body_parent.len() {
+        let nbody = self.body_parent.len();
+        let mut moving = vec![false; nbody];
+        for body in 1..nbody {
             moving[body] = self.body_jnt_num[body] > 0 || moving[self.body_parent[body]];
+        }
+        let turns = self.compile_turns.as_ref();
+        // A body the fused tree does not hold (a flexcomp's vertex body)
+        // after every one it does.
+        let body_turn = |body: usize| {
+            turns.map_or(body, |t| {
+                t.body.get(body).copied().unwrap_or(t.name.len() + body)
+            })
+        };
+        let geom_turn = |geom: usize| {
+            turns
+                .and_then(|t| t.geom.get(geom).copied())
+                .unwrap_or_else(|| body_turn(self.geom_body[geom]))
+        };
+        let mut moved: Vec<usize> = (0..self.geom_body.len())
+            .filter(|&geom| geom_turn(geom) != body_turn(self.geom_body[geom]))
+            .collect();
+        // Stable: one body's geoms as written.
+        moved.sort_by_key(|&geom| geom_turn(geom));
+        let mut moved = moved.into_iter().peekable();
+        // A moved geom by its index and its body before fusion, as a check
+        // of the model before fusion names a geom.
+        let written_in = |geom: usize| {
+            let (name, index) = turns.map_or(("", geom), |t| {
+                (t.name[geom_turn(geom)].as_str(), t.geom_index[geom])
+            });
+            Location::nth(ElementKind::Geom, self.geom_name[geom].as_deref(), index).in_body(name)
+        };
+        for body in 0..nbody {
+            while let Some(geom) = moved.next_if(|&geom| geom_turn(geom) < body_turn(body)) {
+                self.check_geom(geom, moving[self.geom_body[geom]], || written_in(geom))?;
+            }
             let faults = self.body_faults[body];
             if faults.full_and_diagonal {
                 return Err(MjcfError::invalid_value(
@@ -376,21 +410,13 @@ impl ModelBuilder {
             }
             let start = self.body_geom_adr[body];
             for geom in start..start + self.body_geom_num[body] {
-                let at = || {
+                if geom_turn(geom) != body_turn(body) {
+                    continue;
+                }
+                self.check_geom(geom, moving[body], || {
                     Location::nth(ElementKind::Geom, self.geom_name[geom].as_deref(), geom)
                         .within_nth(ElementKind::Body, self.body_name[body].as_deref(), body)
-                };
-                if moving[body] && self.geom_type[geom] == GeomType::Plane {
-                    return Err(
-                        MjcfError::invalid_model("plane only allowed in static bodies").at(at()),
-                    );
-                }
-                if faults.negative_geom == Some(geom) {
-                    return Err(MjcfError::invalid_model(
-                        "mass, inertia or density are negative in geom",
-                    )
-                    .at(at()));
-                }
+                })?;
             }
             if faults.negative {
                 return Err(
@@ -405,6 +431,30 @@ impl ModelBuilder {
                 .at(self.body_location(body)));
             }
             self.check_body_joints(body)?;
+        }
+        for geom in moved {
+            self.check_geom(geom, moving[self.geom_body[geom]], || written_in(geom))?;
+        }
+        Ok(())
+    }
+
+    /// MuJoCo 3.5.0's checks of a geom in `mjCGeom::Compile`'s order: a
+    /// condim other than 1, 3, 4 or 6 (`user_objects.cc:3651-3654`), a plane
+    /// only in a static body, one with no joint on it or a body above it
+    /// (`:3666-3668`; fusion moves a geom only into a body that moves as its
+    /// own does), then a negative mass or density ([`Self::negative_mass`],
+    /// `:3805-3807`). The world's geoms can fail only their condim.
+    fn check_geom(&self, geom: usize, moving: bool, at: impl Fn() -> Location) -> Result<()> {
+        if !matches!(self.geom_condim[geom], 1 | 3 | 4 | 6) {
+            return Err(MjcfError::invalid_model("invalid condim in geom").at(at()));
+        }
+        if moving && self.geom_type[geom] == GeomType::Plane {
+            return Err(MjcfError::invalid_model("plane only allowed in static bodies").at(at()));
+        }
+        if self.body_faults[self.geom_body[geom]].negative_geom == Some(geom) {
+            return Err(
+                MjcfError::invalid_model("mass, inertia or density are negative in geom").at(at()),
+            );
         }
         Ok(())
     }

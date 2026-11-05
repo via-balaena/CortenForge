@@ -1,0 +1,1 @@
+<mujoco><size nuser_geom="0"/><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2" user="1"/></body></worldbody></mujoco>

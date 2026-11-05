@@ -74,8 +74,9 @@ impl ModelBuilder {
             [1.0, 0.005, 0.0001],
         )));
 
-        self.geom_condim
-            .push(validate_condim(geom.condim, geom.name.as_ref()));
+        // As resolved; a value other than 1, 3, 4 or 6 is refused once every
+        // geom is built (`check_bodies`), as MuJoCo 3.5.0 refuses it.
+        self.geom_condim.push(geom.condim.unwrap_or(3));
         // `contype`/`conaffinity` are MuJoCo bitmask attributes accepted as
         // i32 from XML but always non-negative by spec.
         #[allow(clippy::cast_sign_loss)]
@@ -223,49 +224,6 @@ fn convert_geom_type(geom_type: Option<MjcfGeomType>) -> GeomType {
         MjcfGeomType::Mesh => GeomType::Mesh,
         MjcfGeomType::Hfield => GeomType::Hfield,
         MjcfGeomType::Sdf => GeomType::Sdf,
-    }
-}
-
-/// Validate and clamp condim to valid values {1, 3, 4, 6}.
-///
-/// Invalid values are rounded up to the next valid value per MuJoCo convention.
-fn validate_condim(condim: Option<i32>, geom_name: Option<&String>) -> i32 {
-    match condim.unwrap_or(3) {
-        1 => 1,
-        2 => {
-            tracing::warn!(
-                "Geom {:?} has invalid condim=2, rounding up to 3",
-                geom_name
-            );
-            3
-        }
-        3 => 3,
-        4 => 4,
-        5 => {
-            tracing::warn!(
-                "Geom {:?} has invalid condim=5, rounding up to 6",
-                geom_name
-            );
-            6
-        }
-        c if c >= 6 => {
-            if c > 6 {
-                tracing::warn!(
-                    "Geom {:?} has invalid condim={}, clamping to 6",
-                    geom_name,
-                    c
-                );
-            }
-            6
-        }
-        c => {
-            tracing::warn!(
-                "Geom {:?} has invalid condim={}, defaulting to 3",
-                geom_name,
-                c
-            );
-            3
-        }
     }
 }
 

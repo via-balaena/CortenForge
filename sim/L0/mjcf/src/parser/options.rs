@@ -17,27 +17,40 @@ use crate::error::ValueCount;
 
 /// Parse `<size>` element attributes into MjcfModel nuser_* fields.
 /// Multiple `<size>` elements merge with last-writer-wins per attribute.
+/// Each `nuser_` below -1 is refused, the first in the order MuJoCo 3.5.0's
+/// reader reads them (`xml_native_reader.cc:1408-1430`), `nuser_cam`
+/// included, which this crate checks and does not keep (DT-126); the parser
+/// keeps the refusal until the document is read (`parse_mujoco`).
 pub(super) fn parse_size_attrs(e: &BytesStart, model: &mut MjcfModel) -> Result<()> {
     let a = Attrs::new(e)?;
-    if let Some(val) = a.int("nuser_body")? {
+    let nuser = |name: &str| match a.int(name)? {
+        Some(n) if n < -1 => Err(MjcfError::invalid_value(
+            "size",
+            name,
+            format!("must be >= -1, got {n}"),
+        )),
+        value => Ok(value),
+    };
+    if let Some(val) = nuser("nuser_body")? {
         model.nuser_body = val;
     }
-    if let Some(val) = a.int("nuser_jnt")? {
+    if let Some(val) = nuser("nuser_jnt")? {
         model.nuser_jnt = val;
     }
-    if let Some(val) = a.int("nuser_geom")? {
+    if let Some(val) = nuser("nuser_geom")? {
         model.nuser_geom = val;
     }
-    if let Some(val) = a.int("nuser_site")? {
+    if let Some(val) = nuser("nuser_site")? {
         model.nuser_site = val;
     }
-    if let Some(val) = a.int("nuser_tendon")? {
+    nuser("nuser_cam")?;
+    if let Some(val) = nuser("nuser_tendon")? {
         model.nuser_tendon = val;
     }
-    if let Some(val) = a.int("nuser_actuator")? {
+    if let Some(val) = nuser("nuser_actuator")? {
         model.nuser_actuator = val;
     }
-    if let Some(val) = a.int("nuser_sensor")? {
+    if let Some(val) = nuser("nuser_sensor")? {
         model.nuser_sensor = val;
     }
     Ok(())

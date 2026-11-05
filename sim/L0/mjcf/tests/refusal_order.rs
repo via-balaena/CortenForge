@@ -40,10 +40,28 @@
 //! it, before the next body's; all before any fault the builder finds
 //! outside frames. A composite's other faults are met when it is made,
 //! before frames, as MuJoCo's reader meets them. `FRAME_AND_COMPOSITE_COSTS`
-//! pins the orders found unlike MuJoCo's (ledger L353).
+//! pins the orders found unlike MuJoCo's (ledger L353). RL-7c's check of a
+//! geom's condim (book L25) runs with RL-6d's, geom by geom from the
+//! world's, before its plane check; a geom `fusestatic` moves into an
+//! earlier body has its condim, plane and negative-density checks at its own
+//! body's turn, as MuJoCo compiles every body before it fuses (the density
+//! is judged by its new body's inertia rule: ledger L388); a pair's condim,
+//! then its geoms, after the assets and before the sizes, where MuJoCo
+//! compiles pairs; `CONDIM_COSTS` pins the faults this crate meets first
+//! that MuJoCo meets after a condim. A `<size>` `nuser_` below -1 is refused
+//! once the document is parsed, or when a fault outside `<compiler>` and
+//! `<option>` stops the parser first, as MuJoCo's reader reads `<compiler>`,
+//! `<option>` and then `<size>` before the other sections; `NUSER_COSTS`
+//! pins a fault the parser meets before a later `<size>`. A model built in
+//! code has its `nuser_` sizes checked before its names. A
+//! flex's condim outside 1 to 6, which MuJoCo loads, and a pair naming a
+//! geom "" where the model has an unnamed geom, which MuJoCo binds to it,
+//! are refused after the keyframes (`D-FLEX-CONDIM-RANGE`,
+//! `D-PAIR-NO-GEOM`); where it has none, MuJoCo refuses that pair where it
+//! compiles pairs, and so does this crate.
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
-//! oracle, for the fault its expected error names (RL-6a's measured
+//! oracle, with the reason its row gives as MuJoCo's (RL-6a's measured
 //! 2026-10-31, RL-6b's 2026-11-01, RL-6d's 2026-11-02). Eleven are the RL-6a
 //! review's first round, three its fix-diff pass's (a keyframe's fault), and
 //! four set the new checks against each other; RL-6b's set a limit's fault
@@ -52,7 +70,12 @@
 //! reference and an axis MuJoCo refuses too, and beside an option this crate
 //! refuses and MuJoCo does not. RL-7b's (measured 2026-11-03; review round
 //! 1's documents, RA and RW) set a fault in a frame or a cable beside
-//! another.
+//! another. RL-7c's (measured 2026-11-04) set a geom's or a pair's condim,
+//! a pair's unknown geom, a `nuser_` below -1 or a flex's condim beside
+//! another; its review's first round's, a geom `fusestatic` moves beside an
+//! earlier body's fault, a `nuser_` below -1 beside a repeated name, a
+//! class's fault or a parse fault, and a pair naming a geom "" beside
+//! another fault.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1070,6 +1093,396 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "fromto points too close in geom",
         "invalid fromto on <geom>: fromto points too close (geom 'vG1' in body 'vB_1')",
     ),
+    (
+        "condim then its plane",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><geom name="g" type="plane" size="1 1 .1" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'g' in body 'b')",
+    ),
+    (
+        "condim then its negative mass",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><geom name="g" size=".1" mass="-1" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'g' in body 'b')",
+    ),
+    (
+        "condim then its body's axis",
+        r#"<mujoco><worldbody><body name="b"><joint type="hinge" axis="0 0 0"/><geom name="g" size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'g' in body 'b')",
+    ),
+    (
+        "an earlier body's axis then condim",
+        r#"<mujoco><worldbody><body name="a"><joint type="hinge" axis="0 0 0"/><geom size=".1"/></body><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'a_joint0' in body 'a')",
+    ),
+    (
+        "condim then a massless moving body",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body><body name="c"><joint type="slide"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'g' in body 'b')",
+    ),
+    (
+        "condim then a keyframe",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><keyframe><key qpos="0 0 0 1 0 0 0 0"/></keyframe></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'g' in body 'b')",
+    ),
+    (
+        "its user data then condim",
+        r#"<mujoco><size nuser_geom="0"/><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2" user="1"/></body></worldbody></mujoco>"#,
+        "user has more values than nuser_geom in geom 'g' (id = 0)",
+        "invalid user on <geom>: user data exceeds nuser_geom=0",
+    ),
+    (
+        "condim then a free joint below the top",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/><body name="c"><freejoint/><geom size=".1"/></body></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'g' in body 'b')",
+    ),
+    (
+        "the world's condim then a body's plane",
+        r#"<mujoco><worldbody><geom name="w" size=".1" condim="2"/><body name="b"><freejoint/><geom type="plane" size="1 1 .1"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'w' in body 'world')",
+    ),
+    (
+        "a pair's condim then its geom",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="nope" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "a pair's unknown geom then a later pair's condim",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="nope" geom2="floor"/><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "geom 'nope' not found in collision 0",
+        "unknown geom 'nope' (pair #0)",
+    ),
+    (
+        "a pair's condim then a later pair's unknown geom",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/><pair geom1="nope" geom2="floor"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "a pair's condim then a geom's",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "a pair's condim then a size",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom name="z" size="0"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "a pair's unknown geom then a size",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom name="z" size="0"/></body></worldbody><contact><pair geom1="nope" geom2="floor"/></contact></mujoco>"#,
+        "geom 'nope' not found in collision 0",
+        "unknown geom 'nope' (pair #0)",
+    ),
+    (
+        "a pair's unknown geom2 then a size",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom name="z" size="0"/></body></worldbody><contact><pair geom1="g" geom2="nope"/></contact></mujoco>"#,
+        "geom 'nope' not found in collision 0",
+        "unknown geom 'nope' (pair #0)",
+    ),
+    (
+        "a pair's condim then a mesh",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/></asset><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom type="mesh" mesh="m"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "a pair's condim then a tendon's joint",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact><tendon><fixed name="t"><joint joint="nope" coef="1"/></fixed></tendon></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "a pair's unknown geom then an actuator's joint",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="nope" geom2="floor"/></contact><actuator><motor joint="nope"/></actuator></mujoco>"#,
+        "geom 'nope' not found in collision 0",
+        "unknown geom 'nope' (pair #0)",
+    ),
+    (
+        "a pair's condim then a massless moving body",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body><body name="c"><joint type="slide"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "a pair's condim then a keyframe",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact><keyframe><key qpos="0 0 0 1 0 0 0 0"/></keyframe></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
+    (
+        "a repeated name then a pair's condim",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "repeated name 'g' in geom",
+        "repeated name 'g' in geom (geom 'g' in body 'b')",
+    ),
+    (
+        "a nuser below -1 then a pair's condim",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then a geom's mesh",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom type="mesh" mesh="nope"/></body></worldbody><contact><pair geom1="g" geom2="floor"/></contact></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a flex's condim 7 then a keyframe",
+        r#"<mujoco><worldbody><body name="s" pos="0 0 0.105"><freejoint/><geom name="gs" type="sphere" size="0.1" condim="3"/></body><body name="v0" pos="-0.5 -0.5 0"/><body name="v1" pos="0.5 -0.5 0"/><body name="v2" pos="0.5 0.5 0"/><body name="v3" pos="-0.5 0.5 0"/></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2 0 2 3" radius="0.01"><contact condim="7"/></flex></deformable><keyframe><key qpos="0 0 0 1 0 0 0 0"/></keyframe></mujoco>"#,
+        "keyframe '': invalid qpos size, expected 7, got 8",
+        "invalid qpos on <key>: length 8 does not match 7 (key #0)",
+    ),
+    (
+        "a flex's condim 7 then a body's mass",
+        r#"<mujoco><worldbody><body name="s" pos="0 0 0.105"><freejoint/><geom name="gs" type="sphere" size="0.1" condim="3"/></body><body name="v0" pos="-0.5 -0.5 0"/><body name="v1" pos="0.5 -0.5 0"/><body name="v2" pos="0.5 0.5 0"/><body name="v3" pos="-0.5 0.5 0"/><body name="c"><freejoint/></body></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2 0 2 3" radius="0.01"><contact condim="7"/></flex></deformable></mujoco>"#,
+        "mass and inertia of moving bodies must be larger than mjMINVAL",
+        "mass and inertia of moving bodies must be larger than mjMINVAL (body 'c')",
+    ),
+    (
+        "fusestatic: a plane in a moving body, then a fused body's condim",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/><geom name="gp" type="plane" size="1 1 .1"/></body><body name="s" pos="2 0 0"><geom name="gs" size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "plane only allowed in static bodies",
+        "plane only allowed in static bodies (geom 'gp' in body 'a')",
+    ),
+    (
+        "fusestatic: a moving body's condim, then a fused body's",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1" condim="5"/></body><body name="s" pos="2 0 0"><geom name="gs" size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'ga' in body 'a')",
+    ),
+    (
+        "fusestatic: a negative density, then a fused body's condim",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1" density="-1"/></body><body name="s" pos="2 0 0"><geom name="gs" size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "mass, inertia or density are negative in geom",
+        "mass, inertia or density are negative in geom (geom 'ga' in body 'a')",
+    ),
+    (
+        "fusestatic: a child's plane, then the condim of a body fused into the parent",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/><body name="c" pos="0 0 .3"><joint type="hinge"/><geom name="gc" type="plane" size="1 1 .1"/></body><body name="s" pos="0 .3 0"><geom name="gs" size=".1" condim="2"/></body></body></worldbody></mujoco>"#,
+        "plane only allowed in static bodies",
+        "plane only allowed in static bodies (geom 'gc' in body 'c')",
+    ),
+    (
+        "fusestatic: a fused body's condim, then a later body's plane",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="2 0 0"><geom name="gs" size=".1" condim="2"/></body><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/><geom name="gp" type="plane" size="1 1 .1"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'gs' in body 's')",
+    ),
+    (
+        "fusestatic: a joint's axis, then a fused body's condim",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><joint type="hinge" axis="0 0 0"/><geom name="ga" size=".1"/></body><body name="s" pos="2 0 0"><geom name="gs" size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'a_joint0' in body 'a')",
+    ),
+    (
+        "fusestatic: a fullinertia, then a fused body's condim",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><inertial pos="0 0 0" mass="1" fullinertia="1 1 1 0 0 0" diaginertia="1 1 1"/><geom name="ga" size=".1"/></body><body name="s" pos="2 0 0"><geom name="gs" size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "fullinertia and diagonal inertia cannot both be specified",
+        "invalid fullinertia on <inertial>: fullinertia and diagonal inertia cannot both be specified (body 'a')",
+    ),
+    (
+        "fusestatic: a joint's axis, then a plane fused into its body",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><joint type="hinge" axis="0 0 0"/><geom name="ga" size=".1"/><body name="s" pos="0 0 .3"><geom name="gp" type="plane" size="1 1 .1"/></body></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'a_joint0' in body 'a')",
+    ),
+    (
+        "fusestatic: a joint's axis, then a negative density fused into its body",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><joint type="hinge" axis="0 0 0"/><geom name="ga" size=".1"/><body name="s" pos="0 0 .3"><geom name="gn" size=".1" density="-1"/></body></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'a_joint0' in body 'a')",
+    ),
+    (
+        "fusestatic: two fused bodies' condims, the first fused into a moving body",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/><body name="s1" pos="0 0 .3"><geom name="g1" size=".1" condim="2"/></body></body><body name="s2" pos="2 0 0"><geom name="g2" size=".1" condim="5"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'g1' in body 's1')",
+    ),
+    (
+        "fusestatic: a condim fused through two bodies, then a later joint's axis",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="2 0 0"><geom name="gs" size=".1"/><body name="t" pos="0 0 .3"><geom name="gt" size=".1" condim="2"/></body></body><body name="a" pos="0 0 1"><joint type="hinge" axis="0 0 0"/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'gt' in body 't')",
+    ),
+    (
+        "fusestatic: a plane fused into a moving body, then a later body's condim",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/><body name="s" pos="0 0 .3"><geom name="gp" type="plane" size="1 1 .1"/></body></body><body name="c" pos="2 0 1"><freejoint/><geom name="gc" size=".1" condim="2"/></body></worldbody></mujoco>"#,
+        "plane only allowed in static bodies",
+        "plane only allowed in static bodies (geom 'gp' in body 's')",
+    ),
+    (
+        "a nuser below -1 then a repeated body name",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body><body name="a" pos="1 0 1"><freejoint/><geom size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then a repeated pair name",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body></worldbody><contact><pair name="p" geom1="ga" geom2="floor"/><pair name="p" geom1="ga" geom2="floor"/></contact></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then a repeated geom name",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><geom name="ga" type="plane" size="1 1 .1"/><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then an undefined class",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom class="nope" size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "two <size>, the first's nuser below -1",
+        r#"<mujoco><size nuser_geom="-3"/><size nuser_body="-2"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -3 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then a repeated actuator name",
+        r#"<mujoco><size nuser_sensor="-2"/><worldbody><body name="a" pos="0 0 1"><joint name="j" type="hinge"/><geom name="ga" size=".1"/></body></worldbody><actuator><motor name="m" joint="j"/><motor name="m" joint="j"/></actuator></mujoco>"#,
+        "nuser_sensor must be >= -1",
+        "invalid nuser_sensor on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then a repeated tendon name",
+        r#"<mujoco><size nuser_tendon="-2"/><worldbody><body name="a" pos="0 0 1"><joint name="j" type="hinge"/><geom name="ga" size=".1"/></body></worldbody><tendon><fixed name="t"><joint joint="j" coef="1"/></fixed><fixed name="t"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
+        "nuser_tendon must be >= -1",
+        "invalid nuser_tendon on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then a repeated frame name",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><frame name="f"/><frame name="f"/><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then a sphere's fromto",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom type="sphere" size=".1" fromto="0 0 0 0 0 1"/></body></worldbody></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1 then a parse fault",
+        r#"<mujoco><size nuser_geom="-2"/><worldbody><body name="b"><freejoint/><geom name="g" type="nosuch" size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a nuser below -1, written last, then a repeated name",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1"/><geom name="g" size=".1"/></body></worldbody><size nuser_geom="-2"/></mujoco>"#,
+        "nuser_geom must be >= -1",
+        "invalid nuser_geom on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a camera's nuser below -1 then a repeated name",
+        r#"<mujoco><size nuser_cam="-2"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="g" size=".1"/><geom name="g" size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_cam must be >= -1",
+        "invalid nuser_cam on <size>: must be >= -1, got -2 (line 1: size)",
+    ),
+    (
+        "a pair naming an empty geom, then a joint's axis",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".2"/></body><body name="c"><joint type="hinge" axis="0 0 0"/><geom size=".1"/></body></worldbody><contact><pair geom1="" geom2="g"/></contact></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'c_joint0' in body 'c')",
+    ),
+    (
+        "a pair naming an empty geom, then a keyframe",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".2"/></body></worldbody><contact><pair geom1="" geom2="g"/></contact><keyframe><key qpos="1 2 3 4 5 6 7 8"/></keyframe></mujoco>"#,
+        "invalid qpos size, expected 7, got 8",
+        "invalid qpos on <key>: length 8 does not match 7 (key #0)",
+    ),
+    (
+        "a pair naming an empty geom, then an actuator's joint",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".2"/></body></worldbody><contact><pair geom1="" geom2="g"/></contact><actuator><motor joint="nope"/></actuator></mujoco>"#,
+        "unknown transmission target 'nope' for actuator id = 0",
+        "unknown joint 'nope' (actuator #0)",
+    ),
+    (
+        "a pair naming an empty geom, every geom named, then a size",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body><body name="c" pos="1 0 1"><freejoint/><geom name="z" size="0"/></body></worldbody><contact><pair geom1="" geom2="ga"/></contact></mujoco>"#,
+        "geom '' not found in collision 0",
+        "unknown geom '' (pair #0)",
+    ),
+    (
+        "a pair's empty geom2, every geom named, then a keyframe",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1"/></body></worldbody><contact><pair geom1="ga" geom2=""/></contact><keyframe><key qpos="0 0 0 1 0 0 0 9"/></keyframe></mujoco>"#,
+        "geom '' not found in collision 0",
+        "unknown geom '' (pair #0)",
+    ),
+    (
+        "a <size>'s nuser below -1, then a <compiler>'s angle",
+        r#"<mujoco><size nuser_geom="-2"/><compiler angle="foo"/><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "invalid keyword: 'foo'",
+        "invalid keyword \"foo\" in attribute 'angle' on <compiler> (line 1: compiler)",
+    ),
+    (
+        "a <size>'s nuser below -1, then an <option>'s integrator",
+        r#"<mujoco><size nuser_geom="-2"/><option integrator="bogus"/><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "invalid keyword: 'bogus'",
+        "invalid keyword \"bogus\" in attribute 'integrator' on <option> (line 1: option)",
+    ),
+    (
+        "a <size>'s nuser below -1, then an <option>'s timestep",
+        r#"<mujoco><size nuser_geom="-2"/><option timestep="abc"/><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "bad format in attribute 'timestep'",
+        "bad number \"abc\" in attribute 'timestep' on <option> (line 1: option)",
+    ),
+    (
+        "a <size>'s nuser below -1, then a <compiler>'s inertiafromgeom",
+        r#"<mujoco><size nuser_geom="-2"/><compiler inertiafromgeom="maybe"/><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "invalid keyword: 'maybe'",
+        "invalid keyword \"maybe\" in attribute 'inertiafromgeom' on <compiler> (line 1: compiler)",
+    ),
+    (
+        "a <size>'s nuser below -1, then an <option>'s flag",
+        r#"<mujoco><size nuser_geom="-2"/><option><flag gravity="maybe"/></option><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "invalid keyword: 'maybe'",
+        "invalid keyword \"maybe\" in attribute 'gravity' on <flag> (line 1: option > flag)",
+    ),
+    (
+        "a <size>'s nuser below -1, then a <compiler>'s boundmass",
+        r#"<mujoco><size nuser_geom="-2"/><compiler boundmass="x"/><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "bad format in attribute 'boundmass'",
+        "bad number \"x\" in attribute 'boundmass' on <compiler> (line 1: compiler)",
+    ),
+    (
+        "a <size>'s nuser below -1, then an <option>'s gravity",
+        r#"<mujoco><size nuser_geom="-2"/><option gravity="0 0"/><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "attribute 'gravity' does not have enough data",
+        "expected exactly 3 values, found 2 in attribute 'gravity' on <option> (line 1: option)",
+    ),
+    (
+        "a <size>'s nuser below -1, then an <option>'s cone",
+        r#"<mujoco><size nuser_geom="-2"/><option cone="round"/><worldbody><body name="a"><freejoint/><geom name="ga" size=".1"/></body></worldbody></mujoco>"#,
+        "invalid keyword: 'round'",
+        "invalid keyword \"round\" in attribute 'cone' on <option> (line 1: option)",
+    ),
+    (
+        "one <size>'s nuser_geom then nuser_body below -1",
+        r#"<mujoco><size nuser_geom="-2" nuser_body="-3"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="g" size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_body must be >= -1",
+        "invalid nuser_body on <size>: must be >= -1, got -3 (line 1: size)",
+    ),
+    (
+        "one <size>'s nuser_tendon then nuser_cam below -1",
+        r#"<mujoco><size nuser_tendon="-2" nuser_cam="-3"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="g" size=".1"/></body></worldbody></mujoco>"#,
+        "nuser_cam must be >= -1",
+        "invalid nuser_cam on <size>: must be >= -1, got -3 (line 1: size)",
+    ),
 ];
 
 #[test]
@@ -1174,6 +1587,199 @@ const FRAME_AND_COMPOSITE_COSTS: &[(&str, &str, &str, &str)] = &[
 fn a_fault_in_a_frame_or_a_composite_beside_another_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in FRAME_AND_COMPOSITE_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// A `<size>` `nuser_` below -1 written after a fault this crate's parser
+/// meets first: MuJoCo 3.5.0 reads the whole document, then `<compiler>`,
+/// `<option>` and `<size>` before the other sections; this crate's parser
+/// stops at the earlier fault (ledger L353).
+/// `(what, document, MuJoCo's reason, this crate's error)`, measured
+/// 2026-11-04.
+const NUSER_COSTS: &[(&str, &str, &str, &str)] = &[(
+    "a parse fault then a nuser below -1",
+    r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" type="nosuch" size=".1"/></body></worldbody><size nuser_geom="-2"/></mujoco>"#,
+    "nuser_geom must be >= -1",
+    "invalid keyword \"nosuch\" in attribute 'type' on <geom> (line 1: worldbody > body 'b' > geom 'g')",
+)];
+
+#[test]
+fn a_nuser_after_a_parse_fault_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in NUSER_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// A model built in code, its `<size>` not parsed, has its `nuser_` sizes
+/// checked before anything else too: before a repeated name here.
+#[test]
+fn a_nuser_below_minus_1_set_in_code_is_refused_first() {
+    let mut mjcf = sim_mjcf::parse_mjcf_str(
+        r#"<mujoco><worldbody><body name="a"><freejoint/><geom name="g" size=".1"/><geom name="g" size=".1"/></body></worldbody></mujoco>"#,
+    )
+    .expect("parses");
+    mjcf.nuser_body = -2;
+    let error = sim_mjcf::model_from_mjcf(&mjcf, None).expect_err("nuser_body -2");
+    assert_eq!(
+        error.to_string(),
+        "invalid nuser_body on <size>: must be >= -1, got -2"
+    );
+}
+
+/// Two faults, one a geom's or a pair's condim or a pair's geom, where this
+/// crate names the other: a geom's condim is checked with the checks RL-6a
+/// added, after every check this crate makes before building the model, a
+/// pair's after the assets; a sphere's `fromto` is refused when the classes
+/// are applied, a height field written without `elevation` while parsing
+/// (ledger L359), a body's orientation when the tree is built, and a pair
+/// with no `geom1` while parsing (registry `D-PAIR-NO-GEOM`); MuJoCo 3.5.0
+/// checks each condim and pair before these (ledger L353). `(what, document, MuJoCo's reason, this crate's
+/// error)`, measured 2026-11-04 (the last five: review round 1's).
+const CONDIM_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "condim then its size",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><geom name="g" size="0" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid size on <geom>: size 0 must be positive (geom 'g' in body 'b')",
+    ),
+    (
+        "condim then a later body's size",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body><body name="c"><freejoint/><geom name="z" size="0"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid size on <geom>: size 0 must be positive (geom 'z' in body 'c')",
+    ),
+    (
+        "condim then its fromto",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom size=".1"/><geom name="g" size=".1" fromto="0 0 0 0 0 1" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid fromto on <geom>: fromto requires a capsule, cylinder, ellipsoid or box (geom 'g' in body 'b')",
+    ),
+    (
+        "condim then a later frame's xyaxes",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body><body name="c"><freejoint/><geom size=".1"/><frame xyaxes="1 0 0 1 0 0"><geom size=".1"/></frame></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid xyaxes on <frame>: yaxis too small (frame in body 'c')",
+    ),
+    (
+        "condim then a tendon's joint",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><tendon><fixed name="t"><joint joint="nope" coef="1"/></fixed></tendon></mujoco>"#,
+        "invalid condim in geom",
+        "unknown joint 'nope' (tendon 't')",
+    ),
+    (
+        "condim then an actuator's joint",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><actuator><motor joint="nope"/></actuator></mujoco>"#,
+        "invalid condim in geom",
+        "unknown joint 'nope' (actuator #0)",
+    ),
+    (
+        "condim then a sensor's joint",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><sensor><jointpos joint="nope"/></sensor></mujoco>"#,
+        "invalid condim in geom",
+        "unknown joint 'nope' (sensor #0)",
+    ),
+    (
+        "condim then an equality's body",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><equality><connect body1="nope" body2="b" anchor="0 0 0"/></equality></mujoco>"#,
+        "invalid condim in geom",
+        "unknown body 'nope' (equality #0)",
+    ),
+    (
+        "condim then an exclude's body",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom name="g" size=".1" condim="2"/></body></worldbody><contact><exclude body1="nope" body2="b"/></contact></mujoco>"#,
+        "invalid condim in geom",
+        "unknown body 'nope' (exclude #0)",
+    ),
+    (
+        "the world's condim then a body's size",
+        r#"<mujoco><worldbody><geom name="w" size=".1" condim="2"/><body name="b"><freejoint/><geom name="z" size="0"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid size on <geom>: size 0 must be positive (geom 'z' in body 'b')",
+    ),
+    (
+        "the world's condim then a body's user data",
+        r#"<mujoco><size nuser_body="0"/><worldbody><geom name="w" size=".1" condim="2"/><body name="b" user="1"><freejoint/><geom size=".1"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid user on <body>: user data exceeds nuser_body=0",
+    ),
+    (
+        "a pair's condim then a frame's xyaxes",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><frame xyaxes="1 0 0 1 0 0"><geom size=".1"/></frame></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid xyaxes on <frame>: yaxis too small (frame in body 'b')",
+    ),
+    (
+        "a pair's condim then a fromto",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".1" fromto="0 0 0 0 0 1"/></body></worldbody><contact><pair geom1="g" geom2="floor" condim="2"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid fromto on <geom>: fromto requires a capsule, cylinder, ellipsoid or box (geom in body 'b')",
+    ),
+    (
+        "a geom's condim then a sphere's fromto",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><body name="a" pos="0 0 0.09" ><freejoint/><geom name="ga" type="sphere" size="0.1" condim="2"/></body><body name="b" pos="0.5 0 0.09"><freejoint/><geom name="gb" type="sphere" size="0.1" fromto="0 0 0 0 0 1"/></body></worldbody><contact><pair geom1="ga" geom2="floor"/><pair geom1="gb" geom2="floor"/></contact></mujoco>"#,
+        "invalid condim in geom",
+        "invalid fromto on <geom>: fromto requires a capsule, cylinder, ellipsoid or box (geom 'gb' in body 'b')",
+    ),
+    (
+        "a pair's condim then a sphere's fromto",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><body name="a" pos="0 0 0.09" ><freejoint/><geom name="ga" type="sphere" size="0.1"/></body><body name="b" pos="0.5 0 0.09"><freejoint/><geom name="gb" type="sphere" size="0.1" fromto="0 0 0 0 0 1"/></body></worldbody><contact><pair geom1="ga" geom2="floor" condim="2"/><pair geom1="gb" geom2="floor"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid fromto on <geom>: fromto requires a capsule, cylinder, ellipsoid or box (geom 'gb' in body 'b')",
+    ),
+    (
+        "a pair's unknown geom then a sphere's fromto",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="a" pos="0 0 .09"><freejoint/><geom name="ga" size=".1"/></body><body name="h" pos="1 0 1"><freejoint/><geom type="sphere" size=".1" fromto="0 0 0 0 0 1"/></body></worldbody><contact><pair geom1="zz" geom2="floor"/></contact></mujoco>"#,
+        "geom 'zz' not found in collision 0",
+        "invalid fromto on <geom>: fromto requires a capsule, cylinder, ellipsoid or box (geom in body 'h')",
+    ),
+    (
+        "a geom's condim then a height field without elevation",
+        r#"<mujoco><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom type="hfield" hfield="h" pos="3 0 0"/><body name="a" pos="0 0 0.09" ><freejoint/><geom name="ga" type="sphere" size="0.1" condim="2"/></body><body name="b" pos="0.5 0 0.09"><freejoint/><geom name="gb" type="box" size="0.1 0.1 0.1"/></body></worldbody><contact><pair geom1="ga" geom2="floor"/><pair geom1="gb" geom2="floor"/></contact></mujoco>"#,
+        "invalid condim in geom",
+        "invalid elevation on <hfield>: at least one of 'file' or 'elevation' must be specified (line 1: asset > hfield 'h')",
+    ),
+    (
+        "a pair's condim then a height field without elevation",
+        r#"<mujoco><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom type="hfield" hfield="h" pos="3 0 0"/><body name="a" pos="0 0 0.09" ><freejoint/><geom name="ga" type="sphere" size="0.1"/></body><body name="b" pos="0.5 0 0.09"><freejoint/><geom name="gb" type="box" size="0.1 0.1 0.1"/></body></worldbody><contact><pair geom1="ga" geom2="floor" condim="2"/><pair geom1="gb" geom2="floor"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid elevation on <hfield>: at least one of 'file' or 'elevation' must be specified (line 1: asset > hfield 'h')",
+    ),
+    (
+        "a geom's condim then a later moving body's zaxis",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1" condim="2"/></body><body name="s" pos="2 0 0" zaxis="0 0 0"><joint type="hinge"/><geom name="gs" size=".1"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid zaxis on <body>: zaxis too small (body 's')",
+    ),
+    (
+        "a geom's condim then a later fused body's zaxis",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom name="ga" size=".1" condim="2"/></body><body name="s" pos="2 0 0" zaxis="0 0 0"><geom name="gs" size=".1"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid zaxis on <body>: zaxis too small (body 's')",
+    ),
+    (
+        "a pair with no geom1, bound by MuJoCo, then a size",
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".2"/></body><body name="c" pos="1 0 1"><freejoint/><geom name="z" size="0"/></body></worldbody><contact><pair geom2="g"/></contact></mujoco>"#,
+        "size 0 must be positive in geom",
+        "required attribute missing: 'geom1' on <pair> (line 1: contact > pair)",
+    ),
+];
+
+#[test]
+fn a_condim_beside_another_fault_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in CONDIM_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),
