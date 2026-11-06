@@ -89,8 +89,8 @@ fn apply_to_equalities(equality: &mut MjcfEquality, resolver: &DefaultResolver) 
         joints,
         distances,
         tendons,
+        flexes,
         order,
-        ..
     } = equality;
     for (i, &(kind, k)) in order.iter().enumerate() {
         // The equality's name, class, and the three values a class gives.
@@ -140,6 +140,15 @@ fn apply_to_equalities(equality: &mut MjcfEquality, resolver: &DefaultResolver) 
                     &mut e.solimp,
                 )
             }),
+            EqualityKind::Flex => flexes.get_mut(k).map(|e| {
+                (
+                    &e.name,
+                    &e.class,
+                    &mut e.active,
+                    &mut e.solref,
+                    &mut e.solimp,
+                )
+            }),
         }
         .ok_or_else(|| {
             MjcfError::invalid_model(format!(
@@ -163,6 +172,7 @@ fn equality_tag(kind: EqualityKind) -> &'static str {
         EqualityKind::Joint => "joint",
         EqualityKind::Distance => "distance",
         EqualityKind::Tendon => "tendon",
+        EqualityKind::Flex => "flex",
     }
 }
 

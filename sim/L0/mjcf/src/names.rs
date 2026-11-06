@@ -96,6 +96,7 @@ pub fn check_names(model: &MjcfModel, frames: &[FrameName]) -> Result<()> {
             EqualityKind::Joint => equality.joints[idx].name.as_deref(),
             EqualityKind::Distance => equality.distances[idx].name.as_deref(),
             EqualityKind::Tendon => equality.tendons[idx].name.as_deref(),
+            EqualityKind::Flex => equality.flexes[idx].name.as_deref(),
         };
         seen.add(ElementKind::Equality, name.unwrap_or(""), Location::unknown)?;
     }

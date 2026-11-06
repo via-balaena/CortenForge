@@ -164,6 +164,7 @@ fn single_edge_mjcf() -> &'static str {
                 <elasticity young="1000.0" damping="1.0"/>
             </flex>
         </deformable>
+        <equality><flex flex="spring"/></equality>
     </mujoco>
     "#
 }
@@ -1402,6 +1403,7 @@ fn ac20_bending_stability_clamp() {
                 <elasticity young="1e12" poisson="0.3" damping="0.001" thickness="0.005" bending_model="bridson"/>
             </flex>
         </deformable>
+        <equality><flex flex="strip"/></equality>
     </mujoco>
     "#;
 
@@ -2455,6 +2457,7 @@ fn spec_a_constraint_cable_mjcf() -> &'static str {
                 <elasticity young="0" damping="0"/>
             </flex>
         </deformable>
+        <equality><flex flex="cable"/></equality>
     </mujoco>
     "#
 }
@@ -2810,6 +2813,7 @@ fn spec_a_t9_zero_length_edge() {
                 <elasticity young="100" damping="0.1"/>
             </flex>
         </deformable>
+        <equality><flex flex="cable"/></equality>
     </mujoco>
     "#;
     let model = load_model(mjcf).expect("load");
@@ -4027,20 +4031,17 @@ fn edge_velocities(model: &Model, data: &sim_core::Data) -> Vec<([usize; 2], f64
 /// stiffness, an edge damping or the flex's damping needs them; otherwise
 /// they stay 0, and so do the edges' velocities, `J·qvel`
 /// (`engine_core_smooth.c:682-686`, `engine_forward.c:228-230`; ledger
-/// L153). The grid of [`free_grid_moving`] with its edge equality removed
-/// (sim-mjcf gives every flex one, Rigid-loading L31): every velocity 0, as
-/// MuJoCo's loaded grid, and each of the four makes MuJoCo's velocities with
-/// an edge damping, bit for bit (`gen_flex_edge_velocity_reference.py`).
+/// L153). The grid of [`free_grid_moving`], which no equality names: every
+/// velocity 0, as MuJoCo's loaded grid, and each of the four makes MuJoCo's
+/// velocities with an edge damping, bit for bit
+/// (`gen_flex_edge_velocity_reference.py`).
 /// sim-core's own bending damping does not read the edges' Jacobians, so it
 /// makes none.
 #[test]
 fn edge_jacobians_and_velocities_are_made_only_where_mujoco_makes_them() {
-    let (mut model, data) = free_grid_moving();
-    let flex_equality = (0..model.neq)
-        .find(|&eq| model.eq_type[eq] == sim_core::EqualityType::Flex)
-        .expect("the flex's edge equality");
-    model.eq_active[flex_equality] = false;
-    model.flex_edgeequality[0] = false;
+    let (model, data) = free_grid_moving();
+    assert_eq!(model.neq, 0);
+    assert_eq!(model.flex_edgeequality, vec![false]);
 
     let run = |model: &Model| {
         let mut data = data.clone();

@@ -225,6 +225,7 @@ impl ModelBuilder {
             // Sensor/equality name lookup (§59)
             sensor_name_to_id: HashMap::new(),
             eq_name_to_id: HashMap::new(),
+            flex_equalities: Vec::new(),
 
             // Equality constraints (populated by process_equality_constraints)
             eq_type: vec![],

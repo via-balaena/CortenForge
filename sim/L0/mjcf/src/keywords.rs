@@ -148,6 +148,28 @@ pub fn bending_model(s: &str) -> Option<FlexBendingType> {
     }
 }
 
+/// A `<flexcomp><edge>`'s `equality` (`flexeq_map`,
+/// `xml_native_reader.cc:933-937`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlexEdgeEquality {
+    /// No equality (`false`).
+    None,
+    /// An equality on the flex's edges (`true`, MuJoCo's `mjEQ_FLEX`).
+    Edges,
+    /// One on its vertices (`vert`, MuJoCo's `mjEQ_FLEXVERT`).
+    Vertices,
+}
+
+/// A `<flexcomp><edge>`'s `equality` keyword.
+pub fn flex_edge_equality(s: &str) -> Option<FlexEdgeEquality> {
+    match s {
+        "false" => Some(FlexEdgeEquality::None),
+        "true" => Some(FlexEdgeEquality::Edges),
+        "vert" => Some(FlexEdgeEquality::Vertices),
+        _ => None,
+    }
+}
+
 /// A `<composite>`'s `type` (`comp_map`).
 pub fn composite_type(s: &str) -> Option<CompositeType> {
     match s {

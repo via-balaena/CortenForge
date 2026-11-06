@@ -3381,3 +3381,11 @@ f109d39c44c3035e	sim/L0/mjcf/tests/refusal_order.rs:2077
 f1dc74ca987dbaae	sim/L0/mjcf/tests/refusal_order.rs:2011
 f1f588730707bf29	sim/L0/mjcf/tests/refusal_order.rs:2053
 f37bacadac45680f	sim/L0/mjcf/tests/sensor_refusals.rs:116
+0cd74fb70f8525c2	sim/L0/tests/integration/empty_rows_parity.rs:90
+168932bb7a1e104d	sim/L0/tests/integration/sparse_rows_parity.rs:176
+20d855b0fac192b4	sim/L0/tests/integration/flex_unified.rs:2804
+273219322a79c575	sim/L0/tests/integration/flex_equality_rows.rs:19
+3536e32310cfd473	sim/L0/tests/integration/flex_unified.rs:2446
+5b3d0a23702c7da4	sim/L0/tests/integration/flex_unified.rs:155
+7d2802377683057d	sim/L0/tests/integration/flex_unified.rs:1388
+37407380ce1b268a	sim/L0/tests/integration/flex_equality_rows.rs:233

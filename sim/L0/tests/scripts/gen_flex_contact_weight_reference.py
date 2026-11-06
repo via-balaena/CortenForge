@@ -8,8 +8,7 @@ Run it with the unfused oracle's own interpreter (build_mujoco_oracle.sh builds 
 It refuses any other interpreter, as gen_census_golden.py does.
 
 A 3 x 3 cloth (mass 0.1, radius 0.01) 5 mm into a plane on a static body,
-equality constraints disabled (sim-mjcf gives every flex an edge equality,
-Rigid-loading L31, so both sides drop it): its vertex positions and
+equality constraints disabled on both sides: its vertex positions and
 elements, then each contact's sides and each constraint row's R after
 mj_forward. A contact row's R comes from the two sides' bodies' invweight0
 (mj_diagApprox, engine_core_constraint.c:1201-1285): the plane's static

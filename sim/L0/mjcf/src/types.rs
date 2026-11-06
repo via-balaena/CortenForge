@@ -2228,6 +2228,40 @@ pub enum EqualityKind {
     Distance,
     /// Tendon equality constraint.
     Tendon,
+    /// Flex equality constraint (MuJoCo's `mjEQ_FLEX`).
+    Flex,
+}
+
+/// A flex equality constraint (`<equality><flex>`): each of the flex's
+/// edges that is not rigid held at its rest length by one constraint row, as
+/// MuJoCo 3.5.0's `mjEQ_FLEX` (`engine_core_constraint.c:616-643`).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfFlexEquality {
+    /// Optional constraint name.
+    pub name: Option<String>,
+    /// Default class for inheriting parameters.
+    pub class: Option<String>,
+    /// The flex's name.
+    pub flex: String,
+    /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
+    pub solimp: Option<Prefix<5>>,
+    /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
+    pub solref: Option<Prefix<2>>,
+    /// Whether this constraint is active (None = not explicitly set).
+    pub active: Option<bool>,
+}
+
+/// The equality a `<flexcomp>`'s `<edge equality="true">` asks for, with its
+/// `<edge solref solimp>` (`xml_native_reader.cc:2769-2775`).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfFlexcompEdgeEquality {
+    /// Solver reference parameters: MuJoCo's default when `None`, whatever
+    /// the document's `<default>` holds.
+    pub solref: Option<Prefix<2>>,
+    /// Solver impedance parameters, as `solref`.
+    pub solimp: Option<Prefix<5>>,
 }
 
 /// Container for equality constraints from `<equality>` element.
@@ -2244,6 +2278,8 @@ pub struct MjcfEquality {
     pub distances: Vec<MjcfDistance>,
     /// Tendon equality constraints.
     pub tendons: Vec<MjcfTendonEquality>,
+    /// Flex equality constraints.
+    pub flexes: Vec<MjcfFlexEquality>,
     /// Document order: `(kind, index_within_kind_vec)`.
     ///
     /// MuJoCo processes equality constraints in XML document order, not grouped
@@ -2304,6 +2340,15 @@ impl MjcfEquality {
         self
     }
 
+    /// Add a flex equality constraint.
+    #[must_use]
+    pub fn with_flex(mut self, flex: MjcfFlexEquality) -> Self {
+        let idx = self.flexes.len();
+        self.flexes.push(flex);
+        self.order.push((EqualityKind::Flex, idx));
+        self
+    }
+
     /// Check if there are any equality constraints.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -2312,6 +2357,7 @@ impl MjcfEquality {
             && self.joints.is_empty()
             && self.distances.is_empty()
             && self.tendons.is_empty()
+            && self.flexes.is_empty()
     }
 
     /// Get the total number of equality constraints.
@@ -2322,6 +2368,7 @@ impl MjcfEquality {
             + self.joints.len()
             + self.distances.len()
             + self.tendons.len()
+            + self.flexes.len()
     }
 }
 
@@ -4193,6 +4240,12 @@ pub struct MjcfFlex {
     pub edge_stiffness: f64,
     /// Passive edge damping coefficient. Default 0.0 = disabled.
     pub edge_damping: f64,
+    /// A `<flexcomp>`'s `<edge equality="true">`: the loader gives the flex an
+    /// unnamed, active flex equality after the document's `<equality>`
+    /// elements, unless the flexcomp is rigid (every vertex pinned), as
+    /// MuJoCo 3.5.0's flexcomp makes one (`user_flexcomp.cc:463-466`,
+    /// `:643-649`).
+    pub edge_equality: Option<MjcfFlexcompEdgeEquality>,
 
     // --- Internal / derived ---
     /// Total mass `[kg]` for uniform distribution across all vertices (including pinned).
@@ -4278,6 +4331,7 @@ impl Default for MjcfFlex {
             // <edge> child element
             edge_stiffness: 0.0,
             edge_damping: 0.0,
+            edge_equality: None,
             // Internal
             mass: None,
             density: 1000.0,

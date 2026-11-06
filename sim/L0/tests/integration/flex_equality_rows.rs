@@ -2,8 +2,8 @@
 //! `engine_core_constraint.c:616-643`): one row per non-rigid edge, typed as
 //! an equality row with the equality's id, `solref` and `solimp`, and the
 //! edge's `flexedge_invweight0` as its diagonal approximation
-//! (`engine_setconst.c:716-750`). Until the parser reads `<equality><flex>`
-//! (Rigid-loading L31) the builder gives every flex an active one.
+//! (`engine_setconst.c:716-750`). The grid asks for its equality with
+//! `<edge equality="true"/>`, as a MuJoCo flexcomp does.
 //!
 //! Checked against the rule: MuJoCo refuses this crate's `<deformable>`
 //! documents.
@@ -20,6 +20,7 @@ const PINNED_GRID: &str = r#"<mujoco>
   <option gravity="0 0 -9.81" timestep="0.001"/>
   <deformable>
     <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="0.9">
+      <edge equality="true"/>
       <pin id="0 1 2"/>
     </flexcomp>
   </deformable>
@@ -28,7 +29,7 @@ const PINNED_GRID: &str = r#"<mujoco>
 fn flex_equality(model: &Model) -> usize {
     (0..model.neq)
         .find(|&eq| model.eq_type[eq] == EqualityType::Flex)
-        .expect("the builder's flex equality")
+        .expect("the grid's flex equality")
 }
 
 fn flex_rows(model: &Model, data: &sim_core::Data) -> Vec<usize> {
@@ -209,4 +210,113 @@ fn flex_rows_take_the_equality_s_solref() {
         }
     }
     assert!(moving > 0, "some edge is stretched or moving");
+}
+
+/// A flex has edge rows only where the document asks for them, as MuJoCo's
+/// (`flex_edgeequality`, `user_model.cc:3432-3446`): the grid without its
+/// `<edge equality="true"/>` has no equality and no row.
+#[test]
+fn flex_edge_rows_only_where_the_doc_asks() {
+    let xml = PINNED_GRID.replace("      <edge equality=\"true\"/>\n", "");
+    assert_ne!(xml, PINNED_GRID);
+    let model = load_model(&xml).expect("load");
+    assert_eq!(model.neq, 0);
+    assert_eq!(model.flex_edgeequality, vec![false]);
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    assert_eq!(flex_rows(&model, &data).len(), 0);
+}
+
+/// A 3×3 cloth whose vertices are bodies, the first row of them without
+/// joints, under gravity with contacts off; its equality takes `solref`
+/// (0.05, 1), not the flex's.
+const CLOTH: &str = r#"<mujoco>
+  <option timestep="0.001"/>
+  <worldbody>
+    <body name="g_v0" pos="0.0 0.0 1"><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body>
+    <body name="g_v1" pos="0.1 0.0 1"><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body>
+    <body name="g_v2" pos="0.2 0.0 1"><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body>
+    <body name="g_v3" pos="0.0 0.1 1"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body>
+    <body name="g_v4" pos="0.1 0.1 1"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body>
+    <body name="g_v5" pos="0.2 0.1 1"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body>
+    <body name="g_v6" pos="0.0 0.2 1"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body>
+    <body name="g_v7" pos="0.1 0.2 1"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body>
+    <body name="g_v8" pos="0.2 0.2 1"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body>
+  </worldbody>
+  <deformable>
+    <flex name="g" dim="2" body="g_v0 g_v1 g_v2 g_v3 g_v4 g_v5 g_v6 g_v7 g_v8" element="0 1 3 1 4 3 1 2 4 2 5 4 3 4 6 4 7 6 4 5 7 5 8 7">
+      <contact contype="0" conaffinity="0"/>
+    </flex>
+  </deformable>
+  <equality>
+    <flex flex="g" solref="0.05 1"/>
+  </equality>
+</mujoco>"#;
+
+/// The cloth steps as MuJoCo 3.5.0 steps it (the unfused oracle,
+/// `scripts/gen_flex_equality_reference.py`): with its equality, 14 rows (16
+/// edges, the 2 between the fixed vertices rigid) and MuJoCo's `qpos` after
+/// 500 steps; without, no row and the free vertices falling as MuJoCo's.
+#[test]
+fn flex_edge_rows_match_mujoco_3_5_0() {
+    let equality = "  <equality>\n    <flex flex=\"g\" solref=\"0.05 1\"/>\n  </equality>\n";
+    assert!(CLOTH.contains(equality));
+    let fall = -1.228_702_499_999_998_7;
+    let cases: [(&str, String, usize, [f64; 18]); 2] = [
+        (
+            "with the equality",
+            CLOTH.to_string(),
+            14,
+            [
+                0.002_176_400_717_777_742,
+                -0.201_370_929_487_046_8,
+                -0.042_444_310_711_155_58,
+                0.002_134_527_337_477_689_2,
+                -0.201_085_658_778_568_15,
+                -0.043_236_522_490_743_66,
+                0.002_034_208_074_451_764_2,
+                -0.200_935_516_028_789_5,
+                -0.043_749_565_292_276_65,
+                0.002_774_621_480_602_038_3,
+                -0.407_603_005_114_603_4,
+                -0.068_233_752_839_581_84,
+                0.002_700_410_197_226_646_8,
+                -0.406_623_159_553_067_4,
+                -0.071_033_480_911_615_02,
+                0.002_683_665_244_978_826,
+                -0.406_394_344_230_245_1,
+                -0.071_757_588_741_525_78,
+            ],
+        ),
+        (
+            "without",
+            CLOTH.replace(equality, ""),
+            0,
+            [
+                0.0, 0.0, fall, 0.0, 0.0, fall, 0.0, 0.0, fall, 0.0, 0.0, fall, 0.0, 0.0, fall,
+                0.0, 0.0, fall,
+            ],
+        ),
+    ];
+    for (label, xml, rows, mujoco) in cases {
+        let model = load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        assert_eq!(flex_rows(&model, &data).len(), rows, "{label}");
+        for _ in 0..500 {
+            data.step(&model).expect("step");
+        }
+        assert!(
+            data.qpos.iter().all(|q| q.is_finite()),
+            "{label}: {:?}",
+            data.qpos
+        );
+        let off = data
+            .qpos
+            .iter()
+            .zip(mujoco)
+            .map(|(q, m)| (q - m).abs())
+            .fold(0.0, f64::max);
+        assert!(off < 1e-12, "{label}: {:?}, MuJoCo {mujoco:?}", data.qpos);
+    }
 }

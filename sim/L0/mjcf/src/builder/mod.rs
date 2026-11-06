@@ -286,7 +286,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     }
 
     // Process equality constraints (must be after bodies and joints)
-    builder.process_equality_constraints(&mjcf.equality)?;
+    builder.process_equality_constraints(&mjcf.equality, &mjcf.flex)?;
 
     // Process sensors (must be after bodies, joints, tendons, actuators)
     builder.process_sensors(&mjcf.sensors)?;
@@ -297,6 +297,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Process flex deformable bodies (before the mass pipeline, so that a
     // flexcomp's vertex bodies are bounded as every body is)
     builder.process_flex_bodies(&mjcf.flex)?;
+    builder.process_flexcomp_equalities(&mjcf.flex);
 
     // Each body's boundmass and boundinertia, then a mass or moment still
     // negative, then its moments' triangle
@@ -317,6 +318,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // increase is refused after the keyframes (`D-AUTO-RANGE`).
     builder.check_bodies()?;
     builder.check_hfield_sizes()?;
+    builder.check_flex_equalities()?;
     builder.check_tendons()?;
     builder.check_actuators()?;
     builder.check_sensors()?;
@@ -740,6 +742,8 @@ pub struct ModelBuilder {
     // Sensor/equality name lookup (§59)
     pub(crate) sensor_name_to_id: HashMap<String, usize>,
     pub(crate) eq_name_to_id: HashMap<String, usize>,
+    /// Each document flex equality, for [`Self::check_flex_equalities`].
+    pub(crate) flex_equalities: Vec<equality::FlexEqualityRef>,
     /// Each site-form connect's equality id and its two sites, whose points
     /// `build` sets once the sites' frames are known.
     pub(crate) site_connects: Vec<(usize, usize, usize)>,

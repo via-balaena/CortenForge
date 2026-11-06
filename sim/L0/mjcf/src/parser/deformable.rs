@@ -8,7 +8,9 @@ use std::io::BufRead;
 use crate::error::{MjcfError, Result};
 use crate::keywords;
 
-use crate::types::{FlexVertexBodies, MjcfFlex, MjcfSkin, MjcfSkinBone, MjcfSkinVertex};
+use crate::types::{
+    FlexVertexBodies, MjcfFlex, MjcfFlexcompEdgeEquality, MjcfSkin, MjcfSkinBone, MjcfSkinVertex,
+};
 
 use super::attrs::{Attrs, skip_element};
 
@@ -293,6 +295,30 @@ pub(super) fn parse_flex_edge_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> Resu
     Ok(())
 }
 
+/// Parse a `<flexcomp>`'s `<edge>`: its passive coefficients, and the edge
+/// equality it asks for with that equality's `solref` and `solimp`
+/// (`xml_native_reader.cc:2769-2775`). `equality="vert"` (MuJoCo's
+/// `mjEQ_FLEXVERT`) is refused: sim-core has no vertex equality.
+fn parse_flexcomp_edge_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> Result<()> {
+    parse_flex_edge_attrs(e, flex)?;
+    let a = Attrs::new(e)?;
+    let equality = a.keyword("equality", keywords::flex_edge_equality)?;
+    let edge = MjcfFlexcompEdgeEquality {
+        solref: a.prefix("solref")?,
+        solimp: a.prefix("solimp")?,
+    };
+    match equality {
+        None | Some(keywords::FlexEdgeEquality::None) => {}
+        Some(keywords::FlexEdgeEquality::Edges) => flex.edge_equality = Some(edge),
+        Some(keywords::FlexEdgeEquality::Vertices) => {
+            return Err(MjcfError::unsupported(
+                "a flexcomp's vertex equality (`<edge equality=vert>`, MuJoCo's mjEQ_FLEXVERT)",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Parse a `<flexcomp>` element (procedural mesh generation).
 ///
 /// Generates vertices and elements based on the `type` attribute (grid, box, cylinder).
@@ -316,7 +342,7 @@ pub(super) fn parse_flexcomp<R: BufRead>(
                 match e.name().as_ref() {
                     b"contact" => parse_flex_contact_attrs(e, &mut flex)?,
                     b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex)?,
-                    b"edge" => parse_flex_edge_attrs(e, &mut flex)?,
+                    b"edge" => parse_flexcomp_edge_attrs(e, &mut flex)?,
                     b"pin" => {
                         if let Some(ids) = indices(&Attrs::new(e)?, "id")? {
                             flex.pinned.extend(ids);

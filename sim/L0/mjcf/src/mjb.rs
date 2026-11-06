@@ -64,6 +64,8 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
 ///
+/// 16 since Rigid-loading PR RL-8a: `MjcfEquality` took `flexes`,
+/// `EqualityKind` `Flex`, and `MjcfFlex` `edge_equality`.
 /// 15 since Rigid-loading PR RL-7d: `MjcfOption`'s `o_margin` is kept as
 /// written, MuJoCo's default 0 when it is not, where a version-14 file holds
 /// -1 for one not written.
@@ -87,7 +89,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// one below mjMINVAL is refused (Rigid-loading PR RL-3b): a version-6 file
 /// holds 0.0 there for a flexcomp that did not write it. 6 since `MjcfFlex`
 /// took `vertex_bodies` (Rigid-loading L10).
-pub const MJB_VERSION: u32 = 15;
+pub const MJB_VERSION: u32 = 16;
 
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;

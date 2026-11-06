@@ -17,7 +17,7 @@ use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::keywords;
 use crate::types::{FlexVertexBodies, MjcfFlex, MjcfGeom, MjcfGeomType, Prefix};
-use sim_core::{EqualityType, FlexSelfCollide, MjJointType};
+use sim_core::{FlexSelfCollide, MjJointType};
 
 /// Number of coefficients per bending element in the discrete thin-shell model.
 /// Each edge hinge stores a 4×4 symmetric matrix (16 entries) + 1 rest-angle scalar = 17 values.
@@ -149,18 +149,6 @@ impl ModelBuilder {
                 self.nflexelem += 1;
             }
 
-            // The flex's edge equality, with the edge solref and the flex's
-            // solimp: every flex holds its edges until the parser reads
-            // `<equality><flex>` (Rigid-loading L31).
-            let edge_solref = compute_edge_solref(flex);
-            self.eq_type.push(EqualityType::Flex);
-            self.eq_obj1id.push(flex_id);
-            self.eq_obj2id.push(usize::MAX);
-            self.eq_data.push([0.0; 11]);
-            self.eq_active.push(true);
-            self.eq_solref.push(edge_solref);
-            self.eq_solimp.push(flex.solimp);
-            self.eq_name.push(None);
             let k_bend = compute_bend_stiffness_from_material(flex);
             let b_bend = compute_bend_damping_from_material(flex, k_bend);
 
@@ -1173,20 +1161,6 @@ fn compute_dihedral_angle(
     let cos_theta = normal_unit_a.dot(&normal_unit_b).clamp(-1.0, 1.0);
     let sin_theta = normal_unit_a.cross(&normal_unit_b).dot(&e_dir);
     sin_theta.atan2(cos_theta)
-}
-
-/// Compute per-flex edge constraint solref.
-///
-/// MuJoCo architecture note: Edge constraint solref comes from the equality
-/// constraint definition (eq_solref), not from material properties. The
-/// `<edge stiffness="..." damping="..."/>` attributes control passive spring-
-/// damper forces (applied in `mj_fwd_passive`), not constraint solver params.
-///
-/// Our current architecture uses flex-level solref for all edge constraints,
-/// which matches MuJoCo's behavior when no explicit equality constraint
-/// overrides are defined.
-fn compute_edge_solref(flex: &MjcfFlex) -> [f64; 2] {
-    flex.solref
 }
 
 /// Compute bending stiffness from material properties (passive force coefficient).

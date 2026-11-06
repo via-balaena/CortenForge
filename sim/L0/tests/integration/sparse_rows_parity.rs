@@ -165,13 +165,12 @@ fn a_nan_force_reaches_the_dofs_mujoco_s_does() {
     assert!(off.is_empty(), "{} values differ:\n{off:#?}", off.len());
 }
 
-/// A flex's rows at the sparse size, which MuJoCo cannot load in this crate's
-/// form (it refuses its `<deformable>` documents; Rigid-loading L31): a
-/// two-triangle cloth whose vertices are in a free slab under it, its edges'
-/// rows and its vertices' contacts, whose chains join a vertex's dofs to the
-/// slab's. (A world plane makes no contact with it here: ledger L171.) The
-/// forward pass, under Newton with its sparse Hessian, solves it. Every row's chain is strictly ascending and
-/// holds every dof its row has a nonzero entry at.
+/// A flex's rows at the sparse size: a two-triangle cloth whose vertices are
+/// in a free slab under it, its edges' rows and its vertices' contacts, whose
+/// chains join a vertex's dofs to the slab's. (A world plane makes no contact
+/// with it here: ledger L171.) The forward pass, under Newton with its sparse
+/// Hessian, solves it. Every row's chain is strictly ascending and holds every
+/// dof its row has a nonzero entry at.
 #[test]
 fn a_flex_s_rows_hold_their_entries_in_their_chains() {
     let xml = r#"<mujoco>
@@ -191,6 +190,7 @@ fn a_flex_s_rows_hold_their_entries_in_their_chains() {
       <contact margin="0.005"/>
     </flex>
   </deformable>
+  <equality><flex flex="cloth"/></equality>
 </mujoco>"#;
     let model = load_model(xml).expect("load");
     assert!(model.is_sparse(), "the sparse size");
