@@ -40,16 +40,18 @@
 //!
 //! # Limits
 //!
-//! The readers take a file whose strings and byte buffers claim at most
-//! [`MJB_DECODE_LIMIT`] bytes together, each length claimed before its buffer
-//! is allocated ([`MjcfError::MjbTooLarge`]), and whose body and frame tree is
-//! no deeper than the loader takes, a level past it refused before it is read
-//! ([`MjcfError::TooDeep`]). The writers refuse such a tree before encoding
-//! it. Both decode and encode on the loader's own stack (`stack`), as the XML
-//! loaders do.
+//! The readers take a file whose decoded model claims at most
+//! [`MJB_DECODE_LIMIT`] bytes, as bincode claims them: each value at its size
+//! in memory, a string at its length, each length claimed before its buffer is
+//! allocated ([`MjcfError::MjbTooLarge`]); and whose body and frame tree is no
+//! deeper than the loader takes, a level past it refused before it is read
+//! ([`MjcfError::TooDeep`]). The writers write no model the readers would
+//! refuse: a tree too deep before encoding it, a model too large once its
+//! bytes are decoded as the readers decode them. Both decode and encode on the
+//! loader's own stack (`stack`), as the XML loaders do.
 
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::Path;
 
 use crate::error::{MjcfError, Result};
@@ -90,14 +92,43 @@ pub const MJB_VERSION: u32 = 15;
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;
 
-/// The most bytes a file's strings and byte buffers may claim, together, for
-/// the readers to take it: 256 MiB.
+/// The most bytes a file's decoded model may claim: 256 MiB.
+///
+/// The readers take no more, and so the writers write no more. bincode claims
+/// each value it decodes at its size in memory and a string at its length
+/// (see the module's Limits).
 pub const MJB_DECODE_LIMIT: usize = 1 << 28;
 
-/// The readers' bincode configuration: the writers' with
-/// [`MJB_DECODE_LIMIT`].
-fn decode_config() -> impl bincode::config::Config {
-    bincode::config::standard().with_limit::<MJB_DECODE_LIMIT>()
+/// A model decoded from `reader` (the bytes after the header) on this thread,
+/// its values claiming at most `LIMIT` bytes.
+fn decode<const LIMIT: usize, R: Read>(reader: &mut R) -> Result<MjcfModel> {
+    let config = bincode::config::standard().with_limit::<LIMIT>();
+    let (decoded, too_deep) = decoding(|| bincode::serde::decode_from_std_read(reader, config));
+    decoded.map_err(|e| match e {
+        _ if too_deep => MjcfError::too_deep(MAX_BODY_TREE_DEPTH),
+        bincode::error::DecodeError::LimitExceeded => MjcfError::MjbTooLarge { limit: LIMIT },
+        e => MjcfError::MjbDecode {
+            message: e.to_string(),
+        },
+    })
+}
+
+/// `model`'s bytes, header first, if [`decode`] with `LIMIT` takes them back:
+/// a tree too deep refused before encoding, any refusal of the decode
+/// returned.
+fn encode<const LIMIT: usize>(model: &MjcfModel) -> Result<Vec<u8>> {
+    check_tree_depth(&model.worldbody)?;
+    on_large_stack(|| {
+        let encode_error = |message: String| MjcfError::MjbEncode { message };
+        let mut buffer = Vec::new();
+        MjbHeader::new()
+            .write_to(&mut buffer)
+            .map_err(|e| encode_error(e.to_string()))?;
+        bincode::serde::encode_into_std_write(model, &mut buffer, bincode::config::standard())
+            .map_err(|e| encode_error(e.to_string()))?;
+        decode::<LIMIT, _>(&mut &buffer[MJB_HEADER_SIZE..])?;
+        Ok(buffer)
+    })
 }
 
 /// MJB file header.
@@ -183,10 +214,10 @@ impl Default for MjbHeader {
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - The model's body and frame tree is deeper than the loader takes
-/// - The file cannot be created
-/// - Serialization fails
+/// Returns an error, and leaves the file as it was, if the model's body and
+/// frame tree is deeper than the loader takes, its decoded values would claim
+/// more than [`MJB_DECODE_LIMIT`] bytes, or serialization fails; and an error
+/// if the file cannot be written.
 ///
 /// # Example
 ///
@@ -198,9 +229,8 @@ impl Default for MjbHeader {
 /// ```
 pub fn save_mjb_file(model: &MjcfModel, path: impl AsRef<Path>) -> Result<()> {
     let path = path.as_ref();
-    let file = File::create(path).map_err(|e| MjcfError::io(path, e))?;
-    let mut writer = BufWriter::new(file);
-    save_mjb_writer(model, &mut writer)
+    let bytes = save_mjb_bytes(model)?;
+    std::fs::write(path, bytes).map_err(|e| MjcfError::io(path, e))
 }
 
 /// Save an [`MjcfModel`] to a writer in MJB binary format.
@@ -215,13 +245,18 @@ pub fn save_mjb_file(model: &MjcfModel, path: impl AsRef<Path>) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error if the model's body and frame tree is deeper than the
-/// loader takes, if serialization fails, or if the writer does.
+/// Returns an error, having written nothing, if the model's body and frame
+/// tree is deeper than the loader takes, its decoded values would claim more
+/// than [`MJB_DECODE_LIMIT`] bytes, or serialization fails; and an error if
+/// the writer's write or flush does.
 pub fn save_mjb_writer<W: Write>(model: &MjcfModel, writer: &mut W) -> Result<()> {
     let bytes = save_mjb_bytes(model)?;
-    writer.write_all(&bytes).map_err(|e| MjcfError::MjbEncode {
-        message: e.to_string(),
-    })
+    writer
+        .write_all(&bytes)
+        .and_then(|()| writer.flush())
+        .map_err(|e| MjcfError::MjbEncode {
+            message: e.to_string(),
+        })
 }
 
 /// Save an [`MjcfModel`] to a byte vector in MJB binary format.
@@ -240,7 +275,8 @@ pub fn save_mjb_writer<W: Write>(model: &MjcfModel, writer: &mut W) -> Result<()
 /// # Errors
 ///
 /// Returns an error if the model's body and frame tree is deeper than the
-/// loader takes, or if serialization fails.
+/// loader takes, its decoded values would claim more than
+/// [`MJB_DECODE_LIMIT`] bytes, or serialization fails.
 ///
 /// # Example
 ///
@@ -252,17 +288,7 @@ pub fn save_mjb_writer<W: Write>(model: &MjcfModel, writer: &mut W) -> Result<()
 /// println!("MJB size: {} bytes", bytes.len());
 /// ```
 pub fn save_mjb_bytes(model: &MjcfModel) -> Result<Vec<u8>> {
-    check_tree_depth(&model.worldbody)?;
-    on_large_stack(|| {
-        let encode_error = |message: String| MjcfError::MjbEncode { message };
-        let mut buffer = Vec::new();
-        MjbHeader::new()
-            .write_to(&mut buffer)
-            .map_err(|e| encode_error(e.to_string()))?;
-        bincode::serde::encode_into_std_write(model, &mut buffer, bincode::config::standard())
-            .map_err(|e| encode_error(e.to_string()))?;
-        Ok(buffer)
-    })
+    encode::<MJB_DECODE_LIMIT>(model)
 }
 
 /// Load an [`MjcfModel`] from a file in MJB binary format.
@@ -284,7 +310,7 @@ pub fn save_mjb_bytes(model: &MjcfModel) -> Result<Vec<u8>> {
 /// - The file cannot be opened
 /// - The file has invalid magic bytes
 /// - The file version is unsupported
-/// - Its strings and byte buffers claim more than [`MJB_DECODE_LIMIT`] bytes
+/// - Its decoded values claim more than [`MJB_DECODE_LIMIT`] bytes
 /// - Its body and frame tree is deeper than the loader takes
 /// - Deserialization fails
 ///
@@ -305,8 +331,9 @@ pub fn load_mjb_file(path: impl AsRef<Path>) -> Result<MjcfModel> {
 
 /// Load an [`MjcfModel`] from a reader in MJB binary format.
 ///
-/// This allows reading from any source that implements [`Read`], such as
-/// in-memory buffers, network streams, or compressed files.
+/// This allows reading from any source that implements [`Read`] and [`Send`]
+/// (the model is decoded on the loader's thread), such as in-memory buffers,
+/// network streams, or compressed files.
 ///
 /// # Arguments
 ///
@@ -321,7 +348,7 @@ pub fn load_mjb_file(path: impl AsRef<Path>) -> Result<MjcfModel> {
 /// Returns an error if:
 /// - The reader has invalid magic bytes
 /// - The format version is unsupported
-/// - Its strings and byte buffers claim more than [`MJB_DECODE_LIMIT`] bytes
+/// - Its decoded values claim more than [`MJB_DECODE_LIMIT`] bytes
 /// - Its body and frame tree is deeper than the loader takes
 /// - Deserialization fails
 pub fn load_mjb_reader<R: Read + Send>(reader: &mut R) -> Result<MjcfModel> {
@@ -331,19 +358,7 @@ pub fn load_mjb_reader<R: Read + Send>(reader: &mut R) -> Result<MjcfModel> {
     })?;
     header.validate()?;
 
-    on_large_stack(|| {
-        let (decoded, too_deep) =
-            decoding(|| bincode::serde::decode_from_std_read(reader, decode_config()));
-        decoded.map_err(|e| match e {
-            _ if too_deep => MjcfError::too_deep(MAX_BODY_TREE_DEPTH),
-            bincode::error::DecodeError::LimitExceeded => MjcfError::MjbTooLarge {
-                limit: MJB_DECODE_LIMIT,
-            },
-            e => MjcfError::MjbDecode {
-                message: e.to_string(),
-            },
-        })
-    })
+    on_large_stack(|| decode::<MJB_DECODE_LIMIT, _>(reader))
 }
 
 /// Load an [`MjcfModel`] from a byte slice in MJB binary format.
@@ -363,7 +378,7 @@ pub fn load_mjb_reader<R: Read + Send>(reader: &mut R) -> Result<MjcfModel> {
 /// Returns an error if:
 /// - The bytes have invalid magic bytes
 /// - The format version is unsupported
-/// - Their strings and byte buffers claim more than [`MJB_DECODE_LIMIT`] bytes
+/// - Their decoded values claim more than [`MJB_DECODE_LIMIT`] bytes
 /// - Their body and frame tree is deeper than the loader takes
 /// - Deserialization fails
 ///
@@ -433,6 +448,7 @@ pub fn is_mjb_bytes(bytes: &[u8]) -> bool {
 mod tests {
     use super::*;
     use crate::parse_mjcf_str;
+    use crate::types::{MjcfBody, MjcfFrame, MjcfMesh};
 
     fn simple_model() -> MjcfModel {
         parse_mjcf_str(
@@ -857,20 +873,150 @@ mod tests {
         bytes
     }
 
-    /// A file of a [`chain`] `levels` deep, encoded without the writers' depth
-    /// check.
-    fn deep_file(levels: usize) -> Vec<u8> {
-        on_large_stack(move || {
-            let mut bytes = Vec::new();
-            MjbHeader::new().write_to(&mut bytes).unwrap();
-            bincode::serde::encode_into_std_write(
-                chain(levels),
-                &mut bytes,
-                bincode::config::standard(),
-            )
+    /// A body or a frame, in a tree a deep file holds.
+    #[derive(Clone, Copy, Debug)]
+    enum Kind {
+        Body,
+        Frame,
+    }
+
+    /// The bytes bincode encodes `value` to, as the writers do.
+    fn encoded(value: &impl serde::Serialize) -> Vec<u8> {
+        bincode::serde::encode_to_vec(value, bincode::config::standard()).unwrap()
+    }
+
+    /// A default body or frame of `kind` holding one default `inner`, or none.
+    fn holding(kind: Kind, inner: Option<Kind>) -> Vec<u8> {
+        match kind {
+            Kind::Body => {
+                let mut body = MjcfBody::default();
+                match inner {
+                    Some(Kind::Body) => body.children.push(MjcfBody::default()),
+                    Some(Kind::Frame) => body.frames.push(MjcfFrame::default()),
+                    None => {}
+                }
+                encoded(&body)
+            }
+            Kind::Frame => {
+                let mut frame = MjcfFrame::default();
+                match inner {
+                    Some(Kind::Body) => frame.bodies.push(MjcfBody::default()),
+                    Some(Kind::Frame) => frame.frames.push(MjcfFrame::default()),
+                    None => {}
+                }
+                encoded(&frame)
+            }
+        }
+    }
+
+    /// `with_one` around the `inner` it holds where `empty` holds none: the
+    /// bytes before it and after it. They first differ at the list's length,
+    /// 0 then 1; the split is checked.
+    fn around(empty: &[u8], with_one: &[u8], inner: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let at = empty
+            .iter()
+            .zip(with_one)
+            .position(|(a, b)| a != b)
             .unwrap();
-            bytes
-        })
+        assert_eq!((empty[at], with_one[at]), (0, 1));
+        let (before, after) = (&with_one[..=at], &empty[at + 1..]);
+        assert_eq!([before, inner, after].concat(), with_one);
+        (before.to_vec(), after.to_vec())
+    }
+
+    /// A file whose tree below the world is `kinds`, top down, each holding the
+    /// next, encoded without the writers' checks and without recursing: each
+    /// level is the bytes around a default element's one child.
+    fn deep_file(kinds: &[Kind]) -> Vec<u8> {
+        let mut befores = Vec::with_capacity(kinds.len());
+        let mut afters = Vec::with_capacity(kinds.len());
+        let (top, mut world) = (kinds[0], MjcfModel::default());
+        match top {
+            Kind::Body => world.worldbody.children.push(MjcfBody::default()),
+            Kind::Frame => world.worldbody.frames.push(MjcfFrame::default()),
+        }
+        let pieces = around(
+            &encoded(&MjcfModel::default()),
+            &encoded(&world),
+            &holding(top, None),
+        );
+        befores.push(pieces.0);
+        afters.push(pieces.1);
+        for pair in kinds.windows(2) {
+            let (outer, inner) = (pair[0], pair[1]);
+            let pieces = around(
+                &holding(outer, None),
+                &holding(outer, Some(inner)),
+                &holding(inner, None),
+            );
+            befores.push(pieces.0);
+            afters.push(pieces.1);
+        }
+        let mut bytes = Vec::new();
+        MjbHeader::new().write_to(&mut bytes).unwrap();
+        for piece in &befores {
+            bytes.extend_from_slice(piece);
+        }
+        bytes.extend_from_slice(&holding(kinds[kinds.len() - 1], None));
+        for piece in afters.iter().rev() {
+            bytes.extend_from_slice(piece);
+        }
+        bytes
+    }
+
+    /// The trees a deep file is built of, `levels` deep: bodies, frames, and
+    /// the two alternations.
+    fn shapes(levels: usize) -> [Vec<Kind>; 4] {
+        let alternating = |first: usize| {
+            (first..first + levels)
+                .map(|i| if i % 2 == 0 { Kind::Body } else { Kind::Frame })
+                .collect()
+        };
+        [
+            vec![Kind::Body; levels],
+            vec![Kind::Frame; levels],
+            alternating(0),
+            alternating(1),
+        ]
+    }
+
+    /// A level of a model's tree: a body or a frame.
+    enum Element<'a> {
+        Body(&'a MjcfBody),
+        Frame(&'a MjcfFrame),
+    }
+
+    /// The first element below `bodies` and `frames`, a body before a frame.
+    fn first<'a>(bodies: &'a [MjcfBody], frames: &'a [MjcfFrame]) -> Option<Element<'a>> {
+        bodies
+            .first()
+            .map(Element::Body)
+            .or_else(|| frames.first().map(Element::Frame))
+    }
+
+    /// How many levels deep a model's first line of bodies and frames goes.
+    fn depth(model: &MjcfModel) -> usize {
+        let world = &model.worldbody;
+        let mut next = first(&world.children, &world.frames);
+        let mut levels = 0;
+        while let Some(element) = next {
+            levels += 1;
+            next = match element {
+                Element::Body(body) => first(&body.children, &body.frames),
+                Element::Frame(frame) => first(&frame.bodies, &frame.frames),
+            };
+        }
+        levels
+    }
+
+    /// A model holding `n` numbers and no string: a mesh's vertex list.
+    fn numbers(n: usize) -> MjcfModel {
+        let mut model = MjcfModel::default();
+        model.meshes.push(MjcfMesh {
+            vertex: Some(vec![0.0; n]),
+            ..Default::default()
+        });
+        model
     }
 
     #[test]
@@ -880,6 +1026,73 @@ mod tests {
             load_mjb_bytes(&claiming(limit + 1)),
             Err(MjcfError::MjbTooLarge { limit }) if limit == MJB_DECODE_LIMIT
         ));
+    }
+
+    /// The limit counts a string's length, 8 bytes, with its bytes: a model
+    /// name that brings the claim to the limit is taken (the file then ends),
+    /// one byte longer is refused. The name's buffer is allocated zeroed and
+    /// never written.
+    #[test]
+    fn a_length_that_reaches_the_limit_is_taken() {
+        let limit = u64::try_from(MJB_DECODE_LIMIT).unwrap();
+        let taken = load_mjb_bytes(&claiming(limit - 8));
+        assert!(
+            matches!(taken, Err(MjcfError::MjbDecode { .. })),
+            "{taken:?}"
+        );
+        let refused = load_mjb_bytes(&claiming(limit - 7));
+        assert!(
+            matches!(refused, Err(MjcfError::MjbTooLarge { .. })),
+            "{refused:?}"
+        );
+    }
+
+    /// Every value decoded is claimed, a number at 8 bytes: a model of 1,000
+    /// numbers and no string is refused under a limit of 4 KiB and read under
+    /// one of 64 KiB.
+    #[test]
+    fn numbers_count_toward_the_limit() {
+        let bytes = save_mjb_bytes(&numbers(1000)).unwrap();
+        let payload = &bytes[MJB_HEADER_SIZE..];
+        let refused = decode::<4096, _>(&mut &payload[..]).err();
+        assert!(
+            matches!(refused, Some(MjcfError::MjbTooLarge { limit: 4096 })),
+            "{refused:?}"
+        );
+        let read = decode::<65536, _>(&mut &payload[..]);
+        assert!(read.is_ok(), "{read:?}");
+    }
+
+    /// The writers encode a model only as far as the readers take it back.
+    #[test]
+    fn a_model_the_readers_would_refuse_is_not_written() {
+        let refused = encode::<4096>(&numbers(1000)).err();
+        assert!(
+            matches!(refused, Some(MjcfError::MjbTooLarge { limit: 4096 })),
+            "{refused:?}"
+        );
+        assert!(encode::<65536>(&numbers(1000)).is_ok());
+    }
+
+    /// A model refused is refused before the file is touched, and before a
+    /// writer is written to.
+    #[test]
+    fn a_refused_model_leaves_the_file_and_the_writer_as_they_were() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kept.mjb");
+        std::fs::write(&path, b"kept").unwrap();
+        let deep = chain(MAX_BODY_TREE_DEPTH + 1);
+        assert!(matches!(
+            save_mjb_file(&deep, &path),
+            Err(MjcfError::TooDeep { .. })
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), b"kept");
+        let mut written = Vec::new();
+        assert!(matches!(
+            save_mjb_writer(&deep, &mut written),
+            Err(MjcfError::TooDeep { .. })
+        ));
+        assert!(written.is_empty());
     }
 
     /// Not run at its parent: there the reader allocates the claimed length
@@ -913,17 +1126,33 @@ mod tests {
         );
     }
 
-    /// Not run at its parent: there decoding either overflows the stack
-    /// (measured at main `b0590d0c`).
+    /// Not run at its parent: there decoding overflows the stack (measured at
+    /// main `b0590d0c`). Through bodies, frames and both alternations, each
+    /// one guarded field.
     #[test]
     fn a_file_deeper_than_the_loader_takes_is_refused_without_overflowing() {
         for levels in [MAX_BODY_TREE_DEPTH + 1, 100_000] {
-            let bytes = deep_file(levels);
-            let refused = on_small_stack(move || load_mjb_bytes(&bytes).err());
-            assert!(
-                matches!(refused, Some(MjcfError::TooDeep { limit, .. }) if limit == MAX_BODY_TREE_DEPTH),
-                "{levels}: {refused:?}"
-            );
+            for kinds in shapes(levels) {
+                let bytes = deep_file(&kinds);
+                let refused = on_small_stack(move || load_mjb_bytes(&bytes).err());
+                assert!(
+                    matches!(refused, Some(MjcfError::TooDeep { limit, .. }) if limit == MAX_BODY_TREE_DEPTH),
+                    "{levels} {:?}…: {refused:?}",
+                    &kinds[..2]
+                );
+            }
+        }
+    }
+
+    /// A file as deep as the loader takes is read, through bodies, frames and
+    /// both alternations: the guard counts each level once. Read, measured and
+    /// dropped on the loader's stack.
+    #[test]
+    fn a_file_as_deep_as_the_loader_takes_is_read() {
+        for kinds in shapes(MAX_BODY_TREE_DEPTH) {
+            let bytes = deep_file(&kinds);
+            let read = on_large_stack(move || load_mjb_bytes(&bytes).map(|model| depth(&model)));
+            assert_eq!(read.ok(), Some(MAX_BODY_TREE_DEPTH), "{:?}…", &kinds[..2]);
         }
     }
 
@@ -944,20 +1173,21 @@ mod tests {
     /// reported too deep.
     #[test]
     fn a_decode_reports_only_its_own_depth() {
-        let deep = deep_file(MAX_BODY_TREE_DEPTH + 1);
+        let deep = deep_file(&[Kind::Body; MAX_BODY_TREE_DEPTH + 1]);
         let whole = save_mjb_bytes(&simple_model()).unwrap();
         let (first, second) = on_large_stack(move || {
-            let decode = |payload: &[u8]| {
-                decoding(|| {
-                    bincode::serde::decode_from_slice::<MjcfModel, _>(payload, decode_config())
-                        .is_err()
-                })
-            };
-            let first = decode(&deep[MJB_HEADER_SIZE..]);
-            let second = decode(&whole[MJB_HEADER_SIZE..whole.len() - 1]);
+            let first = decode::<MJB_DECODE_LIMIT, _>(&mut &deep[MJB_HEADER_SIZE..]).err();
+            let second =
+                decode::<MJB_DECODE_LIMIT, _>(&mut &whole[MJB_HEADER_SIZE..whole.len() - 1]).err();
             (first, second)
         });
-        assert_eq!(first, (true, true));
-        assert_eq!(second, (true, false));
+        assert!(
+            matches!(first, Some(MjcfError::TooDeep { .. })),
+            "{first:?}"
+        );
+        assert!(
+            matches!(second, Some(MjcfError::MjbDecode { .. })),
+            "{second:?}"
+        );
     }
 }

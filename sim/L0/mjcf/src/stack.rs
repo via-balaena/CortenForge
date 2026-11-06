@@ -23,7 +23,8 @@
 pub const LOADER_STACK_BYTES: usize = 64 << 20;
 
 /// The deepest body and frame tree the loader takes that did not come from
-/// XML: built in code, or by a composite. MuJoCo states no limit; 3.5.0 loads
+/// XML: built in code, by a composite, or decoded from a `.mjb` or any serde
+/// format (`nested`). MuJoCo states no limit; 3.5.0 loads
 /// a cable of count 1000 (999 bodies) and fails one of count 3000 with an
 /// unknown exception, cause not isolated (research A4 §1.4).
 pub const MAX_BODY_TREE_DEPTH: usize = 4096;

@@ -134,7 +134,9 @@
 //!   builds; inline `elevation="..."` height fields continue to work either way.
 //! - `threemf`: 3MF asset support for `<mesh file="..."/>` (forwards to `mesh-io/threemf`).
 //! - `mjb`: the binary model format above (not MuJoCo's `.mjb`).
-//! - `serde`: derive Serialize/Deserialize on the public types.
+//! - `serde`: derive Serialize/Deserialize on the public types. Deserializing
+//!   a model, in any format, refuses a level of bodies and frames past 4096
+//!   before reading it, as the `.mjb` readers do.
 //!
 //! # Coordinate System
 //!
