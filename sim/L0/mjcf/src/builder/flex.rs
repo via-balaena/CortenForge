@@ -725,6 +725,8 @@ impl ModelBuilder {
                 continue; // a boundary edge
             }
             let [ve0, ve1] = self.flexedge_vert[global_e];
+            // Both slots hold vertex indices here: a slot is -1 only while no
+            // triangle has filled it, and slot 0 is filled before slot 1.
             #[allow(clippy::cast_sign_loss)]
             let (va, vb) = (va as usize, vb as usize);
             let rest_angle = compute_dihedral_angle(
