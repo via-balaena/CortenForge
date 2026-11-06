@@ -3307,3 +3307,5 @@ c8c92b02796d00cf	sim/L0/mjcf/tests/refusal_order.rs:1761
 bba0b02d5524c735	sim/L0/mjcf/tests/option_values.rs:85
 da886f57930400e0	sim/L0/mjcf/tests/option_values.rs:103
 f93b031286e40dae	sim/L0/mjcf/tests/option_values.rs:68
+5628be24157082e2	sim/L0/mjcf/tests/option_values.rs:210
+a4f354101cf15f8e	sim/L0/mjcf/tests/option_values.rs:195

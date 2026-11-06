@@ -743,10 +743,8 @@ fn test_option_helper_methods() {
     opt.flag.contact = false;
     assert!(!opt.contacts_enabled());
 
-    // Effective margin
-    assert!(opt.effective_margin().is_none()); // Default is negative
-    opt.o_margin = 0.001;
-    assert_eq!(opt.effective_margin(), Some(0.001));
+    // The override margin's default is MuJoCo's.
+    assert_eq!(opt.o_margin.to_bits(), 0.0_f64.to_bits());
 }
 
 // ========================================================================

@@ -607,7 +607,8 @@ pub struct MjcfOption {
     pub njmax: usize,
 
     // ========== Overrides ==========
-    /// Override contact margin (negative = use geom-specific, default: -1).
+    /// The margin every contact takes under `<flag override>`: MuJoCo's
+    /// default 0, and a written one as written, a negative one too.
     pub o_margin: f64,
 
     /// Override contact solimp parameters.
@@ -673,8 +674,8 @@ impl Default for MjcfOption {
             nconmax: 0,
             njmax: 0,
 
-            // Overrides (negative = use defaults)
-            o_margin: -1.0,
+            // Overrides, used under `<flag override>`
+            o_margin: 0.0,
             o_solimp: None,
             o_solref: None,
             o_friction: None,
@@ -702,16 +703,6 @@ impl MjcfOption {
     #[must_use]
     pub fn contacts_enabled(&self) -> bool {
         self.flag.contact
-    }
-
-    /// Get effective contact margin (uses override if positive).
-    #[must_use]
-    pub fn effective_margin(&self) -> Option<f64> {
-        if self.o_margin >= 0.0 {
-            Some(self.o_margin)
-        } else {
-            None
-        }
     }
 }
 

@@ -74,10 +74,7 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
     }
     finite("density", option.density)?;
     finite("viscosity", option.viscosity)?;
-    // The override margin, when set (non-negative).
-    if option.o_margin >= 0.0 {
-        finite("o_margin", option.o_margin)?;
-    }
+    finite("o_margin", option.o_margin)?;
     Ok(())
 }
 
@@ -1043,7 +1040,8 @@ mod tests {
     /// An option built in code is refused a number that is not finite.
     #[test]
     fn a_number_that_is_not_finite_is_refused() {
-        let refused: [(&str, fn(&mut MjcfOption)); 5] = [
+        let refused: [(&str, fn(&mut MjcfOption)); 6] = [
+            ("o_margin", |o| o.o_margin = f64::NAN),
             ("tolerance", |o| o.tolerance = f64::NAN),
             ("impratio", |o| o.impratio = f64::INFINITY),
             ("density", |o| o.density = f64::NEG_INFINITY),

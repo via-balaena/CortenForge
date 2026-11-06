@@ -926,10 +926,8 @@ impl ModelBuilder {
         self.sdf_initpoints = option.sdf_initpoints;
         self.disableactuator = option.actuatorgroupdisable;
 
-        // S10-stub: Wire override parameters from parsed <option>.
-        if option.o_margin >= 0.0 {
-            self.o_margin = option.o_margin;
-        }
+        // The override parameters from `<option>`.
+        self.o_margin = option.o_margin;
         if let Some(sr) = option.o_solref {
             self.o_solref = sr.over(self.o_solref);
         }

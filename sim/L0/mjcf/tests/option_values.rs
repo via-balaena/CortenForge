@@ -174,3 +174,51 @@ fn a_timestep_not_above_zero_is_refused() {
         );
     }
 }
+
+/// The contacts `xml` lists after a forward pass: `(count, each margin)`.
+fn contacts(xml: &str) -> (f64, usize, Vec<f64>) {
+    let model = load_model(xml).unwrap();
+    let mut data = model.make_data();
+    data.forward(&model).unwrap();
+    let margins = data.contacts.iter().map(|c| c.includemargin).collect();
+    (model.o_margin, data.ncon, margins)
+}
+
+/// Ledger L183(a): under `<flag override>` MuJoCo 3.5.0 keeps a negative
+/// `o_margin` as written (measured): a sphere 0.02 into a plane makes no
+/// contact at -0.2 and one at -0.01, whose margin is -0.01. This crate took
+/// a negative one as 0 before Rigid-loading PR RL-7d, and listed a contact
+/// of margin 0 for both.
+#[test]
+fn a_negative_override_margin_is_kept() {
+    let past = contacts(
+        r#"<mujoco model="override margin past the overlap">
+  <option o_margin="-0.2" gravity="0 0 0">
+    <flag override="enable"/>
+  </option>
+  <worldbody>
+    <geom type="plane" size="1 1 0.1"/>
+    <body pos="0 0 0.08">
+      <freejoint/>
+      <geom type="sphere" size="0.1" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>"#,
+    );
+    assert_eq!(past, (-0.2, 0, vec![]));
+    let within = contacts(
+        r#"<mujoco model="override margin within the overlap">
+  <option o_margin="-0.01" gravity="0 0 0">
+    <flag override="enable"/>
+  </option>
+  <worldbody>
+    <geom type="plane" size="1 1 0.1"/>
+    <body pos="0 0 0.08">
+      <freejoint/>
+      <geom type="sphere" size="0.1" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>"#,
+    );
+    assert_eq!(within, (-0.01, 1, vec![-0.01]));
+}
