@@ -905,7 +905,7 @@ pub struct MjcfTendonDefaults {
 pub struct MjcfSensorDefaults {
     /// Noise standard deviation.
     pub noise: Option<f64>,
-    /// Cutoff, as [`MjcfSensor::cutoff`].
+    /// The cutoff a sensor of this class takes when it writes none.
     pub cutoff: Option<f64>,
     /// User-defined data fields.
     pub user: Option<Vec<f64>>,
