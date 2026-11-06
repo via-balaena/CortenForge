@@ -3353,3 +3353,4 @@ dff5292bdcee9b5b	sim/L0/mjcf/tests/sensor_refusals.rs:42
 e7be545c578f66fb	sim/L0/mjcf/tests/sensor_refusals.rs:57
 eb88582104d7cba9	sim/L0/mjcf/tests/refusal_order.rs:1504
 ff67ed613d416121	sim/L0/mjcf/tests/refusal_order.rs:1959
+4ff6ca8308ec34f2	sim/L0/tests/integration/sensor_phase6_spec_c.rs:1176

@@ -61,26 +61,40 @@ pub fn apply_sensor_cutoff(model: &Model, data: &mut Data, sensor_id: usize) {
         return;
     }
     let data_kind = sensor_type.data_kind();
-    match data_kind {
+    for i in 0..dim {
+        let idx = adr + i;
+        if idx < data.sensordata.len() {
+            let cut = under_cutoff(data_kind, cutoff, data.sensordata[idx]);
+            sensor_write(&mut data.sensordata, adr, i, cut);
+        }
+    }
+}
+
+/// `value` under `cutoff` as MuJoCo's `apply_cutoff` takes it
+/// (`engine_sensor.c:79-87`), with its `mju_clip` and `mju_min`
+/// (`engine_util_misc.c:1286-1314`): a real value held within `[-cutoff,
+/// cutoff]`, a positive one at or below `cutoff`, an axis or quaternion left.
+/// By comparisons, as theirs: a NaN cutoff leaves the value, and a NaN value
+/// stays NaN.
+fn under_cutoff(kind: MjSensorDataKind, cutoff: f64, value: f64) -> f64 {
+    match kind {
         MjSensorDataKind::Real => {
-            for i in 0..dim {
-                let idx = adr + i;
-                if idx < data.sensordata.len() {
-                    let clamped = data.sensordata[idx].clamp(-cutoff, cutoff);
-                    sensor_write(&mut data.sensordata, adr, i, clamped);
-                }
+            if value < -cutoff {
+                -cutoff
+            } else if value > cutoff {
+                cutoff
+            } else {
+                value
             }
         }
         MjSensorDataKind::Positive => {
-            for i in 0..dim {
-                let idx = adr + i;
-                if idx < data.sensordata.len() {
-                    let clamped = data.sensordata[idx].min(cutoff);
-                    sensor_write(&mut data.sensordata, adr, i, clamped);
-                }
+            if cutoff <= value {
+                cutoff
+            } else {
+                value
             }
         }
-        MjSensorDataKind::Axis | MjSensorDataKind::Quaternion => {}
+        MjSensorDataKind::Axis | MjSensorDataKind::Quaternion => value,
     }
 }
 
@@ -93,13 +107,11 @@ pub fn apply_sensor_cutoff(model: &Model, data: &mut Data, sensor_id: usize) {
 /// - `GeomFromTo` (`mjSENS_GEOMFROMTO`): cutoff is consumed during evaluation
 ///   as the `mj_geomDistance()` search radius, not as a value clamp.
 ///
-/// **Layer 2 — data-kind dispatch** (`MjSensorDataKind`):
-/// - `Real` → `clamp(-cutoff, cutoff)` — symmetric clamping.
-/// - `Positive` → `min(cutoff, value)` — a negative value is kept.
-/// - `Axis` / `Quaternion` → no clamping. MuJoCo's if/else chain only has
-///   branches for REAL and POSITIVE; AXIS and QUATERNION fall through without
-///   clamping. This correctly skips FrameXAxis/YAxis/ZAxis, GeomNormal,
-///   BallQuat, and FrameQuat.
+/// **Layer 2 — data-kind dispatch** (`MjSensorDataKind`), as
+/// `under_cutoff` takes each value: `Real` held within `[-cutoff, cutoff]`,
+/// `Positive` at or below `cutoff` (a negative value is kept), `Axis` and
+/// `Quaternion` left (MuJoCo's if/else chain has branches for REAL and
+/// POSITIVE only).
 ///
 /// Noise is not applied here — CortenForge keeps the forward pass fully
 /// deterministic. Noise metadata (`sensor_noise`) is available for
@@ -135,30 +147,13 @@ pub fn mj_sensor_postprocess(model: &Model, data: &mut Data) {
         }
 
         // Layer 2: data-kind dispatch.
-        // MuJoCo: if/else chain on sensor_datatype — REAL clamps, POSITIVE
-        // clamps one-sided, AXIS/QUATERNION fall through (no clamping).
         let data_kind = sensor_type.data_kind();
-        match data_kind {
-            MjSensorDataKind::Real => {
-                for i in 0..dim {
-                    let idx = adr + i;
-                    if idx < data.sensordata.len() {
-                        let clamped = data.sensordata[idx].clamp(-cutoff, cutoff);
-                        sensor_write(&mut data.sensordata, adr, i, clamped);
-                    }
-                }
+        for i in 0..dim {
+            let idx = adr + i;
+            if idx < data.sensordata.len() {
+                let cut = under_cutoff(data_kind, cutoff, data.sensordata[idx]);
+                sensor_write(&mut data.sensordata, adr, i, cut);
             }
-            MjSensorDataKind::Positive => {
-                for i in 0..dim {
-                    let idx = adr + i;
-                    if idx < data.sensordata.len() {
-                        let clamped = data.sensordata[idx].min(cutoff);
-                        sensor_write(&mut data.sensordata, adr, i, clamped);
-                    }
-                }
-            }
-            // AXIS and QUATERNION: no clamping (MuJoCo has no branch for these).
-            MjSensorDataKind::Axis | MjSensorDataKind::Quaternion => {}
         }
     }
 }
