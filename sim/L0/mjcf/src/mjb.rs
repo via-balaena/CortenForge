@@ -216,8 +216,9 @@ impl Default for MjbHeader {
 ///
 /// Returns an error, and leaves the file as it was, if the model's body and
 /// frame tree is deeper than the loader takes, its decoded values would claim
-/// more than [`MJB_DECODE_LIMIT`] bytes, or serialization fails; and an error
-/// if the file cannot be written.
+/// more than [`MJB_DECODE_LIMIT`] bytes, or serialization fails;
+/// [`MjcfError::Io`] if the file cannot be created, and
+/// [`MjcfError::MjbEncode`] if writing it fails.
 ///
 /// # Example
 ///
@@ -230,7 +231,10 @@ impl Default for MjbHeader {
 pub fn save_mjb_file(model: &MjcfModel, path: impl AsRef<Path>) -> Result<()> {
     let path = path.as_ref();
     let bytes = save_mjb_bytes(model)?;
-    std::fs::write(path, bytes).map_err(|e| MjcfError::io(path, e))
+    let mut file = File::create(path).map_err(|e| MjcfError::io(path, e))?;
+    file.write_all(&bytes).map_err(|e| MjcfError::MjbEncode {
+        message: e.to_string(),
+    })
 }
 
 /// Save an [`MjcfModel`] to a writer in MJB binary format.
@@ -1009,7 +1013,7 @@ mod tests {
         levels
     }
 
-    /// A model holding `n` numbers and no string: a mesh's vertex list.
+    /// A default model holding `n` numbers more: a mesh's vertex list.
     fn numbers(n: usize) -> MjcfModel {
         let mut model = MjcfModel::default();
         model.meshes.push(MjcfMesh {
@@ -1047,9 +1051,9 @@ mod tests {
         );
     }
 
-    /// Every value decoded is claimed, a number at 8 bytes: a model of 1,000
-    /// numbers and no string is refused under a limit of 4 KiB and read under
-    /// one of 64 KiB.
+    /// Every value decoded is claimed, a number at 8 bytes: a default model
+    /// holding 1,000 numbers more is refused under a limit of 4 KiB and read
+    /// under one of 64 KiB.
     #[test]
     fn numbers_count_toward_the_limit() {
         let bytes = save_mjb_bytes(&numbers(1000)).unwrap();

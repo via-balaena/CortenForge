@@ -3591,11 +3591,9 @@ pub struct MjcfSensor {
     pub refname: Option<String>,
     /// Noise standard deviation. `None` means not written (0).
     pub noise: Option<f64>,
-    /// The bound MuJoCo 3.5.0's `apply_cutoff` holds a reading to
-    /// (`engine_sensor.c:64-90`), 0 for none: a real value within `[-cutoff,
-    /// cutoff]`, a positive one at or below it, an axis or a quaternion left. A
-    /// geom distance, normal or segment searches within it too
-    /// (`engine_sensor.c:666-700`). `None` means not written (0).
+    /// The sensor's `cutoff` as written, which sim-core applies as MuJoCo
+    /// 3.5.0's `apply_cutoff` does (`engine_sensor.c:64-90`). `None` means not
+    /// written (0).
     pub cutoff: Option<f64>,
     /// User-defined data fields.
     pub user: Vec<f64>,
@@ -3712,7 +3710,7 @@ impl MjcfSensor {
         self
     }
 
-    /// Set cutoff frequency for filtering.
+    /// Set the cutoff.
     #[must_use]
     pub fn with_cutoff(mut self, cutoff: f64) -> Self {
         self.cutoff = Some(cutoff);
