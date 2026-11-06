@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="ball"/><geom size=".1"/></body></worldbody><sensor><ballquat joint="j" cutoff="1e-300"/></sensor></mujoco>
