@@ -1,0 +1,9 @@
+<mujoco model="density and viscosity negative">
+  <option density="-1" viscosity="-1"/>
+  <worldbody>
+    <body pos="0 0 1">
+      <freejoint/>
+      <geom type="box" size="0.05 0.1 0.2" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>

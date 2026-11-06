@@ -30,12 +30,12 @@ pub struct ValidationResult {
 
 /// Validate MJCF simulation options.
 ///
-/// This checks that all option values are physically reasonable:
-/// - Timestep is positive and not too large
-/// - Iteration counts are reasonable
-/// - Tolerance is positive
-/// - Impedance ratio is positive
-/// - Density and viscosity are non-negative
+/// MuJoCo 3.5.0's reader checks no `<option>` number
+/// (`xml_native_reader.cc:1181-1229`), and its compiler none. This refuses a
+/// timestep that is not positive (`D-OPTION-TIMESTEP`), the numbers it reads
+/// below that are not finite (an option built in code: a document's are
+/// refused as they are read, `D-NONFINITE`), and a `regularization` or
+/// `friction_smoothing`, which are this crate's own, that is not positive.
 ///
 /// # Errors
 ///
@@ -60,39 +60,10 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
             ))
         }
     };
-    let non_negative = |attribute: &str, value: f64| -> Result<()> {
-        finite(attribute, value)?;
-        if value >= 0.0 {
-            Ok(())
-        } else {
-            Err(MjcfError::invalid_value(
-                "option",
-                attribute,
-                format!("must be non-negative, got {value}"),
-            ))
-        }
-    };
 
     positive("timestep", option.timestep)?;
-    if option.timestep > 1.0 {
-        return Err(MjcfError::invalid_value(
-            "option",
-            "timestep",
-            format!(
-                "value {} is unusually large (> 1 second), likely an error",
-                option.timestep
-            ),
-        ));
-    }
-    if option.iterations == 0 {
-        return Err(MjcfError::invalid_value(
-            "option",
-            "iterations",
-            "must be at least 1",
-        ));
-    }
-    positive("tolerance", option.tolerance)?;
-    positive("impratio", option.impratio)?;
+    finite("tolerance", option.tolerance)?;
+    finite("impratio", option.impratio)?;
     positive("regularization", option.regularization)?;
     positive("friction_smoothing", option.friction_smoothing)?;
     for &v in option.gravity.iter() {
@@ -101,9 +72,8 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
     for &v in option.wind.iter() {
         finite("wind", v)?;
     }
-    // Density can be zero, which disables it.
-    non_negative("density", option.density)?;
-    non_negative("viscosity", option.viscosity)?;
+    finite("density", option.density)?;
+    finite("viscosity", option.viscosity)?;
     // The override margin, when set (non-negative).
     if option.o_margin >= 0.0 {
         finite("o_margin", option.o_margin)?;
@@ -1035,13 +1005,6 @@ mod tests {
             Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "timestep"
         ));
 
-        // Very large timestep
-        option.timestep = 2.0;
-        assert!(matches!(
-            validate_option(&option),
-            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "timestep"
-        ));
-
         // NaN timestep
         option.timestep = f64::NAN;
         assert!(matches!(
@@ -1050,49 +1013,51 @@ mod tests {
         ));
     }
 
+    /// Values MuJoCo 3.5.0 loads (measured), which this crate refused before
+    /// Rigid-loading PR RL-7d.
     #[test]
-    fn test_option_validation_invalid_iterations() {
-        let mut option = MjcfOption::default();
-        option.iterations = 0;
-
-        assert!(matches!(
-            validate_option(&option),
-            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "iterations"
-        ));
+    fn values_mujoco_loads_are_taken() {
+        let taken: [(&str, fn(&mut MjcfOption)); 9] = [
+            ("timestep 2", |o| o.timestep = 2.0),
+            ("iterations 0", |o| o.iterations = 0),
+            ("tolerance 0", |o| o.tolerance = 0.0),
+            ("tolerance -1e-8", |o| o.tolerance = -1e-8),
+            ("impratio 0", |o| o.impratio = 0.0),
+            ("impratio -1", |o| o.impratio = -1.0),
+            ("density -1", |o| o.density = -1.0),
+            ("viscosity -0.1", |o| o.viscosity = -0.1),
+            ("all at once", |o| {
+                o.iterations = 0;
+                o.tolerance = -1.0;
+                o.impratio = 0.0;
+                o.density = -1.0;
+            }),
+        ];
+        for (case, set) in taken {
+            let mut option = MjcfOption::default();
+            set(&mut option);
+            assert!(validate_option(&option).is_ok(), "{case}");
+        }
     }
 
+    /// An option built in code is refused a number that is not finite.
     #[test]
-    fn test_option_validation_invalid_tolerance() {
-        let mut option = MjcfOption::default();
-
-        option.tolerance = -1e-8;
-        assert!(matches!(
-            validate_option(&option),
-            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "tolerance"
-        ));
-
-        option.tolerance = 0.0;
-        assert!(matches!(
-            validate_option(&option),
-            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "tolerance"
-        ));
-    }
-
-    #[test]
-    fn test_option_validation_invalid_impratio() {
-        let mut option = MjcfOption::default();
-
-        option.impratio = -1.0;
-        assert!(matches!(
-            validate_option(&option),
-            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "impratio"
-        ));
-
-        option.impratio = 0.0;
-        assert!(matches!(
-            validate_option(&option),
-            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "impratio"
-        ));
+    fn a_number_that_is_not_finite_is_refused() {
+        let refused: [(&str, fn(&mut MjcfOption)); 5] = [
+            ("tolerance", |o| o.tolerance = f64::NAN),
+            ("impratio", |o| o.impratio = f64::INFINITY),
+            ("density", |o| o.density = f64::NEG_INFINITY),
+            ("viscosity", |o| o.viscosity = f64::NAN),
+            ("timestep", |o| o.timestep = f64::INFINITY),
+        ];
+        for (name, set) in refused {
+            let mut option = MjcfOption::default();
+            set(&mut option);
+            assert!(
+                matches!(validate_option(&option), Err(MjcfError::NonFinite { attribute, .. }) if attribute == name),
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -1103,28 +1068,6 @@ mod tests {
         assert!(matches!(
             validate_option(&option),
             Err(MjcfError::NonFinite { attribute, .. }) if attribute == "gravity"
-        ));
-    }
-
-    #[test]
-    fn test_option_validation_invalid_density() {
-        let mut option = MjcfOption::default();
-        option.density = -1.0;
-
-        assert!(matches!(
-            validate_option(&option),
-            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "density"
-        ));
-    }
-
-    #[test]
-    fn test_option_validation_invalid_viscosity() {
-        let mut option = MjcfOption::default();
-        option.viscosity = -0.1;
-
-        assert!(matches!(
-            validate_option(&option),
-            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "viscosity"
         ));
     }
 
