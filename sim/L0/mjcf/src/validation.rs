@@ -30,8 +30,9 @@ pub struct ValidationResult {
 
 /// Validate MJCF simulation options.
 ///
-/// MuJoCo 3.5.0's reader checks no `<option>` number
-/// (`xml_native_reader.cc:1181-1229`), and its compiler none. This refuses a
+/// MuJoCo 3.5.0's reader checks no `<option>` number but
+/// `actuatorgroupdisable`'s groups (`xml_native_reader.cc:1181-1229`), and its
+/// compiler none. This refuses a
 /// timestep that is not positive (`D-OPTION-TIMESTEP`), the numbers it reads
 /// below that are not finite (an option built in code: a document's are
 /// refused as they are read, `D-NONFINITE`), and a `regularization` or

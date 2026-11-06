@@ -627,20 +627,14 @@ fn noslip_counts_and_records_its_sweeps_as_mujoco_3_5_0() {
 /// PGS's 300 iterations. The
 /// first forward's iteration count and kept statistics are MuJoCo's, each
 /// improvement within 1e-12 of the case's largest, and PGS's rows' states
-/// (`dualState`'s) MuJoCo's. sim-mjcf refuses a tolerance
-/// that is not positive (ledger L131), so the document loads without it and
-/// the model takes MuJoCo's.
+/// (`dualState`'s) MuJoCo's.
 #[test]
 fn statistics_past_the_200th_are_counted_not_kept() {
-    const TOLERANCE: &str = r#" tolerance="-1""#;
     let g = golden();
     let mut off = Vec::new();
     for (name, case) in g["cases"]["statistics_cap"].as_object().expect("cases") {
         let xml = case["xml"].as_str().expect("xml");
-        let mut model = load_model(&xml.replace(TOLERANCE, "")).expect("load");
-        if xml.contains(TOLERANCE) {
-            model.solver_tolerance = -1.0;
-        }
+        let model = load_model(xml).expect("load");
         let mut data = model.make_data();
         data.qvel.copy_from_slice(&floats(&case["qvel"]));
         data.forward(&model).expect("forward");

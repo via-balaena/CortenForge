@@ -1,7 +1,8 @@
 //! `<option>` values as MuJoCo 3.5.0 loads them (book L28; ledger L24, L131).
 //!
-//! MuJoCo's reader and compiler check no `<option>` number
-//! (`xml_native_reader.cc:1181-1229`), so every document here loads in
+//! MuJoCo's reader and compiler check no `<option>` number but
+//! `actuatorgroupdisable`'s groups (`xml_native_reader.cc:1181-1229`), so
+//! every document here loads in
 //! MuJoCo 3.5.0 (measured) and keeps what it writes. This crate refuses a
 //! timestep that is not above zero (`D-OPTION-TIMESTEP`) and keeps a negative
 //! count as zero (`D-OPTION-NEGATIVE-COUNT`). The whole documents are in the
@@ -175,7 +176,8 @@ fn a_timestep_not_above_zero_is_refused() {
     }
 }
 
-/// The contacts `xml` lists after a forward pass: `(count, each margin)`.
+/// `xml`'s `o_margin` as loaded, and the contacts it lists after a forward
+/// pass: `(o_margin, count, each margin)`.
 fn contacts(xml: &str) -> (f64, usize, Vec<f64>) {
     let model = load_model(xml).unwrap();
     let mut data = model.make_data();
