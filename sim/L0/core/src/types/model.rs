@@ -547,9 +547,10 @@ pub struct Model {
     /// the edge's constraint row (MuJoCo's `flexedge_invweight0`,
     /// `engine_setconst.c:716-750`). Derived by [`Self::compute_invweight0`].
     pub flexedge_invweight0: Vec<f64>,
-    /// Per-edge flap vertices: opposite vertices in adjacent triangles forming
-    /// the diamond stencil. `flexedge_flap[e][0]` = opposite vertex in tri 1,
-    /// `flexedge_flap[e][1]` = opposite vertex in tri 2 (-1 for boundary edges).
+    /// Per-edge flap vertices, the diamond stencil of a dim-2 flex (MuJoCo's
+    /// `flex_edgeflap`): `[0]` is the vertex opposite the edge in the first
+    /// triangle holding it, `[1]` the one in the last other triangle, -1 on a
+    /// boundary edge. `[-1, -1]` on every edge of a flex of dim 1 or 3.
     /// Length `nflexedge`.
     pub flexedge_flap: Vec<[i32; 2]>,
     /// Per-edge cotangent bending coefficients (Wardetzky/Garg cotangent Laplacian).
@@ -606,11 +607,8 @@ pub struct Model {
     pub flex_evpairnum: Vec<usize>,
 
     // --- Per-hinge arrays (bending topology, length nflexhinge) ---
-    // A hinge is a pair of adjacent elements sharing an edge.
-    // dim=2: two triangles sharing an edge → 4 distinct vertices.
-    // dim=3: two tetrahedra sharing a face → 5 distinct vertices (but bending
-    //         force acts on the 4 vertices of the shared face + 2 opposite,
-    //         simplified to the same 4-vertex dihedral formulation).
+    // A hinge is an edge of a dim-2 flex whose flap has both vertices, in
+    // edge order; a flex of dim 1 or 3 has none.
     /// Hinge vertex indices: [v_e0, v_e1, v_opp_a, v_opp_b] where (v_e0, v_e1)
     /// is the shared edge and v_opp_a, v_opp_b are opposite vertices.
     pub flexhinge_vert: Vec<[usize; 4]>,

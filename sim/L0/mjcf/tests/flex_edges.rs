@@ -61,6 +61,46 @@ fn a_triangle_pair_has_mujocos_edges_and_one_hinge_beside_its_flap() {
 }
 
 #[test]
+fn a_triangle_pairs_boundary_edges_keep_their_one_opposite_vertex() {
+    // MuJoCo 3.5.0's `flex_edgeflap` for this square under
+    // `elastic2d="bend"`: each boundary edge `[opposite, -1]`.
+    let xml = flex_doc(2, "0 0 0  1 0 0  0 1 0  1 1 0", "0 1 2  1 3 2");
+    let model = load_model(&xml).unwrap();
+    assert_eq!(
+        model.flexedge_flap,
+        vec![[0, 3], [1, -1], [2, -1], [1, -1], [2, -1]]
+    );
+}
+
+#[test]
+fn an_edge_of_three_triangles_keeps_the_first_and_the_last() {
+    // MuJoCo 3.5.0's `flex_edgeflap` under `elastic2d="bend"`: edge 2,
+    // `(0, 1)`, is in all three triangles and keeps the first's opposite
+    // vertex and the last's.
+    let xml = flex_doc(
+        2,
+        "0 0 0  1 0 0  0 1 0  0 -1 0  0 0 1",
+        "0 1 2  1 0 3  0 1 4",
+    );
+    let model = load_model(&xml).unwrap();
+    assert_eq!(
+        model.flexedge_flap,
+        vec![[0, -1], [1, -1], [2, 4], [1, -1], [0, -1], [0, -1], [1, -1]]
+    );
+    assert_eq!(model.flexhinge_vert, vec![[0, 1, 2, 4]]);
+}
+
+#[test]
+fn a_tetrahedron_pair_has_no_flaps_or_hinges() {
+    // Two tetrahedra sharing the face (1, 2, 3): MuJoCo 3.5.0 makes flaps for
+    // dim 2 only (`user_mesh.cc:4327-4329`), every `flex_edgeflap` `[-1, -1]`.
+    let xml = flex_doc(3, "0 0 0  1 0 0  0 1 0  0 0 1  1 1 1", "0 1 2 3  1 2 3 4");
+    let model = load_model(&xml).unwrap();
+    assert_eq!(model.flexedge_flap, vec![[-1, -1]; 9]);
+    assert_eq!(model.nflexhinge, 0);
+}
+
+#[test]
 fn a_cable_has_mujocos_edges() {
     let xml = flex_doc(1, "0 0 0  1 0 0  2 0 0  3 0 0", "0 1  1 2  2 3");
     assert_edges(&xml, &[[0, 1], [1, 2], [2, 3]]);

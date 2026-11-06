@@ -123,14 +123,8 @@ impl ModelBuilder {
             let (edge_start, edge_key_to_global) =
                 self.extract_flex_edges(flex, vert_start, flex_id, rigid);
 
-            // Extract bending hinges from adjacent elements + compute bending coefficients
-            self.extract_flex_bending_hinges(
-                flex,
-                vert_start,
-                flex_id,
-                edge_start,
-                &edge_key_to_global,
-            );
+            // A dim-2 flex's flaps, hinges and bending coefficients
+            self.extract_flex_flaps(flex, vert_start, flex_id, edge_start, &edge_key_to_global);
 
             // Process elements
             for elem in &flex.elements {
@@ -680,19 +674,24 @@ impl ModelBuilder {
         // all weld to the world.
         let weld = |v: usize| self.weld_id(self.flexvert_bodyid[vert_start + v]);
         self.flexedge_rigid.push(rigid || weld(a) == weld(b));
-        // §42B S1: Initialize flexedge_flap to [-1, -1] (boundary default).
+        // §42B S1: no flap until `extract_flex_flaps` fills a dim-2 flex's.
         self.flexedge_flap.push([-1, -1]);
         // §42B S2+S3: Initialize flex_bending to zeros per edge.
         self.flex_bending.extend_from_slice(&[0.0; BENDING_COEFFS]);
     }
 
-    /// Extract bending hinges from adjacent elements and compute bending coefficients.
+    /// A dim-2 flex's flaps, hinges and cotangent bending coefficients; a flex
+    /// of dim 1 or 3 has none.
     ///
-    /// For each interior edge (shared by exactly 2 elements), finds the opposite
-    /// vertices, computes the rest dihedral angle, populates `flexhinge_*` arrays,
-    /// and fills `flexedge_flap`. Then computes cotangent bending coefficients for
-    /// dim==2 shells with valid material properties.
-    fn extract_flex_bending_hinges(
+    /// The flaps are MuJoCo's (`CreateFlapStencil`, `user_mesh.cc:3667-3717`):
+    /// each triangle in order, its edges `(1,2) (2,0) (0,1)`; the first
+    /// triangle holding an edge stores the vertex opposite it in slot 0 and
+    /// leaves slot 1 at -1, and a later one stores its opposite vertex in slot
+    /// 1, so an edge of three triangles keeps the first and the last. The
+    /// hinges (this crate's Bridson bending) are the edges whose flap has both
+    /// slots, in edge order; the coefficients are computed for those edges
+    /// when the material has `young > 0` and `thickness > 0`.
+    fn extract_flex_flaps(
         &mut self,
         flex: &MjcfFlex,
         vert_start: usize,
@@ -700,60 +699,49 @@ impl ModelBuilder {
         edge_start: usize,
         edge_key_to_global: &std::collections::HashMap<(usize, usize), usize>,
     ) {
-        // Each edge's elements, in element order, the edges in their order.
-        let mut edge_elements: Vec<Vec<usize>> = vec![Vec::new(); self.nflexedge - edge_start];
-        for (elem_idx, verts) in flex.elements.iter().enumerate() {
-            for &(i, j) in ELEMENT_EDGES[flex.dim - 1] {
-                let key = (verts[i].min(verts[j]), verts[i].max(verts[j]));
-                if let Some(&global_e) = edge_key_to_global.get(&key) {
-                    edge_elements[global_e - edge_start].push(elem_idx);
-                }
-            }
+        if flex.dim != 2 {
+            return;
         }
-        for (local_e, elems) in edge_elements.iter().enumerate() {
-            if elems.len() != 2 {
-                continue; // boundary edge
-            }
-            let global_e = edge_start + local_e;
-            let ve0 = self.flexedge_vert[global_e][0] - vert_start;
-            let ve1 = self.flexedge_vert[global_e][1] - vert_start;
-            let opp_a = flex.elements[elems[0]]
-                .iter()
-                .find(|&&v| v != ve0 && v != ve1)
-                .copied();
-            let opp_b = flex.elements[elems[1]]
-                .iter()
-                .find(|&&v| v != ve0 && v != ve1)
-                .copied();
-            if let (Some(va), Some(vb)) = (opp_a, opp_b) {
-                let rest_angle = compute_dihedral_angle(
-                    flex.vertices[ve0],
-                    flex.vertices[ve1],
-                    flex.vertices[va],
-                    flex.vertices[vb],
-                );
-                self.flexhinge_vert.push([
-                    vert_start + ve0,
-                    vert_start + ve1,
-                    vert_start + va,
-                    vert_start + vb,
-                ]);
-                self.flexhinge_angle0.push(rest_angle);
-                self.flexhinge_flexid.push(flex_id);
-                self.nflexhinge += 1;
-
-                // §42B S1: Populate flexedge_flap for this interior edge.
+        for elem in &flex.elements {
+            for &(i, j) in ELEMENT_EDGES[1] {
+                let key = (elem[i].min(elem[j]), elem[i].max(elem[j]));
+                let Some(&global_e) = edge_key_to_global.get(&key) else {
+                    continue;
+                };
+                // MuJoCo's opposite vertex: the one after the edge's second.
                 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-                {
-                    self.flexedge_flap[global_e] =
-                        [(vert_start + va) as i32, (vert_start + vb) as i32];
+                let opposite = (vert_start + elem[(j + 1) % 3]) as i32;
+                let flap = &mut self.flexedge_flap[global_e];
+                if flap[0] == -1 {
+                    flap[0] = opposite;
+                } else {
+                    flap[1] = opposite;
                 }
             }
         }
+        for global_e in edge_start..self.nflexedge {
+            let [va, vb] = self.flexedge_flap[global_e];
+            if vb == -1 {
+                continue; // a boundary edge
+            }
+            let [ve0, ve1] = self.flexedge_vert[global_e];
+            #[allow(clippy::cast_sign_loss)]
+            let (va, vb) = (va as usize, vb as usize);
+            let rest_angle = compute_dihedral_angle(
+                flex.vertices[ve0 - vert_start],
+                flex.vertices[ve1 - vert_start],
+                flex.vertices[va - vert_start],
+                flex.vertices[vb - vert_start],
+            );
+            self.flexhinge_vert.push([ve0, ve1, va, vb]);
+            self.flexhinge_angle0.push(rest_angle);
+            self.flexhinge_flexid.push(flex_id);
+            self.nflexhinge += 1;
+        }
 
-        // §42B S2+S3: Compute cotangent bending coefficients for dim==2
-        // flex with valid material (young > 0, thickness > 0).
-        if flex.dim == 2 && flex.young > 0.0 && flex.thickness > 0.0 {
+        // §42B S2+S3: Compute cotangent bending coefficients for a flex with
+        // valid material (young > 0, thickness > 0).
+        if flex.young > 0.0 && flex.thickness > 0.0 {
             let mu = flex.young / (2.0 * (1.0 + flex.poisson));
             let num_edges = self.nflexedge - edge_start;
             for local_e in 0..num_edges {
