@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size=".1"/></body><geom name="w" pos="1 0 1" size=".1"/></worldbody><sensor><normal geom1="g" geom2="w" cutoff="2"/></sensor></mujoco>

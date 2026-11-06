@@ -48,7 +48,7 @@ pub enum MjcfError {
     /// Nested deeper than the loader takes. A document's elements: MuJoCo's
     /// XML reader's limit, with the root at depth 1 an element that is not
     /// self-closing at 498 (a self-closing one loads at 499). A tree of bodies
-    /// and frames built in code or by a composite: 4096.
+    /// and frames built in code, by a composite or decoded from a `.mjb`: 4096.
     #[error("nested deeper than {limit}{at}")]
     #[non_exhaustive]
     TooDeep {
@@ -344,6 +344,18 @@ pub enum MjcfError {
     MjbDecode {
         /// What the decoder reported.
         message: String,
+    },
+
+    /// An MJB file's decoded model claims more bytes than the readers take
+    /// ([`crate::MJB_DECODE_LIMIT`]), or would once written: each value at its
+    /// size in memory, a string at its length. bincode's limit error names no
+    /// size, so this names the limit only.
+    #[cfg(feature = "mjb")]
+    #[error("MJB data claims more than {limit} bytes")]
+    #[non_exhaustive]
+    MjbTooLarge {
+        /// The most bytes the readers take.
+        limit: usize,
     },
 }
 
@@ -876,7 +888,8 @@ impl MjcfError {
             Self::MjbMagic { .. }
             | Self::MjbVersion { .. }
             | Self::MjbEncode { .. }
-            | Self::MjbDecode { .. } => None,
+            | Self::MjbDecode { .. }
+            | Self::MjbTooLarge { .. } => None,
         }
     }
 }

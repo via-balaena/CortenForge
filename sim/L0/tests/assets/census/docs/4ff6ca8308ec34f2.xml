@@ -1,0 +1,19 @@
+<mujoco>
+          <worldbody>
+            <geom type="plane" size="1 1 0.1"/>
+            <body pos="0 0 0.1">
+              <freejoint/>
+              <geom name="s" type="sphere" size="0.1" mass="1"/>
+              <site name="t" type="sphere" size="0.12"/>
+            </body>
+            <body pos="1 0 0.5">
+              <joint name="j" type="hinge" axis="0 1 0"/>
+              <geom name="h" type="sphere" size="0.1" mass="1"/>
+            </body>
+          </worldbody>
+          <sensor>
+            <jointpos joint="j"/>
+            <touch site="t"/>
+            <distance geom1="s" geom2="h"/>
+          </sensor>
+        </mujoco>

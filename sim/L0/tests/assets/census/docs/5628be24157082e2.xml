@@ -1,0 +1,12 @@
+<mujoco model="override margin within the overlap">
+  <option o_margin="-0.01" gravity="0 0 0">
+    <flag override="enable"/>
+  </option>
+  <worldbody>
+    <geom type="plane" size="1 1 0.1"/>
+    <body pos="0 0 0.08">
+      <freejoint/>
+      <geom type="sphere" size="0.1" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>

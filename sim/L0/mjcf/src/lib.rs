@@ -134,7 +134,9 @@
 //!   builds; inline `elevation="..."` height fields continue to work either way.
 //! - `threemf`: 3MF asset support for `<mesh file="..."/>` (forwards to `mesh-io/threemf`).
 //! - `mjb`: the binary model format above (not MuJoCo's `.mjb`).
-//! - `serde`: derive Serialize/Deserialize on the public types.
+//! - `serde`: derive Serialize/Deserialize on the public types. Deserializing
+//!   a model, in any format, refuses a level of bodies and frames past 4096
+//!   before reading it, as the `.mjb` readers do.
 //!
 //! # Coordinate System
 //!
@@ -215,8 +217,9 @@ pub use builder::{load_model, load_model_from_file, model_from_mjcf};
 // MJB binary format support (requires "mjb" feature)
 #[cfg(feature = "mjb")]
 pub use mjb::{
-    MJB_HEADER_SIZE, MJB_MAGIC, MJB_VERSION, MjbHeader, is_mjb_bytes, is_mjb_file, load_mjb_bytes,
-    load_mjb_file, load_mjb_reader, save_mjb_bytes, save_mjb_file, save_mjb_writer,
+    MJB_DECODE_LIMIT, MJB_HEADER_SIZE, MJB_MAGIC, MJB_VERSION, MjbHeader, is_mjb_bytes,
+    is_mjb_file, load_mjb_bytes, load_mjb_file, load_mjb_reader, save_mjb_bytes, save_mjb_file,
+    save_mjb_writer,
 };
 
 #[cfg(test)]

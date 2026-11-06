@@ -607,7 +607,8 @@ pub struct MjcfOption {
     pub njmax: usize,
 
     // ========== Overrides ==========
-    /// Override contact margin (negative = use geom-specific, default: -1).
+    /// The margin every contact takes under `<flag override>`: MuJoCo's
+    /// default 0, and a written one as written, a negative one too.
     pub o_margin: f64,
 
     /// Override contact solimp parameters.
@@ -673,8 +674,8 @@ impl Default for MjcfOption {
             nconmax: 0,
             njmax: 0,
 
-            // Overrides (negative = use defaults)
-            o_margin: -1.0,
+            // Overrides, used under `<flag override>`
+            o_margin: 0.0,
             o_solimp: None,
             o_solref: None,
             o_friction: None,
@@ -702,16 +703,6 @@ impl MjcfOption {
     #[must_use]
     pub fn contacts_enabled(&self) -> bool {
         self.flag.contact
-    }
-
-    /// Get effective contact margin (uses override if positive).
-    #[must_use]
-    pub fn effective_margin(&self) -> Option<f64> {
-        if self.o_margin >= 0.0 {
-            Some(self.o_margin)
-        } else {
-            None
-        }
     }
 }
 
@@ -905,15 +896,16 @@ pub struct MjcfTendonDefaults {
     pub user: Option<Vec<f64>>,
 }
 
-/// Default sensor parameters.
+/// Default sensor parameters, from a `<default>` class's `<sensor>`.
 ///
-/// MuJoCo sensors can have these defaults specified in the `<default>` element.
+/// This crate reads them; MuJoCo 3.5.0's schema refuses a `<sensor>` in a
+/// `<default>` (ledger L393).
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfSensorDefaults {
     /// Noise standard deviation.
     pub noise: Option<f64>,
-    /// Cutoff frequency for low-pass filter (0 = no filter).
+    /// The cutoff a sensor of this class takes when it writes none.
     pub cutoff: Option<f64>,
     /// User-defined data fields.
     pub user: Option<Vec<f64>>,
@@ -2382,12 +2374,14 @@ pub struct MjcfFrame {
     /// Default class for child elements.
     pub childclass: Option<String>,
     /// Child bodies within this frame.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "crate::stack::nested"))]
     pub bodies: Vec<MjcfBody>,
     /// Child geoms within this frame.
     pub geoms: Vec<MjcfGeom>,
     /// Child sites within this frame.
     pub sites: Vec<MjcfSite>,
     /// Nested child frames.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "crate::stack::nested"))]
     pub frames: Vec<MjcfFrame>,
     /// Composites within this frame: each one's first body is one of the
     /// frame's bodies.
@@ -2595,10 +2589,12 @@ pub struct MjcfBody {
     /// Sites attached to this body.
     pub sites: Vec<MjcfSite>,
     /// Frames within this body (expanded during model building).
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "crate::stack::nested"))]
     pub frames: Vec<MjcfFrame>,
     /// Composite elements to be expanded during builder phase.
     pub composites: Vec<MjcfComposite>,
     /// Child bodies.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "crate::stack::nested"))]
     pub children: Vec<MjcfBody>,
     /// Its joints, geoms, sites, child bodies, frames and composites in the
     /// order the document writes them, one entry each: the k-th
@@ -3595,8 +3591,9 @@ pub struct MjcfSensor {
     pub refname: Option<String>,
     /// Noise standard deviation. `None` means not written (0).
     pub noise: Option<f64>,
-    /// Cutoff frequency for low-pass filter (0 = no filter). `None` means
-    /// not written (0).
+    /// The sensor's `cutoff` as written, which sim-core applies as MuJoCo
+    /// 3.5.0's `apply_cutoff` does (`engine_sensor.c:64-90`). `None` means not
+    /// written (0).
     pub cutoff: Option<f64>,
     /// User-defined data fields.
     pub user: Vec<f64>,
@@ -3713,7 +3710,7 @@ impl MjcfSensor {
         self
     }
 
-    /// Set cutoff frequency for filtering.
+    /// Set the cutoff.
     #[must_use]
     pub fn with_cutoff(mut self, cutoff: f64) -> Self {
         self.cutoff = Some(cutoff);

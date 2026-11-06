@@ -59,6 +59,15 @@
 //! are refused after the keyframes (`D-FLEX-CONDIM-RANGE`,
 //! `D-PAIR-NO-GEOM`); where it has none, MuJoCo refuses that pair where it
 //! compiles pairs, and so does this crate.
+//! RL-7d's checks of a sensor (ledger L197, L199, L391) run with RL-6b's
+//! limit check, sensor by sensor, each sensor's in MuJoCo's order: a
+//! negative noise, a negative cutoff, the limit, a height field in a geom
+//! distance, then a cutoff on a quaternion or an axis. MuJoCo checks a
+//! sensor's noise and cutoff before its object, interval, delay and a user
+//! sensor's dim, and a sensor's whole compile before a later sensor's; this
+//! crate checks those as it reads each sensor, before RL-7d's, and a timestep
+//! not above zero (`D-OPTION-TIMESTEP`) before all of them, and names them:
+//! `SENSOR_COSTS` (ledger L353).
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, with the reason its row gives as MuJoCo's (RL-6a's measured
@@ -75,7 +84,12 @@
 //! another; its review's first round's, a geom `fusestatic` moves beside an
 //! earlier body's fault, a `nuser_` below -1 beside a repeated name, a
 //! class's fault or a parse fault, and a pair naming a geom "" beside
-//! another fault.
+//! another fault. RL-7d's (measured 2026-11-05) set a sensor's negative
+//! noise or cutoff, a cutoff on a quaternion or a height field in a geom
+//! distance beside another fault: in `TWO_FAULTS`, sixteen of the 87
+//! two-fault documents generated at its start; in `SENSOR_COSTS`, the twelve
+//! of the 87 this crate names otherwise and its review's first round's
+//! nineteen.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1483,6 +1497,102 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "nuser_cam must be >= -1",
         "invalid nuser_cam on <size>: must be >= -1, got -3 (line 1: size)",
     ),
+    (
+        "negative cutoff beside a height field's size",
+        r#"<mujoco model="p_C_hfsize"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointpos joint="j" cutoff="-0.1"/></sensor><keyframe></keyframe></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'hf')",
+    ),
+    (
+        "negative cutoff beside a joint's range",
+        r#"<mujoco model="p_C_jrange"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" limited="true" range="1 0"/><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointpos joint="j" cutoff="-0.1"/></sensor><keyframe></keyframe></mujoco>"#,
+        "range[0] should be smaller than range[1] in joint",
+        "invalid range on <joint>: range[0] should be smaller than range[1] in joint (joint 'j' in body 'b')",
+    ),
+    (
+        "height-field distance beside its own negative interval",
+        r#"<mujoco model="p_H_interval_same"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><distance geom1="hfg" geom2="s" interval="-1"/></sensor><keyframe></keyframe></mujoco>"#,
+        "negative interval in sensor",
+        "invalid interval on <sensor>: negative interval in sensor (sensor #0)",
+    ),
+    (
+        "height-field distance beside an earlier sensor's unknown object",
+        r#"<mujoco model="p_H_obj_before"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointvel joint="nope"/><distance geom1="hfg" geom2="s"/></sensor><keyframe></keyframe></mujoco>"#,
+        "unrecognized name 'nope' of sensorized object",
+        "unknown joint 'nope' (sensor #0)",
+    ),
+    (
+        "height-field distance beside a tendon's limits",
+        r#"<mujoco model="p_H_tendon"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon><fixed name="t" limited="true" range="1 0"><joint joint="j" coef="1"/></fixed></tendon><actuator></actuator><sensor><distance geom1="hfg" geom2="s"/></sensor><keyframe></keyframe></mujoco>"#,
+        "invalid limits in tendon",
+        "invalid range on <tendon>: invalid limits in tendon (tendon 't')",
+    ),
+    (
+        "negative noise beside an actuator's control range",
+        r#"<mujoco model="p_N_actuator"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator><motor joint="j" ctrllimited="true" ctrlrange="1 0"/></actuator><sensor><jointpos joint="j" noise="-0.1"/></sensor><keyframe></keyframe></mujoco>"#,
+        "invalid control range for actuator",
+        "invalid ctrlrange on <actuator>: invalid control range for actuator (actuator #0)",
+    ),
+    (
+        "negative noise beside a body's user data",
+        r#"<mujoco model="p_N_buser"><size nuser_body="1"/><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" user="1 2"><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointpos joint="j" noise="-0.1"/></sensor><keyframe></keyframe></mujoco>"#,
+        "user has more values than nuser_body in body",
+        "invalid user on <body>: user data exceeds nuser_body=1",
+    ),
+    (
+        "negative noise beside a geom's condim",
+        r#"<mujoco model="p_N_gcondim"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" condim="2"/><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointpos joint="j" noise="-0.1"/></sensor><keyframe></keyframe></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 's' in body 'b')",
+    ),
+    (
+        "negative noise beside a keyframe's qpos",
+        r#"<mujoco model="p_N_key"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointpos joint="j" noise="-0.1"/></sensor><keyframe><key qpos="1 2 3"/></keyframe></mujoco>"#,
+        "negative noise in sensor",
+        "negative noise in sensor (sensor #0)",
+    ),
+    (
+        "negative noise beside a later unlimited limit sensor",
+        r#"<mujoco model="p_N_limit_after"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointpos joint="j" noise="-0.1"/><jointlimitfrc joint="j"/></sensor><keyframe></keyframe></mujoco>"#,
+        "negative noise in sensor",
+        "negative noise in sensor (sensor #0)",
+    ),
+    (
+        "negative noise beside an earlier unlimited limit sensor",
+        r#"<mujoco model="p_N_limit_before"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointlimitfrc joint="j"/><jointpos joint="j" noise="-0.1"/></sensor><keyframe></keyframe></mujoco>"#,
+        "joint must be limited in sensor",
+        "joint must be limited in sensor (sensor #0)",
+    ),
+    (
+        "negative noise beside a massless moving body",
+        r#"<mujoco model="p_N_mass"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><joint name="cj" type="hinge"/><geom name="s2" type="sphere" size="0.1" mass="0"/></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointpos joint="j" noise="-0.1"/></sensor><keyframe></keyframe></mujoco>"#,
+        "negative noise in sensor",
+        "negative noise in sensor (sensor #0)",
+    ),
+    (
+        "negative noise beside its own user data",
+        r#"<mujoco model="p_N_suser_same"><size nuser_sensor="1"/><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointpos joint="j" noise="-0.1" user="1 2"/></sensor><keyframe></keyframe></mujoco>"#,
+        "user has more values than nuser_sensor in sensor",
+        "invalid user on <sensor>: user data exceeds nuser_sensor=1",
+    ),
+    (
+        "quaternion cutoff beside its own negative interval",
+        r#"<mujoco model="p_Q_interval_same"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><framequat objtype="site" objname="st" cutoff="0.5" interval="-1"/></sensor><keyframe></keyframe></mujoco>"#,
+        "negative interval in sensor",
+        "invalid interval on <sensor>: negative interval in sensor (sensor #0)",
+    ),
+    (
+        "quaternion cutoff beside its own unknown object",
+        r#"<mujoco model="p_Q_obj_same"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><framequat objtype="site" objname="nope" cutoff="0.5"/></sensor><keyframe></keyframe></mujoco>"#,
+        "unrecognized name 'nope' of sensorized object",
+        "unknown site 'nope' (sensor #0)",
+    ),
+    (
+        "quaternion cutoff beside its own user data",
+        r#"<mujoco model="p_Q_suser_same"><size nuser_sensor="1"/><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><framequat objtype="site" objname="st" cutoff="0.5" user="1 2"/></sensor><keyframe></keyframe></mujoco>"#,
+        "user has more values than nuser_sensor in sensor",
+        "invalid user on <sensor>: user data exceeds nuser_sensor=1",
+    ),
 ];
 
 #[test]
@@ -1780,6 +1890,212 @@ const CONDIM_COSTS: &[(&str, &str, &str, &str)] = &[
 fn a_condim_beside_another_fault_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in CONDIM_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, one a sensor's noise, cutoff, quaternion cutoff or height
+/// field, where this crate names the other: ledger L353 holds each. `(what,
+/// document, MuJoCo 3.5.0's reason, this crate's error)`, measured
+/// 2026-11-05.
+const SENSOR_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "negative cutoff beside its own negative interval",
+        r#"<mujoco model="p_C_interval_same"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointpos joint="j" cutoff="-0.1" interval="-1"/></sensor><keyframe></keyframe></mujoco>"#,
+        "negative cutoff in sensor",
+        "invalid interval on <sensor>: negative interval in sensor (sensor #0)",
+    ),
+    (
+        "negative cutoff beside a later sensor's unknown object",
+        r#"<mujoco model="p_C_obj_after"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointpos joint="j" cutoff="-0.1"/><jointvel joint="nope"/></sensor><keyframe></keyframe></mujoco>"#,
+        "negative cutoff in sensor",
+        "unknown joint 'nope' (sensor #1)",
+    ),
+    (
+        "negative cutoff beside its own unknown object",
+        r#"<mujoco model="p_C_obj_same"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointpos joint="nope" cutoff="-0.1"/></sensor><keyframe></keyframe></mujoco>"#,
+        "negative cutoff in sensor",
+        "unknown joint 'nope' (sensor #0)",
+    ),
+    (
+        "negative cutoff beside a later sensor's user data",
+        r#"<mujoco model="p_C_suser_after"><size nuser_sensor="1"/><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointpos joint="j" cutoff="-0.1"/><jointvel joint="j" user="1 2"/></sensor><keyframe></keyframe></mujoco>"#,
+        "negative cutoff in sensor",
+        "invalid user on <sensor>: user data exceeds nuser_sensor=1",
+    ),
+    (
+        "height-field distance beside a later sensor's unknown object",
+        r#"<mujoco model="p_H_obj_after"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><distance geom1="hfg" geom2="s"/><jointvel joint="nope"/></sensor><keyframe></keyframe></mujoco>"#,
+        "height fields are not supported in geom distance sensors",
+        "unknown joint 'nope' (sensor #1)",
+    ),
+    (
+        "height-field distance beside a later sensor's user data",
+        r#"<mujoco model="p_H_suser_after"><size nuser_sensor="1"/><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><distance geom1="hfg" geom2="s"/><jointvel joint="j" user="1 2"/></sensor><keyframe></keyframe></mujoco>"#,
+        "height fields are not supported in geom distance sensors",
+        "invalid user on <sensor>: user data exceeds nuser_sensor=1",
+    ),
+    (
+        "negative noise beside its own negative interval",
+        r#"<mujoco model="p_N_interval_same"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointpos joint="j" noise="-0.1" interval="-1"/></sensor><keyframe></keyframe></mujoco>"#,
+        "negative noise in sensor",
+        "invalid interval on <sensor>: negative interval in sensor (sensor #0)",
+    ),
+    (
+        "negative noise beside a later sensor's unknown object",
+        r#"<mujoco model="p_N_obj_after"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointpos joint="j" noise="-0.1"/><jointvel joint="nope"/></sensor><keyframe></keyframe></mujoco>"#,
+        "negative noise in sensor",
+        "unknown joint 'nope' (sensor #1)",
+    ),
+    (
+        "negative noise beside its own unknown object",
+        r#"<mujoco model="p_N_obj_same"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointpos joint="nope" noise="-0.1"/></sensor><keyframe></keyframe></mujoco>"#,
+        "negative noise in sensor",
+        "unknown joint 'nope' (sensor #0)",
+    ),
+    (
+        "negative noise beside a later sensor's user data",
+        r#"<mujoco model="p_N_suser_after"><size nuser_sensor="1"/><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><jointpos joint="j" noise="-0.1"/><jointvel joint="j" user="1 2"/></sensor><keyframe></keyframe></mujoco>"#,
+        "negative noise in sensor",
+        "invalid user on <sensor>: user data exceeds nuser_sensor=1",
+    ),
+    (
+        "quaternion cutoff beside a later sensor's unknown object",
+        r#"<mujoco model="p_Q_obj_after"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><framequat objtype="site" objname="st" cutoff="0.5"/><jointvel joint="nope"/></sensor><keyframe></keyframe></mujoco>"#,
+        "cutoff applied to axis or quaternion datatype in sensor",
+        "unknown joint 'nope' (sensor #1)",
+    ),
+    (
+        "quaternion cutoff beside a later sensor's user data",
+        r#"<mujoco model="p_Q_suser_after"><size nuser_sensor="1"/><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5" ><joint name="j" type="hinge" axis="0 1 0" /><geom name="s" type="sphere" size="0.1" mass="1" /><site name="st" size="0.01"/></body><body name="c" pos="0.5 0 0.5"><geom name="s2" type="sphere" size="0.1" /></body></worldbody><contact></contact><equality></equality><tendon></tendon><actuator></actuator><sensor><framequat objtype="site" objname="st" cutoff="0.5"/><jointvel joint="j" user="1 2"/></sensor><keyframe></keyframe></mujoco>"#,
+        "cutoff applied to axis or quaternion datatype in sensor",
+        "invalid user on <sensor>: user data exceeds nuser_sensor=1",
+    ),
+    (
+        "negative noise beside a later sensor's delay without a history buffer",
+        r#"<mujoco model="later_N_delay"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><jointpos joint="j" noise="-1"/><jointvel joint="j" delay="0.1"/></sensor></mujoco>"#,
+        "negative noise in sensor",
+        "invalid delay on <sensor>: setting delay > 0 without a history buffer (nsample must be > 0) (sensor #1)",
+    ),
+    (
+        "negative noise beside a later user sensor's negative dim",
+        r#"<mujoco model="later_N_dimneg"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><jointpos joint="j" noise="-1"/><user dim="-1"/></sensor></mujoco>"#,
+        "negative noise in sensor",
+        "invalid dim on <user>: sensor dim must be non-negative in sensor (sensor #1)",
+    ),
+    (
+        "negative noise beside a later sensor's negative interval",
+        r#"<mujoco model="later_N_interval"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><jointpos joint="j" noise="-1"/><jointvel joint="j" interval="-1"/></sensor></mujoco>"#,
+        "negative noise in sensor",
+        "invalid interval on <sensor>: negative interval in sensor (sensor #1)",
+    ),
+    (
+        "negative cutoff beside a later sensor's delay without a history buffer",
+        r#"<mujoco model="later_C_delay"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><jointpos joint="j" cutoff="-1"/><jointvel joint="j" delay="0.1"/></sensor></mujoco>"#,
+        "negative cutoff in sensor",
+        "invalid delay on <sensor>: setting delay > 0 without a history buffer (nsample must be > 0) (sensor #1)",
+    ),
+    (
+        "negative cutoff beside a later user sensor's negative dim",
+        r#"<mujoco model="later_C_dimneg"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><jointpos joint="j" cutoff="-1"/><user dim="-1"/></sensor></mujoco>"#,
+        "negative cutoff in sensor",
+        "invalid dim on <user>: sensor dim must be non-negative in sensor (sensor #1)",
+    ),
+    (
+        "negative cutoff beside a later sensor's negative interval",
+        r#"<mujoco model="later_C_interval"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><jointpos joint="j" cutoff="-1"/><jointvel joint="j" interval="-1"/></sensor></mujoco>"#,
+        "negative cutoff in sensor",
+        "invalid interval on <sensor>: negative interval in sensor (sensor #1)",
+    ),
+    (
+        "quaternion cutoff beside a later sensor's delay without a history buffer",
+        r#"<mujoco model="later_Q_delay"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><framequat objtype="site" objname="st" cutoff="1"/><jointvel joint="j" delay="0.1"/></sensor></mujoco>"#,
+        "cutoff applied to axis or quaternion datatype in sensor",
+        "invalid delay on <sensor>: setting delay > 0 without a history buffer (nsample must be > 0) (sensor #1)",
+    ),
+    (
+        "quaternion cutoff beside a later user sensor's negative dim",
+        r#"<mujoco model="later_Q_dimneg"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><framequat objtype="site" objname="st" cutoff="1"/><user dim="-1"/></sensor></mujoco>"#,
+        "cutoff applied to axis or quaternion datatype in sensor",
+        "invalid dim on <user>: sensor dim must be non-negative in sensor (sensor #1)",
+    ),
+    (
+        "quaternion cutoff beside a later sensor's negative interval",
+        r#"<mujoco model="later_Q_interval"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><framequat objtype="site" objname="st" cutoff="1"/><jointvel joint="j" interval="-1"/></sensor></mujoco>"#,
+        "cutoff applied to axis or quaternion datatype in sensor",
+        "invalid interval on <sensor>: negative interval in sensor (sensor #1)",
+    ),
+    (
+        "height-field distance beside a later sensor's delay without a history buffer",
+        r#"<mujoco model="later_H_delay"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><distance geom1="hfg" geom2="s"/><jointvel joint="j" delay="0.1"/></sensor></mujoco>"#,
+        "height fields are not supported in geom distance sensors",
+        "invalid delay on <sensor>: setting delay > 0 without a history buffer (nsample must be > 0) (sensor #1)",
+    ),
+    (
+        "height-field distance beside a later user sensor's negative dim",
+        r#"<mujoco model="later_H_dimneg"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><distance geom1="hfg" geom2="s"/><user dim="-1"/></sensor></mujoco>"#,
+        "height fields are not supported in geom distance sensors",
+        "invalid dim on <user>: sensor dim must be non-negative in sensor (sensor #1)",
+    ),
+    (
+        "height-field distance beside a later sensor's negative interval",
+        r#"<mujoco model="later_H_interval"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><distance geom1="hfg" geom2="s"/><jointvel joint="j" interval="-1"/></sensor></mujoco>"#,
+        "height fields are not supported in geom distance sensors",
+        "invalid interval on <sensor>: negative interval in sensor (sensor #1)",
+    ),
+    (
+        "negative noise beside its own delay without a history buffer",
+        r#"<mujoco model="same_N_delay"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><jointpos joint="j" noise="-1" delay="0.1"/></sensor></mujoco>"#,
+        "negative noise in sensor",
+        "invalid delay on <sensor>: setting delay > 0 without a history buffer (nsample must be > 0) (sensor #0)",
+    ),
+    (
+        "negative cutoff beside its own delay without a history buffer",
+        r#"<mujoco model="same_C_delay"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><jointpos joint="j" cutoff="-1" delay="0.1"/></sensor></mujoco>"#,
+        "negative cutoff in sensor",
+        "invalid delay on <sensor>: setting delay > 0 without a history buffer (nsample must be > 0) (sensor #0)",
+    ),
+    (
+        "negative noise beside its own negative user dim",
+        r#"<mujoco model="f_nn_userdim"><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><body name="hb" pos="5 0 0"><geom name="hfg" type="hfield" hfield="hf"/></body><frame name="fr" pos="0 5 0"><geom name="hff" type="hfield" hfield="hf"/></frame><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0" limited="true" range="-1 1"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/><body name="c" pos="0 0 0.3"><joint name="bj" type="ball"/><geom name="s2" type="sphere" size="0.05" mass="0.5"/></body></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><tendon><fixed name="t" limited="true" range="-1 1"><joint joint="j" coef="1"/></fixed></tendon><actuator><motor name="a" joint="j"/><motor name="at" tendon="t"/></actuator><sensor><user noise="-1" dim="-1"/></sensor></mujoco>"#,
+        "negative noise in sensor",
+        "invalid dim on <user>: sensor dim must be non-negative in sensor (sensor #0)",
+    ),
+    (
+        "negative noise beside a timestep of zero",
+        r#"<mujoco model="stage_N_timestep0"><option timestep="0"/><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><jointpos joint="j" noise="-1"/></sensor></mujoco>"#,
+        "negative noise in sensor",
+        "invalid timestep on <option>: must be positive, got 0",
+    ),
+    (
+        "negative cutoff beside a timestep of zero",
+        r#"<mujoco model="stage_C_timestep0"><option timestep="0"/><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><jointpos joint="j" cutoff="-1"/></sensor></mujoco>"#,
+        "negative cutoff in sensor",
+        "invalid timestep on <option>: must be positive, got 0",
+    ),
+    (
+        "quaternion cutoff beside a timestep of zero",
+        r#"<mujoco model="stage_Q_timestep0"><option timestep="0"/><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><framequat objtype="site" objname="st" cutoff="1"/></sensor></mujoco>"#,
+        "cutoff applied to axis or quaternion datatype in sensor",
+        "invalid timestep on <option>: must be positive, got 0",
+    ),
+    (
+        "height-field distance beside a timestep of zero",
+        r#"<mujoco model="stage_H_timestep0"><option timestep="0"/><asset><hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 0 0 0 0 0"/></asset><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><geom name="hfg" type="hfield" hfield="hf" pos="5 0 0"/><body name="b" pos="0 0 0.5"><joint name="j" type="hinge" axis="0 1 0"/><geom name="s" type="sphere" size="0.1" mass="1"/><site name="st" size="0.01"/></body><body name="d" pos="1 0 0.5"><joint name="dj" type="slide" axis="1 0 0"/><geom name="s3" type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody><sensor><distance geom1="hfg" geom2="s"/></sensor></mujoco>"#,
+        "height fields are not supported in geom distance sensors",
+        "invalid timestep on <option>: must be positive, got 0",
+    ),
+];
+
+#[test]
+fn a_sensors_fault_beside_another_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in SENSOR_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),

@@ -4,6 +4,7 @@
 //! Handles object resolution (joint, tendon, actuator, site, body, geom)
 //! and sensor type/datatype mapping.
 
+use sim_core::types::MjSensorDataKind;
 use sim_core::{
     GeomType, InterpolationType, MjJointType, MjObjectType, MjSensorDataType, MjSensorType,
 };
@@ -15,22 +16,45 @@ use crate::keywords;
 use crate::types::{MjcfSensor, MjcfSensorType};
 
 impl ModelBuilder {
-    /// MuJoCo 3.5.0's check of a limit sensor (`mjCSensor::Compile`,
-    /// `user_objects.cc:7442-7468`), sensor by sensor: a joint limit force on
-    /// a joint that is not limited, or a tendon limit force on a tendon that
-    /// is not, refused (book L21, U01). The caller runs it after every check
-    /// this crate makes before building the model, after the actuators' and
-    /// before the free joint's, as MuJoCo compiles sensors after actuators.
-    pub(crate) fn check_limit_sensors(&self) -> Result<()> {
-        for (i, (&kind, &id)) in self.sensor_type.iter().zip(&self.sensor_objid).enumerate() {
-            let words = match kind {
-                MjSensorType::JointLimitFrc if !self.jnt_limited[id] => {
-                    "joint must be limited in sensor"
-                }
-                MjSensorType::TendonLimitFrc if !self.tendon_limited[id] => {
-                    "tendon must be limited in sensor"
-                }
-                _ => continue,
+    /// MuJoCo 3.5.0's checks of a sensor this crate did not make before
+    /// Rigid-loading PRs RL-6b and RL-7d, sensor by sensor, each sensor's in
+    /// `mjCSensor::Compile`'s order (`user_objects.cc:7286-7632`): a negative
+    /// noise ('negative noise in sensor'), a negative cutoff, a joint or
+    /// tendon limit force on a joint or tendon that is not limited, a geom
+    /// distance, normal or segment naming a height-field geom, then a cutoff
+    /// on a quaternion, or on an axis other than a geom normal's. The caller
+    /// runs it after every check this crate makes before building the model,
+    /// after the actuators' and before the free joint's, as MuJoCo compiles
+    /// sensors after actuators.
+    pub(crate) fn check_sensors(&self) -> Result<()> {
+        let height_field = |kind: MjObjectType, id: usize| {
+            kind == MjObjectType::Geom && self.geom_type[id] == GeomType::Hfield
+        };
+        for (i, &kind) in self.sensor_type.iter().enumerate() {
+            let (objid, cutoff) = (self.sensor_objid[i], self.sensor_cutoff[i]);
+            let words = if self.sensor_noise[i] < 0.0 {
+                "negative noise in sensor"
+            } else if cutoff < 0.0 {
+                "negative cutoff in sensor"
+            } else if kind == MjSensorType::JointLimitFrc && !self.jnt_limited[objid] {
+                "joint must be limited in sensor"
+            } else if kind == MjSensorType::TendonLimitFrc && !self.tendon_limited[objid] {
+                "tendon must be limited in sensor"
+            } else if matches!(
+                kind,
+                MjSensorType::GeomDist | MjSensorType::GeomNormal | MjSensorType::GeomFromTo
+            ) && (height_field(self.sensor_objtype[i], objid)
+                || height_field(self.sensor_reftype[i], self.sensor_refid[i]))
+            {
+                "height fields are not supported in geom distance sensors"
+            } else if cutoff > 0.0
+                && (kind.data_kind() == MjSensorDataKind::Quaternion
+                    || (kind.data_kind() == MjSensorDataKind::Axis
+                        && kind != MjSensorType::GeomNormal))
+            {
+                "cutoff applied to axis or quaternion datatype in sensor"
+            } else {
+                continue;
             };
             return Err(MjcfError::invalid_model(words).at(Location::nth(
                 ElementKind::Sensor,

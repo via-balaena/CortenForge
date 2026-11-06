@@ -6,11 +6,11 @@
 //! profile (research A4 §1.4, macOS arm64), more than a test thread's 2 MiB.
 //! So the entry points that parse, expand includes, validate or build
 //! (`parse_mjcf_str`, `load_model`, `load_model_from_file`, `model_from_mjcf`,
-//! `validate`) run their work on a thread of their own with
-//! [`LOADER_STACK_BYTES`], and the depths that reach it are bounded: the XML by
-//! MuJoCo's reader's rule (`parser`), a tree built in code or by a composite by
-//! [`MAX_BODY_TREE_DEPTH`]. The `.mjb` readers and writers are not among them
-//! (`mjb`).
+//! `validate`), and the `.mjb` readers and writers (`mjb`), run their work on
+//! a thread of their own with [`LOADER_STACK_BYTES`], and the depths that
+//! reach it are bounded: the XML by MuJoCo's reader's rule (`parser`), a tree
+//! built in code, by a composite or decoded from a `.mjb` by
+//! [`MAX_BODY_TREE_DEPTH`].
 //!
 //! The loader thread takes the caller's tracing dispatcher and current span,
 //! so what the loader logs reaches the caller's subscriber, within the
@@ -23,7 +23,8 @@
 pub const LOADER_STACK_BYTES: usize = 64 << 20;
 
 /// The deepest body and frame tree the loader takes that did not come from
-/// XML: built in code, or by a composite. MuJoCo states no limit; 3.5.0 loads
+/// XML: built in code, by a composite, or decoded from a `.mjb` or any serde
+/// format (`nested`). MuJoCo states no limit; 3.5.0 loads
 /// a cable of count 1000 (999 bodies) and fails one of count 3000 with an
 /// unknown exception, cause not isolated (research A4 §1.4).
 pub const MAX_BODY_TREE_DEPTH: usize = 4096;
@@ -74,6 +75,72 @@ fn on_stack_of<T: Send>(bytes: usize, f: impl FnOnce() -> T + Send) -> T {
             (None, None) => unreachable!("the loader thread ran f and returned nothing"),
         }
     }
+}
+
+#[cfg(feature = "serde")]
+thread_local! {
+    /// The level of the body or frame this thread is decoding, the world's
+    /// children at 1.
+    static LEVEL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Whether a decode on this thread has met a level past
+    /// [`MAX_BODY_TREE_DEPTH`].
+    static TOO_DEEP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A body's or frame's bodies or frames, deserialized one level below their
+/// holder: each level counted as [`crate::validation::check_tree_depth`]
+/// counts it, and one past [`MAX_BODY_TREE_DEPTH`] refused before it is read,
+/// so deserializing recurses no deeper than a tree the loader takes.
+#[cfg(feature = "serde")]
+pub fn nested<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    let levels: Vec<Level<T>> = serde::Deserialize::deserialize(deserializer)?;
+    Ok(levels.into_iter().map(|level| level.0).collect())
+}
+
+/// One element of [`nested`]'s list, read one level deeper.
+#[cfg(feature = "serde")]
+struct Level<T>(T);
+
+#[cfg(feature = "serde")]
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Level<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let level = LEVEL.with(|level| {
+            level.set(level.get() + 1);
+            level.get()
+        });
+        let _leave = LeaveLevel;
+        if level > MAX_BODY_TREE_DEPTH {
+            TOO_DEEP.with(|too_deep| too_deep.set(true));
+            return Err(serde::de::Error::custom(format_args!(
+                "nested deeper than {MAX_BODY_TREE_DEPTH}"
+            )));
+        }
+        T::deserialize(deserializer).map(Level)
+    }
+}
+
+/// Leaves the level [`Level`] entered, however its read ends.
+#[cfg(feature = "serde")]
+struct LeaveLevel;
+
+#[cfg(feature = "serde")]
+impl Drop for LeaveLevel {
+    fn drop(&mut self) {
+        LEVEL.with(|level| level.set(level.get().saturating_sub(1)));
+    }
+}
+
+/// `decode`, and whether it met a level past [`MAX_BODY_TREE_DEPTH`] (its
+/// error then says so).
+#[cfg(feature = "mjb")]
+pub fn decoding<T>(decode: impl FnOnce() -> T) -> (T, bool) {
+    TOO_DEEP.with(|too_deep| too_deep.set(false));
+    let decoded = decode();
+    (decoded, TOO_DEEP.with(std::cell::Cell::get))
 }
 
 #[cfg(test)]

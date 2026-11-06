@@ -305,20 +305,21 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Finalize user data: resolve nuser, validate, pad
     builder.finalize_user_data(&mjcf)?;
 
-    // MuJoCo 3.5.0's checks this crate did not make before RL-6a, RL-6b and
-    // RL-6d (book L19-L22), after every check above, so that a document
-    // refused before they existed is refused for the same fault (MuJoCo
-    // orders some of them before checks above). Among themselves in MuJoCo's
-    // order: each body's inertia, geoms and joints, the height fields' sizes, the
-    // tendons, the actuators, the sensors, a moving body's mass and inertia,
-    // then the free joint below the world's children, as MuJoCo's
-    // `CopyTree` refuses it. An automatic range that does not increase is
-    // refused after the keyframes (`D-AUTO-RANGE`).
+    // MuJoCo 3.5.0's checks this crate did not make before Rigid-loading PR
+    // RL-6a and the PRs after it (book L19-L22, L25; a sensor's noise, cutoff
+    // and height field, ledger L197, L199, L391), after every check above, so
+    // that a document refused before they existed is refused for the same
+    // fault (MuJoCo orders some of them before checks above). Among themselves
+    // in MuJoCo's order: each body's inertia, geoms and joints, the height
+    // fields' sizes, the tendons, the actuators, the sensors, a moving body's
+    // mass and inertia, then the free joint below the world's children, as
+    // MuJoCo's `CopyTree` refuses it. An automatic range that does not
+    // increase is refused after the keyframes (`D-AUTO-RANGE`).
     builder.check_bodies()?;
     builder.check_hfield_sizes()?;
     builder.check_tendons()?;
     builder.check_actuators()?;
-    builder.check_limit_sensors()?;
+    builder.check_sensors()?;
     builder.check_moving_body_mass()?;
     builder.check_free_joints_on_top_level()?;
     let automatic = builder.automatic_range_fault();
@@ -926,10 +927,8 @@ impl ModelBuilder {
         self.sdf_initpoints = option.sdf_initpoints;
         self.disableactuator = option.actuatorgroupdisable;
 
-        // S10-stub: Wire override parameters from parsed <option>.
-        if option.o_margin >= 0.0 {
-            self.o_margin = option.o_margin;
-        }
+        // The override parameters from `<option>`.
+        self.o_margin = option.o_margin;
         if let Some(sr) = option.o_solref {
             self.o_solref = sr.over(self.o_solref);
         }

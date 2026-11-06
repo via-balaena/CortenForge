@@ -1,0 +1,10 @@
+<mujoco model="no iterations, zero tolerance">
+  <option iterations="0" tolerance="0"/>
+  <worldbody>
+    <geom type="plane" size="1 1 0.1"/>
+    <body pos="0 0 0.05">
+      <freejoint/>
+      <geom type="box" size="0.05 0.05 0.05" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>

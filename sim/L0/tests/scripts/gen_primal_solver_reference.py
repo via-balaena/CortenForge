@@ -95,7 +95,7 @@ cases:
   variant also runs under CG with `ls_iterations` 1, and under CG and Newton with
   `tolerance` 1e-300 and iterations capped at 40: a mutant of the line search's exit
   at its iteration cap is caught by the first, one of its midpoint exit by CG's
-  second. (sim-mjcf refuses a `tolerance` of 0, which MuJoCo takes.)
+  second.
 
 With islands enabled, MuJoCo solves each island apart (`mj_solNewton_island`,
 `mj_solCG_island`, `engine_forward.c:768-799`), scaled by 1/Σ diag of its mass

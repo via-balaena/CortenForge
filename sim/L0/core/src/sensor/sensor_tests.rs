@@ -743,6 +743,81 @@ fn test_sensor_no_cutoff_when_zero() {
     assert_relative_eq!(data.sensordata[0], 99.0, epsilon = 1e-10);
 }
 
+/// A cutoff set in code to NaN: MuJoCo 3.5.0's `apply_cutoff` does not return
+/// early on it (`if (cutoff <= 0) return;`, `engine_sensor.c:66`) and clips with
+/// comparisons (`mju_clip`, `engine_util_misc.c:1306-1314`), which leave the
+/// value; `f64::clamp` panicked on it (ledger L199). Both sites: forward's
+/// pass and the per-sensor one.
+#[test]
+fn a_nan_cutoff_leaves_the_value_as_mujoco() {
+    let mut model = make_sensor_test_model();
+    add_sensor(
+        &mut model,
+        MjSensorType::JointPos,
+        MjSensorDataType::Position,
+        MjObjectType::Joint,
+        0,
+    );
+    model.sensor_cutoff[0] = f64::NAN;
+
+    let mut data = model.make_data();
+    data.qpos[0] = 2.0;
+    data.forward(&model).unwrap();
+    assert_eq!(data.sensordata[0].to_bits(), 2.0_f64.to_bits());
+    super::postprocess::apply_sensor_cutoff(&model, &mut data, 0);
+    assert_eq!(data.sensordata[0].to_bits(), 2.0_f64.to_bits());
+}
+
+/// A NaN reading under a positive sensor's cutoff stays NaN: MuJoCo 3.5.0
+/// takes `mju_min(cutoff, value)`, `a <= b ? a : b`
+/// (`engine_util_misc.c:1286-1292`), where `f64::min` gave the cutoff.
+#[test]
+fn a_nan_reading_under_a_positive_sensors_cutoff_stays_nan_as_mujoco() {
+    let mut model = make_sensor_test_model();
+    add_sensor(
+        &mut model,
+        MjSensorType::Touch,
+        MjSensorDataType::Acceleration,
+        MjObjectType::Site,
+        0,
+    );
+    model.sensor_cutoff[0] = 1.0;
+
+    let mut data = model.make_data();
+    data.sensordata[0] = f64::NAN;
+    super::postprocess::apply_sensor_cutoff(&model, &mut data, 0);
+    assert!(data.sensordata[0].is_nan());
+    data.sensordata[0] = f64::NAN;
+    super::postprocess::mj_sensor_postprocess(&model, &mut data);
+    assert!(data.sensordata[0].is_nan());
+}
+
+/// The same NaN reading of a real sensor, clipped by MuJoCo's `mju_clip`,
+/// stays NaN too, and a real reading outside the cutoff is held at it.
+#[test]
+fn a_real_reading_is_clipped_as_mujoco() {
+    let mut model = make_sensor_test_model();
+    add_sensor(
+        &mut model,
+        MjSensorType::JointPos,
+        MjSensorDataType::Position,
+        MjObjectType::Joint,
+        0,
+    );
+    model.sensor_cutoff[0] = 1.0;
+
+    let mut data = model.make_data();
+    for (reading, held) in [(f64::NAN, f64::NAN), (-3.0, -1.0), (3.0, 1.0), (0.25, 0.25)] {
+        data.sensordata[0] = reading;
+        super::postprocess::mj_sensor_postprocess(&model, &mut data);
+        let got = data.sensordata[0];
+        assert!(
+            got.to_bits() == held.to_bits() || (got.is_nan() && held.is_nan()),
+            "{reading}: {got}"
+        );
+    }
+}
+
 // ========================================================================
 // Multiple Sensors Test
 // ========================================================================

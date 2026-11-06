@@ -1164,3 +1164,59 @@ fn t29b_tendonactuatorfrc_skips_another_tendons_actuators() {
     );
     assert!(data.actuator_force[0] != data.actuator_force[1]);
 }
+
+/// Every cutoff set in code to NaN (ledger L199). MuJoCo 3.5.0 (unfused
+/// build) reads, for three steps of this model, the joint position and the
+/// touch force a cutoff of 0 gives, and the geom distance as NaN: its search
+/// starts at the cutoff (`engine_sensor.c:670-701`). Before Rigid-loading PR
+/// RL-7d the joint position's clamp panicked.
+#[test]
+fn a_nan_cutoff_set_in_code_reads_as_mujoco_3_5_0() {
+    let mut model = load_model(
+        r#"<mujoco>
+          <worldbody>
+            <geom type="plane" size="1 1 0.1"/>
+            <body pos="0 0 0.1">
+              <freejoint/>
+              <geom name="s" type="sphere" size="0.1" mass="1"/>
+              <site name="t" type="sphere" size="0.12"/>
+            </body>
+            <body pos="1 0 0.5">
+              <joint name="j" type="hinge" axis="0 1 0"/>
+              <geom name="h" type="sphere" size="0.1" mass="1"/>
+            </body>
+          </worldbody>
+          <sensor>
+            <jointpos joint="j"/>
+            <touch site="t"/>
+            <distance geom1="s" geom2="h"/>
+          </sensor>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let run = |model: &sim_core::Model| {
+        let mut data = model.make_data();
+        data.qpos[7] = 0.4;
+        (0..3)
+            .map(|_| {
+                data.step(model).expect("step");
+                data.sensordata.iter().copied().collect::<Vec<f64>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let zero = run(&model);
+    for cutoff in &mut model.sensor_cutoff {
+        *cutoff = f64::NAN;
+    }
+    let nan = run(&model);
+    for (step, (z, n)) in zero.iter().zip(&nan).enumerate() {
+        assert_eq!(
+            z[0].to_bits(),
+            n[0].to_bits(),
+            "joint position, step {step}"
+        );
+        assert_eq!(z[1].to_bits(), n[1].to_bits(), "touch, step {step}");
+        assert!(n[2].is_nan(), "distance, step {step}: {}", n[2]);
+    }
+    assert_relative_eq!(nan[1][1], 10.777_640_927_216_81, epsilon = 1e-9);
+}
