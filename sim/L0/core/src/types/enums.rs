@@ -580,8 +580,8 @@ pub enum SensorStage {
 ///
 /// MuJoCo's `sensor_datatype` stores the data kind (`mjDATATYPE_REAL`, etc.),
 /// which controls how `apply_cutoff()` clamps sensor values:
-/// - `Real` → `clamp(-cutoff, cutoff)` (symmetric)
-/// - `Positive` → `min(cutoff, value)` (preserves negative values)
+/// - `Real` → held within `[-cutoff, cutoff]` (`mju_clip`)
+/// - `Positive` → at or below `cutoff` (`mju_min`; preserves negative values)
 /// - `Axis` / `Quaternion` → no clamping (normalized vectors/quaternions
 ///   should not be clamped to a magnitude range)
 ///
@@ -590,9 +590,9 @@ pub enum SensorStage {
 /// concepts that MuJoCo happens to also call "datatype."
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MjSensorDataKind {
-    /// Scalar real value — clamp to `[-cutoff, cutoff]`. MuJoCo: `mjDATATYPE_REAL` (0).
+    /// Scalar real value — held within `[-cutoff, cutoff]`. MuJoCo: `mjDATATYPE_REAL` (0).
     Real,
-    /// Non-negative value — clamp to `min(cutoff, value)`. MuJoCo: `mjDATATYPE_POSITIVE` (1).
+    /// Non-negative value — held at or below `cutoff`. MuJoCo: `mjDATATYPE_POSITIVE` (1).
     Positive,
     /// Unit axis vector — no cutoff clamping. MuJoCo: `mjDATATYPE_AXIS` (2).
     Axis,

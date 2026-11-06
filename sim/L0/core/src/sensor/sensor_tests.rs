@@ -743,8 +743,8 @@ fn test_sensor_no_cutoff_when_zero() {
     assert_relative_eq!(data.sensordata[0], 99.0, epsilon = 1e-10);
 }
 
-/// A cutoff set in code to NaN: MuJoCo 3.5.0's `apply_cutoff` passes it
-/// (`if (cutoff <= 0) return;`, `engine_sensor.c:66`) and clips with
+/// A cutoff set in code to NaN: MuJoCo 3.5.0's `apply_cutoff` does not return
+/// early on it (`if (cutoff <= 0) return;`, `engine_sensor.c:66`) and clips with
 /// comparisons (`mju_clip`, `engine_util_misc.c:1306-1314`), which leave the
 /// value; `f64::clamp` panicked on it (ledger L199). Both sites: forward's
 /// pass and the per-sensor one.

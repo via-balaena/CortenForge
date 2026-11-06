@@ -45,10 +45,14 @@ pub fn sensor_write6(sensordata: &mut DVector<f64>, adr: usize, v: &[f64; 6]) {
     sensor_write(sensordata, adr, 5, v[5]);
 }
 
-/// Apply cutoff clamping to a single sensor.
+/// Apply one sensor's cutoff to its readings, as MuJoCo's `apply_cutoff`
+/// (`engine_sensor.c:64-90`): none when the cutoff is at or below 0, none on a
+/// geom segment (`GeomFromTo`, whose cutoff is its search distance), else each
+/// value as `under_cutoff` takes it.
 ///
-/// Extracted from `mj_sensor_postprocess` for use by plugin sensor dispatch
-/// (§66), which applies cutoff per-sensor immediately after plugin compute.
+/// Called by [`mj_sensor_postprocess`] for each sensor, by the plugin
+/// dispatch after a plugin computes its sensors (§66), and by
+/// `compute_sensor` for a delayed sensor's sample.
 pub fn apply_sensor_cutoff(model: &Model, data: &mut Data, sensor_id: usize) {
     let adr = model.sensor_adr[sensor_id];
     let dim = model.sensor_dim[sensor_id];
@@ -56,6 +60,9 @@ pub fn apply_sensor_cutoff(model: &Model, data: &mut Data, sensor_id: usize) {
     if cutoff <= 0.0 {
         return;
     }
+    // MuJoCo: `if (type == mjSENS_CONTACT || type == mjSENS_GEOMFROMTO)
+    // return;` sim-core has no contact sensor (`mjSENS_CONTACT`); touch is
+    // `mjSENS_TOUCH`, which MuJoCo clamps.
     let sensor_type = model.sensor_type[sensor_id];
     if sensor_type == MjSensorType::GeomFromTo {
         return;
@@ -98,20 +105,13 @@ fn under_cutoff(kind: MjSensorDataKind, cutoff: f64, value: f64) -> f64 {
     }
 }
 
-/// Apply sensor post-processing: cutoff clamping.
+/// Apply sensor post-processing: each sensor's cutoff
+/// ([`apply_sensor_cutoff`]), but on a value read from the history buffer.
 ///
-/// Matches MuJoCo's `apply_cutoff()` in `engine_sensor.c:64–89` using a
-/// two-layer dispatch:
-///
-/// **Layer 1 — explicit type exemptions:**
-/// - `GeomFromTo` (`mjSENS_GEOMFROMTO`): cutoff is consumed during evaluation
-///   as the `mj_geomDistance()` search radius, not as a value clamp.
-///
-/// **Layer 2 — data-kind dispatch** (`MjSensorDataKind`), as
-/// `under_cutoff` takes each value: `Real` held within `[-cutoff, cutoff]`,
-/// `Positive` at or below `cutoff` (a negative value is kept), `Axis` and
-/// `Quaternion` left (MuJoCo's if/else chain has branches for REAL and
-/// POSITIVE only).
+/// `MjSensorDataKind` decides each value's treatment, as `under_cutoff`
+/// takes it: `Real` held within `[-cutoff, cutoff]`, `Positive` at or below
+/// `cutoff` (a negative value is kept), `Axis` and `Quaternion` left
+/// (MuJoCo's if/else chain has branches for REAL and POSITIVE only).
 ///
 /// Noise is not applied here — CortenForge keeps the forward pass fully
 /// deterministic. Noise metadata (`sensor_noise`) is available for
@@ -122,38 +122,12 @@ pub fn mj_sensor_postprocess(model: &Model, data: &mut Data) {
         return;
     }
     for sensor_id in 0..model.nsensor {
-        let adr = model.sensor_adr[sensor_id];
-        let dim = model.sensor_dim[sensor_id];
-
-        let cutoff = model.sensor_cutoff[sensor_id];
-        if cutoff <= 0.0 {
-            continue;
-        }
         // A value read from the history buffer was clamped when it was
         // computed, and an interpolated one is not clamped: MuJoCo applies the
         // cutoff in `mj_computeSensor` only (`engine_sensor.c:1341-1342`).
         if crate::history::sensor_reads_history(model, data, sensor_id) {
             continue;
         }
-
-        let sensor_type = model.sensor_type[sensor_id];
-
-        // Layer 1: explicit type exemptions.
-        // MuJoCo: `if (type == mjSENS_CONTACT || type == mjSENS_GEOMFROMTO) return;`
-        // sim-core has no contact sensor (`mjSENS_CONTACT`); touch is
-        // `mjSENS_TOUCH`, which MuJoCo clamps.
-        if sensor_type == MjSensorType::GeomFromTo {
-            continue;
-        }
-
-        // Layer 2: data-kind dispatch.
-        let data_kind = sensor_type.data_kind();
-        for i in 0..dim {
-            let idx = adr + i;
-            if idx < data.sensordata.len() {
-                let cut = under_cutoff(data_kind, cutoff, data.sensordata[idx]);
-                sensor_write(&mut data.sensordata, adr, i, cut);
-            }
-        }
+        apply_sensor_cutoff(model, data, sensor_id);
     }
 }
