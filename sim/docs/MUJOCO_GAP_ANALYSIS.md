@@ -899,9 +899,9 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 
 > ✅ **Unified flex architecture (§6B).** A flex vertex's DOFs are its body's (a `<flex>`'s vertex bodies are declared bodies; a flexcomp's come after every other body). Edge constraints enter the unified Jacobian as a flex equality's rows (`EqualityType::Flex`). Bending acts as passive spring-damper forces in `mj_fwd_passive()` (matching MuJoCo `engine_passive.c`). Flex-rigid contacts are regular `Contact` entries (discriminated by `flex_vertex: Option<usize>`). The previous `sim-deformable` crate (XPBD solver) has been deleted — useful code migrated to `builder/`. See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) ✅.
 >
-> **Key pipeline functions:** `collide_body_flex()`, `mj_flex()` (FK → xpos), `apply_flex_edge_constraints()`. Post-§27F: `mj_crba_flex()`, `mj_factor_flex()`, `mj_fwd_position_flex()`, and `mj_integrate_pos_flex()` have been **deleted** — flex vertices are now real bodies with 3 slide joints, so the standard CRBA/RNE/FK/integration handles everything.
+> **Key pipeline functions:** `collide_body_flex()`, `mj_flex()` (FK → xpos). Post-§27F: `mj_crba_flex()`, `mj_factor_flex()`, `mj_fwd_position_flex()`, and `mj_integrate_pos_flex()` have been **deleted** — flex vertices are now real bodies with 3 slide joints, so the standard CRBA/RNE/FK/integration handles everything.
 >
-> **Material model:** Young's modulus → bending stiffness via Kirchhoff-Love, for a dim-2 flex under `elastic2d` bend or both (a dim-3 flex's Young's modulus is refused, registry `D-FLEX-TET-ELASTICITY`). Proportional damping. Pinned vertices: `mass = 1e20`, `invmass = 0`.
+> **Material model:** Young's modulus → bending stiffness via Kirchhoff-Love, for a dim-2 flex under `elastic2d` bend (a membrane, `stretch` or `both` with a Young's modulus and a positive thickness, and a dim-3 flex's Young's modulus are refused, registry `D-FLEX-MEMBRANE`, `D-FLEX-TET-ELASTICITY`). Proportional damping. Pinned vertices: `invmass = 0`.
 >
 > **MJCF parsing:** `<flex>` (MuJoCo's form: its vertices are the bodies it names) and `<flexcomp>` (procedural: grid, box, cable) parsed in `sim-mjcf`. Edge/hinge topology computed at build time.
 >

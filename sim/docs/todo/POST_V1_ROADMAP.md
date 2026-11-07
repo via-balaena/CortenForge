@@ -89,7 +89,7 @@ DT-181 added during derivatives examples (sensor FD optimization).
 | DT-73 | T3 | Volume constraints for flex bodies -- no MuJoCo equivalent; continuum model | 10i |
 | DT-82 | T3 | SoA layout across environments for cache locality -- deferred to GPU work | 10j |
 | DT-83 | T3 | Multi-model batching -- different robots in same batch (per-env dimensions) | 10j |
-| DT-86 | T1 | ~~`elastic2d` keyword on `<flex><elasticity>` -- model selection `[none, bend, stretch, both]`~~ **Done** -- read as MuJoCo's: a dim-2 flex bends only under `bend` or `both`; a membrane (`stretch` or `both` with a Young's modulus and a thickness) is refused, a stated limitation (`D-FLEX-MEMBRANE`; Rigid-loading PR RL-8a, book L32) | 10i |
+| DT-86 | T1 | ~~`elastic2d` keyword on `<flex><elasticity>` -- model selection `[none, bend, stretch, both]`~~ **Done** -- read as MuJoCo's: a dim-2 flex bends only under `bend` or `both`; a membrane (`stretch` or `both` with a Young's modulus and a positive thickness) is refused, a stated limitation (`D-FLEX-MEMBRANE`; Rigid-loading PR RL-8a, book L32) | 10i |
 | DT-87 | T2 | Shared-body flex vertices -- multiple vertices referencing same body's DOFs | 10i |
 | DT-111 | T3 | HillMuscle compliant tendon mode -- persistent fiber state (`act_num >= 2`) + custom integration | 10g |
 | DT-112 | T1 | HillMuscle named MJCF attributes (`optlen`, `slacklen`, `pennation`) -- convenience UX over raw `gainprm` indices | 10g |

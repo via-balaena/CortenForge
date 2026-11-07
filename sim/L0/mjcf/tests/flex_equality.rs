@@ -202,6 +202,21 @@ fn an_empty_flex_name_beside_an_unnamed_flex_is_refused() {
 }
 
 #[test]
+fn of_two_equalities_refused_after_the_keyframes_the_first_is_named() {
+    // MuJoCo loads both documents (registry `D-FLEX-VERT-EQUALITY`,
+    // `D-FLEX-EQ-NO-NAME`).
+    let err = load_model(&square("", r#"<flexvert flex="f"/><flexvert flex="f"/>"#)).unwrap_err();
+    assert!(
+        matches!(&err, MjcfError::Unsupported { .. }) && err.to_string().ends_with("(equality #0)"),
+        "{err}"
+    );
+    let unnamed =
+        square("", r#"<flexvert flex=""/><flex flex=""/>"#).replace(r#"<flex name="f" "#, "<flex ");
+    let err = load_model(&unnamed).unwrap_err();
+    assert!(matches!(&err, MjcfError::Unsupported { .. }), "{err}");
+}
+
+#[test]
 fn a_flexcomps_edge_equality_has_mujocos_own_parameters() {
     // MuJoCo: one unnamed active equality on the flexcomp, MuJoCo's default
     // `solref` and `solimp` under a main class that writes others, or the

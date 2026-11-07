@@ -21,7 +21,7 @@ use sim_core::{EqualityType, Model, SameFrame};
 /// A document's flex equality, kept for
 /// [`ModelBuilder::check_flex_equalities`]: its equality id, its position in
 /// `<equality>`, its name and its flex's, and whether its empty `flex` stands
-/// beside an unnamed flex, which MuJoCo binds it to (`user_model.cc:3434-3437`).
+/// beside an unnamed flex, which MuJoCo binds it to (`user_objects.cc:6005`).
 #[derive(Debug, Clone)]
 pub struct FlexEqualityRef {
     eq_id: usize,

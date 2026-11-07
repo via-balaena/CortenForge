@@ -32,7 +32,7 @@ fn diamond_bodies(flex: &str, positions: &str, damping: Option<&str>) -> (String
 // MJCF Fixtures
 // ============================================================================
 
-/// AC1: Small 2D cloth (2x2 quad = 4 vertices, 4 edges, 2 triangles) for gravity drape.
+/// AC1: Small 2D cloth (2x2 quad = 4 vertices, 5 edges, 2 triangles) for gravity drape.
 /// Uses explicit vertices.
 fn cloth_5x5_mjcf() -> &'static str {
     r#"
@@ -1389,7 +1389,7 @@ fn ac19_bending_damping_only() {
 #[test]
 fn ac20_bending_stability_clamp() {
     // §42B: Uses bending_model="bridson" — the stability clamp is Bridson-specific.
-    // Cotangent bending has no per-vertex stability clamp (linear force, constant matrix).
+    // Cotangent bending has no per-vertex stability clamp.
     // Very high Young's modulus with a relatively large timestep.
     // k_max = 1/(dt^2) = 1/(0.01^2) = 10_000.
     // Kirchhoff-Love: D = E * t^3 / (12 * (1 - nu^2))

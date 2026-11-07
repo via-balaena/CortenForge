@@ -56,14 +56,10 @@ fn cable(elasticity: &str) -> String {
     flex(1, &SQUARE[..2], "0 1", elasticity, &[])
 }
 
+const TETRAHEDRON: [&str; 4] = ["0 0 0", "1 0 0", "0 1 0", "0 0 1"];
+
 fn tetrahedron(elasticity: &str) -> String {
-    flex(
-        3,
-        &["0 0 0", "1 0 0", "0 1 0", "0 0 1"],
-        "0 1 2 3",
-        elasticity,
-        &[],
-    )
+    flex(3, &TETRAHEDRON, "0 1 2 3", elasticity, &[])
 }
 
 const BENT_FLAPS: [[i32; 2]; 5] = [[0, 3], [1, -1], [2, -1], [1, -1], [2, -1]];
@@ -119,6 +115,20 @@ fn stretching_is_refused_where_mujoco_makes_a_membrane() {
             "{stretches}: {err}"
         );
     }
+    // Also where MuJoCo's membrane moves no dof: on vertex bodies without
+    // joints, and on a flexcomp every vertex of which is pinned (rigid in
+    // MuJoCo).
+    let membrane = r#"young="1e4" thickness="0.01" elastic2d="stretch""#;
+    for xml in [
+        flex(2, &SQUARE, "0 1 2  1 3 2", membrane, &[0, 1, 2, 3]),
+        flexcomp(&format!(r#"<pin id="0 1 2 3"/><elasticity {membrane}/>"#)),
+    ] {
+        let err = load_model(&xml).unwrap_err();
+        assert!(
+            matches!(&err, MjcfError::Unsupported { .. }),
+            "{xml}: {err}"
+        );
+    }
     // Everywhere else MuJoCo makes none, and loads it: no Young's modulus, no
     // thickness, a thickness of 0, a dim-1 flex.
     for loads in [
@@ -149,6 +159,10 @@ fn a_dim3_flexs_youngs_modulus_is_refused() {
             "{elasticity}: {err}"
         );
     }
+    // Also where MuJoCo's moves no dof, on vertex bodies without joints.
+    let jointless = flex(3, &TETRAHEDRON, "0 1 2 3", r#"young="1e4""#, &[0, 1, 2, 3]);
+    let err = load_model(&jointless).unwrap_err();
+    assert!(matches!(&err, MjcfError::Unsupported { .. }), "{err}");
     let model = load_model(&tetrahedron(r#"elastic2d="bend""#)).unwrap();
     assert_eq!(model.flexedge_flap, [[-1, -1]; 6]);
 }
@@ -259,6 +273,23 @@ fn a_flat_diamond_at_rest_takes_no_bending_force() {
     let elasticity = r#"young="1e4" poisson="0.3" thickness="0.01" elastic2d="bend""#;
     let model = load_model(&flex(2, &DIAMOND, "0 2 1  2 3 1", elasticity, &[])).unwrap();
     // The shared edge's 16 coefficients, as MuJoCo's: the flat diamond bends.
+    assert_eq!(nonzero(&model.flex_bending), 16);
+    let mut data = model.make_data();
+    data.forward(&model).unwrap();
+    let biggest = max_abs_or_nan(data.qfrc_spring.iter());
+    assert!(biggest < 1e-12, "{biggest}");
+}
+
+/// An irregular flat quad whose shared edge (1, 2) the first triangle holds
+/// as (2, 1).
+const QUAD: [&str; 4] = ["0 0 0", "1.3 0.1 0", "0.2 0.9 0", "1.1 1.2 0"];
+
+#[test]
+fn a_stiffer_flat_quad_at_rest_takes_no_bending_force() {
+    // MuJoCo gives this quad max |qfrc_spring| 0.092 at rest (2.8e-17 as
+    // `0 1 2  1 3 2`), registry `D-FLEX-BEND-ORDER`.
+    let elasticity = r#"young="1e5" poisson="0.3" thickness="0.02" elastic2d="bend""#;
+    let model = load_model(&flex(2, &QUAD, "1 3 2  0 1 2", elasticity, &[])).unwrap();
     assert_eq!(nonzero(&model.flex_bending), 16);
     let mut data = model.make_data();
     data.forward(&model).unwrap();

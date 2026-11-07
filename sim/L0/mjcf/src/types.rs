@@ -2232,9 +2232,10 @@ pub enum EqualityKind {
     Flex,
 }
 
-/// A flex equality constraint (`<equality><flex>`): each of the flex's
-/// edges that is not rigid held at its rest length by one constraint row, as
-/// MuJoCo 3.5.0's `mjEQ_FLEX` (`engine_core_constraint.c:616-643`).
+/// A flex equality constraint: `<equality><flex>`, each of the flex's edges
+/// that is not rigid held at its rest length by one constraint row, as
+/// MuJoCo 3.5.0's `mjEQ_FLEX` (`engine_core_constraint.c:616-643`), or
+/// `<equality><flexvert>` (`vertices`).
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfFlexEquality {
@@ -2256,8 +2257,9 @@ pub struct MjcfFlexEquality {
     pub vertices: bool,
 }
 
-/// The equality a `<flexcomp>`'s `<edge equality="true">` asks for, with its
-/// `<edge solref solimp>` (`xml_native_reader.cc:2769-2775`).
+/// The equality a `<flexcomp>`'s `<edge equality="true">` asks for, or with
+/// `vertices` its `<edge equality="vert">`, with its `<edge solref solimp>`
+/// (`xml_native_reader.cc:2769-2775`).
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfFlexcompEdgeEquality {
