@@ -310,24 +310,23 @@ pub(super) fn parse_flex_edge_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> Resu
 /// Parse a `<flexcomp>`'s `<edge>`: its passive coefficients, and the edge
 /// equality it asks for with that equality's `solref` and `solimp`
 /// (`xml_native_reader.cc:2769-2775`). `equality="vert"` (MuJoCo's
-/// `mjEQ_FLEXVERT`) is refused: sim-core has no vertex equality.
+/// `mjEQ_FLEXVERT`) is kept as asked: the builder refuses the equality it
+/// makes after the keyframes (registry `D-FLEX-VERT-EQUALITY`).
 fn parse_flexcomp_edge_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> Result<()> {
     parse_flex_edge_attrs(e, flex)?;
     let a = Attrs::new(e)?;
     let equality = a.keyword("equality", keywords::flex_edge_equality)?;
-    let edge = MjcfFlexcompEdgeEquality {
-        solref: a.prefix("solref")?,
-        solimp: a.prefix("solimp")?,
+    let (solref, solimp) = (a.prefix("solref")?, a.prefix("solimp")?);
+    let vertices = match equality {
+        None | Some(keywords::FlexEdgeEquality::None) => return Ok(()),
+        Some(keywords::FlexEdgeEquality::Edges) => false,
+        Some(keywords::FlexEdgeEquality::Vertices) => true,
     };
-    match equality {
-        None | Some(keywords::FlexEdgeEquality::None) => {}
-        Some(keywords::FlexEdgeEquality::Edges) => flex.edge_equality = Some(edge),
-        Some(keywords::FlexEdgeEquality::Vertices) => {
-            return Err(MjcfError::unsupported(
-                "a flexcomp's vertex equality (`<edge equality=vert>`, MuJoCo's mjEQ_FLEXVERT)",
-            ));
-        }
-    }
+    flex.edge_equality = Some(MjcfFlexcompEdgeEquality {
+        solref,
+        solimp,
+        vertices,
+    });
     Ok(())
 }
 
@@ -374,8 +373,8 @@ pub(super) fn parse_flexcomp<R: BufRead>(
         buf.clear();
     }
 
-    // MuJoCo refuses a flexcomp that stretches beside its edge equality
-    // (`xml_native_reader.cc:2789-2791`).
+    // MuJoCo refuses a flexcomp that stretches beside the equality its
+    // `<edge>` asks for, `vert` too (`xml_native_reader.cc:2789-2791`).
     if flex.elastic2d.stretches() && flex.edge_equality.is_some() {
         return Err(MjcfError::invalid_value(
             "flexcomp",

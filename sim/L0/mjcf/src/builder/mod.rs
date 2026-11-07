@@ -312,14 +312,15 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // check above, so that a document refused before they existed is refused
     // for the same fault (MuJoCo orders some of them before checks above).
     // Among themselves in MuJoCo's order: each body's inertia, geoms and
-    // joints, the height fields' sizes, a bending flex's thickness, the flex
-    // equalities, the tendons, the actuators, the sensors, a moving body's
-    // mass and inertia, then the free joint below the world's children, as
-    // MuJoCo's `CopyTree` refuses it. An automatic range that does not
-    // increase is refused after the keyframes (`D-AUTO-RANGE`).
+    // joints, a bending flex's thickness, the height fields' sizes
+    // (`user_model.cc:4947-4949` compiles the flexes before the height
+    // fields), the flex equalities, the tendons, the actuators, the sensors,
+    // a moving body's mass and inertia, then the free joint below the world's
+    // children, as MuJoCo's `CopyTree` refuses it. An automatic range that
+    // does not increase is refused after the keyframes (`D-AUTO-RANGE`).
     builder.check_bodies()?;
-    builder.check_hfield_sizes()?;
     flex::check_flex_bending_thickness(&mjcf.flex)?;
+    builder.check_hfield_sizes()?;
     builder.check_flex_equalities()?;
     builder.check_tendons()?;
     builder.check_actuators()?;
@@ -327,6 +328,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     builder.check_moving_body_mass()?;
     builder.check_free_joints_on_top_level()?;
     let automatic = builder.automatic_range_fault();
+    let flex_equality = builder.flex_equality_fault.take();
     let negative_inertial = negative_inertial.or_else(|| builder.kept_negative_inertial.take());
     builder.apply_settotalmass();
     builder.sync_flex_vertex_masses();
@@ -361,7 +363,9 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // keyframes: a slide after a ball, a fixed tendon's negative armature,
     // an automatic range that does not increase (`D-AUTO-RANGE`, which
     // MuJoCo leaves unlimited), an `<inertial>`'s negative mass or moment
-    // (`D-INERTIAL-NEGATIVE`, which MuJoCo raises to its bounds), a flex's
+    // (`D-INERTIAL-NEGATIVE`, which MuJoCo raises to its bounds), a flex
+    // vertex equality (`D-FLEX-VERT-EQUALITY`) or an empty `flex` beside
+    // an unnamed flex (`D-FLEX-EQ-NO-NAME`), which MuJoCo makes, a flex's
     // condim outside 1 to 6 (`D-FLEX-CONDIM-RANGE`, which MuJoCo loads), a
     // flex's stretching or a dim-3 flex's Young's modulus (`D-FLEX-MEMBRANE`,
     // `D-FLEX-TET-ELASTICITY`, which MuJoCo computes), an edge of three
@@ -375,6 +379,9 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         return Err(error);
     }
     if let Some(error) = negative_inertial {
+        return Err(error);
+    }
+    if let Some(error) = flex_equality {
         return Err(error);
     }
     flex::check_flex_condims(&mjcf.flex)?;
@@ -750,6 +757,11 @@ pub struct ModelBuilder {
     pub(crate) eq_name_to_id: HashMap<String, usize>,
     /// Each document flex equality, for [`Self::check_flex_equalities`].
     pub(crate) flex_equalities: Vec<equality::FlexEqualityRef>,
+    /// The first flex equality, in index order, that MuJoCo makes and this
+    /// crate refuses after the keyframes: a vertex equality (registry
+    /// `D-FLEX-VERT-EQUALITY`), or an empty `flex` beside an unnamed flex
+    /// (`D-FLEX-EQ-NO-NAME`).
+    pub(crate) flex_equality_fault: Option<MjcfError>,
     /// Each site-form connect's equality id and its two sites, whose points
     /// `build` sets once the sites' frames are known.
     pub(crate) site_connects: Vec<(usize, usize, usize)>,

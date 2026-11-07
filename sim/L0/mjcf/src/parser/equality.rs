@@ -60,16 +60,11 @@ pub(super) fn parse_equality<R: BufRead>(
                         equality.tendons.push(ten_eq);
                         equality.order.push((EqualityKind::Tendon, idx));
                     }
-                    b"flex" => {
-                        let flex_eq = parse_flex_equality_attrs(e)?;
+                    name @ (b"flex" | b"flexvert") => {
+                        let flex_eq = parse_flex_equality_attrs(e, name == b"flexvert")?;
                         let idx = equality.flexes.len();
                         equality.flexes.push(flex_eq);
                         equality.order.push((EqualityKind::Flex, idx));
-                    }
-                    b"flexvert" => {
-                        return Err(MjcfError::unsupported(
-                            "a flex vertex equality (`<equality><flexvert>`, MuJoCo's mjEQ_FLEXVERT)",
-                        ));
                     }
                     _ => {}
                 }
@@ -236,19 +231,25 @@ pub(super) fn parse_tendon_equality_attrs(e: &BytesStart) -> Result<MjcfTendonEq
     Ok(ten_eq)
 }
 
-/// Parse a flex equality constraint's attributes (`<equality><flex>`): its
+/// Parse a flex equality constraint's attributes (`<equality><flex>`, or
+/// `<equality><flexvert>` when `vertices`, which MuJoCo reads alike): its
 /// `flex` is required (`xml_native_reader.cc:2208-2210`).
-pub(super) fn parse_flex_equality_attrs(e: &BytesStart) -> Result<MjcfFlexEquality> {
+pub(super) fn parse_flex_equality_attrs(
+    e: &BytesStart,
+    vertices: bool,
+) -> Result<MjcfFlexEquality> {
     let a = Attrs::new(e)?;
+    let element = if vertices { "flexvert" } else { "flex" };
     Ok(MjcfFlexEquality {
         name: a.string("name"),
         class: a.string("class"),
         flex: a
             .string("flex")
-            .ok_or_else(|| MjcfError::missing_attribute("flex", "flex"))?,
+            .ok_or_else(|| MjcfError::missing_attribute(element, "flex"))?,
         solimp: a.prefix("solimp")?,
         solref: a.prefix("solref")?,
         active: a.boolean("active")?,
+        vertices,
     })
 }
 

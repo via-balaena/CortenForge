@@ -151,6 +151,57 @@ fn a_flexvert_equality_is_refused() {
 }
 
 #[test]
+fn a_vertex_equality_is_refused_after_mujocos_checks() {
+    // MuJoCo checks a vertex equality's flex as a flex equality's:
+    // "unknown element 'nope' in equality constraint", and "rigid flex 'c'
+    // in equality constraint 0" for a flexcomp every vertex of which is
+    // pinned.
+    let err = load_model(&square("", r#"<flexvert flex="nope"/>"#)).unwrap_err();
+    assert!(
+        matches!(&err, MjcfError::UndefinedReference { kind: ElementKind::Flex, name, .. } if name == "nope"),
+        "{err}"
+    );
+    let err = load_model(&cloth(
+        r#"<pin id="0 1 2 3"/>"#,
+        "",
+        r#"<flexvert flex="c"/>"#,
+    ))
+    .unwrap_err();
+    assert!(
+        matches!(&err, MjcfError::InvalidModel { reason, .. } if reason.contains("rigid flex 'c'")),
+        "{err}"
+    );
+    // A rigid flexcomp's `<edge equality="vert">` makes none, and loads, as
+    // MuJoCo's; with one pin it makes one (MuJoCo's `mjEQ_FLEXVERT`).
+    let model = load_model(&cloth(
+        r#"<edge equality="vert"/><pin id="0 1 2 3"/>"#,
+        "",
+        "",
+    ))
+    .unwrap();
+    assert_eq!(model.neq, 0);
+    let err = load_model(&cloth(r#"<edge equality="vert"/><pin id="0"/>"#, "", "")).unwrap_err();
+    assert!(matches!(&err, MjcfError::Unsupported { .. }), "{err}");
+}
+
+#[test]
+fn an_empty_flex_name_beside_an_unnamed_flex_is_refused() {
+    // MuJoCo binds `flex=""` to the unnamed flex (neq 1, five rows); this
+    // crate refuses it (registry `D-FLEX-EQ-NO-NAME`). With no unnamed flex
+    // MuJoCo refuses it too: "unknown element '' in equality constraint".
+    let named = square("", r#"<flex flex=""/>"#);
+    assert_eq!(named.matches(r#"<flex name="f" "#).count(), 1);
+    let unnamed = named.replace(r#"<flex name="f" "#, "<flex ");
+    for xml in [unnamed, named] {
+        let err = load_model(&xml).unwrap_err();
+        assert!(
+            matches!(&err, MjcfError::UndefinedReference { kind: ElementKind::Flex, name, .. } if name.is_empty()),
+            "{err}"
+        );
+    }
+}
+
+#[test]
 fn a_flexcomps_edge_equality_has_mujocos_own_parameters() {
     // MuJoCo: one unnamed active equality on the flexcomp, MuJoCo's default
     // `solref` and `solimp` under a main class that writes others, or the
@@ -182,6 +233,12 @@ fn a_flexcomps_vertex_equality_and_an_unknown_keyword_are_refused() {
     // MuJoCo: "invalid keyword: 'yes'".
     let err = load_model(&cloth(r#"<edge equality="yes"/>"#, "", "")).unwrap_err();
     assert!(matches!(&err, MjcfError::InvalidKeyword { .. }), "{err}");
+    // MuJoCo reads the `<edge>`'s `solref` whatever its `equality`: "bad
+    // format in attribute 'solref'" beside `false` too.
+    for equality in ["false", "true"] {
+        let edge = format!(r#"<edge equality="{equality}" solref="0.02 x"/>"#);
+        assert!(load_model(&cloth(&edge, "", "")).is_err(), "{equality}");
+    }
 }
 
 #[test]

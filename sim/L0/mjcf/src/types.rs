@@ -2250,6 +2250,10 @@ pub struct MjcfFlexEquality {
     pub solref: Option<Prefix<2>>,
     /// Whether this constraint is active (None = not explicitly set).
     pub active: Option<bool>,
+    /// Written as `<equality><flexvert>` (MuJoCo's `mjEQ_FLEXVERT`): checked
+    /// as a flex equality is, then refused after the keyframes, a stated
+    /// limitation (registry `D-FLEX-VERT-EQUALITY`).
+    pub vertices: bool,
 }
 
 /// The equality a `<flexcomp>`'s `<edge equality="true">` asks for, with its
@@ -2262,6 +2266,10 @@ pub struct MjcfFlexcompEdgeEquality {
     pub solref: Option<Prefix<2>>,
     /// Solver impedance parameters, as `solref`.
     pub solimp: Option<Prefix<5>>,
+    /// Asked for as `equality="vert"` (MuJoCo's `mjEQ_FLEXVERT`): made as an
+    /// edge equality is, then refused after the keyframes, a stated
+    /// limitation (registry `D-FLEX-VERT-EQUALITY`).
+    pub vertices: bool,
 }
 
 /// Container for equality constraints from `<equality>` element.
@@ -4143,8 +4151,6 @@ impl Default for MjcfKeyframe {
 // Model
 // ============================================================================
 
-/// Parsed `<flex>` element from `<deformable>`.
-///
 /// A flex's `elastic2d` (`<elasticity elastic2d>`, MuJoCo's `elastic2d_map`,
 /// `xml_native_reader.cc:924-929`): the 2-D elasticity of a dim-2 flex, none
 /// by default (`mjs_defaultFlex`). A flex of dim 1 or 3 has none whatever it
@@ -4177,6 +4183,8 @@ impl FlexElastic2d {
     }
 }
 
+/// Parsed `<flex>` element from `<deformable>`.
+///
 /// Represents a deformable flex body with vertices, elements, and material/collision
 /// properties. Maps to MuJoCo's `<flex>` element within `<deformable>`.
 ///
