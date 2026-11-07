@@ -8,7 +8,7 @@
 //! Checked against the rule: MuJoCo refuses this crate's `<deformable>`
 //! documents.
 
-use sim_core::{ConstraintType, EqualityType, Model, mj_solve_m};
+use sim_core::{ConstraintType, EqualityType, Model, StepError, mj_solve_m};
 use sim_mjcf::load_model;
 
 /// MuJoCo's `mjMINVAL`.
@@ -132,11 +132,13 @@ fn flex_rows_join_every_edge_s_trees() {
     assert!(data.tree_island[..model.ntree].iter().all(|&i| i == 0));
 }
 
-/// A flex equality is never asleep (MuJoCo's `mj_sleepState` gives a flex no
-/// other state, `engine_sleep.c:755-756`): with sleep enabled, the grid keeps
-/// its 14 rows on a step where a box beside it has fallen asleep.
+/// With sleep enabled, the grid's active flex equality is refused by the
+/// first step, as MuJoCo's position stage raises on it (`mj_wakeEquality`,
+/// `engine_sleep.c:401-403`; `sleep_parity`'s
+/// `flex_equality_with_sleep_refused` holds MuJoCo's calls). Made inactive,
+/// it steps: the box beside the grid falls asleep, and the grid makes no rows.
 #[test]
-fn flex_rows_stay_while_another_tree_sleeps() {
+fn a_flex_equality_with_sleep_enabled_is_refused() {
     let xml = PINNED_GRID
         .replace(
             r#"<option gravity="0 0 -9.81" timestep="0.001"/>"#,
@@ -153,7 +155,13 @@ fn flex_rows_stay_while_another_tree_sleeps() {
     </body>
   </worldbody>"#,
         );
-    let model = load_model(&xml).expect("load");
+    let mut model = load_model(&xml).expect("load");
+    let eq = flex_equality(&model);
+    assert_eq!(
+        model.make_data().step(&model),
+        Err(StepError::FlexEqualityWithSleep { eq })
+    );
+    model.eq_active[eq] = false;
     let box_body = (0..model.nbody)
         .find(|&b| model.body_name[b].as_deref() == Some("box"))
         .expect("the box");
@@ -164,7 +172,7 @@ fn flex_rows_stay_while_another_tree_sleeps() {
         data.step(&model).expect("step");
         if !data.tree_awake[box_tree] {
             asleep_steps += 1;
-            assert_eq!(flex_rows(&model, &data).len(), 14, "the grid's rows");
+            assert!(flex_rows(&model, &data).is_empty(), "the grid's rows");
         }
     }
     assert!(asleep_steps > 0, "the box falls asleep");

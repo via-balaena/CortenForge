@@ -110,22 +110,31 @@ pub fn check_contact_frames(data: &Data) -> Result<(), StepError> {
 /// The check the calls that run the position stage make before any work
 /// (`step`, `step1`, `forward`, `forward_skip` from `MjStage::None`, the
 /// transition finite differences, the init-sleep reset): MuJoCo 3.5.0's
-/// position stage raises an error on an active tendon equality with sleep
-/// enabled (`mj_wakeEquality`, `engine_sleep.c:398-400`). `step2`,
-/// `integrate`, `forward_skip` past the position stage, `inverse` (whose
-/// position stage runs no equality wake) and the inverse finite differences
-/// run, as MuJoCo's `mj_step2`, `mj_Euler`, `mj_forwardSkip`, `mj_inverse`
-/// (`mj_invPosition`) and `mjd_inverseFD` do.
+/// position stage raises an error on the first active tendon or flex
+/// equality, in index order, with sleep enabled (`mj_wakeEquality`,
+/// `engine_sleep.c:398-403`). `step2`, `integrate`, `forward_skip` past the
+/// position stage, `inverse` (whose position stage runs no equality wake)
+/// and the inverse finite differences run, as MuJoCo's `mj_step2`,
+/// `mj_Euler`, `mj_forwardSkip`, `mj_inverse` (`mj_invPosition`) and
+/// `mjd_inverseFD` do.
 ///
 /// # Errors
 ///
-/// [`StepError::TendonEqualityWithSleep`] naming the first such equality.
-pub fn check_tendon_equality_sleep(model: &Model) -> Result<(), StepError> {
-    if model.enableflags & ENABLE_SLEEP != 0
-        && let Some(eq) = (0..model.neq)
-            .find(|&eq| model.eq_active[eq] && model.eq_type[eq] == EqualityType::Tendon)
-    {
-        return Err(StepError::TendonEqualityWithSleep { eq });
+/// [`StepError::TendonEqualityWithSleep`] or
+/// [`StepError::FlexEqualityWithSleep`] naming the first such equality.
+pub fn check_equality_sleep(model: &Model) -> Result<(), StepError> {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return Ok(());
+    }
+    for eq in (0..model.neq).filter(|&eq| model.eq_active[eq]) {
+        match model.eq_type[eq] {
+            EqualityType::Tendon => return Err(StepError::TendonEqualityWithSleep { eq }),
+            EqualityType::Flex => return Err(StepError::FlexEqualityWithSleep { eq }),
+            EqualityType::Connect
+            | EqualityType::Weld
+            | EqualityType::Joint
+            | EqualityType::Distance => {}
+        }
     }
     Ok(())
 }

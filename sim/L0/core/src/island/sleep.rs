@@ -556,8 +556,9 @@ pub fn mj_wake_tendon(model: &Model, data: &mut Data) -> bool {
 /// Wake the trees an active connect, weld or joint equality couples to an
 /// awake tree, or two sleeping trees it couples across sleep cycles (MuJoCo
 /// `mj_wakeEquality`, `:366-455`), fully awake. A static object wakes
-/// nothing; other equality types are left out (MuJoCo refuses a tendon
-/// equality with sleep enabled, as [`Data::step`](crate::Data::step) does).
+/// nothing; other equality types are left out (MuJoCo refuses a tendon or
+/// flex equality with sleep enabled, as [`Data::step`](crate::Data::step)
+/// does).
 /// Reads the sleep arrays, which the caller refreshes when it returns `true`.
 pub fn mj_wake_equality(model: &Model, data: &mut Data) -> bool {
     if model.enableflags & ENABLE_SLEEP == 0 {
