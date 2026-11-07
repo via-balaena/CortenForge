@@ -100,11 +100,22 @@ fn an_edge_of_three_triangles_in_a_flex_that_bends_is_refused() {
 
 #[test]
 fn a_tetrahedron_pair_has_no_flaps_or_hinges() {
-    // Two tetrahedra sharing the face (1, 2, 3): MuJoCo 3.5.0 makes flaps for
-    // dim 2 only (`user_mesh.cc:4327-4329`), every `flex_edgeflap` `[-1, -1]`.
-    let xml = flex_doc(3, "0 0 0  1 0 0  0 1 0  0 0 1  1 1 1", "0 1 2 3  1 2 3 4");
+    // Two tetrahedra sharing the face (1, 2, 3), under `elastic2d="bend"`:
+    // MuJoCo 3.5.0 makes flaps for dim 2 only (`user_mesh.cc:4327-4329`),
+    // every `flex_edgeflap` `[-1, -1]`.
+    let xml = bending_flex_doc(3, "0 0 0  1 0 0  0 1 0  0 0 1  1 1 1", "0 1 2 3  1 2 3 4");
     let model = load_model(&xml).unwrap();
     assert_eq!(model.flexedge_flap, vec![[-1, -1]; 9]);
+    assert_eq!(model.nflexhinge, 0);
+}
+
+#[test]
+fn a_cable_has_no_flaps_or_hinges() {
+    // A dim-1 flex under `elastic2d="bend"`: MuJoCo 3.5.0's `flex_edgeflap`
+    // `[-1, -1]` on both edges.
+    let xml = bending_flex_doc(1, "0 0 0  1 0 0  2 0 0", "0 1  1 2");
+    let model = load_model(&xml).unwrap();
+    assert_eq!(model.flexedge_flap, vec![[-1, -1]; 2]);
     assert_eq!(model.nflexhinge, 0);
 }
 

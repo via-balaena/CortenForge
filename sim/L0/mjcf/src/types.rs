@@ -4283,11 +4283,12 @@ pub struct MjcfFlex {
     pub edge_stiffness: f64,
     /// Passive edge damping coefficient. Default 0.0 = disabled.
     pub edge_damping: f64,
-    /// A `<flexcomp>`'s `<edge equality="true">`: the loader gives the flex an
-    /// unnamed, active flex equality after the document's `<equality>`
-    /// elements, unless the flexcomp is rigid (every vertex pinned), as
-    /// MuJoCo 3.5.0's flexcomp makes one (`user_flexcomp.cc:463-466`,
-    /// `:643-649`).
+    /// A `<flexcomp>`'s `<edge equality="true">` or `"vert"`: the loader gives
+    /// the flex an unnamed, active flex equality after the document's
+    /// `<equality>` elements, unless the flexcomp is rigid (every vertex
+    /// pinned), as MuJoCo 3.5.0's flexcomp makes one
+    /// (`user_flexcomp.cc:463-467`, `:643-649`); a vertex one is refused after
+    /// the keyframes ([`MjcfFlexcompEdgeEquality::vertices`]).
     pub edge_equality: Option<MjcfFlexcompEdgeEquality>,
 
     // --- Internal / derived ---

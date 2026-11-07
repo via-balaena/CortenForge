@@ -244,7 +244,10 @@ fn a_flexcomps_vertex_equality_and_an_unknown_keyword_are_refused() {
 #[test]
 fn a_flexcomps_equality_follows_the_documents() {
     // MuJoCo makes a flexcomp's equality while it reads `<worldbody>`, after
-    // `<equality>`: here the flexcomp `c` is flex 0 and `f` flex 1.
+    // `<equality>`: `f`'s equality, then `c`'s. The flex ids are this crate's:
+    // it numbers the flexes as written, `c` 0 and `f` 1, where MuJoCo, reading
+    // `<deformable>` before the flexcomp in `<worldbody>`, numbers `f` 0 and
+    // `c` 1 (its `eq_obj1id` `[0, 1]`).
     let bodies = square_bodies(1);
     let xml = format!(
         r#"<mujoco>

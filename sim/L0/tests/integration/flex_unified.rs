@@ -33,7 +33,7 @@ fn diamond_bodies(flex: &str, positions: &str, damping: Option<&str>) -> (String
 // ============================================================================
 
 /// AC1: Small 2D cloth (2x2 quad = 4 vertices, 4 edges, 2 triangles) for gravity drape.
-/// Uses explicit vertices with soft constraints to ensure stability.
+/// Uses explicit vertices.
 fn cloth_5x5_mjcf() -> &'static str {
     r#"
     <mujoco model="cloth_drape">
@@ -94,9 +94,9 @@ fn cable_20seg_mjcf() -> &'static str {
     "#
 }
 
-/// AC3: Single tetrahedron (4 vertices) falling under gravity for compression test.
-/// Uses PGS solver with soft parameters. No Young's modulus: a dim-3 flex's is
-/// refused (registry `D-FLEX-TET-ELASTICITY`).
+/// AC3: Single tetrahedron (4 vertices) falling under gravity for compression test,
+/// its edges held by a flex equality. Uses PGS solver with soft parameters. No
+/// Young's modulus: a dim-3 flex's is refused (registry `D-FLEX-TET-ELASTICITY`).
 fn solid_3x3x3_mjcf() -> &'static str {
     r#"
     <mujoco model="soft_body">
@@ -114,6 +114,7 @@ fn solid_3x3x3_mjcf() -> &'static str {
                 <elasticity poisson="0.3" damping="10.0"/>
             </flex>
         </deformable>
+        <equality><flex flex="block"/></equality>
     </mujoco>
     "#
 }
@@ -473,10 +474,6 @@ fn ac3_solid_compression() {
     assert!(rest_volume > 0.0, "rest volume should be positive");
 
     // Simulate under gravity for 2 seconds — verify stability (no NaN, no blow-up)
-    // NOTE: Without volume constraints, the tet may collapse or invert under gravity.
-    // MuJoCo has no dedicated volume constraint; volume preservation is implicit from
-    // the SVK continuum model (not yet implemented). Edge constraints alone cannot
-    // prevent inversion of a single tetrahedron.
     for step in 0..2000 {
         if let Err(e) = data.step(&model) {
             let max_vel = data.qvel.iter().fold(0.0_f64, |mx, v| mx.max(v.abs()));
@@ -495,6 +492,18 @@ fn ac3_solid_compression() {
     // Vertices should have fallen under gravity (not stuck)
     let any_moved = data.flexvert_xpos.iter().any(|v| v.z < -0.5);
     assert!(any_moved, "solid should have fallen under gravity");
+
+    // Held by its edge equality, the tetrahedron keeps its shape: every edge
+    // within 1% of its rest length (MuJoCo 3.5.0, the same document: 0.04%
+    // at the end; without the equality its vertices fall apart, 89%).
+    for (e, &[a, b]) in model.flexedge_vert.iter().enumerate() {
+        let length = (data.flexvert_xpos[b] - data.flexvert_xpos[a]).norm();
+        let rest = model.flexedge_length0[e];
+        assert!(
+            (length / rest - 1.0).abs() < 0.01,
+            "edge {e}: {length} against {rest}"
+        );
+    }
 }
 
 // ============================================================================
@@ -2441,8 +2450,8 @@ fn spec_a_rigid_cable_mjcf() -> &'static str {
     "#
 }
 
-/// MJCF fixture: 3-vertex cable with edge constraints (solref != 0),
-/// no stiffness/damping — tests constraint-only J path.
+/// MJCF fixture: 3-vertex cable whose edges a flex equality holds, with no
+/// stiffness or damping — tests the constraint-only J path.
 fn spec_a_constraint_cable_mjcf() -> &'static str {
     r#"
     <mujoco model="spec_a_constraint">
@@ -2454,7 +2463,6 @@ fn spec_a_constraint_cable_mjcf() -> &'static str {
         </worldbody>
         <deformable>
             <flex name="cable" dim="1" body="cable_v0 cable_v1 cable_v2" element="0 1  1 2">
-                <edge solref="-100 -10"/>
                 <elasticity young="0" damping="0"/>
             </flex>
         </deformable>
@@ -3240,7 +3248,7 @@ fn specb_t13_zero_thickness_zero_bending() {
   </worldbody>
   <deformable>
     <flex name="zero_thick" dim="2" radius="0.005" body="zero_thick_v0 zero_thick_v1 zero_thick_v2 zero_thick_v3" element="0 1 2  1 0 3">
-      <elasticity young="1e4" poisson="0.3" thickness="0.0"/>
+      <elasticity elastic2d="bend" young="1e4" poisson="0.3" thickness="0.0"/>
     </flex>
   </deformable>
 </mujoco>"#;
@@ -3747,8 +3755,8 @@ fn specb_t10_disable_damper_gate() {
 /// §42B T11: Cotangent stability — very high stiffness, no clamp needed (AC11).
 #[test]
 fn specb_t11_cotangent_stability_no_clamp() {
-    // Default cotangent bending model with very high stiffness.
-    // Cotangent is stable without per-vertex clamp (linear force, constant B matrix).
+    // The cotangent bending model with a very high stiffness and no clamp:
+    // 500 steps from the tips' push keep every vertex finite and within 100.
     let mjcf = r#"
     <mujoco model="stiff_cotangent">
         <option gravity="0 0 -9.81" timestep="0.01"/>
@@ -3783,7 +3791,7 @@ fn specb_t11_cotangent_stability_no_clamp() {
     data.qvel[v3_dof + 2] = -1.0;
     data.qvel[v7_dof + 2] = -1.0;
 
-    // 500 steps — should remain stable without clamp
+    // 500 steps
     for _ in 0..500 {
         data.step(&model).expect("step failed");
     }
@@ -4163,8 +4171,7 @@ fn a_flex_marked_rigid_keeps_no_edge_jacobian_velocity_or_spring_force() {
 }
 
 /// A 3 × 3 cloth (mass 0.1, radius 0.01) 5 mm into a plane on a static
-/// body, equality constraints off (sim-mjcf's edge equality, Rigid-loading
-/// L31, and MuJoCo's flexcomp has none): MuJoCo 3.5.0's flexcomp, its
+/// body, equality constraints off on both sides: MuJoCo 3.5.0's flexcomp, its
 /// vertices and elements as MuJoCo compiles them
 /// (`scripts/gen_flex_contact_weight_reference.py`).
 const CLOTH_ON_A_STATIC_FLOOR: &str = r#"<mujoco>

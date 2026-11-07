@@ -3443,3 +3443,6 @@ d8b69d1745dbf844	sim/L0/mjcf/tests/refusal_order.rs:1677
 dc8517ce2da38159	sim/L0/mjcf/tests/refusal_order.rs:1647
 fb0983d5b579671f	sim/L0/mjcf/tests/refusal_order.rs:2241
 fca3ab7011051780	sim/L0/mjcf/tests/refusal_order.rs:2223
+186ffef7376d53f3	sim/L0/tests/integration/flex_unified.rs:2456
+6699b432ef411f31	sim/L0/tests/integration/flex_unified.rs:3242
+f7ff3e5a7626cd8e	sim/L0/tests/integration/flex_unified.rs:101

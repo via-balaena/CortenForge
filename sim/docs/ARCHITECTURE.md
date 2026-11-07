@@ -485,8 +485,9 @@ Flex vertices are bodies with slide joints, so the rigid CRBA, kinematics and
 integration handle them (`MUJOCO_GAP_ANALYSIS.md`, §27F).
 
 **Material model:** Young's modulus, Poisson's ratio, density, thickness,
-damping. Bending stiffness derived from material (Kirchhoff-Love for shells,
-characteristic stiffness for solids). Pinned vertices use `mass = 1e20`,
+damping. Bending stiffness derived from material (Kirchhoff-Love) for a dim-2
+flex under `elastic2d` bend or both; a dim-3 flex's Young's modulus is refused
+(registry `D-FLEX-TET-ELASTICITY`). Pinned vertices use `mass = 1e20`,
 `invmass = 0`.
 
 **Parsed from MJCF:** `<flex>` (MuJoCo's form: its vertices are the bodies it

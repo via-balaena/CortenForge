@@ -901,7 +901,7 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 >
 > **Key pipeline functions:** `collide_body_flex()`, `mj_flex()` (FK → xpos), `apply_flex_edge_constraints()`. Post-§27F: `mj_crba_flex()`, `mj_factor_flex()`, `mj_fwd_position_flex()`, and `mj_integrate_pos_flex()` have been **deleted** — flex vertices are now real bodies with 3 slide joints, so the standard CRBA/RNE/FK/integration handles everything.
 >
-> **Material model:** Young's modulus → bending stiffness via Kirchhoff-Love (shells) or characteristic stiffness (solids). Proportional damping. Pinned vertices: `mass = 1e20`, `invmass = 0`.
+> **Material model:** Young's modulus → bending stiffness via Kirchhoff-Love, for a dim-2 flex under `elastic2d` bend or both (a dim-3 flex's Young's modulus is refused, registry `D-FLEX-TET-ELASTICITY`). Proportional damping. Pinned vertices: `mass = 1e20`, `invmass = 0`.
 >
 > **MJCF parsing:** `<flex>` (MuJoCo's form: its vertices are the bodies it names) and `<flexcomp>` (procedural: grid, box, cable) parsed in `sim-mjcf`. Edge/hinge topology computed at build time.
 >

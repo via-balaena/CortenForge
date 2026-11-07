@@ -10,6 +10,7 @@
 use std::fmt::Write as _;
 
 use sim_core::FlexBendingType;
+use sim_core::validation::max_abs_or_nan;
 use sim_mjcf::{MjcfError, load_model};
 
 const SLIDES: &str = r#"<joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>"#;
@@ -257,9 +258,11 @@ fn a_flat_diamond_at_rest_takes_no_bending_force() {
     // book L32 too.
     let elasticity = r#"young="1e4" poisson="0.3" thickness="0.01" elastic2d="bend""#;
     let model = load_model(&flex(2, &DIAMOND, "0 2 1  2 3 1", elasticity, &[])).unwrap();
+    // The shared edge's 16 coefficients, as MuJoCo's: the flat diamond bends.
+    assert_eq!(nonzero(&model.flex_bending), 16);
     let mut data = model.make_data();
     data.forward(&model).unwrap();
-    let biggest = data.qfrc_spring.iter().fold(0.0_f64, |m, f| m.max(f.abs()));
+    let biggest = max_abs_or_nan(data.qfrc_spring.iter());
     assert!(biggest < 1e-12, "{biggest}");
 }
 
