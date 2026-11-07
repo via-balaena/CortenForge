@@ -57,7 +57,7 @@ fn flex_cloth_friction_mjcf() -> &'static str {
         <deformable>
             <flex name="cloth" dim="2" radius="0.005" body="cloth_v0 cloth_v1 cloth_v2 cloth_v3" element="0 1 2  1 3 2">
                 <contact condim="3" friction="1.0 0.005 0.0001" solref="0.02 1.0"/>
-                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <elasticity elastic2d="bend" young="50" damping="5.0" thickness="0.01"/>
             </flex>
         </deformable>
     </mujoco>
@@ -82,7 +82,7 @@ fn flex_cloth_frictionless_mjcf() -> &'static str {
         <deformable>
             <flex name="cloth" dim="2" radius="0.005" body="cloth_v0 cloth_v1 cloth_v2 cloth_v3" element="0 1 2  1 3 2">
                 <contact condim="1" friction="0 0 0" solref="0.02 1.0"/>
-                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <elasticity elastic2d="bend" young="50" damping="5.0" thickness="0.01"/>
             </flex>
         </deformable>
     </mujoco>

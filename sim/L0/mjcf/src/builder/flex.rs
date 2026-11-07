@@ -668,14 +668,16 @@ impl ModelBuilder {
         self.flex_bending.extend_from_slice(&[0.0; BENDING_COEFFS]);
     }
 
-    /// A dim-2 flex's flaps, hinges and cotangent bending coefficients; a flex
-    /// of dim 1 or 3 has none.
+    /// The flaps, hinges and cotangent bending coefficients of a dim-2 flex
+    /// that bends (`elastic2d` bend or both: MuJoCo stores `flex_edgeflap`
+    /// then only, `user_model.cc:3504-3510`); any other flex has none.
     ///
     /// The flaps are MuJoCo's (`CreateFlapStencil`, `user_mesh.cc:3667-3717`):
     /// each triangle in order, its edges `(1,2) (2,0) (0,1)`; the first
     /// triangle holding an edge stores the vertex opposite it in slot 0 and
     /// leaves slot 1 at -1, and a later one stores its opposite vertex in slot
-    /// 1, so an edge of three triangles keeps the first and the last. The
+    /// 1, so an edge of three triangles would keep the first and the last
+    /// ([`check_flex_elasticity`] refuses one). The
     /// hinges (this crate's Bridson bending) are the edges whose flap has both
     /// slots, in edge order; the coefficients are computed for those edges
     /// when the material has `young > 0` and `thickness > 0`.
@@ -687,7 +689,7 @@ impl ModelBuilder {
         edge_start: usize,
         edge_key_to_global: &std::collections::HashMap<(usize, usize), usize>,
     ) {
-        if flex.dim != 2 {
+        if flex.dim != 2 || !flex.elastic2d.bends() {
             return;
         }
         for elem in &flex.elements {
@@ -822,6 +824,74 @@ pub fn check_flex_condims(flexes: &[MjcfFlex]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// MuJoCo's check of a dim-2 flex that bends, with a Young's modulus
+/// (`mjCFlex::Compile`, `user_mesh.cc:4363-4367`): a thickness that is not
+/// negative ("thickness must be positive for bending stiffness"; 0 loads,
+/// with no bending).
+pub fn check_flex_bending_thickness(flexes: &[MjcfFlex]) -> Result<()> {
+    for (i, flex) in flexes.iter().enumerate() {
+        if flex.dim == 2 && flex.elastic2d.bends() && flex.young > 0.0 && flex.thickness < 0.0 {
+            return Err(MjcfError::invalid_value(
+                "elasticity",
+                "thickness",
+                "thickness must be positive for bending stiffness",
+            )
+            .at(Location::nth(ElementKind::Flex, Some(&flex.name), i)));
+        }
+    }
+    Ok(())
+}
+
+/// The flex elasticity this crate refuses where MuJoCo computes it or takes
+/// it as given: a dim-2 flex's stretching where MuJoCo makes its membrane,
+/// with a Young's modulus and a positive thickness (`user_mesh.cc:4351-4355`;
+/// sim-core has none, `D-FLEX-MEMBRANE`); a dim-3 flex's Young's modulus,
+/// MuJoCo's tetrahedral elasticity (`:4356-4360`; sim-core has none,
+/// `D-FLEX-TET-ELASTICITY`); and an edge of three or more triangles in a flex
+/// that bends, where MuJoCo pairs the first and the last (`CreateFlapStencil`,
+/// `:3705`) and leaves out the others (`D-FLEX-BEND-NONMANIFOLD`).
+pub fn check_flex_elasticity(flexes: &[MjcfFlex]) -> Result<()> {
+    for (i, flex) in flexes.iter().enumerate() {
+        let at = || Location::nth(ElementKind::Flex, Some(&flex.name), i);
+        if flex.dim == 2 && flex.elastic2d.stretches() && flex.young > 0.0 && flex.thickness > 0.0 {
+            return Err(MjcfError::unsupported(
+                "a flex's stretching (elastic2d stretch or both, MuJoCo's membrane elasticity)",
+            )
+            .at(at()));
+        }
+        if flex.dim == 3 && flex.young > 0.0 {
+            return Err(MjcfError::unsupported(
+                "a dim-3 flex's Young's modulus (MuJoCo's tetrahedral elasticity)",
+            )
+            .at(at()));
+        }
+        if flex.dim == 2 && flex.elastic2d.bends() && has_an_edge_of_three_triangles(flex) {
+            return Err(MjcfError::invalid_model(
+                "an edge of three or more triangles in a flex that bends",
+            )
+            .at(at()));
+        }
+    }
+    Ok(())
+}
+
+/// Whether three of a dim-2 flex's triangles hold one edge.
+fn has_an_edge_of_three_triangles(flex: &MjcfFlex) -> bool {
+    let mut held = std::collections::HashMap::new();
+    for elem in &flex.elements {
+        for &(i, j) in ELEMENT_EDGES[1] {
+            let count = held
+                .entry((elem[i].min(elem[j]), elem[i].max(elem[j])))
+                .or_insert(0_u32);
+            *count += 1;
+            if *count == 3 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// With `vertcollide`, a sphere's radius, the flex's, positive, as MuJoCo's
@@ -1163,25 +1233,16 @@ fn compute_dihedral_angle(
     sin_theta.atan2(cos_theta)
 }
 
-/// Compute bending stiffness from material properties (passive force coefficient).
-///
-/// For dim=2 (shells): Kirchhoff-Love thin plate bending stiffness
-///   D = E * t^3 / (12 * (1 - nu^2))
-/// For dim=3 (solids): characteristic stiffness D = E
-///   (the Bridson dihedral gradient provides geometric scaling)
-/// For dim=1 (cables): 0.0 (no bending)
+/// The bending stiffness the Bridson bending reads (`flex_bend_stiffness`)
+/// of a dim-2 flex that bends: the Kirchhoff-Love thin-plate stiffness
+/// `D = E t³ / (12 (1 − ν²))`. 0 for any other flex, or without a Young's
+/// modulus.
 fn compute_bend_stiffness_from_material(flex: &MjcfFlex) -> f64 {
-    if flex.young <= 0.0 {
+    if flex.dim != 2 || !flex.elastic2d.bends() || flex.young <= 0.0 {
         return 0.0;
     }
-    match flex.dim {
-        2 => {
-            let nu = flex.poisson.clamp(0.0, 0.499);
-            flex.young * flex.thickness.powi(3) / (12.0 * (1.0 - nu * nu))
-        }
-        3 => flex.young,
-        _ => 0.0,
-    }
+    let nu = flex.poisson.clamp(0.0, 0.499);
+    flex.young * flex.thickness.powi(3) / (12.0 * (1.0 - nu * nu))
 }
 
 /// Compute bending damping from material properties.

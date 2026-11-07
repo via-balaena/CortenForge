@@ -660,7 +660,7 @@ fn a_poisson_ratio_out_of_range_is_refused() {
         doc(
             &triangle_bodies(),
             &format!(
-                r#"<flex name="f" dim="2" body="a b c" element="0 1 2"><elasticity young="100" poisson="{poisson}" thickness="0.01"/></flex>"#
+                r#"<flex name="f" dim="2" body="a b c" element="0 1 2"><elasticity elastic2d="bend" young="100" poisson="{poisson}" thickness="0.01"/></flex>"#
             ),
         )
     };
@@ -673,7 +673,7 @@ fn a_poisson_ratio_out_of_range_is_refused() {
         }
     }
     load_model(&flex("0.49")).expect("0.49");
-    let flexcomp = r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"><elasticity young="100" poisson="0.6" thickness="0.01"/></flexcomp></deformable></mujoco>"#;
+    let flexcomp = r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"><elasticity elastic2d="bend" young="100" poisson="0.6" thickness="0.01"/></flexcomp></deformable></mujoco>"#;
     match refusal(flexcomp) {
         MjcfError::InvalidValue { reason, .. } => {
             assert_eq!(reason, "Poisson ratio must be in [0, 0.5)");
@@ -886,7 +886,7 @@ fn the_new_refusals_come_in_mujocos_order() {
             r#"<mujoco><deformable><flexcomp name="g" type="grid" count="2 2 1" spacing="0.1 0.1 0.1"{attrs}>{children}</flexcomp></deformable></mujoco>"#
         )
     };
-    let poisson = r#"<elasticity young="100" poisson="0.6" thickness="0.01"/>"#;
+    let poisson = r#"<elasticity elastic2d="bend" young="100" poisson="0.6" thickness="0.01"/>"#;
     for (case, xml, reason) in [
         (
             "flex: edge stiffness, Poisson ratio",
@@ -945,7 +945,10 @@ fn a_flexcomp_vertex_mass_or_inertia_that_is_not_finite_is_refused() {
     };
     refused(
         "lumped mass",
-        load_model(&grid("", r#"<elasticity thickness="1e306"/>"#)),
+        load_model(&grid(
+            "",
+            r#"<elasticity elastic2d="bend" thickness="1e306"/>"#,
+        )),
     );
     refused(
         "inertiabox",

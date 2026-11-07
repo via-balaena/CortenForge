@@ -16,7 +16,8 @@ use sim_core::{
 };
 
 use crate::types::{
-    AngleUnit, CompositeShape, CompositeType, FluidShape, InertiaFromGeom, MeshInertia,
+    AngleUnit, CompositeShape, CompositeType, FlexElastic2d, FluidShape, InertiaFromGeom,
+    MeshInertia,
 };
 
 /// `<compiler angle>` (`angle_map`).
@@ -144,6 +145,18 @@ pub fn bending_model(s: &str) -> Option<FlexBendingType> {
     match s {
         "cotangent" => Some(FlexBendingType::Cotangent),
         "bridson" => Some(FlexBendingType::Bridson),
+        _ => None,
+    }
+}
+
+/// A flex `<elasticity>`'s `elastic2d` (`elastic2d_map`,
+/// `xml_native_reader.cc:924-929`).
+pub fn elastic2d(s: &str) -> Option<FlexElastic2d> {
+    match s {
+        "none" => Some(FlexElastic2d::None),
+        "bend" => Some(FlexElastic2d::Bend),
+        "stretch" => Some(FlexElastic2d::Stretch),
+        "both" => Some(FlexElastic2d::Both),
         _ => None,
     }
 }

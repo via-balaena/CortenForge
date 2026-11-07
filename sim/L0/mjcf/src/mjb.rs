@@ -65,7 +65,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// Current MJB format version.
 ///
 /// 16 since Rigid-loading PR RL-8a: `MjcfEquality` took `flexes`,
-/// `EqualityKind` `Flex`, and `MjcfFlex` `edge_equality`.
+/// `EqualityKind` `Flex`, and `MjcfFlex` `edge_equality` and `elastic2d`.
 /// 15 since Rigid-loading PR RL-7d: `MjcfOption`'s `o_margin` is kept as
 /// written, MuJoCo's default 0 when it is not, where a version-14 file holds
 /// -1 for one not written.

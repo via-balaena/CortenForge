@@ -275,8 +275,20 @@ pub(super) fn parse_flex_elasticity_attrs(e: &BytesStart, flex: &mut MjcfFlex) -
     if let Some(thickness) = a.real("thickness")? {
         flex.thickness = thickness;
     }
-    // §42B S4: bending_model, an extension attribute.
+    if let Some(elastic2d) = a.keyword("elastic2d", keywords::elastic2d)? {
+        flex.elastic2d = elastic2d;
+    }
+    // §42B S4: bending_model, an extension attribute, written only beside
+    // `elastic2d` bend or both. MuJoCo reads one `<elasticity>` (its schema
+    // refuses a second), so the `elastic2d` beside it is the flex's.
     if let Some(model) = a.keyword("bending_model", keywords::bending_model)? {
+        if !flex.elastic2d.bends() {
+            return Err(MjcfError::invalid_value(
+                "elasticity",
+                "bending_model",
+                "a bending model needs elastic2d bend or both",
+            ));
+        }
         flex.bending_model = model;
     }
     Ok(())
@@ -362,6 +374,15 @@ pub(super) fn parse_flexcomp<R: BufRead>(
         buf.clear();
     }
 
+    // MuJoCo refuses a flexcomp that stretches beside its edge equality
+    // (`xml_native_reader.cc:2789-2791`).
+    if flex.elastic2d.stretches() && flex.edge_equality.is_some() {
+        return Err(MjcfError::invalid_value(
+            "flexcomp",
+            "elastic2d",
+            "elasticity and edge constraints cannot both be present",
+        ));
+    }
     Ok(flex)
 }
 

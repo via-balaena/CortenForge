@@ -4145,6 +4145,38 @@ impl Default for MjcfKeyframe {
 
 /// Parsed `<flex>` element from `<deformable>`.
 ///
+/// A flex's `elastic2d` (`<elasticity elastic2d>`, MuJoCo's `elastic2d_map`,
+/// `xml_native_reader.cc:924-929`): the 2-D elasticity of a dim-2 flex, none
+/// by default (`mjs_defaultFlex`). A flex of dim 1 or 3 has none whatever it
+/// says, as MuJoCo's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum FlexElastic2d {
+    /// No 2-D elasticity (`none`).
+    #[default]
+    None,
+    /// Bending (`bend`).
+    Bend,
+    /// Stretching, MuJoCo's membrane (`stretch`).
+    Stretch,
+    /// Bending and stretching (`both`).
+    Both,
+}
+
+impl FlexElastic2d {
+    /// `bend` or `both`.
+    #[must_use]
+    pub fn bends(self) -> bool {
+        matches!(self, Self::Bend | Self::Both)
+    }
+
+    /// `stretch` or `both`.
+    #[must_use]
+    pub fn stretches(self) -> bool {
+        matches!(self, Self::Stretch | Self::Both)
+    }
+}
+
 /// Represents a deformable flex body with vertices, elements, and material/collision
 /// properties. Maps to MuJoCo's `<flex>` element within `<deformable>`.
 ///
@@ -4229,9 +4261,12 @@ pub struct MjcfFlex {
     pub damping: f64,
     /// Shell thickness `[m]` (dim=2 only). -1 = "not set".
     pub thickness: f64,
+    /// Its 2-D elasticity (`elastic2d`).
+    pub elastic2d: FlexElastic2d,
 
     /// Bending model selection (default: Cotangent = MuJoCo-conformant).
-    /// CortenForge extension attribute — not in MuJoCo schema.
+    /// CortenForge extension attribute — not in MuJoCo schema; written only
+    /// beside `elastic2d` bend or both.
     pub bending_model: FlexBendingType,
 
     // --- <flex><edge> child element attributes ---
@@ -4326,6 +4361,7 @@ impl Default for MjcfFlex {
             poisson: 0.0,
             damping: 0.0,
             thickness: -1.0, // MuJoCo default sentinel "not set"; was 0.001
+            elastic2d: FlexElastic2d::None,
             // Bending model (CortenForge extension)
             bending_model: FlexBendingType::Cotangent,
             // <edge> child element

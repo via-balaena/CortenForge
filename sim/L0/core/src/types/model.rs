@@ -491,10 +491,10 @@ pub struct Model {
     /// compile, `user_model.cc:3432-3446`). Derived by
     /// [`Self::compute_invweight0`].
     pub flex_edgeequality: Vec<bool>,
-    /// Per-flex: bending stiffness (passive spring, N·m/rad).
-    /// Derived from Young's modulus, thickness, and Poisson ratio.
-    /// dim=2 (shell): D = E·t³ / (12·(1−ν²))  (Kirchhoff-Love plate theory).
-    /// dim=3 (solid): D = E  (characteristic stiffness; gradient provides geometry).
+    /// Per-flex: bending stiffness (passive spring, N·m/rad), read by the
+    /// Bridson bending. Derived from Young's modulus, thickness, and Poisson
+    /// ratio for a dim-2 flex that bends: D = E·t³ / (12·(1−ν²))
+    /// (Kirchhoff-Love plate theory); 0 for any other flex.
     pub flex_bend_stiffness: Vec<f64>,
     /// Per-flex: bending damping (passive damper, N·m·s/rad).
     /// Proportional damping: b = damping × k_bend.
@@ -550,13 +550,16 @@ pub struct Model {
     /// Per-edge flap vertices, the diamond stencil of a dim-2 flex (MuJoCo's
     /// `flex_edgeflap`): `[0]` is the vertex opposite the edge in the first
     /// triangle holding it, `[1]` the one in the last other triangle, -1 on a
-    /// boundary edge. `[-1, -1]` on every edge of a flex of dim 1 or 3.
+    /// boundary edge. `[-1, -1]` on every edge of a flex of dim 1 or 3, or of
+    /// one that does not bend (MuJoCo stores flaps for `elastic2d` bend or
+    /// both only, `user_model.cc:3504-3510`).
     /// Length `nflexedge`.
     pub flexedge_flap: Vec<[i32; 2]>,
     /// Per-edge cotangent bending coefficients (Wardetzky/Garg cotangent Laplacian).
     /// Layout: 17 f64 per edge, flat — `flex_bending[17*e + 4*i + j]` for the
     /// 4x4 stiffness matrix, `flex_bending[17*e + 16]` for the Garg curved
-    /// reference coefficient. Zero for boundary edges and non-dim-2 flexes.
+    /// reference coefficient. Zero for boundary edges, for a flex that does
+    /// not bend or is not dim 2, and without a Young's modulus.
     /// Length `17 * nflexedge`.
     pub flex_bending: Vec<f64>,
 
@@ -608,7 +611,7 @@ pub struct Model {
 
     // --- Per-hinge arrays (bending topology, length nflexhinge) ---
     // A hinge is an edge of a dim-2 flex whose flap has both vertices, in
-    // edge order; a flex of dim 1 or 3 has none.
+    // edge order; a flex of dim 1 or 3, or one that does not bend, has none.
     /// Hinge vertex indices: [v_e0, v_e1, v_opp_a, v_opp_b] where (v_e0, v_e1)
     /// is the shared edge and v_opp_a, v_opp_b are opposite vertices.
     pub flexhinge_vert: Vec<[usize; 4]>,

@@ -2324,7 +2324,7 @@ fn ac35c_override_with_flex_contacts() {
         <deformable>
             <flex name="cloth" dim="2" radius="0.02" body="cloth_v0 cloth_v1 cloth_v2 cloth_v3" element="0 1 2  1 3 2">
                 <contact margin="0.01" condim="3" solref="0.5 2.0" friction="0.5"/>
-                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <elasticity elastic2d="bend" young="50" damping="5.0" thickness="0.01"/>
             </flex>
         </deformable>
     </mujoco>

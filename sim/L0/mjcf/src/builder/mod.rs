@@ -307,17 +307,19 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     builder.finalize_user_data(&mjcf)?;
 
     // MuJoCo 3.5.0's checks this crate did not make before Rigid-loading PR
-    // RL-6a and the PRs after it (book L19-L22, L25; a sensor's noise, cutoff
-    // and height field, ledger L197, L199, L391), after every check above, so
-    // that a document refused before they existed is refused for the same
-    // fault (MuJoCo orders some of them before checks above). Among themselves
-    // in MuJoCo's order: each body's inertia, geoms and joints, the height
-    // fields' sizes, the tendons, the actuators, the sensors, a moving body's
+    // RL-6a and the PRs after it (book L19-L22, L25, L31, L32; a sensor's
+    // noise, cutoff and height field, ledger L197, L199, L391), after every
+    // check above, so that a document refused before they existed is refused
+    // for the same fault (MuJoCo orders some of them before checks above).
+    // Among themselves in MuJoCo's order: each body's inertia, geoms and
+    // joints, the height fields' sizes, a bending flex's thickness, the flex
+    // equalities, the tendons, the actuators, the sensors, a moving body's
     // mass and inertia, then the free joint below the world's children, as
     // MuJoCo's `CopyTree` refuses it. An automatic range that does not
     // increase is refused after the keyframes (`D-AUTO-RANGE`).
     builder.check_bodies()?;
     builder.check_hfield_sizes()?;
+    flex::check_flex_bending_thickness(&mjcf.flex)?;
     builder.check_flex_equalities()?;
     builder.check_tendons()?;
     builder.check_actuators()?;
@@ -361,6 +363,9 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // MuJoCo leaves unlimited), an `<inertial>`'s negative mass or moment
     // (`D-INERTIAL-NEGATIVE`, which MuJoCo raises to its bounds), a flex's
     // condim outside 1 to 6 (`D-FLEX-CONDIM-RANGE`, which MuJoCo loads), a
+    // flex's stretching or a dim-3 flex's Young's modulus (`D-FLEX-MEMBRANE`,
+    // `D-FLEX-TET-ELASTICITY`, which MuJoCo computes), an edge of three
+    // triangles in a flex that bends (`D-FLEX-BEND-NONMANIFOLD`), a
     // pair naming a geom "" where the model has an unnamed geom
     // (`D-PAIR-NO-GEOM`, which MuJoCo binds to it); every check above has
     // taken MuJoCo's value.
@@ -373,6 +378,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         return Err(error);
     }
     flex::check_flex_condims(&mjcf.flex)?;
+    flex::check_flex_elasticity(&mjcf.flex)?;
     contact::check_pair_geom_names(&mjcf.contact)?;
 
     Ok(model)
