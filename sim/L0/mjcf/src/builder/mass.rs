@@ -33,6 +33,10 @@ impl ModelBuilder {
         let nbody = self.body_mass.len();
 
         for i in 1..nbody {
+            // A pinned flexcomp point's stand-in: MuJoCo has no body there.
+            if self.flex_stand_ins.binary_search(&i).is_ok() {
+                continue;
+            }
             if self.body_mass[i] < self.compiler.boundmass {
                 self.body_mass[i] = self.compiler.boundmass;
             }

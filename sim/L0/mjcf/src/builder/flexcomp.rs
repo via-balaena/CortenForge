@@ -17,12 +17,16 @@
 //! flexcomp the frame's body, not the frame, `xml_native_reader.cc:3622-3625`).
 //! [`place_flexcomps`] then puts each flexcomp's bodies where it is written.
 //!
-//! What this crate does not make is refused after the keyframes, as every
-//! refusal it makes and MuJoCo does not: a mesh or gmsh type, a box, cylinder
-//! or ellipsoid with a count of 1 on an axis (MuJoCo loops forever there), and
-//! a `<plugin>`. Forms sim-core does not take (a radial dof, interpolated
-//! nodes, a holding body that moves or turns) are made as MuJoCo makes them,
-//! and the builder refuses their flex then.
+//! A type this crate does not make (mesh, gmsh) is refused where Make reaches
+//! its maker, and so is a box, cylinder or ellipsoid with a count of 1 on an
+//! axis, on which MuJoCo's `MakeBox` never ends its loop; a flexcomp made into
+//! nothing would turn every reference to it into another, false refusal. A
+//! `<plugin>` is refused after the keyframes, the flexcomp made without it.
+//! Forms sim-core does not take (a radial dof, interpolated nodes, a vertex
+//! body in a moving or turned holding body, a pinned point on a moving one)
+//! are made as MuJoCo makes them, and the builder refuses their flex after
+//! the keyframes, built until then with every vertex fixed (a `<flex>`'s are
+//! refused where the builder finds them, registry `D-FLEX-VERTEX-BODY`).
 
 use std::f64::consts::PI;
 
@@ -35,9 +39,13 @@ use crate::types::{
     MjcfGeom, MjcfGeomType, MjcfInertial, MjcfItem, MjcfJoint, MjcfJointType, Prefix,
 };
 
+use super::geom::resolve_geom_fromto;
 use super::items::{Contents, Element};
 use super::mass::MJ_MINVAL;
 use super::orientation::{MJ_EPS, normvec, quat_as_written, rot_vec_quat};
+
+/// MuJoCo's `mjMAXVAL` (`mjmodel.h`), where Make starts its bounding box.
+const MJ_MAXVAL: f64 = 1e10;
 
 /// A flexcomp as Make made it: its bodies, its flex, and a refusal this
 /// crate makes after the keyframes, if any.
@@ -49,8 +57,8 @@ pub struct MadeFlexcomp {
     /// The bodies of its unpinned points, in point order, then its node
     /// bodies.
     bodies: Vec<MjcfBody>,
-    /// Its flex: none where its points were not made.
-    flex: Option<MjcfFlex>,
+    /// Its flex.
+    flex: MjcfFlex,
     /// What this crate refuses of it, after the keyframes.
     refusal: Option<MjcfError>,
 }
@@ -60,13 +68,15 @@ pub struct MadeFlexcomp {
 pub struct PlacedFlexcomps {
     /// The flexes, after the `<deformable>` ones in the model's order.
     pub flexes: Vec<MjcfFlex>,
-    /// The first flexcomp's refusal, in document order.
-    pub refusal: Option<MjcfError>,
+    /// The first flexcomp's refusal, in document order, with its flex's
+    /// position in `flexes`.
+    pub refusal: Option<(usize, MjcfError)>,
 }
 
 /// `fc`, written in the body `holder`, made as MuJoCo's `Make` makes it: its
-/// checks, in Make's order, refuse it; the forms this crate does not make
-/// come back as the made flexcomp's refusal, for after the keyframes.
+/// checks, in Make's order, refuse it, and so does a type this crate does not
+/// make; a `<plugin>` comes back as the made flexcomp's refusal, for after the
+/// keyframes.
 pub fn make_flexcomp(
     fc: &MjcfFlexcomp,
     holder: &str,
@@ -82,16 +92,17 @@ fn refuse(attribute: &str, reason: impl Into<String>) -> MjcfError {
     MjcfError::invalid_value("flexcomp", attribute, reason)
 }
 
-/// A made flexcomp that is only a refusal: none of its bodies or its flex.
-fn not_made(fc: &MjcfFlexcomp, what: String) -> MadeFlexcomp {
-    MadeFlexcomp {
-        name: fc.name.clone(),
-        bodies: Vec::new(),
-        flex: None,
-        refusal: Some(
-            MjcfError::unsupported(what).at(Location::named(ElementKind::Flex, &fc.name)),
-        ),
+/// A made body's name as MuJoCo writes it, into a `char txt[100]` by
+/// `sprintf_arr` (`user_flexcomp.cc:550-552`, `:624-626`): its first 99
+/// bytes (at a character's boundary here).
+fn made_name(name: String) -> String {
+    let mut name = name;
+    let mut end = name.len().min(99);
+    while !name.is_char_boundary(end) {
+        end -= 1;
     }
+    name.truncate(end);
+    name
 }
 
 // The steps follow `Make` one for one, so the function reads as its source.
@@ -167,10 +178,10 @@ fn make(
         }
         FlexcompType::Box | FlexcompType::Cylinder | FlexcompType::Ellipsoid => {
             if fc.count.contains(&1) {
-                return Ok(not_made(
-                    fc,
+                return Err(refuse(
+                    "count",
                     format!(
-                        "a flexcomp of type {} with a count of 1 (MuJoCo 3.5.0's MakeBox loops forever)",
+                        "a {} needs a count of at least 2 on each axis (MuJoCo 3.5.0's MakeBox does not end its loop at 1)",
                         fc.kind.word()
                     ),
                 ));
@@ -182,10 +193,10 @@ fn make(
             make_square(fc, &mut flat, &mut element)?;
         }
         FlexcompType::Mesh | FlexcompType::Gmsh => {
-            return Ok(not_made(
-                fc,
-                format!("a flexcomp of type {}", fc.kind.word()),
-            ));
+            return Err(MjcfError::unsupported(format!(
+                "a flexcomp of type {} (ledger L398, L399)",
+                fc.kind.word()
+            )));
         }
         FlexcompType::Direct => {}
     }
@@ -260,12 +271,7 @@ fn make(
         ];
     }
     let mut minmax = [
-        f64::MAX,
-        f64::MAX,
-        f64::MAX,
-        -f64::MAX,
-        -f64::MAX,
-        -f64::MAX,
+        MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, -MJ_MAXVAL, -MJ_MAXVAL, -MJ_MAXVAL,
     ];
     for p in &points {
         for (j, &x) in p.iter().enumerate() {
@@ -350,16 +356,20 @@ fn make(
     let mut made = MadeFlexcomp {
         name: fc.name.clone(),
         bodies: Vec::new(),
-        flex: None,
+        flex: MjcfFlex::default(),
         refusal: fc.plugin.then(|| {
             MjcfError::unsupported("a flexcomp's <plugin> (ledger L339)")
                 .at(Location::named(ElementKind::Flex, &fc.name))
         }),
     };
+    // A rigid flexcomp returns before Make makes its edge equality
+    // (`:463-466`, `:643-649`); one Make takes as not rigid keeps it, rigid as
+    // its compiled flex may be (an unused free point dropped, `:384-437`).
     if rigid {
         flex.body = vec![holder.to_string()];
         flex.vertices = points.iter().map(|p| Vector3::from(*p)).collect();
-        made.flex = Some(flex);
+        flex.edge_equality = None;
+        made.flex = flex;
         return Ok(made);
     }
 
@@ -376,7 +386,7 @@ fn make(
             vert.push(Vector3::from(*p));
             continue;
         }
-        let name = format!("{}_{i}", fc.name);
+        let name = made_name(format!("{}_{i}", fc.name));
         let mut body = point_body(&name, *p, bodymass, bodyinertia);
         if fc.flex.vertcollide {
             body.geoms.push(sphere(fc, radius, Some(4), resolver)?);
@@ -435,7 +445,7 @@ fn make(
                             * mass_p2[usize::from(k)]
                     };
                     let inertia = mass * (2.0 * fc.inertiabox * fc.inertiabox) / 3.0;
-                    let name = format!("{}_{i}_{j}_{k}", fc.name);
+                    let name = made_name(format!("{}_{i}_{j}_{k}", fc.name));
                     let mut body = point_body(&name, pos, mass, inertia);
                     if fc.flex.vertcollide {
                         body.geoms.push(sphere(fc, radius, None, resolver)?);
@@ -457,7 +467,7 @@ fn make(
     if !centered || interpolated {
         flex.vertices = vert;
     }
-    made.flex = Some(flex);
+    made.flex = flex;
     Ok(made)
 }
 
@@ -973,7 +983,8 @@ fn slide(
 }
 
 /// A point's sphere (`:503-509`): the flex's radius, `group` 4 for a vertex
-/// body's (a node body's keeps its class's), otherwise its class's.
+/// body's (a node body's keeps its class's), otherwise its class's, its
+/// `fromto` (a class's) then made into its pose or refused, as every geom's.
 fn sphere(
     fc: &MjcfFlexcomp,
     radius: f64,
@@ -987,7 +998,9 @@ fn sphere(
         group,
         ..MjcfGeom::default()
     };
-    resolver.apply_to_geom(&geom)
+    let mut geom = resolver.apply_to_geom(&geom)?;
+    resolve_geom_fromto(&mut geom)?;
+    Ok(geom)
 }
 
 /// Each flexcomp of `world`'s tree put where it is written: replaced by the
@@ -1028,10 +1041,10 @@ fn place_in(
                 for made_body in one.bodies {
                     kept.push(Element::Body(made_body));
                 }
-                placed.flexes.extend(one.flex);
                 if placed.refusal.is_none() {
-                    placed.refusal = one.refusal;
+                    placed.refusal = one.refusal.map(|e| (placed.flexes.len(), e));
                 }
+                placed.flexes.push(one.flex);
             }
             other => kept.push(other),
         }

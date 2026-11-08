@@ -4407,9 +4407,11 @@ pub struct MjcfFlex {
     /// A `<flex>`'s `node` bodies (MuJoCo's trilinear interpolation): refused,
     /// a stated limitation, after MuJoCo's checks of its collisions, its node
     /// count, its node names and, with a Young's modulus, its element count;
-    /// empty when the attribute is omitted or empty. Refused on a flexcomp
-    /// built in code; a `<flexcomp>`'s in a document is not read (MuJoCo's
-    /// schema refuses it, Rigid-loading L47's).
+    /// empty when the attribute is omitted or empty; a body-level flexcomp of
+    /// an interpolated dof fills it, and its flex is refused as a `<flex>`'s.
+    /// Refused on a `<deformable><flexcomp>` built in code; such a
+    /// flexcomp's in a document is not read (MuJoCo's schema refuses it,
+    /// Rigid-loading L47's).
     pub node: Vec<String>,
     /// Visualization group (0-5).
     pub group: i32,

@@ -3,7 +3,7 @@
 //!
 //! Each `Expected` below is MuJoCo's model of the same document, measured on
 //! the unfused oracle by `sim/L0/tests/scripts/gen_flexcomp_reference.py`,
-//! whose output is the GENERATED section, pasted as it printed it. The bodies
+//! whose output is the GENERATED section, as rustfmt lays it out. The bodies
 //! MuJoCo makes are each document's first bodies here, in MuJoCo's order, and
 //! every vertex's world position after a forward is MuJoCo's. A pinned point,
 //! which MuJoCo puts on the body holding the flexcomp, is a jointless,
@@ -35,6 +35,7 @@ struct Expected {
     vert_xpos: &'static [[f64; 3]],
     elem: &'static [usize],
     edges: &'static [[usize; 2]],
+    edge_rigid: &'static [bool],
     jnt_axis: &'static [[f64; 3]],
     dof_damping: &'static [f64],
     jnt_range: &'static [[f64; 2]],
@@ -178,6 +179,11 @@ fn differences(what: &str, e: &Expected) -> Vec<String> {
     }
     differ("elements", format!("{elem:?}"), format!("{:?}", e.elem));
     differ("edges", format!("{edges:?}"), format!("{:?}", e.edges));
+    differ(
+        "edges rigid",
+        format!("{:?}", model.flexedge_rigid),
+        format!("{:?}", e.edge_rigid),
+    );
     let axes: Vec<[f64; 3]> = model.jnt_axis.iter().map(|&a| a.into()).collect();
     differ(
         "joint axes",
@@ -303,6 +309,9 @@ fn the_compiler_passes_see_the_vertex_bodies() {
         ("SETTOTALMASS", &SETTOTALMASS),
         ("BOUNDMASS", &BOUNDMASS),
         ("DISCARDVISUAL", &DISCARDVISUAL),
+        ("RIGID_BOUNDMASS_FREE", &RIGID_BOUNDMASS_FREE),
+        ("PIN_BOUNDMASS", &PIN_BOUNDMASS),
+        ("FUSESTATIC_FREE", &FUSESTATIC_FREE),
     ]);
 }
 
@@ -491,6 +500,41 @@ fn single_faults() -> Vec<(String, &'static str)> {
             )),
             "pingridrange out of range",
         ),
+        // Make takes it as not rigid (an unused free point), so it makes the
+        // equality; the compiled flex is rigid, and MuJoCo refuses that.
+        (
+            world(
+                r#"<flexcomp name="f" type="direct" dim="1" point="0 0 0 1 0 0 2 0 0" element="0 1"><pin id="0 1"/><edge equality="true"/></flexcomp>"#,
+            ),
+            "rigid flex 'f' in equality constraint 0",
+        ),
+        (
+            format!(
+                r#"<mujoco><default><geom fromto="0 0 0 0 0 0.1"/></default><worldbody><flexcomp name="f" {G1} radius="0.01"><contact vertcollide="true"/></flexcomp></worldbody></mujoco>"#
+            ),
+            // This crate's words for MuJoCo's 'fromto requires capsule,
+            // cylinder, box or ellipsoid in geom'.
+            "fromto requires a capsule, cylinder, ellipsoid or box",
+        ),
+        // MuJoCo cuts a made body's name to 99 characters: `f_0` and `f_1` of
+        // a 98-character name are one name.
+        (
+            world(&format!(r#"<flexcomp name="{}" {G1}/>"#, "n".repeat(98))),
+            "repeated name",
+        ),
+        // `<contact>` is read in MuJoCo's order: `contype` before `priority`.
+        (
+            world(&format!(
+                r#"<flexcomp name="f" {G1}><contact priority="x" contype="y"/></flexcomp>"#
+            )),
+            "attribute 'contype'",
+        ),
+        // MuJoCo 3.5.0's MakeBox does not end its loop at a count of 1
+        // (measured: still running at 20 s); this crate refuses it there.
+        (
+            world(r#"<flexcomp name="f" type="box" count="1 3 3" spacing="0.1 0.1 0.1" dim="2"/>"#),
+            "needs a count of at least 2 on each axis",
+        ),
     ]
 }
 
@@ -519,62 +563,75 @@ fn a_body_named_as_a_vertex_body_is_a_repeated_name_unless_the_point_is_pinned()
     load_model(&pinned).unwrap();
 }
 
-/// The forms this crate does not make or sim-core does not take, each
-/// refused as not supported. MuJoCo 3.5.0 loads a radial or trilinear dof, a
-/// moving or turned holding body and a mesh type (measured); it loops forever
-/// on a box of count 1 (measured: stopped at 20 s); the gmsh type and the
-/// plugin were not run on it.
-fn refused_forms() -> Vec<(&'static str, String)> {
+/// The types this crate does not make, refused where Make reaches their
+/// maker, with the reason. MuJoCo 3.5.0 loads each with a real file
+/// (measured by review RL-8b's RB, a mesh and one of MuJoCo's gmsh files);
+/// these documents name none, which this crate refuses before reading it.
+fn refused_when_made() -> Vec<(&'static str, String, &'static str)> {
     vec![
-        (
-            "radial",
-            world(&format!(r#"<flexcomp name="f" {G1} dof="radial"/>"#)),
-        ),
-        (
-            "trilinear",
-            world(
-                r#"<flexcomp name="f" type="grid" count="2 2 2" spacing="0.1 0.1 0.1" dim="3" dof="trilinear"><contact selfcollide="none"/></flexcomp>"#,
-            ),
-        ),
-        (
-            "moving holder",
-            world(&format!(
-                r#"<body name="p" pos="0 0 1"><freejoint/><geom size="0.1"/><flexcomp name="f" {G1}/></body>"#
-            )),
-        ),
-        (
-            "turned holder",
-            world(&format!(
-                r#"<body name="p" euler="0 0 90"><flexcomp name="f" {G1}/></body>"#
-            )),
-        ),
         (
             "mesh",
             world(r#"<flexcomp name="f" type="mesh" file="tet.obj" dim="2"/>"#),
+            "a flexcomp of type mesh",
         ),
         (
             "gmsh",
             world(r#"<flexcomp name="f" type="gmsh" file="tet.msh" dim="3"/>"#),
+            "a flexcomp of type gmsh",
+        ),
+    ]
+}
+
+/// The forms MuJoCo 3.5.0 loads (measured) that this crate makes and refuses
+/// after the keyframes, with the reason: sim-core does not take the flex, or
+/// the plugin.
+fn refused_after_the_keyframes() -> Vec<(&'static str, String, &'static str)> {
+    vec![
+        (
+            "radial",
+            world(&format!(r#"<flexcomp name="f" {G1} dof="radial"/>"#)),
+            "joints other than three slides",
+        ),
+        (
+            "trilinear",
+            world(r#"<flexcomp name="f" type="grid" count="2 2 2" spacing="0.1 0.1 0.1" dim="3" dof="trilinear"><contact selfcollide="none"/></flexcomp>"#),
+            "a flex's node",
+        ),
+        // Never rigid (MuJoCo's rule), so the equality naming it stands.
+        (
+            "trilinear in an equality",
+            r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="2 2 2" spacing="0.1 0.1 0.1" dim="3" dof="trilinear"><contact selfcollide="none"/></flexcomp></worldbody><equality><flex flex="f"/></equality></mujoco>"#.to_string(),
+            "a flex's node",
+        ),
+        (
+            "moving holder",
+            world(&format!(r#"<body name="p" pos="0 0 1"><freejoint/><geom size="0.1"/><flexcomp name="f" {G1}/></body>"#)),
+            "moves with a body above it",
+        ),
+        (
+            "turned holder",
+            world(&format!(r#"<body name="p" euler="0 0 90"><flexcomp name="f" {G1}/></body>"#)),
+            "is rotated",
         ),
         (
             "plugin",
-            world(&format!(
-                r#"<flexcomp name="f" {G1}><plugin plugin="mujoco.elasticity.cable"/></flexcomp>"#
-            )),
-        ),
-        (
-            "box of count 1",
-            world(r#"<flexcomp name="f" type="box" count="1 3 3" spacing="0.1 0.1 0.1" dim="2"/>"#),
+            format!(
+                r#"<mujoco><extension><plugin plugin="mujoco.elasticity.cable"/></extension><worldbody><flexcomp name="f" {G1}><plugin plugin="mujoco.elasticity.cable"/></flexcomp></worldbody></mujoco>"#
+            ),
+            "a flexcomp's <plugin>",
         ),
     ]
 }
 
 #[test]
-fn the_forms_this_crate_does_not_make_are_refused() {
+fn the_forms_this_crate_does_not_make_are_refused_for_their_own_reason() {
     let mut missed = Vec::new();
-    for (what, doc) in refused_forms() {
+    for (what, doc, reason) in refused_when_made()
+        .into_iter()
+        .chain(refused_after_the_keyframes())
+    {
         match load_model(&doc) {
-            Err(MjcfError::Unsupported { .. }) => {}
+            Err(e @ MjcfError::Unsupported { .. }) if e.to_string().contains(reason) => {}
             Err(e) => missed.push(format!("{what}: {e}")),
             Ok(_) => missed.push(format!("{what}: loads")),
         }
@@ -583,18 +640,20 @@ fn the_forms_this_crate_does_not_make_are_refused() {
 }
 
 #[test]
-fn a_refused_form_is_refused_after_a_keyframes_fault() {
-    // Where MuJoCo loads the form, it names the keyframe's fault (measured
-    // for the five forms above it loads); this crate refuses what MuJoCo does
-    // not after the keyframes.
+fn a_form_refused_after_the_keyframes_comes_after_a_keyframes_fault() {
+    // MuJoCo loads each form and names the keyframe's fault (measured); a
+    // type refused when made is named first.
+    let key = r#"<keyframe><key ctrl="1 2 3"/></keyframe></mujoco>"#;
     let mut missed = Vec::new();
-    for (what, doc) in refused_forms() {
-        let doc = doc.replace(
-            "</mujoco>",
-            r#"<keyframe><key ctrl="1 2 3"/></keyframe></mujoco>"#,
-        );
-        match load_model(&doc) {
+    for (what, doc, _) in refused_after_the_keyframes() {
+        match load_model(&doc.replace("</mujoco>", key)) {
             Err(e) if e.to_string().contains("ctrl") => {}
+            other => missed.push(format!("{what}: {other:?}")),
+        }
+    }
+    for (what, doc, reason) in refused_when_made() {
+        match load_model(&doc.replace("</mujoco>", key)) {
+            Err(e) if e.to_string().contains(reason) => {}
             other => missed.push(format!("{what}: {other:?}")),
         }
     }
@@ -645,6 +704,7 @@ const GRID1: Expected = Expected {
     vert_xpos: &[[-0.1, 0.0, 0.0], [0.0, 0.0, 0.0], [0.1, 0.0, 0.0]],
     elem: &[0, 1, 1, 2],
     edges: &[[0, 1], [1, 2]],
+    edge_rigid: &[false, false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -721,6 +781,7 @@ const GRID2: Expected = Expected {
     ],
     elem: &[0, 2, 3, 0, 3, 1],
     edges: &[[2, 3], [0, 3], [0, 2], [1, 3], [0, 1]],
+    edge_rigid: &[false, false, false, false, false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -834,6 +895,9 @@ const GRID2_3X2: Expected = Expected {
         [2, 5],
         [2, 4],
         [3, 5],
+    ],
+    edge_rigid: &[
+        false, false, false, false, false, false, false, false, false,
     ],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
@@ -983,6 +1047,10 @@ const GRID3: Expected = Expected {
         [3, 5],
         [5, 7],
     ],
+    edge_rigid: &[
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false,
+    ],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -1092,6 +1160,7 @@ const CIRCLE: Expected = Expected {
     ],
     elem: &[0, 1, 1, 2, 2, 3, 3, 0],
     edges: &[[0, 1], [1, 2], [2, 3], [0, 3]],
+    edge_rigid: &[false, false, false, false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -1481,6 +1550,16 @@ const BOX3: Expected = Expected {
         [24, 26],
         [18, 26],
     ],
+    edge_rigid: &[
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false,
+    ],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -1756,6 +1835,10 @@ const BOX2: Expected = Expected {
         [4, 6],
         [2, 7],
         [5, 7],
+    ],
+    edge_rigid: &[
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false,
     ],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
@@ -2094,6 +2177,13 @@ const CYLINDER2: Expected = Expected {
         [19, 23],
         [20, 23],
         [20, 24],
+    ],
+    edge_rigid: &[
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false,
     ],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
@@ -2680,6 +2770,16 @@ const ELLIPSOID3: Expected = Expected {
         [24, 26],
         [18, 26],
     ],
+    edge_rigid: &[
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false,
+    ],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -2973,6 +3073,10 @@ const SQUARE: Expected = Expected {
         [4, 8],
         [5, 8],
     ],
+    edge_rigid: &[
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false,
+    ],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -3155,6 +3259,10 @@ const DISC: Expected = Expected {
         [4, 8],
         [5, 8],
     ],
+    edge_rigid: &[
+        false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false,
+    ],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -3249,6 +3357,7 @@ const DIRECT: Expected = Expected {
     vert_xpos: &[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
     elem: &[0, 1],
     edges: &[[0, 1]],
+    edge_rigid: &[false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -3313,6 +3422,7 @@ const GRID_WITH_POINTS: Expected = Expected {
     vert_xpos: &[[5.0, 5.0, 5.0], [-0.05, 0.0, 0.0], [0.05, 0.0, 0.0]],
     elem: &[0, 1],
     edges: &[[0, 1]],
+    edge_rigid: &[false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -3387,6 +3497,7 @@ const POSE: Expected = Expected {
     ],
     elem: &[0, 1, 1, 2],
     edges: &[[0, 1], [1, 2]],
+    edge_rigid: &[false, false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -3461,6 +3572,7 @@ const QUAT_RAW: Expected = Expected {
     ],
     elem: &[0, 1, 1, 2],
     edges: &[[0, 1], [1, 2]],
+    edge_rigid: &[false, false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -3531,6 +3643,7 @@ const QUAT_ZERO: Expected = Expected {
     vert_xpos: &[[-0.1, 0.0, 0.0], [0.0, 0.0, 0.0], [0.1, 0.0, 0.0]],
     elem: &[0, 1, 1, 2],
     edges: &[[0, 1], [1, 2]],
+    edge_rigid: &[false, false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -3636,6 +3749,10 @@ const PINS: Expected = Expected {
         [7, 8],
         [4, 8],
         [5, 8],
+    ],
+    edge_rigid: &[
+        false, true, false, false, false, true, false, false, false, false, false, false, false,
+        false, true, true,
     ],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
@@ -3771,6 +3888,10 @@ const PIN_GRIDRANGE: Expected = Expected {
         [4, 8],
         [5, 8],
     ],
+    edge_rigid: &[
+        false, false, false, false, true, false, false, false, true, false, false, false, false,
+        false, false, false,
+    ],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -3834,6 +3955,7 @@ const RIGID: Expected = Expected {
     vert_xpos: &[[-0.1, 0.0, 0.0], [0.0, 0.0, 0.0], [0.1, 0.0, 0.0]],
     elem: &[0, 1, 1, 2],
     edges: &[[0, 1], [1, 2]],
+    edge_rigid: &[true, true],
     jnt_axis: &[],
     dof_damping: &[],
     jnt_range: &[],
@@ -3862,6 +3984,7 @@ const ALL_PINNED_EQ: Expected = Expected {
     ],
     elem: &[0, 2, 3, 0, 3, 1],
     edges: &[[2, 3], [0, 3], [0, 2], [1, 3], [0, 1]],
+    edge_rigid: &[true, true, true, true, true],
     jnt_axis: &[],
     dof_damping: &[],
     jnt_range: &[],
@@ -3890,6 +4013,7 @@ const RIGID_EQ: Expected = Expected {
     ],
     elem: &[0, 2, 3, 0, 3, 1],
     edges: &[[2, 3], [0, 3], [0, 2], [1, 3], [0, 1]],
+    edge_rigid: &[true, true, true, true, true],
     jnt_axis: &[],
     dof_damping: &[],
     jnt_range: &[],
@@ -3931,6 +4055,7 @@ const STATIC_HOLDER: Expected = Expected {
     vert_xpos: &[[0.9, 2.0, 3.0], [1.0, 2.0, 3.0], [1.1, 2.0, 3.0]],
     elem: &[0, 1, 1, 2],
     edges: &[[0, 1], [1, 2]],
+    edge_rigid: &[false, false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -3980,6 +4105,7 @@ const SPHERES: Expected = Expected {
     vert_xpos: &[[-0.05, 0.0, 0.0], [0.05, 0.0, 0.0]],
     elem: &[0, 1],
     edges: &[[0, 1]],
+    edge_rigid: &[false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -4029,6 +4155,7 @@ const CLASS_MAIN: Expected = Expected {
     vert_xpos: &[[-0.05, 0.0, 0.0], [0.05, 0.0, 0.0]],
     elem: &[0, 1],
     edges: &[[0, 1]],
+    edge_rigid: &[false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -4084,6 +4211,7 @@ const CLASS_HOLDER: Expected = Expected {
     vert_xpos: &[[-0.05, 0.0, 0.0], [0.05, 0.0, 0.0]],
     elem: &[0, 1],
     edges: &[[0, 1]],
+    edge_rigid: &[false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -4139,6 +4267,7 @@ const CLASS_FRAME_IGNORED: Expected = Expected {
     vert_xpos: &[[-0.05, 0.0, 0.0], [0.05, 0.0, 0.0]],
     elem: &[0, 1],
     edges: &[[0, 1]],
+    edge_rigid: &[false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -4194,6 +4323,7 @@ const CLASS_BODY_IN_FRAME: Expected = Expected {
     vert_xpos: &[[0.95, 0.0, 0.0], [1.05, 0.0, 0.0]],
     elem: &[0, 1],
     edges: &[[0, 1]],
+    edge_rigid: &[false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -4255,6 +4385,7 @@ const ORDER_FRAME: Expected = Expected {
     vert_xpos: &[[-0.05, 0.0, 0.0], [0.05, 0.0, 0.0]],
     elem: &[0, 1],
     edges: &[[0, 1]],
+    edge_rigid: &[false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -4361,6 +4492,7 @@ const NESTED_ORDER: Expected = Expected {
     ],
     elem: &[0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
     edges: &[[0, 1], [0, 1], [0, 1], [0, 1], [0, 1]],
+    edge_rigid: &[true, false, false, false, false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -4449,6 +4581,7 @@ const INERTIAFROMGEOM: Expected = Expected {
     vert_xpos: &[[-0.05, 0.0, 0.0], [0.05, 0.0, 0.0]],
     elem: &[0, 1],
     edges: &[[0, 1]],
+    edge_rigid: &[false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -4519,6 +4652,7 @@ const SETTOTALMASS: Expected = Expected {
     ],
     elem: &[0, 2, 3, 0, 3, 1],
     edges: &[[2, 3], [0, 3], [0, 2], [1, 3], [0, 1]],
+    edge_rigid: &[false, false, false, false, false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -4585,6 +4719,7 @@ const BOUNDMASS: Expected = Expected {
     ],
     elem: &[0, 2, 3, 0, 3, 1],
     edges: &[[2, 3], [0, 3], [0, 2], [1, 3], [0, 1]],
+    edge_rigid: &[false, false, false, false, false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
@@ -4607,6 +4742,169 @@ const BOUNDMASS: Expected = Expected {
         [0.0, 0.0],
         [0.0, 0.0],
         [0.0, 0.0],
+        [0.0, 0.0],
+        [0.0, 0.0],
+        [0.0, 0.0],
+        [0.0, 0.0],
+        [0.0, 0.0],
+        [0.0, 0.0],
+    ],
+    geom_size: &[],
+    geom_group: &[],
+    geom_contype: &[],
+    neq: 0,
+};
+
+/// `RIGID_BOUNDMASS_FREE`.
+const RIGID_BOUNDMASS_FREE: Expected = Expected {
+    doc: r#"<mujoco><compiler boundmass="0.5" settotalmass="10"/><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body><body name="h" pos="1 0 0"><flexcomp name="f" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2" rigid="true"/></body></worldbody></mujoco>"#,
+    body_names: &["world", "b", "h"],
+    body_parent: &[0, 0, 0],
+    body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]],
+    body_mass: &[0.0, 6.666666666666667, 3.3333333333333335],
+    body_inertia: &[
+        [0.0, 0.0, 0.0],
+        [
+            0.026666666666666675,
+            0.026666666666666675,
+            0.026666666666666675,
+        ],
+        [0.0, 0.0, 0.0],
+    ],
+    flex_names: &["f"],
+    flex_rigid: &[true],
+    vertbody: &[2, 2, 2, 2],
+    vert_xpos: &[
+        [0.95, -0.05, 0.0],
+        [0.95, 0.05, 0.0],
+        [1.05, -0.05, 0.0],
+        [1.05, 0.05, 0.0],
+    ],
+    elem: &[0, 2, 3, 0, 3, 1],
+    edges: &[[2, 3], [0, 3], [0, 2], [1, 3], [0, 1]],
+    edge_rigid: &[true, true, true, true, true],
+    jnt_axis: &[[0.0, 0.0, 1.0]],
+    dof_damping: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    jnt_range: &[[0.0, 0.0]],
+    geom_size: &[0.1],
+    geom_group: &[0],
+    geom_contype: &[1],
+    neq: 0,
+};
+
+/// `PIN_BOUNDMASS`.
+const PIN_BOUNDMASS: Expected = Expected {
+    doc: r#"<mujoco><compiler boundmass="0.5" boundinertia="0.001" settotalmass="10"/><worldbody><flexcomp name="f" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"><pin id="0"/></flexcomp></worldbody></mujoco>"#,
+    body_names: &["world", "f_1", "f_2", "f_3"],
+    body_parent: &[0, 0, 0, 0],
+    body_pos: &[
+        [0.0, 0.0, 0.0],
+        [-0.05, 0.05, 0.0],
+        [0.05, -0.05, 0.0],
+        [0.05, 0.05, 0.0],
+    ],
+    body_mass: &[
+        0.0,
+        3.3333333333333335,
+        3.3333333333333335,
+        3.3333333333333335,
+    ],
+    body_inertia: &[
+        [0.0, 0.0, 0.0],
+        [
+            0.006666666666666667,
+            0.006666666666666667,
+            0.006666666666666667,
+        ],
+        [
+            0.006666666666666667,
+            0.006666666666666667,
+            0.006666666666666667,
+        ],
+        [
+            0.006666666666666667,
+            0.006666666666666667,
+            0.006666666666666667,
+        ],
+    ],
+    flex_names: &["f"],
+    flex_rigid: &[false],
+    vertbody: &[0, 1, 2, 3],
+    vert_xpos: &[
+        [-0.05, -0.05, 0.0],
+        [-0.05, 0.05, 0.0],
+        [0.05, -0.05, 0.0],
+        [0.05, 0.05, 0.0],
+    ],
+    elem: &[0, 2, 3, 0, 3, 1],
+    edges: &[[2, 3], [0, 3], [0, 2], [1, 3], [0, 1]],
+    edge_rigid: &[false, false, false, false, false],
+    jnt_axis: &[
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ],
+    dof_damping: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    jnt_range: &[
+        [0.0, 0.0],
+        [0.0, 0.0],
+        [0.0, 0.0],
+        [0.0, 0.0],
+        [0.0, 0.0],
+        [0.0, 0.0],
+        [0.0, 0.0],
+        [0.0, 0.0],
+        [0.0, 0.0],
+    ],
+    geom_size: &[],
+    geom_group: &[],
+    geom_contype: &[],
+    neq: 0,
+};
+
+/// `FUSESTATIC_FREE`.
+const FUSESTATIC_FREE: Expected = Expected {
+    doc: r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="b" pos="1 2 3"><flexcomp name="f" type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1"/></body></worldbody></mujoco>"#,
+    body_names: &["world", "f_0", "f_1"],
+    body_parent: &[0, 0, 0],
+    body_pos: &[[0.0, 0.0, 0.0], [0.95, 2.0, 3.0], [1.05, 2.0, 3.0]],
+    body_mass: &[0.0, 0.5, 0.5],
+    body_inertia: &[
+        [0.0, 0.0, 0.0],
+        [
+            8.333333333333334e-06,
+            8.333333333333334e-06,
+            8.333333333333334e-06,
+        ],
+        [
+            8.333333333333334e-06,
+            8.333333333333334e-06,
+            8.333333333333334e-06,
+        ],
+    ],
+    flex_names: &["f"],
+    flex_rigid: &[false],
+    vertbody: &[1, 2],
+    vert_xpos: &[[0.95, 2.0, 3.0], [1.05, 2.0, 3.0]],
+    elem: &[0, 1],
+    edges: &[[0, 1]],
+    edge_rigid: &[false],
+    jnt_axis: &[
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ],
+    dof_damping: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    jnt_range: &[
         [0.0, 0.0],
         [0.0, 0.0],
         [0.0, 0.0],
@@ -4646,6 +4944,7 @@ const DISCARDVISUAL: Expected = Expected {
     vert_xpos: &[[-0.05, 0.0, 0.0], [0.05, 0.0, 0.0]],
     elem: &[0, 1],
     edges: &[[0, 1]],
+    edge_rigid: &[false],
     jnt_axis: &[
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],

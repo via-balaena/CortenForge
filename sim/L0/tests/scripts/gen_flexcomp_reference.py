@@ -3,8 +3,8 @@ unfused oracle, one forward at qpos0, and the values the tests compare printed a
 
 Run with the oracle's Python (`sim/L0/tests/scripts/build_mujoco_oracle.sh`):
     <oracle>/venv/bin/python -I gen_flexcomp_reference.py > out.rs
-The tests embed the output between their GENERATED markers; every value is printed with `repr`, which
-round-trips an f64 exactly.
+The tests embed the output after their GENERATED marker, as rustfmt lays it out; every value is printed
+with `repr`, which round-trips an f64 exactly.
 """
 import sys
 
@@ -76,6 +76,15 @@ DOCS = {
                      'count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/></worldbody></mujoco>'),
     "BOUNDMASS": ('<mujoco><compiler boundmass="0.5" boundinertia="0.001"/><worldbody><flexcomp name="f" '
                   'type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/></worldbody></mujoco>'),
+    "RIGID_BOUNDMASS_FREE": ('<mujoco><compiler boundmass="0.5" settotalmass="10"/><worldbody><body name="b" '
+                             'pos="0 0 1"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body><body name="h" '
+                             'pos="1 0 0"><flexcomp name="f" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2" '
+                             'rigid="true"/></body></worldbody></mujoco>'),
+    "PIN_BOUNDMASS": ('<mujoco><compiler boundmass="0.5" boundinertia="0.001" settotalmass="10"/><worldbody>'
+                      '<flexcomp name="f" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"><pin id="0"/>'
+                      '</flexcomp></worldbody></mujoco>'),
+    "FUSESTATIC_FREE": ('<mujoco><compiler fusestatic="true"/><worldbody><body name="b" pos="1 2 3"><flexcomp '
+                        'name="f" type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1"/></body></worldbody></mujoco>'),
     "DISCARDVISUAL": ('<mujoco><compiler discardvisual="true"/><default><geom contype="0" conaffinity="0"/></default>'
                       '<worldbody><flexcomp name="f" type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1">'
                       '<contact vertcollide="true"/></flexcomp></worldbody></mujoco>'),
@@ -135,6 +144,7 @@ for key, xml in documents():
     out.write(f"    vert_xpos: {vecs(d.flexvert_xpos)},\n")
     out.write(f"    elem: {ints(m.flex_elem)},\n")
     out.write(f"    edges: &[{', '.join('[' + str(a) + ', ' + str(b) + ']' for a, b in edges)}],\n")
+    out.write(f"    edge_rigid: &[{', '.join('true' if r else 'false' for r in m.flexedge_rigid)}],\n")
     out.write(f"    jnt_axis: {vecs(m.jnt_axis)},\n")
     out.write(f"    dof_damping: {floats(m.dof_damping)},\n")
     out.write(f"    jnt_range: {vecs(m.jnt_range)},\n")

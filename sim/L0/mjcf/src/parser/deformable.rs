@@ -210,17 +210,19 @@ pub(super) fn parse_flex_attrs(e: &BytesStart) -> Result<MjcfFlex> {
     Ok(flex)
 }
 
-/// Parse `<contact>` child element attributes into MjcfFlex.
+/// Parse `<contact>` child element attributes into MjcfFlex, in the order
+/// MuJoCo 3.5.0's readers of a `<flex>` and a `<flexcomp>` read them
+/// (`xml_native_reader.cc:2796-2816`), so that of two malformed attributes
+/// the same one is named.
 pub(super) fn parse_flex_contact_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> Result<()> {
     let a = Attrs::new(e)?;
+    flex.contype = a.int("contype")?;
+    flex.conaffinity = a.int("conaffinity")?;
+    if let Some(condim) = a.int("condim")? {
+        flex.condim = condim;
+    }
     if let Some(priority) = a.int("priority")? {
         flex.priority = priority;
-    }
-    if let Some(solmix) = a.real("solmix")? {
-        flex.solmix = solmix;
-    }
-    if let Some(gap) = a.real("gap")? {
-        flex.gap = gap;
     }
     // MuJoCo friction is real(3): "tangential torsional rolling", read with
     // `exact = false`: the values not given keep the flex's, MuJoCo's
@@ -228,11 +230,8 @@ pub(super) fn parse_flex_contact_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> R
     if let Some(friction) = a.prefix("friction")? {
         flex.friction = Vector3::from(friction.over(flex.friction.into()));
     }
-    if let Some(condim) = a.int("condim")? {
-        flex.condim = condim;
-    }
-    if let Some(margin) = a.real("margin")? {
-        flex.margin = margin;
+    if let Some(solmix) = a.real("solmix")? {
+        flex.solmix = solmix;
     }
     if let Some(solref) = a.prefix("solref")? {
         flex.solref = solref.over(flex.solref);
@@ -240,23 +239,27 @@ pub(super) fn parse_flex_contact_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> R
     if let Some(solimp) = a.prefix("solimp")? {
         flex.solimp = solimp.over(flex.solimp);
     }
-    flex.contype = a.int("contype")?;
-    flex.conaffinity = a.int("conaffinity")?;
-    if let Some(s) = a.keyword_text("selfcollide", keywords::flex_selfcollide)? {
-        flex.selfcollide = Some(s);
+    if let Some(margin) = a.real("margin")? {
+        flex.margin = margin;
+    }
+    if let Some(gap) = a.real("gap")? {
+        flex.gap = gap;
     }
     // DT-85: Flex contact runtime attributes
     if let Some(internal) = a.boolean("internal")? {
         flex.internal = internal;
     }
-    if let Some(val) = a.int("activelayers")? {
-        flex.activelayers = val;
+    if let Some(s) = a.keyword_text("selfcollide", keywords::flex_selfcollide)? {
+        flex.selfcollide = Some(s);
     }
     if let Some(vertcollide) = a.boolean("vertcollide")? {
         flex.vertcollide = vertcollide;
     }
     if let Some(passive) = a.boolean("passive")? {
         flex.passive = passive;
+    }
+    if let Some(val) = a.int("activelayers")? {
+        flex.activelayers = val;
     }
     Ok(())
 }

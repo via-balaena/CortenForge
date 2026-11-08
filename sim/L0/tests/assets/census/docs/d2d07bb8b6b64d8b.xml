@@ -1,0 +1,1 @@
+<mujoco><compiler boundmass="0.5" settotalmass="10"/><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body><body name="h" pos="1 0 0"><flexcomp name="f" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2" rigid="true"/></body></worldbody></mujoco>

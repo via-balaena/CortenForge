@@ -510,15 +510,21 @@ impl ModelBuilder {
     /// Each flexcomp's `<edge equality="true">` equality, after the
     /// document's equalities and once the flexes are built: MuJoCo makes a
     /// flexcomp's as it reads `<worldbody>`, which it reads after `<equality>`
-    /// (`mjXReader::Parse`), and none for a rigid flexcomp
-    /// (`user_flexcomp.cc:463-466`, `:643-649`). Unnamed and active, with
+    /// (`mjXReader::Parse`), and none for one its `Make` takes as rigid
+    /// (`user_flexcomp.cc:463-466`, `:643-649`): a body-level flexcomp's Make
+    /// has dropped it, and the deformable form's is dropped here when its flex
+    /// is rigid. A body-level one whose compiled flex alone is rigid (an
+    /// unused free point dropped) keeps it, and `check_flex_equalities`
+    /// refuses it, as MuJoCo's compiler does. Unnamed and active, with
     /// MuJoCo's default `solref` and `solimp` unless the `<edge>` writes them.
     /// One `equality="vert"` asks for is made so, and refused after the
     /// keyframes ([`ModelBuilder::flex_equality_fault`]).
     pub(crate) fn process_flexcomp_equalities(&mut self, flexes: &[MjcfFlex]) {
         for (flex_id, flex) in flexes.iter().enumerate() {
+            // A body-level flexcomp's Make has dropped the equality of one it
+            // makes rigid; the deformable form's is dropped here.
             if let Some(edge) = &flex.edge_equality
-                && !self.flex_rigid[flex_id]
+                && (flex.flexcomp_holder.is_some() || !self.flex_rigid[flex_id])
             {
                 if edge.vertices {
                     self.defer_flex_equality_fault(
@@ -527,6 +533,18 @@ impl ModelBuilder {
                         )
                         .at(Location::nth(ElementKind::Flex, Some(&flex.name), flex_id)),
                     );
+                }
+                // Checked with the document's (`check_flex_equalities`): a
+                // body-level flexcomp's equality on a flex its compiled form
+                // makes rigid is MuJoCo's refusal too (`user_objects.cc:6056`).
+                if flex.flexcomp_holder.is_some() {
+                    self.flex_equalities.push(FlexEqualityRef {
+                        eq_id: self.eq_type.len(),
+                        index: self.eq_type.len(),
+                        name: None,
+                        flex: flex.name.clone(),
+                        unnamed: false,
+                    });
                 }
                 self.push_flex_equality(
                     flex_id,

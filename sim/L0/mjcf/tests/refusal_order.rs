@@ -88,10 +88,13 @@
 //! orientations, an edge equality beside a stretching elasticity) run while
 //! parsing, and Make's when the composites are made, in document order among
 //! them, before every frame's and every later check, as MuJoCo makes a
-//! flexcomp while its reader meets it. A form MuJoCo loads and this crate
-//! does not make (a mesh or gmsh type, a radial or interpolated dof, a moving
-//! or turned holding body, a `<plugin>`, a box's count of 1) is refused after
-//! the keyframes. Where MuJoCo's reader meets a fault written before the
+//! flexcomp while its reader meets it; two of Make's checks in one flexcomp
+//! are named in Make's order. A type this crate does not make (mesh, gmsh)
+//! and a box's count of 1 (where MuJoCo's maker never ends) are refused where
+//! Make reaches the maker; a form MuJoCo loads that this crate makes and
+//! sim-core does not take (a radial or interpolated dof, a vertex body in a
+//! moving or turned holding body) and a `<plugin>` are refused after the
+//! keyframes. Where MuJoCo's reader meets a fault written before the
 //! flexcomp first (a repeated name, an unknown class, a composite's), this
 //! crate names the flexcomp's, as it names a composite's; and a parse fault
 //! or an unknown class written after the flexcomp before Make's checks, as
@@ -125,7 +128,9 @@
 //! (measured 2026-11-07, the 503 two-fault documents generated at its start,
 //! each fault alone refused by MuJoCo but the forms it loads) set a
 //! flexcomp's check or a refused form beside another fault: four in
-//! `TWO_FAULTS`, six in `FLEXCOMP_COSTS`.
+//! `TWO_FAULTS`, six in `FLEXCOMP_COSTS`; its review's first round's set two
+//! of Make's checks in one flexcomp (eight in `TWO_FAULTS`) and two
+//! flexcomps of one name (one in `FLEXCOMP_COSTS`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1731,6 +1736,54 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "mass and inertia of moving bodies must be larger than mjMINVAL",
         "mass and inertia of moving bodies must be larger than mjMINVAL (body 'mb')",
     ),
+    (
+        "a flexcomp's dim then its count",
+        r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="0 1 1" spacing="0.1 0.1 0.1" dim="4"/></worldbody></mujoco>"#,
+        "Invalid dim, must be between 1 and 3",
+        "invalid dim on <flexcomp>: Invalid dim, must be between 1 and 3 (flex 'f')",
+    ),
+    (
+        "a flexcomp's count then its spacing",
+        r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="0 1 1" spacing="0.001 0.1 0.1" dim="1"/></worldbody></mujoco>"#,
+        "Count too small",
+        "invalid count on <flexcomp>: Count too small (flex 'f')",
+    ),
+    (
+        "a flexcomp's spacing then its scale",
+        r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="2 1 1" spacing="0.001 0.1 0.1" dim="1" scale="0 1 1"/></worldbody></mujoco>"#,
+        "Spacing must be larger than geometry size",
+        "invalid spacing on <flexcomp>: Spacing must be larger than geometry size (flex 'f')",
+    ),
+    (
+        "a flexcomp's scale then its mass",
+        r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1" scale="0 1 1" mass="0"/></worldbody></mujoco>"#,
+        "Scale must be larger than mjMINVAL",
+        "invalid scale on <flexcomp>: Scale must be larger than mjMINVAL (flex 'f')",
+    ),
+    (
+        "a flexcomp's mass then its orientation",
+        r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1" mass="0" axisangle="0 0 0 90"/></worldbody></mujoco>"#,
+        "Mass and inertiabox must be larger than mjMINVAL",
+        "invalid mass on <flexcomp>: Mass and inertiabox must be larger than mjMINVAL (flex 'f')",
+    ),
+    (
+        "a flexcomp's orientation then its maker's",
+        r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="1 1 1" spacing="0.1 0.1 0.1" dim="1" axisangle="0 0 0 90"/></worldbody></mujoco>"#,
+        "axisangle too small",
+        "invalid axisangle on <flexcomp>: axisangle too small (flex 'f')",
+    ),
+    (
+        "a flexcomp's pin range size then its missing points",
+        r#"<mujoco><worldbody><flexcomp name="f" type="direct" dim="1"><pin range="0"/></flexcomp></worldbody></mujoco>"#,
+        "Pin range number must be multiple of 2",
+        "invalid pin on <flexcomp>: Pin range number must be multiple of 2 (flex 'f')",
+    ),
+    (
+        "a flexcomp's element id then its pin id",
+        r#"<mujoco><worldbody><flexcomp name="f" type="direct" dim="1" point="0 0 0 1 0 0" element="0 5"><pin id="9"/></flexcomp></worldbody></mujoco>"#,
+        "element 1 has point id 5, number of points is 2",
+        "invalid element on <flexcomp>: element 1 has point id 5, number of points is 2 (flex 'f')",
+    ),
 ];
 
 #[test]
@@ -2308,7 +2361,8 @@ fn a_flex_fault_beside_another_is_named_as_ledgered() {
 /// after making it and its reader's checks before the classes and the
 /// composites; and MuJoCo makes the flexcomp before a later parse fault or
 /// unknown class, which this crate meets first, as it did before the flexcomp
-/// was made.
+/// was made; of two flexcomps of one name MuJoCo names their first bodies'
+/// name, this crate their flexes', checked before the bodies'.
 const FLEXCOMP_COSTS: &[(&str, &str, &str, &str)] = &[
     (
         "a repeated name before a flexcomp's count",
@@ -2345,6 +2399,12 @@ const FLEXCOMP_COSTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1" mass="0"/><geom type="sausage" size="0.1"/></worldbody></mujoco>"#,
         "Mass and inertiabox must be larger than mjMINVAL",
         "invalid keyword \"sausage\" in attribute 'type' on <geom> (line 1: worldbody > geom)",
+    ),
+    (
+        "two flexcomps of one name",
+        r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1"/><flexcomp name="f" type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1"/></worldbody></mujoco>"#,
+        "repeated name 'f_0' in body",
+        "repeated name 'f' in flex",
     ),
 ];
 

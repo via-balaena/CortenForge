@@ -331,7 +331,12 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     builder.check_free_joints_on_top_level()?;
     let automatic = builder.automatic_range_fault();
     let flex_equality = builder.flex_equality_fault.take();
-    let flexcomp_refusal = flexcomp_refusal.or_else(|| builder.flexcomp_fault.take());
+    // The first refused flexcomp's, in document order (flex order), whichever
+    // stage found it.
+    let flexcomp_refusal = match (flexcomp_refusal, builder.flexcomp_fault.take()) {
+        (Some((a, ea)), Some((b, eb))) => Some(if a <= b { ea } else { eb }),
+        (front, built) => front.or(built).map(|(_, e)| e),
+    };
     let negative_inertial = negative_inertial.or_else(|| builder.kept_negative_inertial.take());
     builder.apply_settotalmass();
     builder.sync_flex_vertex_masses();
@@ -366,13 +371,13 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // keyframes: a slide after a ball, a fixed tendon's negative armature,
     // an automatic range that does not increase (`D-AUTO-RANGE`, which
     // MuJoCo leaves unlimited), an `<inertial>`'s negative mass or moment
-    // (`D-INERTIAL-NEGATIVE`, which MuJoCo raises to its bounds), a flex
+    // (`D-INERTIAL-NEGATIVE`, which MuJoCo raises to its bounds), the first
+    // body-level flexcomp in document order of a form sim-core does not take
+    // or with a `<plugin>` (a radial or interpolated dof, a vertex body in a
+    // moving or turned holding body, a pinned point on a moving one;
+    // `D-FLEXCOMP-FORM`, `D-FLEXCOMP-PLUGIN`), which MuJoCo loads, a flex
     // vertex equality (`D-FLEX-VERT-EQUALITY`) or an empty `flex` beside
-    // an unnamed flex (`D-FLEX-EQ-NO-NAME`), which MuJoCo makes, a body-level
-    // flexcomp of a form this crate does not make or sim-core does not take
-    // (a mesh or gmsh type, a box's count of 1, a `<plugin>`, a radial or
-    // interpolated dof, a holding body that moves or turns), which MuJoCo
-    // loads, a flex's
+    // an unnamed flex (`D-FLEX-EQ-NO-NAME`), which MuJoCo makes, a flex's
     // condim outside 1 to 6 (`D-FLEX-CONDIM-RANGE`, which MuJoCo loads), a
     // flex's stretching or a dim-3 flex's Young's modulus (`D-FLEX-MEMBRANE`,
     // `D-FLEX-TET-ELASTICITY`, which MuJoCo computes), an edge of three
@@ -413,8 +418,8 @@ pub struct FrontEnd {
     /// What validation found.
     pub checked: crate::validation::ValidationResult,
     /// The first refusal of a body-level flexcomp's form this crate does not
-    /// make, for after the keyframes.
-    pub flexcomp_refusal: Option<MjcfError>,
+    /// make, for after the keyframes, with its flex's id.
+    pub flexcomp_refusal: Option<(usize, MjcfError)>,
 }
 
 /// The model as the loader checks it: a clone of `mjcf` with its assets
@@ -454,6 +459,7 @@ pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
     // The flexcomps' bodies in their places, their flexes after every
     // `<deformable>` flex (MuJoCo reads `<worldbody>` last).
     let placed = flexcomp::place_flexcomps(&mut mjcf.worldbody, made_flexcomps);
+    let first_flexcomp = mjcf.flex.len();
     mjcf.flex.extend(placed.flexes);
     crate::validation::check_tree_depth(&mjcf.worldbody)?;
 
@@ -466,7 +472,7 @@ pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
         resolver,
         actuators,
         checked,
-        flexcomp_refusal: placed.refusal,
+        flexcomp_refusal: placed.refusal.map(|(k, e)| (first_flexcomp + k, e)),
     })
 }
 
@@ -784,8 +790,11 @@ pub struct ModelBuilder {
     /// (`D-FLEX-EQ-NO-NAME`).
     pub(crate) flex_equality_fault: Option<MjcfError>,
     /// The first flexcomp flex sim-core does not take (rule (c)), built with
-    /// every vertex fixed and refused after the keyframes.
-    pub(crate) flexcomp_fault: Option<MjcfError>,
+    /// every vertex fixed and refused after the keyframes, with its flex id.
+    pub(crate) flexcomp_fault: Option<(usize, MjcfError)>,
+    /// The jointless bodies made for pinned flexcomp points, in id order:
+    /// MuJoCo has no such body, so no compiler pass sees them.
+    pub(crate) flex_stand_ins: Vec<usize>,
     /// Each site-form connect's equality id and its two sites, whose points
     /// `build` sets once the sites' frames are known.
     pub(crate) site_connects: Vec<(usize, usize, usize)>,
