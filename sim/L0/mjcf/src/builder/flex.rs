@@ -129,7 +129,7 @@ impl ModelBuilder {
                         // at its world position (D-FLEX-PINNED-BODY), massless,
                         // as MuJoCo makes no body for it.
                         VertexOn::StandIn => {
-                            // No compiler pass sees it: MuJoCo has no such body.
+                            // The mass pipeline's bounds skip it: MuJoCo has no such body.
                             self.flex_stand_ins.push(self.body_parent.len());
                             self.create_flex_vertex_body(flex, pos, 0.0, true, flex_id)
                                 .map_err(|e| e.with_location_if_unknown(at()))?;

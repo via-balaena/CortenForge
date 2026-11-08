@@ -4408,7 +4408,8 @@ pub struct MjcfFlex {
     /// a stated limitation, after MuJoCo's checks of its collisions, its node
     /// count, its node names and, with a Young's modulus, its element count;
     /// empty when the attribute is omitted or empty; a body-level flexcomp of
-    /// an interpolated dof fills it, and its flex is refused as a `<flex>`'s.
+    /// an interpolated dof fills it, and its flex is refused for its node after
+    /// the keyframes (`D-FLEXCOMP-FORM`), a `<flex>`'s where the builder meets it.
     /// Refused on a `<deformable><flexcomp>` built in code; such a
     /// flexcomp's in a document is not read (MuJoCo's schema refuses it,
     /// Rigid-loading L47's).

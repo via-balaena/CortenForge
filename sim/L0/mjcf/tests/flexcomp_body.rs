@@ -529,12 +529,6 @@ fn single_faults() -> Vec<(String, &'static str)> {
             )),
             "attribute 'contype'",
         ),
-        // MuJoCo 3.5.0's MakeBox does not end its loop at a count of 1
-        // (measured: still running at 20 s); this crate refuses it there.
-        (
-            world(r#"<flexcomp name="f" type="box" count="1 3 3" spacing="0.1 0.1 0.1" dim="2"/>"#),
-            "needs a count of at least 2 on each axis",
-        ),
     ]
 }
 
@@ -661,7 +655,28 @@ fn a_form_refused_after_the_keyframes_comes_after_a_keyframes_fault() {
 }
 
 #[test]
-fn of_two_refused_flexcomps_the_first_in_the_document_is_named() {
+fn a_box_with_a_count_of_1_is_refused_where_mujocos_maker_does_not_end() {
+    // MuJoCo 3.5.0's MakeBox does not end its loop at a count of 1 (measured
+    // on these three documents: still running at 20 s); this crate refuses
+    // it where Make reaches the maker.
+    for (kind, count) in [
+        ("box", "1 3 3"),
+        ("cylinder", "1 3 3"),
+        ("ellipsoid", "3 3 1"),
+    ] {
+        let doc = world(&format!(
+            r#"<flexcomp name="f" type="{kind}" count="{count}" spacing="0.1 0.1 0.1" dim="2"/>"#
+        ));
+        let err = load_model(&doc).unwrap_err().to_string();
+        assert!(
+            err.contains("needs a count of at least 2 on each axis"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn of_two_flexcomps_refused_after_the_keyframes_the_first_written_is_named() {
     // MuJoCo loads both (measured); the radial one is refused once its flex
     // is built, the plugin's when it is made: the first written is named.
     let ext = r#"<extension><plugin plugin="mujoco.elasticity.cable"/></extension>"#;

@@ -331,8 +331,9 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     builder.check_free_joints_on_top_level()?;
     let automatic = builder.automatic_range_fault();
     let flex_equality = builder.flex_equality_fault.take();
-    // The first refused flexcomp's, in document order (flex order), whichever
-    // stage found it.
+    // Of the flexcomps refused after the keyframes, the first in document
+    // order (flex order), whichever stage found it; a type refused when made
+    // (mesh, gmsh) has been named before any of them.
     let flexcomp_refusal = match (flexcomp_refusal, builder.flexcomp_fault.take()) {
         (Some((a, ea)), Some((b, eb))) => Some(if a <= b { ea } else { eb }),
         (front, built) => front.or(built).map(|(_, e)| e),
@@ -417,8 +418,8 @@ pub struct FrontEnd {
     pub actuators: Vec<ActuatorSpec>,
     /// What validation found.
     pub checked: crate::validation::ValidationResult,
-    /// The first refusal of a body-level flexcomp's form this crate does not
-    /// make, for after the keyframes, with its flex's id.
+    /// The first body-level flexcomp's `<plugin>` refusal, for after the
+    /// keyframes, with its flex's id.
     pub flexcomp_refusal: Option<(usize, MjcfError)>,
 }
 
@@ -793,7 +794,7 @@ pub struct ModelBuilder {
     /// every vertex fixed and refused after the keyframes, with its flex id.
     pub(crate) flexcomp_fault: Option<(usize, MjcfError)>,
     /// The jointless bodies made for pinned flexcomp points, in id order:
-    /// MuJoCo has no such body, so no compiler pass sees them.
+    /// MuJoCo has no such body, so the mass pipeline's bounds skip them.
     pub(crate) flex_stand_ins: Vec<usize>,
     /// Each site-form connect's equality id and its two sites, whose points
     /// `build` sets once the sites' frames are known.
