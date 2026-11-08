@@ -83,6 +83,19 @@
 //! keyframes. Where MuJoCo checks a flex before a fault this crate meets
 //! while parsing or before RL-6a's checks, this crate names that fault:
 //! `FLEX_COSTS` (ledger L353).
+//! RL-8b's body-level `<flexcomp>` (made as MuJoCo's `mjCFlexcomp::Make`
+//! makes it): its reader's checks (its name, its keywords, two
+//! orientations, an edge equality beside a stretching elasticity) run while
+//! parsing, and Make's when the composites are made, in document order among
+//! them, before every frame's and every later check, as MuJoCo makes a
+//! flexcomp while its reader meets it. A form MuJoCo loads and this crate
+//! does not make (a mesh or gmsh type, a radial or interpolated dof, a moving
+//! or turned holding body, a `<plugin>`, a box's count of 1) is refused after
+//! the keyframes. Where MuJoCo's reader meets a fault written before the
+//! flexcomp first (a repeated name, an unknown class, a composite's), this
+//! crate names the flexcomp's, as it names a composite's; and a parse fault
+//! or an unknown class written after the flexcomp before Make's checks, as
+//! before: `FLEXCOMP_COSTS` (ledger L353).
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, with the reason its row gives as MuJoCo's (RL-6a's measured
@@ -108,7 +121,11 @@
 //! MuJoCo; most of them its review's first round's, RA's) set a flex's
 //! thickness, a flex equality, a flex vertex equality, a flexcomp's stretch
 //! beside its edge equality, or a refusal made after the keyframes beside
-//! another fault: thirteen in `TWO_FAULTS`, five in `FLEX_COSTS`.
+//! another fault: thirteen in `TWO_FAULTS`, five in `FLEX_COSTS`. RL-8b's
+//! (measured 2026-11-07, the 503 two-fault documents generated at its start,
+//! each fault alone refused by MuJoCo but the forms it loads) set a
+//! flexcomp's check or a refused form beside another fault: four in
+//! `TWO_FAULTS`, six in `FLEXCOMP_COSTS`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1690,6 +1707,30 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "keyframe '': invalid qpos size, expected 15, got 16",
         "invalid qpos on <key>: length 16 does not match 15 (key #0)",
     ),
+    (
+        "a flexcomp's count then a keyframe's ctrl",
+        r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="0 1 1" spacing="0.1 0.1 0.1" dim="1"/></worldbody><keyframe><key ctrl="1 2 3"/></keyframe></mujoco>"#,
+        "Count too small",
+        "invalid count on <flexcomp>: Count too small (flex 'f')",
+    ),
+    (
+        "a flexcomp's pin id then a joint's range",
+        r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1"><pin id="9"/></flexcomp><body name="jb" pos="2 0 0"><joint type="hinge" range="1 0" limited="true"/><geom size="0.1"/></body></worldbody></mujoco>"#,
+        "pinid out of range",
+        "invalid pin on <flexcomp>: pinid out of range (flex 'f')",
+    ),
+    (
+        "a radial flexcomp, which MuJoCo loads, then a keyframe's ctrl",
+        r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1" dof="radial"/></worldbody><keyframe><key ctrl="1 2 3"/></keyframe></mujoco>"#,
+        "keyframe 0: invalid ctrl size, expected length 0",
+        "invalid ctrl on <key>: length 3 does not match 0 (key #0)",
+    ),
+    (
+        "a flexcomp in a turned body, which MuJoCo loads, then a massless moving body",
+        r#"<mujoco><worldbody><body name="p" euler="0 0 90"><flexcomp name="f" type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1"/></body><body name="mb" pos="3 0 0"><joint type="hinge"/></body></worldbody></mujoco>"#,
+        "mass and inertia of moving bodies must be larger than mjMINVAL",
+        "mass and inertia of moving bodies must be larger than mjMINVAL (body 'mb')",
+    ),
 ];
 
 #[test]
@@ -2250,6 +2291,67 @@ const FLEX_COSTS: &[(&str, &str, &str, &str)] = &[
 fn a_flex_fault_beside_another_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in FLEX_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, one a body-level flexcomp's, where this crate names the other
+/// one than MuJoCo 3.5.0: ledger L353 holds each. `(what, document, MuJoCo's
+/// reason, this crate's error)`, measured 2026-11-07 (RL-8b's two-fault set):
+/// MuJoCo's reader meets a repeated name, an unknown class or a composite's
+/// fault written before the flexcomp first, where this crate checks names
+/// after making it and its reader's checks before the classes and the
+/// composites; and MuJoCo makes the flexcomp before a later parse fault or
+/// unknown class, which this crate meets first, as it did before the flexcomp
+/// was made.
+const FLEXCOMP_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "a repeated name before a flexcomp's count",
+        r#"<mujoco><worldbody><body name="dup"/><body name="dup"/><flexcomp name="f" type="grid" count="0 1 1" spacing="0.1 0.1 0.1" dim="1"/></worldbody></mujoco>"#,
+        "repeated name 'dup' in body",
+        "invalid count on <flexcomp>: Count too small (flex 'f')",
+    ),
+    (
+        "a repeated name before a flexcomp with no name",
+        r#"<mujoco><worldbody><body name="dup"/><body name="dup"/><flexcomp type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1"/></worldbody></mujoco>"#,
+        "repeated name 'dup' in body",
+        "required attribute missing: 'name' on <flexcomp> (line 1: worldbody > flexcomp)",
+    ),
+    (
+        "an unknown class before a flexcomp's type keyword",
+        r#"<mujoco><worldbody><geom class="nope" size="0.1"/><flexcomp name="f" type="blob" count="2 1 1" spacing="0.1 0.1 0.1" dim="1"/></worldbody></mujoco>"#,
+        "unknown default class name 'nope'",
+        "invalid keyword \"blob\" in attribute 'type' on <flexcomp> (line 1: worldbody > flexcomp 'f')",
+    ),
+    (
+        "a composite's fault before a flexcomp's two orientations",
+        r#"<mujoco><worldbody><body name="cb"><composite type="cable" count="4 2 1" curve="s" size="1"><geom type="capsule" size=".01"/></composite></body><flexcomp name="f" type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1" euler="0 0 90" axisangle="0 0 1 90"/></worldbody></mujoco>"#,
+        "Cable must be one-dimensional",
+        "<flexcomp> may set only one of: axisangle, euler (line 1: worldbody > flexcomp 'f')",
+    ),
+    (
+        "a flexcomp's spacing before a later geom's unknown class",
+        r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="2 1 1" spacing="0.001 0.1 0.1" dim="1"/><geom class="nope" size="0.1"/></worldbody></mujoco>"#,
+        "Spacing must be larger than geometry size",
+        "unknown default class name 'nope' (geom in body 'world')",
+    ),
+    (
+        "a flexcomp's mass before a later geom's type keyword",
+        r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1" mass="0"/><geom type="sausage" size="0.1"/></worldbody></mujoco>"#,
+        "Mass and inertiabox must be larger than mjMINVAL",
+        "invalid keyword \"sausage\" in attribute 'type' on <geom> (line 1: worldbody > geom)",
+    ),
+];
+
+#[test]
+fn a_flexcomp_fault_beside_another_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in FLEXCOMP_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),

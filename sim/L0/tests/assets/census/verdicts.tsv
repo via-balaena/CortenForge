@@ -172,6 +172,7 @@
 0b5cac5f41563f25	agree
 0b63f032a499b8fe	both-refuse
 0b6bc543ad3ce1ab	agree
+0b6e30a797a9a164	both-refuse
 0b7d77d5e334cee7	both-refuse
 0bac8315f1dbc1a7	both-refuse
 0bbe286818ee35e0	model:actuator_lengthrange;dyn:agree
@@ -1433,6 +1434,7 @@
 68f4e6888ca70cca	agree
 691ffdf65e566a59	agree
 693fd9b061e88237	agree
+6966d46111718d58	both-refuse
 696dc3e49254cacf	agree
 69785d3c877e664d	agree
 6994e923fcce5647	both-refuse
@@ -1478,7 +1480,9 @@
 6ce5751f8eeb11fc	agree
 6cf230f70b652bb5	agree
 6cfe5483f426e590	mj-refuses
+6d0e7001ce50e5e1	both-refuse
 6d1389ca9a0e5fc0	agree
+6d26f6b9ee7620ac	both-refuse
 6d3833565c250c8f	ours-refused	divergence=D-MUSCLE-NEGATIVE
 6d39d833f3f392a7	agree
 6d6e589c0b60e74c	agree
@@ -1733,6 +1737,7 @@
 80102a44207d0b2b	agree
 802059ff00be983d	agree
 8036cabc9f53f8d3	both-refuse
+8053b49887fe5918	both-refuse
 806c25494b472948	both-refuse
 806fc6cde5ee4615	agree
 8075cd310b18c77c	agree
@@ -1837,6 +1842,7 @@
 88df115039e3d8fd	agree
 890dee7740613285	agree
 8911fdab9393973e	mj-refuses
+8935ec214f9aa345	both-refuse
 893718bf892cba2c	both-refuse
 89463ef98ed617da	agree
 895e39339d2e13ef	agree
@@ -1967,6 +1973,7 @@
 93c66ded6cc5b065	both-refuse
 93d677c73dc50c6a	both-refuse
 93e41a1a7e28f3c9	agree
+941613752843a58e	both-refuse
 94371ed5eb6da0e1	both-refuse
 943f6c6a8e919486	ours-refused	divergence=D-AUTO-RANGE
 94408990b9520f9a	both-refuse
@@ -2046,6 +2053,7 @@
 99f17a3b77243de5	agree
 99ff7ee5a1562374	agree
 9a08e6d4d24e24bb	agree
+9a17ebd7ae950a38	both-refuse
 9a27b0d6f6d1d517	mj-refuses
 9a51402a43295954	both-refuse
 9a9333b18b272379	agree
@@ -3054,6 +3062,7 @@ e7f2491c0d2b5138	agree
 e7f7cf0a5ea7a6a8	both-refuse
 e8078e8fd954f048	agree
 e80c19462f6e7147	agree
+e81c57d6a056defe	both-refuse
 e82a56a7738afd73	both-refuse
 e83272971a932650	agree
 e834655daec17376	agree
@@ -3190,6 +3199,7 @@ f1f588730707bf29	both-refuse
 f209164005f8238f	agree
 f233dbf79124c507	both-refuse
 f23bfa8529856b7f	both-refuse
+f25895baadc4a342	both-refuse
 f26179fd4c423c05	both-refuse
 f27c583a1a376b80	both-refuse
 f28e0cb5ec143e85	agree
