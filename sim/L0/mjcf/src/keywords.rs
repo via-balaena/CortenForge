@@ -16,8 +16,8 @@ use sim_core::{
 };
 
 use crate::types::{
-    AngleUnit, CompositeShape, CompositeType, FlexElastic2d, FluidShape, InertiaFromGeom,
-    MeshInertia,
+    AngleUnit, CompositeShape, CompositeType, FlexElastic2d, FlexcompDof, FlexcompType, FluidShape,
+    InertiaFromGeom, MeshInertia,
 };
 
 /// `<compiler angle>` (`angle_map`).
@@ -222,19 +222,31 @@ pub fn sensor_data_kind(s: &str) -> Option<&'static str> {
         .find(|word| *word == s)
 }
 
-/// A `<flexcomp>`'s `type` (`fcomp_map`), as its word.
-pub fn flexcomp_type(s: &str) -> Option<&'static str> {
-    const WORDS: [&str; 10] = [
-        "grid",
-        "box",
-        "cylinder",
-        "ellipsoid",
-        "square",
-        "disc",
-        "circle",
-        "mesh",
-        "gmsh",
-        "direct",
-    ];
-    WORDS.into_iter().find(|word| *word == s)
+/// A `<flexcomp>`'s `type` (`fcomp_map`).
+pub fn flexcomp_type(s: &str) -> Option<FlexcompType> {
+    [
+        FlexcompType::Grid,
+        FlexcompType::Box,
+        FlexcompType::Cylinder,
+        FlexcompType::Ellipsoid,
+        FlexcompType::Square,
+        FlexcompType::Disc,
+        FlexcompType::Circle,
+        FlexcompType::Mesh,
+        FlexcompType::Gmsh,
+        FlexcompType::Direct,
+    ]
+    .into_iter()
+    .find(|kind| kind.word() == s)
+}
+
+/// A `<flexcomp>`'s `dof` (`fdof_map`).
+pub fn flexcomp_dof(s: &str) -> Option<FlexcompDof> {
+    match s {
+        "full" => Some(FlexcompDof::Full),
+        "radial" => Some(FlexcompDof::Radial),
+        "trilinear" => Some(FlexcompDof::Trilinear),
+        "quadratic" => Some(FlexcompDof::Quadratic),
+        _ => None,
+    }
 }

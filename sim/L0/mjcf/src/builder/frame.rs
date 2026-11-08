@@ -258,7 +258,9 @@ fn dissolve(
             }
             // A frame holds no joint (the reader refuses one), and its
             // composites were made into bodies before frames.
-            other @ (Element::Joint(_) | Element::Composite(_)) => other,
+            // A flexcomp keeps its place and is not moved: its bodies are
+            // its frame's body's, as MuJoCo gives it the body, not the frame.
+            other @ (Element::Joint(_) | Element::Composite(_) | Element::Flexcomp(_)) => other,
         };
         placed.push(element);
     }

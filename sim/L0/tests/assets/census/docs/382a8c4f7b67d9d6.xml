@@ -1,0 +1,1 @@
+<mujoco><worldbody><flexcomp name="f" type="direct" dim="1"><pin range="0"/></flexcomp></worldbody></mujoco>

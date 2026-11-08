@@ -1,0 +1,1 @@
+<mujoco><worldbody><geom class="nope" size="0.1"/><flexcomp name="f" type="blob" count="2 1 1" spacing="0.1 0.1 0.1" dim="1"/></worldbody></mujoco>

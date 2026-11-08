@@ -1,0 +1,1 @@
+<mujoco><worldbody><flexcomp name="f" type="box" count="2 2 2" spacing="0.1 0.1 0.1" dim="2"/></worldbody></mujoco>

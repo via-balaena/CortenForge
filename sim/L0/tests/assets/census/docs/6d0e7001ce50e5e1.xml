@@ -1,0 +1,1 @@
+<mujoco><worldbody><flexcomp name="f" type="grid" count="0 1 1" spacing="0.1 0.1 0.1" dim="1"/></worldbody><keyframe><key ctrl="1 2 3"/></keyframe></mujoco>

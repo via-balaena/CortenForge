@@ -9,21 +9,45 @@
 use nalgebra::{Rotation3, UnitQuaternion, Vector3};
 use std::f64::consts::PI;
 
+use super::flexcomp::{MadeFlexcomp, make_flexcomp};
 use super::geom::resolve_geom_fromto;
 use super::items::{Contents, Element};
+use super::orientation::rot_vec_quat;
+use crate::defaults::DefaultResolver;
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::stack::MAX_BODY_TREE_DEPTH;
 use crate::types::{
-    CompositeType, MjcfBody, MjcfComposite, MjcfContactExclude, MjcfGeom, MjcfGeomType, MjcfJoint,
-    MjcfJointType, MjcfSite, Prefix,
+    CompositeType, MjcfBody, MjcfCompiler, MjcfComposite, MjcfContactExclude, MjcfGeom,
+    MjcfGeomType, MjcfJoint, MjcfJointType, MjcfSite, Prefix,
 };
 
-/// Expand all composite elements in the body tree.
-/// Returns generated contact exclude pairs, or error for deprecated/invalid types.
-pub fn expand_composites(body: &mut MjcfBody) -> Result<Vec<MjcfContactExclude>> {
-    let mut excludes = Vec::new();
-    expand_composites_recursive(body, &mut excludes)?;
-    Ok(excludes)
+/// Expand all composite elements in the body tree, and make each flexcomp
+/// (`flexcomp::make_flexcomp`), in document order, as MuJoCo's reader makes
+/// both where it meets them; a flexcomp stays in its place, for
+/// `flexcomp::place_flexcomps` once the frames are composed. Returns the
+/// composites' contact exclude pairs and the made flexcomps, or the first
+/// error either makes.
+pub fn expand_composites(
+    body: &mut MjcfBody,
+    resolver: &DefaultResolver,
+    compiler: &MjcfCompiler,
+) -> Result<(Vec<MjcfContactExclude>, Vec<MadeFlexcomp>)> {
+    let mut made = Made {
+        excludes: Vec::new(),
+        flexcomps: Vec::new(),
+        resolver,
+        compiler,
+    };
+    expand_composites_recursive(body, &mut made)?;
+    Ok((made.excludes, made.flexcomps))
+}
+
+/// What the walk makes, and what it makes flexcomps with.
+struct Made<'a> {
+    excludes: Vec<MjcfContactExclude>,
+    flexcomps: Vec<MadeFlexcomp>,
+    resolver: &'a DefaultResolver,
+    compiler: &'a MjcfCompiler,
 }
 
 /// `body`'s geoms a composite made, each `fromto` made into its pose: every
@@ -56,12 +80,9 @@ pub fn resolve_made_fromtos(body: &mut MjcfBody) -> Result<()> {
 /// makes one when it reads it: its bodies take its place among the children
 /// of the body or frame holding it, and a body written before it has its own
 /// composites made first.
-fn expand_composites_recursive(
-    body: &mut MjcfBody,
-    excludes: &mut Vec<MjcfContactExclude>,
-) -> Result<()> {
+fn expand_composites_recursive(body: &mut MjcfBody, made: &mut Made<'_>) -> Result<()> {
     let contents = Contents::take_from_body(body);
-    make_in_place(contents, &body.name, excludes)?.put_into_body(body);
+    make_in_place(contents, &body.name, made)?.put_into_body(body);
     Ok(())
 }
 
@@ -69,22 +90,23 @@ fn expand_composites_recursive(
 /// composite made into its bodies where it stands, and each body and frame
 /// among them made the same way. An error names `holder`, the body that
 /// holds the composite.
-fn make_in_place(
-    contents: Contents,
-    holder: &str,
-    excludes: &mut Vec<MjcfContactExclude>,
-) -> Result<Contents> {
+fn make_in_place(contents: Contents, holder: &str, made: &mut Made<'_>) -> Result<Contents> {
     let mut placed = Contents::default();
     for element in contents.into_elements() {
         match element {
             Element::Body(mut child) => {
-                expand_composites_recursive(&mut child, excludes)?;
+                expand_composites_recursive(&mut child, made)?;
                 placed.push(Element::Body(child));
             }
             Element::Frame(mut frame) => {
                 let inner = Contents::take_from_frame(&mut frame);
-                make_in_place(inner, holder, excludes)?.put_into_frame(&mut frame);
+                make_in_place(inner, holder, made)?.put_into_frame(&mut frame);
                 placed.push(Element::Frame(frame));
+            }
+            Element::Flexcomp(flexcomp) => {
+                let one = make_flexcomp(&flexcomp, holder, made.resolver, made.compiler)?;
+                made.flexcomps.push(one);
+                placed.push(Element::Flexcomp(flexcomp));
             }
             Element::Composite(composite) => {
                 let (bodies, excl) = expand_composite(&composite).map_err(|e| {
@@ -93,7 +115,7 @@ fn make_in_place(
                 for made in bodies {
                     placed.push(Element::Body(made));
                 }
-                excludes.extend(excl);
+                made.excludes.extend(excl);
             }
             other => placed.push(other),
         }
@@ -252,31 +274,6 @@ fn generate_vertices(composite: &MjcfComposite) -> Vec<[f64; 3]> {
             rotated.map(|x| f64::from(x as f32))
         })
         .collect()
-}
-
-/// MuJoCo's `mjuu_rotVecQuat` (`user_util.cc`): `quat` as written, not
-/// normalised, turns `vec`; a zero vector stays zero, and the quaternion
-/// (1, 0, 0, 0) copies it.
-// The two shortcuts compare exactly, as MuJoCo's (`vec[0] == 0 && …`).
-#[allow(clippy::float_cmp)]
-fn rot_vec_quat(vec: [f64; 3], quat: [f64; 4]) -> [f64; 3] {
-    if vec == [0.0; 3] {
-        return [0.0; 3];
-    }
-    if quat == [1.0, 0.0, 0.0, 0.0] {
-        return vec;
-    }
-    let [w, x, y, z] = quat;
-    let tmp = [
-        w * vec[0] + y * vec[2] - z * vec[1],
-        w * vec[1] + z * vec[0] - x * vec[2],
-        w * vec[2] + x * vec[1] - y * vec[0],
-    ];
-    [
-        vec[0] + 2.0 * (y * tmp[2] - z * tmp[1]),
-        vec[1] + 2.0 * (z * tmp[0] - x * tmp[2]),
-        vec[2] + 2.0 * (x * tmp[1] - y * tmp[0]),
-    ]
 }
 
 /// `to - from` as MuJoCo computes it: a cable's vertices are floats
@@ -775,7 +772,8 @@ mod tests {
             geom: None,
             site: None,
         });
-        let result = expand_composites(&mut body);
+        let resolver = DefaultResolver::from_model(&crate::types::MjcfModel::default()).unwrap();
+        let result = expand_composites(&mut body, &resolver, &MjcfCompiler::default());
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("rope"));

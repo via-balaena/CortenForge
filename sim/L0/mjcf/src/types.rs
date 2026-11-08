@@ -2403,6 +2403,8 @@ pub enum MjcfItem {
     Frame,
     /// Its next composite.
     Composite,
+    /// Its next flexcomp: its bodies take its place.
+    Flexcomp,
 }
 
 /// A coordinate frame transformation from `<frame>` element.
@@ -2443,7 +2445,10 @@ pub struct MjcfFrame {
     /// Composites within this frame: each one's first body is one of the
     /// frame's bodies.
     pub composites: Vec<MjcfComposite>,
-    /// Its geoms, sites, bodies, frames and composites in the order the
+    /// Flexcomps within this frame: their bodies are the frame's body's, and
+    /// the frame does not move them, as in MuJoCo.
+    pub flexcomps: Vec<MjcfFlexcomp>,
+    /// Its geoms, sites, bodies, frames, composites and flexcomps in the order the
     /// document writes them, one entry each, as [`MjcfBody::items`] lists a
     /// body's: the frame's contents take its place among its holder's.
     pub items: Vec<MjcfItem>,
@@ -2465,6 +2470,7 @@ impl Default for MjcfFrame {
             sites: Vec::new(),
             frames: Vec::new(),
             composites: Vec::new(),
+            flexcomps: Vec::new(),
             items: Vec::new(),
         }
     }
@@ -2616,6 +2622,191 @@ pub struct MjcfComposite {
 }
 
 // ============================================================================
+// Flexcomp
+// ============================================================================
+
+/// A `<flexcomp>`'s `type` (MuJoCo 3.5.0's `fcomp_map`,
+/// `xml_native_reader.cc:889-901`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum FlexcompType {
+    /// A grid of points, of the flexcomp's dim (`grid`, the default).
+    #[default]
+    Grid,
+    /// A box's surface, with a centre point in dim 3 (`box`).
+    Box,
+    /// A box's surface projected onto a cylinder (`cylinder`).
+    Cylinder,
+    /// A box's surface projected onto an ellipsoid (`ellipsoid`).
+    Ellipsoid,
+    /// A dim-2 grid (`square`).
+    Square,
+    /// A dim-2 grid projected onto a disc (`disc`).
+    Disc,
+    /// A dim-1 loop (`circle`).
+    Circle,
+    /// A mesh file's vertices and faces (`mesh`).
+    Mesh,
+    /// A gmsh file's nodes and elements (`gmsh`).
+    Gmsh,
+    /// The points and elements the flexcomp writes (`direct`).
+    Direct,
+}
+
+impl FlexcompType {
+    /// Its MJCF word.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Grid => "grid",
+            Self::Box => "box",
+            Self::Cylinder => "cylinder",
+            Self::Ellipsoid => "ellipsoid",
+            Self::Square => "square",
+            Self::Disc => "disc",
+            Self::Circle => "circle",
+            Self::Mesh => "mesh",
+            Self::Gmsh => "gmsh",
+            Self::Direct => "direct",
+        }
+    }
+}
+
+/// A `<flexcomp>`'s `dof` (MuJoCo 3.5.0's `fdof_map`,
+/// `xml_native_reader.cc:904-910`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum FlexcompDof {
+    /// Three slides along x, y and z per vertex body (`full`, the default).
+    #[default]
+    Full,
+    /// One slide per vertex body, along its position (`radial`).
+    Radial,
+    /// Eight node bodies, interpolated (`trilinear`).
+    Trilinear,
+    /// Twenty-seven node bodies, interpolated (`quadratic`).
+    Quadratic,
+}
+
+/// A `<flexcomp>`'s `<pin>` elements, each attribute's values in the order
+/// the document writes them (MuJoCo appends every `<pin>`'s to one list per
+/// attribute, `xml_native_reader.cc:2822-2845`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfFlexcompPins {
+    /// Point ids (`id`).
+    pub id: Vec<i32>,
+    /// Point id ranges, two per range, both ends pinned (`range`).
+    pub range: Vec<i32>,
+    /// Grid coordinates, dim per point (`grid`).
+    pub grid: Vec<i32>,
+    /// Grid coordinate ranges, 2·dim per range (`gridrange`).
+    pub gridrange: Vec<i32>,
+}
+
+/// A `<flexcomp>` written in a body, a frame or the world body.
+///
+/// MuJoCo 3.5.0's generator of a flex and of the bodies of its points
+/// (`mjCFlexcomp`, `user_flexcomp.cc`), as its reader holds it
+/// (`OneFlexcomp`, `xml_native_reader.cc:2702-2858`). The loader makes it
+/// where it is written, among its holder's elements
+/// ([`MjcfItem::Flexcomp`]): a body named `<name>_<i>` for each point not
+/// pinned, a child of the body holding the flexcomp, and the flex.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfFlexcomp {
+    /// Its name, which MuJoCo's reader requires: its flex's, and its vertex
+    /// bodies' prefix.
+    pub name: String,
+    /// Its type.
+    pub kind: FlexcompType,
+    /// Points per axis (MuJoCo's default 10 10 10).
+    pub count: [i32; 3],
+    /// Spacing per axis (default 0.02 each).
+    pub spacing: [f64; 3],
+    /// Scale per axis, applied to a direct, mesh or gmsh type's points
+    /// (default 1 1 1).
+    pub scale: [f64; 3],
+    /// Total mass (default 1): each vertex body takes `mass / npnt`, `npnt`
+    /// counting the pinned points.
+    pub mass: f64,
+    /// Inertia box (default 0.005): each vertex body's inertia about each
+    /// axis is its mass · 2 · inertiabox² / 3.
+    pub inertiabox: f64,
+    /// A mesh or gmsh type's file.
+    pub file: Option<String>,
+    /// A mesh type's `origin`.
+    pub origin: Option<[f64; 3]>,
+    /// The points' position in the holding body's frame.
+    pub pos: Vector3<f64>,
+    /// The points' orientation (w, x, y, z) as written, not made unit:
+    /// MuJoCo turns the points by it as written (`mjuu_rotVecQuat`).
+    pub quat: Vector4<f64>,
+    /// Alternative orientation as axis-angle.
+    pub axisangle: Option<Vector4<f64>>,
+    /// Alternative orientation as euler angles.
+    pub euler: Option<Vector3<f64>>,
+    /// Alternative orientation as x and y axes.
+    pub xyaxes: Option<[f64; 6]>,
+    /// Alternative orientation as the z axis.
+    pub zaxis: Option<Vector3<f64>>,
+    /// Every point on the holding body (`rigid`).
+    pub rigid: bool,
+    /// A direct type's points, x, y and z each.
+    pub point: Vec<f64>,
+    /// A direct type's elements, dim + 1 point ids each.
+    pub element: Vec<i32>,
+    /// Its vertex dofs.
+    pub dof: FlexcompDof,
+    /// Its pins.
+    pub pins: MjcfFlexcompPins,
+    /// Its `dim` as written (default 2), checked when it is made.
+    pub dim: i32,
+    /// Its flex's own values (its `radius` and `group`, and its `<contact>`,
+    /// `<elasticity>` and `<edge>`): MuJoCo's flex defaults where they are
+    /// not written, never a class's (MuJoCo makes the flex from a
+    /// default-constructed class, `xml_native_reader.cc:2707`).
+    pub flex: MjcfFlex,
+    /// Whether it holds a `<plugin>`.
+    pub plugin: bool,
+    /// The class its vertex bodies' joints and spheres take: the body
+    /// holding it's, set when the classes are applied (a frame around the
+    /// flexcomp gives it none, as in MuJoCo). It has no `class` attribute.
+    pub class: Option<String>,
+}
+
+impl Default for MjcfFlexcomp {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            kind: FlexcompType::Grid,
+            count: [10; 3],
+            spacing: [0.02; 3],
+            scale: [1.0; 3],
+            mass: 1.0,
+            inertiabox: 0.005,
+            file: None,
+            origin: None,
+            pos: Vector3::zeros(),
+            quat: Vector4::new(1.0, 0.0, 0.0, 0.0),
+            axisangle: None,
+            euler: None,
+            xyaxes: None,
+            zaxis: None,
+            rigid: false,
+            point: Vec::new(),
+            element: Vec::new(),
+            dof: FlexcompDof::Full,
+            pins: MjcfFlexcompPins::default(),
+            dim: 2,
+            flex: MjcfFlex::default(),
+            plugin: false,
+            class: None,
+        }
+    }
+}
+
+// ============================================================================
 // Body
 // ============================================================================
 
@@ -2650,11 +2841,14 @@ pub struct MjcfBody {
     pub frames: Vec<MjcfFrame>,
     /// Composite elements to be expanded during builder phase.
     pub composites: Vec<MjcfComposite>,
+    /// Flexcomps, each made during the builder phase into bodies that take
+    /// its place among this body's children.
+    pub flexcomps: Vec<MjcfFlexcomp>,
     /// Child bodies.
     #[cfg_attr(feature = "serde", serde(deserialize_with = "crate::stack::nested"))]
     pub children: Vec<MjcfBody>,
-    /// Its joints, geoms, sites, child bodies, frames and composites in the
-    /// order the document writes them, one entry each: the k-th
+    /// Its joints, geoms, sites, child bodies, frames, composites and
+    /// flexcomps in the order the document writes them, one entry each: the k-th
     /// [`MjcfItem::Geom`] is `geoms[k]`, and so on. MuJoCo 3.5.0 numbers a
     /// body's elements as it reads them, so the builder puts a frame's
     /// contents and a composite's bodies where the frame or composite is
@@ -2696,6 +2890,7 @@ impl Default for MjcfBody {
             sites: Vec::new(),
             frames: Vec::new(),
             composites: Vec::new(),
+            flexcomps: Vec::new(),
             children: Vec::new(),
             items: Vec::new(),
             parent: None,
@@ -4204,16 +4399,20 @@ pub struct MjcfFlex {
     /// Collision vertex radius `[m]`.
     pub radius: f64,
     /// A `<flex>`'s vertex bodies, one per vertex: each vertex is the body
-    /// it names, as MuJoCo 3.5.0's `vertbody`. Refused on a flexcomp, whose
-    /// vertex bodies the loader makes ([`FlexVertexBodies::Generated`]), as
-    /// the parser refuses `body` on one.
+    /// it names, as MuJoCo 3.5.0's `vertbody`; a body-level flexcomp's names
+    /// the bodies it made, and its holding body for a pinned point. Refused
+    /// on a `<deformable><flexcomp>`, whose vertex bodies the loader makes
+    /// ([`FlexVertexBodies::Generated`]), as the parser refuses `body` on one.
     pub body: Vec<String>,
     /// A `<flex>`'s `node` bodies (MuJoCo's trilinear interpolation): refused,
     /// a stated limitation, after MuJoCo's checks of its collisions, its node
     /// count, its node names and, with a Young's modulus, its element count;
-    /// empty when the attribute is omitted or empty. Refused on a flexcomp
-    /// built in code; a `<flexcomp>`'s in a document is not read (MuJoCo's
-    /// schema refuses it, Rigid-loading L47's).
+    /// empty when the attribute is omitted or empty; a body-level flexcomp of
+    /// an interpolated dof fills it, and its flex is refused for its node after
+    /// the keyframes (`D-FLEXCOMP-FORM`), a `<flex>`'s where the builder meets it.
+    /// Refused on a `<deformable><flexcomp>` built in code; such a
+    /// flexcomp's in a document is not read (MuJoCo's schema refuses it,
+    /// Rigid-loading L47's).
     pub node: Vec<String>,
     /// Visualization group (0-5).
     pub group: i32,
@@ -4318,8 +4517,9 @@ pub struct MjcfFlex {
 
     // --- Structural data arrays ---
     /// A `<flex>`'s `vertex`: each vertex's offset in its body (sim-mjcf
-    /// takes only zero offsets; empty when the attribute is omitted). Where
-    /// the loader makes the vertex bodies, each vertex's position.
+    /// takes only zero offsets, but a body-level flexcomp's on its holding
+    /// body; empty when the attribute is omitted). Where the loader makes the
+    /// vertex bodies (a `<deformable><flexcomp>`), each vertex's position.
     pub vertices: Vec<Vector3<f64>>,
     /// Element connectivity (each element is a list of vertex indices).
     pub elements: Vec<Vec<usize>>,
@@ -4327,14 +4527,20 @@ pub struct MjcfFlex {
     pub pinned: Vec<usize>,
     /// Where the vertex bodies come from.
     pub vertex_bodies: FlexVertexBodies,
+    /// The body holding the body-level `<flexcomp>` that made this flex, or
+    /// `None` for a `<flex>`: a vertex on it is a pinned point (every point of
+    /// a rigid flexcomp), which the builder gives a jointless body of its own
+    /// (registry `D-FLEX-PINNED-BODY`), and what sim-core does not take of
+    /// it is refused after the keyframes.
+    pub flexcomp_holder: Option<String>,
 }
 
 /// Where a flex's vertex bodies come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum FlexVertexBodies {
-    /// Each vertex is the body [`MjcfFlex::body`] names: a `<flex>`, as
-    /// MuJoCo 3.5.0's `vertbody`.
+    /// Each vertex is the body [`MjcfFlex::body`] names: a `<flex>`'s and a
+    /// body-level flexcomp's, as MuJoCo 3.5.0's `vertbody`.
     #[default]
     Named,
     /// The loader makes a body for each vertex: a `<deformable><flexcomp>`'s.
@@ -4392,6 +4598,7 @@ impl Default for MjcfFlex {
             elements: Vec::new(),
             pinned: Vec::new(),
             vertex_bodies: FlexVertexBodies::Named,
+            flexcomp_holder: None,
         }
     }
 }

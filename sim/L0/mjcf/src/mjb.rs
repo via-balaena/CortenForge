@@ -64,6 +64,8 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
 ///
+/// 17 since Rigid-loading PR RL-8b: `MjcfBody` and `MjcfFrame` took
+/// `flexcomps`, `MjcfItem` `Flexcomp`, and `MjcfFlex` `flexcomp_holder`.
 /// 16 since Rigid-loading PR RL-8a: `MjcfEquality` took `flexes`,
 /// `EqualityKind` `Flex`, and `MjcfFlex` `edge_equality` and `elastic2d`.
 /// 15 since Rigid-loading PR RL-7d: `MjcfOption`'s `o_margin` is kept as
@@ -89,7 +91,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// one below mjMINVAL is refused (Rigid-loading PR RL-3b): a version-6 file
 /// holds 0.0 there for a flexcomp that did not write it. 6 since `MjcfFlex`
 /// took `vertex_bodies` (Rigid-loading L10).
-pub const MJB_VERSION: u32 = 16;
+pub const MJB_VERSION: u32 = 17;
 
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;
@@ -604,6 +606,26 @@ mod tests {
         let bytes = save_mjb_bytes(&original).expect("should serialize");
         let loaded = load_mjb_bytes(&bytes).expect("should deserialize");
         assert_eq!(loaded, original);
+    }
+
+    #[test]
+    fn a_model_with_body_level_flexcomps_reads_back_and_builds_the_same() {
+        // A flexcomp in the world body (with a pin) and one in a frame in a
+        // body (with contact, edge and elasticity), each kept by `items`.
+        let xml = r#"<mujoco><worldbody><flexcomp name="w" type="grid" count="3 1 1" spacing="0.1 0.1 0.1" dim="1"><pin id="0"/></flexcomp><body name="b" pos="0 0 1"><geom size="0.1"/><frame pos="1 0 0"><flexcomp name="f" type="box" count="2 2 2" spacing="0.1 0.1 0.1" dim="2" mass="2" euler="0 0 30"><contact vertcollide="true"/><edge equality="true"/><elasticity young="10"/></flexcomp></frame></body></worldbody></mujoco>"#;
+        let original = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(original.worldbody.flexcomps.len(), 1);
+        let bytes = save_mjb_bytes(&original).expect("should serialize");
+        let loaded = load_mjb_bytes(&bytes).expect("should deserialize");
+        assert_eq!(loaded, original);
+        let (a, b) = (
+            crate::model_from_mjcf(&original, None).expect("builds"),
+            crate::model_from_mjcf(&loaded, None).expect("builds"),
+        );
+        assert_eq!(
+            (a.nbody, a.nflex, a.nflexvert, a.neq, &a.body_pos),
+            (b.nbody, b.nflex, b.nflexvert, b.neq, &b.body_pos)
+        );
     }
 
     #[test]

@@ -28,10 +28,9 @@ qfrc_gravcomp after mj_forward. The models, all with sleep enabled:
   nothing, two with damping only, and a tendon whose wraps reach tree 3
   before tree 2;
 - flex: a free body and a 2 x 2 flexcomp grid, whose four vertex bodies are
-  trees. sim-mjcf does not read a `<flexcomp>` under `<worldbody>` (the
-  book's Rigid-loading L47 refuses it), so the case also holds `ours_xml`,
-  the same grid in the `<deformable><flexcomp>` form sim-mjcf reads, which
-  the test loads;
+  trees. The case also holds `ours_xml`, the same grid in the
+  `<deformable><flexcomp>` form, which the test loads (MuJoCo refuses that
+  form; ledger L387);
 - gravcomp: a static body and a free body with gravity compensation;
 - tendon_one_tree: a stiff fixed tendon over two hinges of one tree, and a
   second tree.

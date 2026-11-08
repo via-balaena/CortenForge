@@ -1,0 +1,1 @@
+<mujoco><compiler inertiafromgeom="true"/><worldbody><flexcomp name="f" type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1" radius="0.01"><contact vertcollide="true"/></flexcomp></worldbody></mujoco>

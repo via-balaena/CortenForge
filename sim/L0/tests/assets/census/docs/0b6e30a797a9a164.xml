@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="p" euler="0 0 90"><flexcomp name="f" type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1"/></body><body name="mb" pos="3 0 0"><joint type="hinge"/></body></worldbody></mujoco>

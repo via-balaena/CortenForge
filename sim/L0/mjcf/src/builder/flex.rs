@@ -19,6 +19,30 @@ use crate::keywords;
 use crate::types::{FlexVertexBodies, MjcfFlex, MjcfGeom, MjcfGeomType, Prefix};
 use sim_core::{FlexSelfCollide, MjJointType};
 
+/// A flex whose vertices are named bodies, as the builder takes it: each
+/// vertex's world position, what each vertex is on, and whether the flex is
+/// rigid.
+struct NamedVertices {
+    flex: MjcfFlex,
+    on: Vec<VertexOn>,
+    rigid: bool,
+}
+
+/// MuJoCo's rule for a flex's `rigid` (`user_mesh.cc:4204-4213`): every
+/// vertex on one body, and never an interpolated flex.
+fn mujoco_rigid(flex: &MjcfFlex, bodies: &[usize]) -> bool {
+    flex.node.is_empty() && bodies.windows(2).all(|w| w[0] == w[1])
+}
+
+/// What a vertex of a flex with named vertex bodies is on.
+#[derive(Debug, Clone, Copy)]
+enum VertexOn {
+    /// The body of this id.
+    Body(usize),
+    /// A jointless body the builder makes for it (a pinned flexcomp point).
+    StandIn,
+}
+
 /// Number of coefficients per bending element in the discrete thin-shell model.
 /// Each edge hinge stores a 4×4 symmetric matrix (16 entries) + 1 rest-angle scalar = 17 values.
 const BENDING_COEFFS: usize = 17;
@@ -35,9 +59,11 @@ fn vertex_inertia(mass: f64, inertiabox: f64) -> f64 {
 }
 
 impl ModelBuilder {
-    /// Process flex deformable bodies: a `<flex>`'s vertices on the bodies it names, a
-    /// flexcomp's on a body each (+ 3 slide joints if unpinned); extract edges/hinges,
-    /// populate Model flex_* arrays.
+    /// Process flex deformable bodies: a `<flex>`'s vertices on the bodies it
+    /// names, a body-level flexcomp's on the bodies it made (a pinned point on
+    /// a jointless body made here), a `<deformable><flexcomp>`'s on a body each
+    /// (+ 3 slide joints if unpinned); extract edges/hinges, populate Model
+    /// flex_* arrays.
     ///
     /// MuJoCo architecture: flex vertices ARE bodies in the kinematic tree. `mj_crb`/`mj_rne`
     /// have zero flex-specific code — the standard rigid-body pipeline handles everything.
@@ -48,12 +74,24 @@ impl ModelBuilder {
             // bodies of their own below.
             let resolved;
             let mut vertex_bodies = None;
+            let mut named_rigid = false;
             let flex = if flex_orig.vertex_bodies == FlexVertexBodies::Named {
-                let (named, bodies) = self
-                    .resolve_vertex_bodies(flex_orig)
-                    .map_err(|e| e.with_location_if_unknown(at()))?;
-                resolved = named;
-                vertex_bodies = Some(bodies);
+                let named = match self.resolve_vertex_bodies(flex_orig) {
+                    Ok(named) => named,
+                    // A flexcomp's flex sim-core does not take: built with every
+                    // vertex fixed where it is, refused after the keyframes.
+                    Err(e @ MjcfError::Unsupported { .. })
+                        if flex_orig.flexcomp_holder.is_some() =>
+                    {
+                        self.flexcomp_fault
+                            .get_or_insert_with(|| (index, e.with_location_if_unknown(at())));
+                        self.fixed_flexcomp_vertices(flex_orig)
+                    }
+                    Err(e) => return Err(e.with_location_if_unknown(at())),
+                };
+                named_rigid = named.rigid;
+                resolved = named.flex;
+                vertex_bodies = Some(named.on);
                 &resolved
             } else {
                 // A flexcomp's checks; a `<flex>` has had them above.
@@ -81,9 +119,22 @@ impl ModelBuilder {
 
             let vert_start = self.nflexvert;
 
-            if let Some(bodies) = &vertex_bodies {
-                for (&body_id, pos) in bodies.iter().zip(&flex.vertices) {
-                    self.push_named_flex_vertex(flex, body_id, pos, flex_id);
+            if let Some(on) = &vertex_bodies {
+                for (vertex, pos) in on.iter().zip(&flex.vertices) {
+                    match *vertex {
+                        VertexOn::Body(body_id) => {
+                            self.push_named_flex_vertex(flex, body_id, pos, flex_id);
+                        }
+                        // A pinned flexcomp point: a jointless body of its own
+                        // at its world position (D-FLEX-PINNED-BODY), massless,
+                        // as MuJoCo makes no body for it.
+                        VertexOn::StandIn => {
+                            // The mass pipeline's bounds skip it: MuJoCo has no such body.
+                            self.flex_stand_ins.push(self.body_parent.len());
+                            self.create_flex_vertex_body(flex, pos, 0.0, true, flex_id)
+                                .map_err(|e| e.with_location_if_unknown(at()))?;
+                        }
+                    }
                 }
             } else {
                 // Compute per-vertex masses (uniform from mass attr, or element-based lumping)
@@ -113,11 +164,13 @@ impl ModelBuilder {
 
             // A flex whose vertices are named bodies is rigid when they are one
             // body (`mjCFlex::Compile`, `user_mesh.cc:4205-4213`), which
-            // `resolve_vertex_bodies` refuses. Where the loader makes the
-            // vertex bodies: when no vertex has an inverse mass.
-            let rigid = vertex_bodies.is_none()
-                && (vert_start..vert_start + flex.vertices.len())
-                    .all(|v| self.flexvert_invmass[v] == 0.0);
+            // `resolve_vertex_bodies` refuses of a `<flex>` and takes of a
+            // flexcomp's (every point on its holding body). Where the loader
+            // makes the vertex bodies: when no vertex has an inverse mass.
+            let rigid = named_rigid
+                || (vertex_bodies.is_none()
+                    && (vert_start..vert_start + flex.vertices.len())
+                        .all(|v| self.flexvert_invmass[v] == 0.0));
 
             // Extract edges from element connectivity
             let (edge_start, edge_key_to_global) =
@@ -278,7 +331,7 @@ impl ModelBuilder {
     /// Returns the flex with each vertex's world position, its body's at
     /// compile time (MuJoCo's centered flex: `vertxpos` is the body's
     /// `xpos0`), and the vertex bodies' ids.
-    fn resolve_vertex_bodies(&self, flex: &MjcfFlex) -> Result<(MjcfFlex, Vec<usize>)> {
+    fn resolve_vertex_bodies(&self, flex: &MjcfFlex) -> Result<NamedVertices> {
         let refuse = |attribute: &str, reason: &str| {
             MjcfError::invalid_value("flex", attribute, reason.to_string())
         };
@@ -348,6 +401,9 @@ impl ModelBuilder {
                 "a flex's node (MuJoCo's trilinear interpolation)",
             ));
         }
+        if let Some(holder) = flex.flexcomp_holder.as_deref() {
+            return self.resolve_flexcomp_vertices(flex, holder, &bodies);
+        }
         if bodies.len() == 1 && nvert > 1 {
             return Err(MjcfError::unsupported(
                 "one body for every vertex (MuJoCo's rigid flex)",
@@ -365,34 +421,8 @@ impl ModelBuilder {
                 "a vertex away from its body's origin (a nonzero vertex offset)",
             ));
         }
-        let axes = [Vector3::x(), Vector3::y(), Vector3::z()];
         for (name, &id) in flex.body.iter().zip(&bodies) {
-            let (adr, num) = (self.body_jnt_adr[id], self.body_jnt_num[id]);
-            let three_slides = num == 3
-                && (0..3).all(|k| {
-                    self.jnt_type[adr + k] == MjJointType::Slide
-                        && self.jnt_axis[adr + k] == axes[k]
-                });
-            if num != 0 && !three_slides {
-                return Err(MjcfError::unsupported(format!(
-                    "vertex body '{name}' has joints other than three slides along x, y and z"
-                )));
-            }
-            if id == 0 {
-                continue;
-            }
-            if num != 0 && self.body_world_quat[id - 1].angle() != 0.0 {
-                return Err(MjcfError::unsupported(format!(
-                    "vertex body '{name}' is rotated"
-                )));
-            }
-            // Slides turn with a mocap body above them; a jointless vertex
-            // on one has no dofs to misread.
-            if self.moves_with(self.body_parent[id], num != 0) {
-                return Err(MjcfError::unsupported(format!(
-                    "vertex body '{name}' moves with a body above it"
-                )));
-            }
+            self.check_vertex_body(name, id)?;
         }
 
         let vertices = bodies
@@ -405,13 +435,145 @@ impl ModelBuilder {
                 }
             })
             .collect();
-        Ok((
-            MjcfFlex {
+        Ok(NamedVertices {
+            flex: MjcfFlex {
                 vertices,
                 ..flex.clone()
             },
-            bodies,
-        ))
+            on: bodies.into_iter().map(VertexOn::Body).collect(),
+            rigid: false,
+        })
+    }
+
+    /// A body-level flexcomp's flex, past MuJoCo's checks of a flex: each
+    /// vertex on the holding body (a pinned point, or every point of a rigid
+    /// flexcomp) gets a jointless body of its own at its world position
+    /// (`D-FLEX-PINNED-BODY`), which needs the holding body fixed to the
+    /// world; each other vertex is on the body the flexcomp made it, held to
+    /// the subset sim-core takes as a `<flex>`'s vertex bodies are. Rigid by
+    /// MuJoCo's rule: every vertex on one body (`user_mesh.cc:4204-4213`).
+    fn resolve_flexcomp_vertices(
+        &self,
+        flex: &MjcfFlex,
+        holder: &str,
+        bodies: &[usize],
+    ) -> Result<NamedVertices> {
+        // Gone under fusestatic where no vertex names it, as in MuJoCo, whose
+        // flex names the holding body only for a point on it.
+        let holder_id = self.body_name_to_id.get(holder).copied();
+        let nvert = if flex.vertices.is_empty() {
+            bodies.len()
+        } else {
+            flex.vertices.len()
+        };
+        let body_of = |k: usize| {
+            if bodies.len() == 1 {
+                bodies[0]
+            } else {
+                bodies[k]
+            }
+        };
+        let mut on = Vec::with_capacity(nvert);
+        for k in 0..nvert {
+            let id = body_of(k);
+            if Some(id) == holder_id {
+                if self.moves_with(id, true) {
+                    return Err(MjcfError::unsupported(format!(
+                        "a pinned point of flexcomp '{}' on body '{holder}', which moves",
+                        flex.name
+                    )));
+                }
+                on.push(VertexOn::StandIn);
+            } else {
+                self.check_vertex_body(&flex.body[k], id)?;
+                on.push(VertexOn::Body(id));
+            }
+        }
+        Ok(NamedVertices {
+            flex: MjcfFlex {
+                vertices: self.flexcomp_world_vertices(flex, bodies, nvert),
+                ..flex.clone()
+            },
+            on,
+            rigid: mujoco_rigid(flex, bodies),
+        })
+    }
+
+    /// A flexcomp flex sim-core does not take, built with every vertex fixed
+    /// at its world position, to be refused after the keyframes.
+    fn fixed_flexcomp_vertices(&self, flex: &MjcfFlex) -> NamedVertices {
+        let bodies: Vec<usize> = flex
+            .body
+            .iter()
+            .map(|name| self.body_name_to_id.get(name).copied().unwrap_or(0))
+            .collect();
+        let nvert = if flex.vertices.is_empty() {
+            bodies.len()
+        } else {
+            flex.vertices.len()
+        };
+        NamedVertices {
+            flex: MjcfFlex {
+                vertices: self.flexcomp_world_vertices(flex, &bodies, nvert),
+                ..flex.clone()
+            },
+            on: vec![VertexOn::StandIn; nvert],
+            rigid: mujoco_rigid(flex, &bodies),
+        }
+    }
+
+    /// Each vertex's world position: its body's pose applied to its offset.
+    fn flexcomp_world_vertices(
+        &self,
+        flex: &MjcfFlex,
+        bodies: &[usize],
+        nvert: usize,
+    ) -> Vec<Vector3<f64>> {
+        (0..nvert)
+            .map(|k| {
+                let id = if bodies.len() == 1 {
+                    bodies[0]
+                } else {
+                    bodies[k]
+                };
+                let offset = flex.vertices.get(k).copied().unwrap_or_else(Vector3::zeros);
+                let (pos, quat) = self.body_world_pose(id);
+                pos + quat * offset
+            })
+            .collect()
+    }
+
+    /// A vertex body held to the subset sim-core takes: jointless with no
+    /// joint above it, or three slides along x, y and z, unrotated, with no
+    /// joint or mocap body above it.
+    fn check_vertex_body(&self, name: &str, id: usize) -> Result<()> {
+        let axes = [Vector3::x(), Vector3::y(), Vector3::z()];
+        let (adr, num) = (self.body_jnt_adr[id], self.body_jnt_num[id]);
+        let three_slides = num == 3
+            && (0..3).all(|k| {
+                self.jnt_type[adr + k] == MjJointType::Slide && self.jnt_axis[adr + k] == axes[k]
+            });
+        if num != 0 && !three_slides {
+            return Err(MjcfError::unsupported(format!(
+                "vertex body '{name}' has joints other than three slides along x, y and z"
+            )));
+        }
+        if id == 0 {
+            return Ok(());
+        }
+        if num != 0 && self.body_world_quat[id - 1].angle() != 0.0 {
+            return Err(MjcfError::unsupported(format!(
+                "vertex body '{name}' is rotated"
+            )));
+        }
+        // Slides turn with a mocap body above them; a jointless vertex
+        // on one has no dofs to misread.
+        if self.moves_with(self.body_parent[id], num != 0) {
+            return Err(MjcfError::unsupported(format!(
+                "vertex body '{name}' moves with a body above it"
+            )));
+        }
+        Ok(())
     }
 
     /// One vertex of a flex whose vertices are named bodies: the `flexvert_*`
@@ -445,7 +607,9 @@ impl ModelBuilder {
     }
 
     /// Create a body (+ 3 slide joints for unpinned vertices) for one vertex
-    /// of a `<deformable><flexcomp>`, on the world body.
+    /// of a `<deformable><flexcomp>`, on the world body, or the jointless,
+    /// massless stand-in of a body-level flexcomp's pinned point
+    /// (`D-FLEX-PINNED-BODY`).
     ///
     /// Pushes body, joint, DOF, qpos, and flexvert arrays for the vertex at `pos`.
     /// Pinned vertices get a body with no joints/DOFs; unpinned get 3 slide joints (X, Y, Z),
@@ -462,7 +626,8 @@ impl ModelBuilder {
 
         // `check_flexcomp` has refused a mass below mjMINVAL, the density path
         // floors each vertex's, and the caller a mass that is not finite, so
-        // `mass` is positive and finite.
+        // `mass` is positive and finite; a pinned flexcomp point's stand-in
+        // body's is 0, and pinned.
         let inv_mass = if pinned { 0.0 } else { 1.0 / mass };
 
         self.nflexvert += 1;

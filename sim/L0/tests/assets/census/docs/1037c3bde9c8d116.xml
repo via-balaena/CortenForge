@@ -1,0 +1,1 @@
+<mujoco><worldbody><flexcomp name="f" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"><pin range="0 3"/><edge equality="true"/></flexcomp></worldbody></mujoco>

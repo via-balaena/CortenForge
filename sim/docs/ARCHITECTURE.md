@@ -473,8 +473,9 @@ and the sim-mjcf `builder/flex.rs` module.
 | 3D (solid) | Tetrahedral volumetric meshes | `<flexcomp type="box">` |
 
 **Architecture:** A flex vertex's DOFs are its body's: a `<flex>`'s vertex
-bodies are declared bodies, wherever they sit in the tree; a flexcomp's are
-appended after every other body. Edge constraints enter the unified Jacobian as a flex equality's
+bodies are declared bodies, wherever they sit in the tree; a body-level
+`<flexcomp>`'s take its place among its holding body's children, as MuJoCo's,
+and a `<deformable><flexcomp>`'s are appended after every other body. Edge constraints enter the unified Jacobian as a flex equality's
 rows (`EqualityType::Flex`, one per non-rigid edge).
 Bending acts as passive spring-damper forces in `mj_fwd_passive()` (matching
 MuJoCo `engine_passive.c`). Flex-rigid contacts are regular `Contact` entries

@@ -1,0 +1,1 @@
+<mujoco><default><joint damping="0.5" range="-1 1"/><geom contype="3" group="1" friction="0.7"/><default class="X"><joint damping="0.7"/></default><default class="Y"><joint damping="0.9"/></default></default><worldbody><flexcomp name="f" type="grid" count="2 1 1" spacing="0.1 0.1 0.1" dim="1"><contact vertcollide="true"/></flexcomp></worldbody></mujoco>
