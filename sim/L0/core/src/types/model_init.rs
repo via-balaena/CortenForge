@@ -1173,9 +1173,8 @@ impl Model {
         }
         // MuJoCo's reset runs `mj_forward`, which checks no timestep (a
         // timestep at or below 0 is refused only with history buffers,
-        // before this) and raises on a tendon equality with sleep.
-        crate::forward::check::check_tendon_equality_sleep(self)
-            .map_err(InitSleepRefusal::Forward)?;
+        // before this) and raises on a tendon or flex equality with sleep.
+        crate::forward::check::check_equality_sleep(self).map_err(InitSleepRefusal::Forward)?;
         data.forward_skip_unchecked(self, MjStage::None, false)
             .map_err(InitSleepRefusal::Forward)?;
         for t in 0..self.ntree {

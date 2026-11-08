@@ -99,6 +99,7 @@ fn empty_flex_edge_rows_are_not_made() {
               <elasticity young="1e4" damping="0.1"/>
             </flex>
           </deformable>
+          <equality><flex flex="rope"/></equality>
         </mujoco>"#,
     )
     .expect("load");

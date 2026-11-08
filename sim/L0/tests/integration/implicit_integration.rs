@@ -1892,8 +1892,8 @@ fn implicit_steps_follow_the_spring_and_damper_flags_as_mujoco_3_5_0() {
 /// Flex edge damping enters the implicit integrators' `D`, as MuJoCo's
 /// `mjd_passive_vel` adds it (`engine_derivative.c:1737-1758`): a two-vertex
 /// cable with its first vertex pinned, so the edge's `−b · JᵀJ` lies within
-/// the free vertex's three dofs, equality constraints disabled (our `<flex>`
-/// adds edge equalities). MuJoCo 3.5.0 (unfused build) steps the same cable
+/// the free vertex's three dofs, equality constraints disabled. MuJoCo 3.5.0
+/// (unfused build) steps the same cable
 /// as a jointless anchor body and a body with three slides and a 0.1 kg
 /// sphere under `<flex body="anchor v1">`, 20 steps of 0.002 s from qvel
 /// (0.4, 0.7, -0.5). Both steps match it: under implicitfast MuJoCo leaves

@@ -17,7 +17,7 @@ use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::keywords;
 use crate::types::{FlexVertexBodies, MjcfFlex, MjcfGeom, MjcfGeomType, Prefix};
-use sim_core::{EqualityType, FlexSelfCollide, MjJointType};
+use sim_core::{FlexSelfCollide, MjJointType};
 
 /// Number of coefficients per bending element in the discrete thin-shell model.
 /// Each edge hinge stores a 4×4 symmetric matrix (16 entries) + 1 rest-angle scalar = 17 values.
@@ -123,14 +123,8 @@ impl ModelBuilder {
             let (edge_start, edge_key_to_global) =
                 self.extract_flex_edges(flex, vert_start, flex_id, rigid);
 
-            // Extract bending hinges from adjacent elements + compute bending coefficients
-            self.extract_flex_bending_hinges(
-                flex,
-                vert_start,
-                flex_id,
-                edge_start,
-                &edge_key_to_global,
-            );
+            // A dim-2 flex's flaps, hinges and bending coefficients
+            self.extract_flex_flaps(flex, vert_start, flex_id, edge_start, &edge_key_to_global);
 
             // Process elements
             for elem in &flex.elements {
@@ -155,18 +149,6 @@ impl ModelBuilder {
                 self.nflexelem += 1;
             }
 
-            // The flex's edge equality, with the edge solref and the flex's
-            // solimp: every flex holds its edges until the parser reads
-            // `<equality><flex>` (Rigid-loading L31).
-            let edge_solref = compute_edge_solref(flex);
-            self.eq_type.push(EqualityType::Flex);
-            self.eq_obj1id.push(flex_id);
-            self.eq_obj2id.push(usize::MAX);
-            self.eq_data.push([0.0; 11]);
-            self.eq_active.push(true);
-            self.eq_solref.push(edge_solref);
-            self.eq_solimp.push(flex.solimp);
-            self.eq_name.push(None);
             let k_bend = compute_bend_stiffness_from_material(flex);
             let b_bend = compute_bend_damping_from_material(flex, k_bend);
 
@@ -680,19 +662,26 @@ impl ModelBuilder {
         // all weld to the world.
         let weld = |v: usize| self.weld_id(self.flexvert_bodyid[vert_start + v]);
         self.flexedge_rigid.push(rigid || weld(a) == weld(b));
-        // §42B S1: Initialize flexedge_flap to [-1, -1] (boundary default).
+        // §42B S1: no flap until `extract_flex_flaps` fills a dim-2 flex's.
         self.flexedge_flap.push([-1, -1]);
         // §42B S2+S3: Initialize flex_bending to zeros per edge.
         self.flex_bending.extend_from_slice(&[0.0; BENDING_COEFFS]);
     }
 
-    /// Extract bending hinges from adjacent elements and compute bending coefficients.
+    /// The flaps, hinges and cotangent bending coefficients of a dim-2 flex
+    /// that bends (`elastic2d` bend or both: MuJoCo stores `flex_edgeflap`
+    /// then only, `user_model.cc:3504-3510`); any other flex has none.
     ///
-    /// For each interior edge (shared by exactly 2 elements), finds the opposite
-    /// vertices, computes the rest dihedral angle, populates `flexhinge_*` arrays,
-    /// and fills `flexedge_flap`. Then computes cotangent bending coefficients for
-    /// dim==2 shells with valid material properties.
-    fn extract_flex_bending_hinges(
+    /// The flaps are MuJoCo's (`CreateFlapStencil`, `user_mesh.cc:3667-3717`):
+    /// each triangle in order, its edges `(1,2) (2,0) (0,1)`; the first
+    /// triangle holding an edge stores the vertex opposite it in slot 0 and
+    /// leaves slot 1 at -1, and a later one stores its opposite vertex in slot
+    /// 1, so an edge of three triangles would keep the first and the last
+    /// ([`check_flex_elasticity`] refuses one). The
+    /// hinges (this crate's Bridson bending) are the edges whose flap has both
+    /// slots, in edge order; the coefficients are computed for those edges
+    /// when the material has `young > 0` and `thickness > 0`.
+    fn extract_flex_flaps(
         &mut self,
         flex: &MjcfFlex,
         vert_start: usize,
@@ -700,60 +689,51 @@ impl ModelBuilder {
         edge_start: usize,
         edge_key_to_global: &std::collections::HashMap<(usize, usize), usize>,
     ) {
-        // Each edge's elements, in element order, the edges in their order.
-        let mut edge_elements: Vec<Vec<usize>> = vec![Vec::new(); self.nflexedge - edge_start];
-        for (elem_idx, verts) in flex.elements.iter().enumerate() {
-            for &(i, j) in ELEMENT_EDGES[flex.dim - 1] {
-                let key = (verts[i].min(verts[j]), verts[i].max(verts[j]));
-                if let Some(&global_e) = edge_key_to_global.get(&key) {
-                    edge_elements[global_e - edge_start].push(elem_idx);
-                }
-            }
+        if flex.dim != 2 || !flex.elastic2d.bends() {
+            return;
         }
-        for (local_e, elems) in edge_elements.iter().enumerate() {
-            if elems.len() != 2 {
-                continue; // boundary edge
-            }
-            let global_e = edge_start + local_e;
-            let ve0 = self.flexedge_vert[global_e][0] - vert_start;
-            let ve1 = self.flexedge_vert[global_e][1] - vert_start;
-            let opp_a = flex.elements[elems[0]]
-                .iter()
-                .find(|&&v| v != ve0 && v != ve1)
-                .copied();
-            let opp_b = flex.elements[elems[1]]
-                .iter()
-                .find(|&&v| v != ve0 && v != ve1)
-                .copied();
-            if let (Some(va), Some(vb)) = (opp_a, opp_b) {
-                let rest_angle = compute_dihedral_angle(
-                    flex.vertices[ve0],
-                    flex.vertices[ve1],
-                    flex.vertices[va],
-                    flex.vertices[vb],
-                );
-                self.flexhinge_vert.push([
-                    vert_start + ve0,
-                    vert_start + ve1,
-                    vert_start + va,
-                    vert_start + vb,
-                ]);
-                self.flexhinge_angle0.push(rest_angle);
-                self.flexhinge_flexid.push(flex_id);
-                self.nflexhinge += 1;
-
-                // §42B S1: Populate flexedge_flap for this interior edge.
+        for elem in &flex.elements {
+            for &(i, j) in ELEMENT_EDGES[1] {
+                let key = (elem[i].min(elem[j]), elem[i].max(elem[j]));
+                let Some(&global_e) = edge_key_to_global.get(&key) else {
+                    continue;
+                };
+                // MuJoCo's opposite vertex: the one after the edge's second.
                 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-                {
-                    self.flexedge_flap[global_e] =
-                        [(vert_start + va) as i32, (vert_start + vb) as i32];
+                let opposite = (vert_start + elem[(j + 1) % 3]) as i32;
+                let flap = &mut self.flexedge_flap[global_e];
+                if flap[0] == -1 {
+                    flap[0] = opposite;
+                } else {
+                    flap[1] = opposite;
                 }
             }
         }
+        for global_e in edge_start..self.nflexedge {
+            let [va, vb] = self.flexedge_flap[global_e];
+            if vb == -1 {
+                continue; // a boundary edge
+            }
+            let [ve0, ve1] = self.flexedge_vert[global_e];
+            // Both slots hold vertex indices here: a slot is -1 only while no
+            // triangle has filled it, and slot 0 is filled before slot 1.
+            #[allow(clippy::cast_sign_loss)]
+            let (va, vb) = (va as usize, vb as usize);
+            let rest_angle = compute_dihedral_angle(
+                flex.vertices[ve0 - vert_start],
+                flex.vertices[ve1 - vert_start],
+                flex.vertices[va - vert_start],
+                flex.vertices[vb - vert_start],
+            );
+            self.flexhinge_vert.push([ve0, ve1, va, vb]);
+            self.flexhinge_angle0.push(rest_angle);
+            self.flexhinge_flexid.push(flex_id);
+            self.nflexhinge += 1;
+        }
 
-        // §42B S2+S3: Compute cotangent bending coefficients for dim==2
-        // flex with valid material (young > 0, thickness > 0).
-        if flex.dim == 2 && flex.young > 0.0 && flex.thickness > 0.0 {
+        // §42B S2+S3: Compute cotangent bending coefficients for a flex with
+        // valid material (young > 0, thickness > 0).
+        if flex.young > 0.0 && flex.thickness > 0.0 {
             let mu = flex.young / (2.0 * (1.0 + flex.poisson));
             let num_edges = self.nflexedge - edge_start;
             for local_e in 0..num_edges {
@@ -844,6 +824,74 @@ pub fn check_flex_condims(flexes: &[MjcfFlex]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// MuJoCo's check of a dim-2 flex that bends, with a Young's modulus
+/// (`mjCFlex::Compile`, `user_mesh.cc:4363-4367`): a thickness that is not
+/// negative ("thickness must be positive for bending stiffness"; 0 loads,
+/// with no bending).
+pub fn check_flex_bending_thickness(flexes: &[MjcfFlex]) -> Result<()> {
+    for (i, flex) in flexes.iter().enumerate() {
+        if flex.dim == 2 && flex.elastic2d.bends() && flex.young > 0.0 && flex.thickness < 0.0 {
+            return Err(MjcfError::invalid_value(
+                "elasticity",
+                "thickness",
+                "thickness must be positive for bending stiffness",
+            )
+            .at(Location::nth(ElementKind::Flex, Some(&flex.name), i)));
+        }
+    }
+    Ok(())
+}
+
+/// The flex elasticity this crate refuses where MuJoCo computes it or takes
+/// it as given: a dim-2 flex's stretching where MuJoCo makes its membrane,
+/// with a Young's modulus and a positive thickness (`user_mesh.cc:4351-4355`;
+/// sim-core has none, `D-FLEX-MEMBRANE`); a dim-3 flex's Young's modulus,
+/// MuJoCo's tetrahedral elasticity (`:4356-4360`; sim-core has none,
+/// `D-FLEX-TET-ELASTICITY`); and an edge of three or more triangles in a flex
+/// that bends, where MuJoCo pairs the first and the last (`CreateFlapStencil`,
+/// `:3705`) and leaves out the others (`D-FLEX-BEND-NONMANIFOLD`).
+pub fn check_flex_elasticity(flexes: &[MjcfFlex]) -> Result<()> {
+    for (i, flex) in flexes.iter().enumerate() {
+        let at = || Location::nth(ElementKind::Flex, Some(&flex.name), i);
+        if flex.dim == 2 && flex.elastic2d.stretches() && flex.young > 0.0 && flex.thickness > 0.0 {
+            return Err(MjcfError::unsupported(
+                "a flex's stretching (elastic2d stretch or both, MuJoCo's membrane elasticity)",
+            )
+            .at(at()));
+        }
+        if flex.dim == 3 && flex.young > 0.0 {
+            return Err(MjcfError::unsupported(
+                "a dim-3 flex's Young's modulus (MuJoCo's tetrahedral elasticity)",
+            )
+            .at(at()));
+        }
+        if flex.dim == 2 && flex.elastic2d.bends() && has_an_edge_of_three_triangles(flex) {
+            return Err(MjcfError::invalid_model(
+                "an edge of three or more triangles in a flex that bends",
+            )
+            .at(at()));
+        }
+    }
+    Ok(())
+}
+
+/// Whether three of a dim-2 flex's triangles hold one edge.
+fn has_an_edge_of_three_triangles(flex: &MjcfFlex) -> bool {
+    let mut held = std::collections::HashMap::new();
+    for elem in &flex.elements {
+        for &(i, j) in ELEMENT_EDGES[1] {
+            let count = held
+                .entry((elem[i].min(elem[j]), elem[i].max(elem[j])))
+                .or_insert(0_u32);
+            *count += 1;
+            if *count == 3 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// With `vertcollide`, a sphere's radius, the flex's, positive, as MuJoCo's
@@ -1185,39 +1233,16 @@ fn compute_dihedral_angle(
     sin_theta.atan2(cos_theta)
 }
 
-/// Compute per-flex edge constraint solref.
-///
-/// MuJoCo architecture note: Edge constraint solref comes from the equality
-/// constraint definition (eq_solref), not from material properties. The
-/// `<edge stiffness="..." damping="..."/>` attributes control passive spring-
-/// damper forces (applied in `mj_fwd_passive`), not constraint solver params.
-///
-/// Our current architecture uses flex-level solref for all edge constraints,
-/// which matches MuJoCo's behavior when no explicit equality constraint
-/// overrides are defined.
-fn compute_edge_solref(flex: &MjcfFlex) -> [f64; 2] {
-    flex.solref
-}
-
-/// Compute bending stiffness from material properties (passive force coefficient).
-///
-/// For dim=2 (shells): Kirchhoff-Love thin plate bending stiffness
-///   D = E * t^3 / (12 * (1 - nu^2))
-/// For dim=3 (solids): characteristic stiffness D = E
-///   (the Bridson dihedral gradient provides geometric scaling)
-/// For dim=1 (cables): 0.0 (no bending)
+/// The bending stiffness the Bridson bending reads (`flex_bend_stiffness`)
+/// of a dim-2 flex that bends: the Kirchhoff-Love thin-plate stiffness
+/// `D = E t³ / (12 (1 − ν²))`. 0 for any other flex, or without a Young's
+/// modulus.
 fn compute_bend_stiffness_from_material(flex: &MjcfFlex) -> f64 {
-    if flex.young <= 0.0 {
+    if flex.dim != 2 || !flex.elastic2d.bends() || flex.young <= 0.0 {
         return 0.0;
     }
-    match flex.dim {
-        2 => {
-            let nu = flex.poisson.clamp(0.0, 0.499);
-            flex.young * flex.thickness.powi(3) / (12.0 * (1.0 - nu * nu))
-        }
-        3 => flex.young,
-        _ => 0.0,
-    }
+    let nu = flex.poisson.clamp(0.0, 0.499);
+    flex.young * flex.thickness.powi(3) / (12.0 * (1.0 - nu * nu))
 }
 
 /// Compute bending damping from material properties.

@@ -23,7 +23,7 @@ DT-87/88 share a "Flexcomp Completeness" spec (T2). The rest
 | DT-72 | §36 | Flex contacts not wired for adhesion — AC12 test documented skip | Low | T1 |
 | DT-73 | §6B | Volume constraints — no MuJoCo equivalent; emergent from continuum model | Low | T3 |
 | ~~DT-85~~ | §27B | ~~Flex `<contact>` runtime attributes not wired: `internal`, `activelayers`, `vertcollide`, `passive`~~ **DONE** — Phase 7 T1 (commit `cf76731`). Parse + store + wire to Model arrays. | Low | T1 |
-| DT-86 | §27B | `elastic2d` keyword on `<flex><elasticity>` — model selection `[none, bend, stretch, both]` | Low | T1 |
+| ~~DT-86~~ | §27B | ~~`elastic2d` keyword on `<flex><elasticity>` — model selection `[none, bend, stretch, both]`~~ **Done** -- read as MuJoCo's: a dim-2 flex bends only under `bend` or `both`; a membrane (`stretch` or `both` with a Young's modulus and a positive thickness) is refused, a stated limitation (`D-FLEX-MEMBRANE`; Rigid-loading PR RL-8a, book L32) | Low | T1 |
 | DT-87 | §27D | Shared-body flex vertices — multiple vertices referencing same body's DOFs not implemented | Low | T2 |
 | ~~DT-88~~ | §27E | ~~`<flexcomp>` deferred physics attributes: `inertiabox`, `scale`, `quat`, `file`~~ **DONE** — Phase 7 Spec C (commit `05ee0a5`). Documentation-fidelity only (not in MuJoCo 3.5.0 binary). | Low | T2 |
 | DT-89 | §27E | `<flexcomp>` deferred rendering attributes: `flatskin`, `material`, `rgba` | Low | T1 |

@@ -1,0 +1,1 @@
+<mujoco><default></default><worldbody></worldbody><deformable><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><edge equality="vert"/><elasticity elastic2d="stretch"/><contact contype="0" conaffinity="0"/></flexcomp></deformable><equality></equality></mujoco>

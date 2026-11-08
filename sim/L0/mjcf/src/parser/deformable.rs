@@ -8,7 +8,9 @@ use std::io::BufRead;
 use crate::error::{MjcfError, Result};
 use crate::keywords;
 
-use crate::types::{FlexVertexBodies, MjcfFlex, MjcfSkin, MjcfSkinBone, MjcfSkinVertex};
+use crate::types::{
+    FlexVertexBodies, MjcfFlex, MjcfFlexcompEdgeEquality, MjcfSkin, MjcfSkinBone, MjcfSkinVertex,
+};
 
 use super::attrs::{Attrs, skip_element};
 
@@ -273,8 +275,20 @@ pub(super) fn parse_flex_elasticity_attrs(e: &BytesStart, flex: &mut MjcfFlex) -
     if let Some(thickness) = a.real("thickness")? {
         flex.thickness = thickness;
     }
-    // §42B S4: bending_model, an extension attribute.
+    if let Some(elastic2d) = a.keyword("elastic2d", keywords::elastic2d)? {
+        flex.elastic2d = elastic2d;
+    }
+    // §42B S4: bending_model, an extension attribute, written only beside
+    // `elastic2d` bend or both. MuJoCo reads one `<elasticity>` (its schema
+    // refuses a second), so the `elastic2d` beside it is the flex's.
     if let Some(model) = a.keyword("bending_model", keywords::bending_model)? {
+        if !flex.elastic2d.bends() {
+            return Err(MjcfError::invalid_value(
+                "elasticity",
+                "bending_model",
+                "a bending model needs elastic2d bend or both",
+            ));
+        }
         flex.bending_model = model;
     }
     Ok(())
@@ -290,6 +304,29 @@ pub(super) fn parse_flex_edge_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> Resu
     if let Some(damping) = a.real("damping")? {
         flex.edge_damping = damping;
     }
+    Ok(())
+}
+
+/// Parse a `<flexcomp>`'s `<edge>`: its passive coefficients, and the edge
+/// equality it asks for with that equality's `solref` and `solimp`
+/// (`xml_native_reader.cc:2769-2775`). `equality="vert"` (MuJoCo's
+/// `mjEQ_FLEXVERT`) is kept as asked: the builder refuses the equality it
+/// makes after the keyframes (registry `D-FLEX-VERT-EQUALITY`).
+fn parse_flexcomp_edge_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> Result<()> {
+    parse_flex_edge_attrs(e, flex)?;
+    let a = Attrs::new(e)?;
+    let equality = a.keyword("equality", keywords::flex_edge_equality)?;
+    let (solref, solimp) = (a.prefix("solref")?, a.prefix("solimp")?);
+    let vertices = match equality {
+        None | Some(keywords::FlexEdgeEquality::None) => return Ok(()),
+        Some(keywords::FlexEdgeEquality::Edges) => false,
+        Some(keywords::FlexEdgeEquality::Vertices) => true,
+    };
+    flex.edge_equality = Some(MjcfFlexcompEdgeEquality {
+        solref,
+        solimp,
+        vertices,
+    });
     Ok(())
 }
 
@@ -316,7 +353,7 @@ pub(super) fn parse_flexcomp<R: BufRead>(
                 match e.name().as_ref() {
                     b"contact" => parse_flex_contact_attrs(e, &mut flex)?,
                     b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex)?,
-                    b"edge" => parse_flex_edge_attrs(e, &mut flex)?,
+                    b"edge" => parse_flexcomp_edge_attrs(e, &mut flex)?,
                     b"pin" => {
                         if let Some(ids) = indices(&Attrs::new(e)?, "id")? {
                             flex.pinned.extend(ids);
@@ -336,6 +373,15 @@ pub(super) fn parse_flexcomp<R: BufRead>(
         buf.clear();
     }
 
+    // MuJoCo refuses a flexcomp that stretches beside the equality its
+    // `<edge>` asks for, `vert` too (`xml_native_reader.cc:2789-2791`).
+    if flex.elastic2d.stretches() && flex.edge_equality.is_some() {
+        return Err(MjcfError::invalid_value(
+            "flexcomp",
+            "elastic2d",
+            "elasticity and edge constraints cannot both be present",
+        ));
+    }
     Ok(flex)
 }
 

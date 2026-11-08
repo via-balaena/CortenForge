@@ -68,6 +68,21 @@
 //! crate checks those as it reads each sensor, before RL-7d's, and a timestep
 //! not above zero (`D-OPTION-TIMESTEP`) before all of them, and names them:
 //! `SENSOR_COSTS` (ledger L353).
+//! RL-8a's checks of a flex (book L31, L32): a bending flex's thickness runs
+//! with RL-6a's, after the bodies' and before the height fields' sizes, as
+//! MuJoCo compiles the flexes before the height fields; a flex equality's
+//! flex (unknown, or rigid) after the height fields' and before the
+//! tendons', in index order, as MuJoCo compiles the equalities. A
+//! flexcomp's stretch beside the equality its `<edge>` asks for is refused
+//! while parsing, as MuJoCo's reader refuses it. A flex vertex equality
+//! (`D-FLEX-VERT-EQUALITY`) and an empty `flex` beside an unnamed flex
+//! (`D-FLEX-EQ-NO-NAME`), which MuJoCo makes, and a flex's membrane, a dim-3
+//! flex's Young's modulus and an edge of three triangles in a flex that
+//! bends (`D-FLEX-MEMBRANE`, `D-FLEX-TET-ELASTICITY`,
+//! `D-FLEX-BEND-NONMANIFOLD`), which MuJoCo computes, are refused after the
+//! keyframes. Where MuJoCo checks a flex before a fault this crate meets
+//! while parsing or before RL-6a's checks, this crate names that fault:
+//! `FLEX_COSTS` (ledger L353).
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, with the reason its row gives as MuJoCo's (RL-6a's measured
@@ -89,7 +104,11 @@
 //! distance beside another fault: in `TWO_FAULTS`, sixteen of the 87
 //! two-fault documents generated at its start; in `SENSOR_COSTS`, the twelve
 //! of the 87 this crate names otherwise and its review's first round's
-//! nineteen.
+//! nineteen. RL-8a's (measured 2026-11-07, a flexcomp written in a body for
+//! MuJoCo; most of them its review's first round's, RA's) set a flex's
+//! thickness, a flex equality, a flex vertex equality, a flexcomp's stretch
+//! beside its edge equality, or a refusal made after the keyframes beside
+//! another fault: thirteen in `TWO_FAULTS`, five in `FLEX_COSTS`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1593,6 +1612,84 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "user has more values than nuser_sensor in sensor",
         "invalid user on <sensor>: user data exceeds nuser_sensor=1",
     ),
+    (
+        "a bending flex's thickness then a height field's size",
+        r#"<mujoco><default></default><worldbody><body name="v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2  1 3 2" ><contact contype="0" conaffinity="0"/><elasticity elastic2d="bend" young="10000.0" thickness="-0.5"/></flex></deformable><equality></equality><asset><hfield name="h" nrow="2" ncol="2" elevation="0 0 0 0" size="1 1 0 0.1"/></asset></mujoco>"#,
+        "thickness must be positive for bending stiffness",
+        "invalid thickness on <elasticity>: thickness must be positive for bending stiffness (flex 'f')",
+    ),
+    (
+        "a flex vertex equality then a joint axis",
+        r#"<mujoco><default></default><worldbody><body name="v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="j" pos="5 0 0"><joint type="hinge" axis="0 0 0"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2  1 3 2" ><contact contype="0" conaffinity="0"/></flex></deformable><equality><flexvert flex="f"/></equality></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'j_joint0' in body 'j')",
+    ),
+    (
+        "a flexcomp's vertex equality then a joint axis",
+        r#"<mujoco><default></default><worldbody><body name="j" pos="5 0 0"><joint type="hinge" axis="0 0 0"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1" radius="0.005"><edge equality="vert"/><contact contype="0" conaffinity="0"/></flexcomp></deformable><equality></equality></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'j_joint0' in body 'j')",
+    ),
+    (
+        "a flex vertex equality then a connect's unknown body",
+        r#"<mujoco><default></default><worldbody><body name="v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2  1 3 2" ><contact contype="0" conaffinity="0"/></flex></deformable><equality><connect body1="nobody" body2="v1" anchor="0 0 0"/><flexvert flex="f"/></equality></mujoco>"#,
+        "unknown element 'nobody' in equality constraint",
+        "unknown body 'nobody' (equality #0)",
+    ),
+    (
+        "a flexcomp's vertex equality then a flex equality's unknown flex",
+        r#"<mujoco><default></default><worldbody></worldbody><deformable><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1" radius="0.005"><edge equality="vert"/><contact contype="0" conaffinity="0"/></flexcomp></deformable><equality><flex flex="nope"/></equality></mujoco>"#,
+        "unknown element 'nope' in equality constraint",
+        "unknown flex 'nope' (equality #0)",
+    ),
+    (
+        "a flexcomp's stretch beside its vertex equality",
+        r#"<mujoco><default></default><worldbody></worldbody><deformable><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><edge equality="vert"/><elasticity elastic2d="stretch"/><contact contype="0" conaffinity="0"/></flexcomp></deformable><equality></equality></mujoco>"#,
+        "elasticity and edge constraints cannot both be present",
+        "invalid elastic2d on <flexcomp>: elasticity and edge constraints cannot both be present (line 1: deformable > flexcomp 'c' > contact)",
+    ),
+    (
+        "a flex equality's unknown flex then a tendon's negative armature",
+        r#"<mujoco><worldbody><site name="s0" pos="0 0 2"/><site name="s1" pos="1 0 2"/><body name="v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2  1 3 2"><contact contype="0" conaffinity="0"/></flex></deformable><equality><flex flex="nope"/></equality><tendon><spatial armature="-1"><site site="s0"/><site site="s1"/></spatial></tendon></mujoco>"#,
+        "unknown element 'nope' in equality constraint",
+        "unknown flex 'nope' (equality #0)",
+    ),
+    (
+        "a bending flex without a thickness then a flex equality's unknown flex",
+        r#"<mujoco><worldbody><body name="v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2  1 3 2"><contact contype="0" conaffinity="0"/><elasticity elastic2d="bend" young="1e4"/></flex></deformable><equality><flex flex="nope"/></equality></mujoco>"#,
+        "thickness must be positive for bending stiffness",
+        "invalid thickness on <elasticity>: thickness must be positive for bending stiffness (flex 'f')",
+    ),
+    (
+        "a flex vertex equality then a keyframe",
+        r#"<mujoco><worldbody><body name="v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2  1 3 2"><contact contype="0" conaffinity="0"/></flex></deformable><equality><flexvert flex="f"/></equality><keyframe><key qpos="0 0 0 0 0 0 0 0 0 0 0 0 0"/></keyframe></mujoco>"#,
+        "keyframe '': invalid qpos size, expected 12, got 13",
+        "invalid qpos on <key>: length 13 does not match 12 (key #0)",
+    ),
+    (
+        "an empty flex name beside an unnamed flex then a keyframe",
+        r#"<mujoco><worldbody><body name="v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex dim="2" body="v0 v1 v2 v3" element="0 1 2  1 3 2"><contact contype="0" conaffinity="0"/></flex></deformable><equality><flex flex=""/></equality><keyframe><key qpos="0 0 0 0 0 0 0 0 0 0 0 0 0"/></keyframe></mujoco>"#,
+        "keyframe '': invalid qpos size, expected 12, got 13",
+        "invalid qpos on <key>: length 13 does not match 12 (key #0)",
+    ),
+    (
+        "a flex's membrane then a keyframe",
+        r#"<mujoco><worldbody><body name="v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2  1 3 2"><contact contype="0" conaffinity="0"/><elasticity elastic2d="stretch" young="1e4" thickness="0.01"/></flex></deformable><keyframe><key qpos="0 0 0 0 0 0 0 0 0 0 0 0 0"/></keyframe></mujoco>"#,
+        "keyframe '': invalid qpos size, expected 12, got 13",
+        "invalid qpos on <key>: length 13 does not match 12 (key #0)",
+    ),
+    (
+        "a dim-3 flex's Young's modulus then a keyframe",
+        r#"<mujoco><worldbody><body name="v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v4" pos="0 0 1"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="3" body="v0 v1 v2 v3 v4" element="0 1 2 4"><contact contype="0" conaffinity="0"/><elasticity young="1e4"/></flex></deformable><keyframe><key qpos="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"/></keyframe></mujoco>"#,
+        "keyframe '': invalid qpos size, expected 15, got 16",
+        "invalid qpos on <key>: length 16 does not match 15 (key #0)",
+    ),
+    (
+        "an edge of three triangles in a bending flex then a keyframe",
+        r#"<mujoco><worldbody><body name="v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v4" pos="0 0 1"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3 v4" element="0 1 2  1 0 3  0 1 4"><contact contype="0" conaffinity="0"/><elasticity elastic2d="bend"/></flex></deformable><keyframe><key qpos="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"/></keyframe></mujoco>"#,
+        "keyframe '': invalid qpos size, expected 15, got 16",
+        "invalid qpos on <key>: length 16 does not match 15 (key #0)",
+    ),
 ];
 
 #[test]
@@ -2096,6 +2193,63 @@ const SENSOR_COSTS: &[(&str, &str, &str, &str)] = &[
 fn a_sensors_fault_beside_another_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in SENSOR_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, one a flex's thickness, a flex equality's flex, or a
+/// flexcomp's stretch beside its edge equality, where this crate names the
+/// other: the thickness and the flex equalities are checked with the checks
+/// RL-6a added, after every check this crate makes before building the
+/// model, and a flexcomp's stretch once its children are read, where a
+/// flexcomp's count and its children's keywords are refused while parsing,
+/// a flex's repeated vertex when the flexes are built, a connect's body when
+/// the equalities are made and a tendon's joint when the tendons are made;
+/// MuJoCo 3.5.0 checks the flex first (ledger L353). `(what, document, MuJoCo's reason,
+/// this crate's error)`, measured 2026-11-07 (RL-8a's review round 1, a
+/// flexcomp written in a body for MuJoCo).
+const FLEX_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "a flex equality's unknown flex then a later connect's unknown body",
+        r#"<mujoco><default></default><worldbody><body name="v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2  1 3 2" ><contact contype="0" conaffinity="0"/></flex></deformable><equality><flex flex="nope"/><connect body1="nobody" body2="v1" anchor="0 0 0"/></equality></mujoco>"#,
+        "unknown element 'nope' in equality constraint",
+        "unknown body 'nobody' (equality #1)",
+    ),
+    (
+        "a flex's thickness then a later flex's repeated vertex",
+        r#"<mujoco><default></default><worldbody><body name="v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v2" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="v3" pos="1 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="w0" pos="3 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="w1" pos="4 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="w2" pos="3 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="w3" pos="4 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2  1 3 2" ><contact contype="0" conaffinity="0"/><elasticity elastic2d="bend" young="10000.0" thickness="-0.5"/></flex><flex name="g" dim="2" body="w0 w1 w2 w3" element="0 1 1  1 3 2" ><contact contype="0" conaffinity="0"/></flex></deformable><equality></equality></mujoco>"#,
+        "thickness must be positive for bending stiffness",
+        "invalid element on <flex>: repeated vertex in element (flex 'g')",
+    ),
+    (
+        "a flexcomp's stretch beside its edge equality then its contact's keyword",
+        r#"<mujoco><default></default><worldbody></worldbody><deformable><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><contact selfcollide="bogus"/><edge equality="true"/><elasticity elastic2d="stretch"/></flexcomp></deformable><equality></equality></mujoco>"#,
+        "elasticity and edge constraints cannot both be present",
+        "invalid keyword \"bogus\" in attribute 'selfcollide' on <contact> (line 1: deformable > flexcomp 'c' > contact)",
+    ),
+    (
+        "a flexcomp's stretch beside its edge equality then its count",
+        r#"<mujoco><default></default><worldbody></worldbody><deformable><flexcomp name="c" type="grid" count="0 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><edge equality="true"/><elasticity elastic2d="stretch"/></flexcomp></deformable><equality></equality></mujoco>"#,
+        "elasticity and edge constraints cannot both be present",
+        "invalid count on <flexcomp>: Count too small (line 1: deformable > flexcomp 'c')",
+    ),
+    (
+        "a flex equality's rigid flexcomp then a tendon's unknown joint",
+        r#"<mujoco><default></default><worldbody></worldbody><deformable><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><pin id="0 1 2 3"/><contact contype="0" conaffinity="0"/></flexcomp></deformable><equality><flex flex="c"/></equality><tendon><fixed armature="-1"><joint joint="nojoint" coef="1"/></fixed></tendon></mujoco>"#,
+        "rigid flex 'c' in equality constraint 0",
+        "unknown joint 'nojoint' (tendon #0)",
+    ),
+];
+
+#[test]
+fn a_flex_fault_beside_another_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in FLEX_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),

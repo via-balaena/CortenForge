@@ -40,6 +40,14 @@ fn flex_doc(dim: usize, vertices: &str, elements: &str) -> String {
     )
 }
 
+/// [`flex_doc`]'s flex under `elastic2d="bend"`, the only flex of dim 2 that
+/// MuJoCo 3.5.0 gives flaps (with `both`, `user_model.cc:3504-3510`).
+fn bending_flex_doc(dim: usize, vertices: &str, elements: &str) -> String {
+    let xml = flex_doc(dim, vertices, elements);
+    assert_eq!(xml.matches("></flex>").count(), 1);
+    xml.replace("></flex>", r#"><elasticity elastic2d="bend"/></flex>"#)
+}
+
 fn edges_of(xml: &str) -> Vec<[usize; 2]> {
     load_model(xml).unwrap().flexedge_vert
 }
@@ -53,11 +61,62 @@ fn assert_edges(xml: &str, expected: &[[usize; 2]]) {
 
 #[test]
 fn a_triangle_pair_has_mujocos_edges_and_one_hinge_beside_its_flap() {
-    let xml = flex_doc(2, "0 0 0  1 0 0  0 1 0  1 1 0", "0 1 2  1 3 2");
+    let xml = bending_flex_doc(2, "0 0 0  1 0 0  0 1 0  1 1 0", "0 1 2  1 3 2");
     assert_edges(&xml, &[[1, 2], [0, 2], [0, 1], [2, 3], [1, 3]]);
     let model = load_model(&xml).unwrap();
     assert_eq!(model.flexedge_flap[0], [0, 3]);
     assert_eq!(model.flexhinge_vert, vec![[1, 2, 0, 3]]);
+}
+
+#[test]
+fn a_triangle_pairs_boundary_edges_keep_their_one_opposite_vertex() {
+    // MuJoCo 3.5.0's `flex_edgeflap` for this square under
+    // `elastic2d="bend"`: each boundary edge `[opposite, -1]`.
+    let xml = bending_flex_doc(2, "0 0 0  1 0 0  0 1 0  1 1 0", "0 1 2  1 3 2");
+    let model = load_model(&xml).unwrap();
+    assert_eq!(
+        model.flexedge_flap,
+        vec![[0, 3], [1, -1], [2, -1], [1, -1], [2, -1]]
+    );
+}
+
+#[test]
+fn an_edge_of_three_triangles_in_a_flex_that_bends_is_refused() {
+    // Edge 2, `(0, 1)`, is in all three triangles. MuJoCo 3.5.0 under
+    // `elastic2d="bend"` keeps the first's opposite vertex and the last's,
+    // `flex_edgeflap` `[2, 4]`, and leaves out the middle one; this crate
+    // refuses it (A9 Q4, registry `D-FLEX-BEND-NONMANIFOLD`). Without bending
+    // it has no flaps, as MuJoCo's.
+    let (vertices, elements) = ("0 0 0  1 0 0  0 1 0  0 -1 0  0 0 1", "0 1 2  1 0 3  0 1 4");
+    let err = load_model(&bending_flex_doc(2, vertices, elements)).unwrap_err();
+    assert!(
+        matches!(&err, MjcfError::InvalidModel { reason, .. } if reason.contains("three or more triangles")),
+        "{err}"
+    );
+    let model = load_model(&flex_doc(2, vertices, elements)).unwrap();
+    assert_eq!(model.flexedge_flap, vec![[-1, -1]; 7]);
+    assert_eq!(model.nflexhinge, 0);
+}
+
+#[test]
+fn a_tetrahedron_pair_has_no_flaps_or_hinges() {
+    // Two tetrahedra sharing the face (1, 2, 3), under `elastic2d="bend"`:
+    // MuJoCo 3.5.0 makes flaps for dim 2 only (`user_mesh.cc:4327-4329`),
+    // every `flex_edgeflap` `[-1, -1]`.
+    let xml = bending_flex_doc(3, "0 0 0  1 0 0  0 1 0  0 0 1  1 1 1", "0 1 2 3  1 2 3 4");
+    let model = load_model(&xml).unwrap();
+    assert_eq!(model.flexedge_flap, vec![[-1, -1]; 9]);
+    assert_eq!(model.nflexhinge, 0);
+}
+
+#[test]
+fn a_cable_has_no_flaps_or_hinges() {
+    // A dim-1 flex under `elastic2d="bend"`: MuJoCo 3.5.0's `flex_edgeflap`
+    // `[-1, -1]` on both edges.
+    let xml = bending_flex_doc(1, "0 0 0  1 0 0  2 0 0", "0 1  1 2");
+    let model = load_model(&xml).unwrap();
+    assert_eq!(model.flexedge_flap, vec![[-1, -1]; 2]);
+    assert_eq!(model.nflexhinge, 0);
 }
 
 #[test]
@@ -81,7 +140,7 @@ fn a_positively_turned_tetrahedron_has_the_edges_of_mujocos_turned_element() {
 
 #[test]
 fn a_grids_hinges_follow_its_edges() {
-    let xml = flex_doc(
+    let xml = bending_flex_doc(
         2,
         "0 0 0  1 0 0  2 0 0  0 1 0  1 1 0  2 1 0",
         "0 1 3  1 4 3  1 2 4  2 5 4",

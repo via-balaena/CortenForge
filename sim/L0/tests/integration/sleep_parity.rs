@@ -867,21 +867,15 @@ fn init_mixed_island_refused() {
     }
 }
 
-/// A tendon equality with sleep enabled is refused by the calls that run the
-/// position stage, as MuJoCo's raise an error there, and by none of the
-/// others; an inactive one, and one with sleep disabled, by none. Each call
-/// on a fresh `Data`, against the MuJoCo call the golden names.
-#[test]
-fn tendon_equality_with_sleep_refused() {
-    let (_, theirs) = refusal("tendon_equality");
-    assert_eq!(
-        theirs,
-        "mj_wakeEquality: tendon equality does not yet support sleeping"
-    );
+/// The golden's `entry` equality, active and made inactive: each of
+/// the ten calls on a fresh `Data` refused with `refused` where the MuJoCo
+/// call the golden names raised, and run where it ran; with sleep disabled,
+/// `forward` runs.
+fn equality_calls_as_mujoco(entry: &str, refused: StepError) {
     let golden = golden();
     let config = sim_core::DerivativeConfig::default();
     for key in ["active", "inactive"] {
-        let case = &golden["tendon_equality_calls"][key];
+        let case = &golden[entry][key];
         let model = model_of(case);
         let calls = case["calls"].as_object().expect("calls");
         assert_eq!(calls.len(), 10, "{key}");
@@ -903,15 +897,36 @@ fn tendon_equality_with_sleep_refused() {
             let want = if message.is_null() {
                 Ok(())
             } else {
-                Err(StepError::TendonEqualityWithSleep { eq: 0 })
+                Err(refused)
             };
-            assert_eq!(ours, want, "{key} {call}");
+            assert_eq!(ours, want, "{entry} {key} {call}");
         }
         let mut asleep_off = model.clone();
         asleep_off.enableflags &= !ENABLE_SLEEP;
         let mut data = asleep_off.make_data();
-        assert_eq!(data.forward(&asleep_off), Ok(()), "{key}, sleep disabled");
+        assert_eq!(
+            data.forward(&asleep_off),
+            Ok(()),
+            "{entry} {key}, sleep disabled"
+        );
     }
+}
+
+/// A tendon equality with sleep enabled is refused by the calls that run the
+/// position stage, as MuJoCo's raise an error there, and by none of the
+/// others; an inactive one, and one with sleep disabled, by none.
+#[test]
+fn tendon_equality_with_sleep_refused() {
+    let (_, theirs) = refusal("tendon_equality");
+    assert_eq!(
+        theirs,
+        "mj_wakeEquality: tendon equality does not yet support sleeping"
+    );
+    equality_calls_as_mujoco(
+        "tendon_equality_calls",
+        StepError::TendonEqualityWithSleep { eq: 0 },
+    );
+    let golden = golden();
     // `step` refuses before any work: a NaN position stays, where the check
     // `step` makes first would reset it (MuJoCo's `mj_step` resets it, then
     // its forward pass raises).
@@ -950,6 +965,63 @@ fn init_sleep_with_a_tendon_equality_refused() {
             StepError::TendonEqualityWithSleep { eq: 0 }
         ))
     );
+}
+
+/// A flex equality with sleep enabled is refused by the calls that refuse a
+/// tendon equality, as MuJoCo's raise its own error at the same place
+/// (`mj_wakeEquality`); an inactive one, and one with sleep disabled, by none.
+#[test]
+fn flex_equality_with_sleep_refused() {
+    let (_, theirs) = refusal("flex_equality");
+    assert_eq!(
+        theirs,
+        "mj_wakeEquality: flex equality does not yet support sleeping"
+    );
+    equality_calls_as_mujoco(
+        "flex_equality_calls",
+        StepError::FlexEqualityWithSleep { eq: 0 },
+    );
+}
+
+/// A vertex body that starts asleep beside an active flex equality: MuJoCo
+/// refuses the model at compile, where its reset's `mj_forward` raises the
+/// flex-equality error; making its `Data` here refuses it with that error.
+#[test]
+fn init_sleep_with_a_flex_equality_refused() {
+    let (model, theirs) = refusal("init_flex_equality");
+    assert!(
+        theirs.ends_with("mj_wakeEquality: flex equality does not yet support sleeping"),
+        "{theirs}"
+    );
+    assert_eq!(
+        model.try_make_data().err(),
+        Some(MakeDataError::InitForward(
+            StepError::FlexEqualityWithSleep { eq: 0 }
+        ))
+    );
+}
+
+/// With a tendon and a flex equality both active, the first in index order
+/// is the one refused, whichever kind it is, as MuJoCo's loop over the
+/// equalities raises at the first.
+#[test]
+fn the_first_tendon_or_flex_equality_is_the_one_refused() {
+    for (name, message, refused) in [
+        (
+            "flex_then_tendon_equality",
+            "mj_wakeEquality: flex equality does not yet support sleeping",
+            StepError::FlexEqualityWithSleep { eq: 0 },
+        ),
+        (
+            "tendon_then_flex_equality",
+            "mj_wakeEquality: tendon equality does not yet support sleeping",
+            StepError::TendonEqualityWithSleep { eq: 0 },
+        ),
+    ] {
+        let (model, theirs) = refusal(name);
+        assert_eq!(theirs, message, "{name}");
+        assert_eq!(model.make_data().forward(&model), Err(refused), "{name}");
+    }
 }
 
 /// The trees that start asleep see each mocap body at its pose. MuJoCo's

@@ -7,8 +7,8 @@ use std::io::BufRead;
 use crate::error::{MjcfError, Result};
 
 use crate::types::{
-    EqualityKind, MjcfConnect, MjcfDistance, MjcfEquality, MjcfJointEquality, MjcfTendonEquality,
-    MjcfWeld,
+    EqualityKind, MjcfConnect, MjcfDistance, MjcfEquality, MjcfFlexEquality, MjcfJointEquality,
+    MjcfTendonEquality, MjcfWeld,
 };
 
 use super::attrs::{Attrs, skip_element};
@@ -60,7 +60,12 @@ pub(super) fn parse_equality<R: BufRead>(
                         equality.tendons.push(ten_eq);
                         equality.order.push((EqualityKind::Tendon, idx));
                     }
-                    // Skip other equality constraint types (flex)
+                    name @ (b"flex" | b"flexvert") => {
+                        let flex_eq = parse_flex_equality_attrs(e, name == b"flexvert")?;
+                        let idx = equality.flexes.len();
+                        equality.flexes.push(flex_eq);
+                        equality.order.push((EqualityKind::Flex, idx));
+                    }
                     _ => {}
                 }
                 skip_element(reader, e.name().as_ref(), child_empty)?;
@@ -224,6 +229,28 @@ pub(super) fn parse_tendon_equality_attrs(e: &BytesStart) -> Result<MjcfTendonEq
     ten_eq.active = a.boolean("active")?;
 
     Ok(ten_eq)
+}
+
+/// Parse a flex equality constraint's attributes (`<equality><flex>`, or
+/// `<equality><flexvert>` when `vertices`, which MuJoCo reads alike): its
+/// `flex` is required (`xml_native_reader.cc:2208-2210`).
+pub(super) fn parse_flex_equality_attrs(
+    e: &BytesStart,
+    vertices: bool,
+) -> Result<MjcfFlexEquality> {
+    let a = Attrs::new(e)?;
+    let element = if vertices { "flexvert" } else { "flex" };
+    Ok(MjcfFlexEquality {
+        name: a.string("name"),
+        class: a.string("class"),
+        flex: a
+            .string("flex")
+            .ok_or_else(|| MjcfError::missing_attribute(element, "flex"))?,
+        solimp: a.prefix("solimp")?,
+        solref: a.prefix("solref")?,
+        active: a.boolean("active")?,
+        vertices,
+    })
 }
 
 /// `polycoef`: one up to `N` coefficients, the ones not given MuJoCo's

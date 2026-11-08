@@ -278,10 +278,15 @@ fn an_unknown_selfcollide_is_refused() {
 
 #[test]
 fn bending_model_is_an_exact_extension() {
-    // Before: any word but `bridson` was `cotangent`.
-    let err = refused(&flex(r#"<elasticity bending_model="Bridson"/>"#));
+    // Before: any word but `bridson` was `cotangent`. A bending model is
+    // written only beside `elastic2d` bend or both (A9 Q7).
+    let err = refused(&flex(
+        r#"<elasticity elastic2d="bend" bending_model="Bridson"/>"#,
+    ));
     assert_keyword(&err, "elasticity", "bending_model", "Bridson");
-    let m = load(&flex(r#"<elasticity bending_model="bridson"/>"#));
+    let m = load(&flex(
+        r#"<elasticity elastic2d="bend" bending_model="bridson"/>"#,
+    ));
     assert_eq!(m.flex_bending_type[0], FlexBendingType::Bridson);
 }
 

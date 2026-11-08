@@ -330,6 +330,7 @@ fn parse_section<R: BufRead>(
             let jo = model.equality.joints.len();
             let do_ = model.equality.distances.len();
             let to = model.equality.tendons.len();
+            let fo = model.equality.flexes.len();
             for &(kind, idx) in &eq.order {
                 let offset_idx = match kind {
                     EqualityKind::Connect => idx + co,
@@ -337,6 +338,7 @@ fn parse_section<R: BufRead>(
                     EqualityKind::Joint => idx + jo,
                     EqualityKind::Distance => idx + do_,
                     EqualityKind::Tendon => idx + to,
+                    EqualityKind::Flex => idx + fo,
                 };
                 model.equality.order.push((kind, offset_idx));
             }
@@ -345,6 +347,7 @@ fn parse_section<R: BufRead>(
             model.equality.joints.extend(eq.joints);
             model.equality.distances.extend(eq.distances);
             model.equality.tendons.extend(eq.tendons);
+            model.equality.flexes.extend(eq.flexes);
         }
         b"deformable" => {
             let (skins, flex) = parse_deformable(reader, empty)?;

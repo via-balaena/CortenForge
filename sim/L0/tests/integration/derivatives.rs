@@ -4279,8 +4279,7 @@ fn check_transition_with_a_stateful_plugin(integrator: &str) {
 /// The hybrid's analytic velocity columns take flex edge damping, whose
 /// `−b · JᵀJ` `mjd_passive_vel` adds (MuJoCo `engine_derivative.c:1737-1758`):
 /// a four-vertex cable with edge damping 3 and a three-vertex one with 7,
-/// equality constraints disabled (our `<flex>` adds edge equalities, whose
-/// rows send the hybrid to pure finite differences), under each integrator,
+/// equality constraints disabled, under each integrator,
 /// and with dampers disabled, where the
 /// passive pass applies none. Its position columns are finite differences (a
 /// flex model's always are).

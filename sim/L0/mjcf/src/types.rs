@@ -2228,6 +2228,50 @@ pub enum EqualityKind {
     Distance,
     /// Tendon equality constraint.
     Tendon,
+    /// Flex equality constraint (MuJoCo's `mjEQ_FLEX`).
+    Flex,
+}
+
+/// A flex equality constraint: `<equality><flex>`, each of the flex's edges
+/// that is not rigid held at its rest length by one constraint row, as
+/// MuJoCo 3.5.0's `mjEQ_FLEX` (`engine_core_constraint.c:616-643`), or
+/// `<equality><flexvert>` (`vertices`).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfFlexEquality {
+    /// Optional constraint name.
+    pub name: Option<String>,
+    /// Default class for inheriting parameters.
+    pub class: Option<String>,
+    /// The flex's name.
+    pub flex: String,
+    /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
+    pub solimp: Option<Prefix<5>>,
+    /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
+    pub solref: Option<Prefix<2>>,
+    /// Whether this constraint is active (None = not explicitly set).
+    pub active: Option<bool>,
+    /// Written as `<equality><flexvert>` (MuJoCo's `mjEQ_FLEXVERT`): checked
+    /// as a flex equality is, then refused after the keyframes, a stated
+    /// limitation (registry `D-FLEX-VERT-EQUALITY`).
+    pub vertices: bool,
+}
+
+/// The equality a `<flexcomp>`'s `<edge equality="true">` asks for, or with
+/// `vertices` its `<edge equality="vert">`, with its `<edge solref solimp>`
+/// (`xml_native_reader.cc:2769-2775`).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfFlexcompEdgeEquality {
+    /// Solver reference parameters: MuJoCo's default when `None`, whatever
+    /// the document's `<default>` holds.
+    pub solref: Option<Prefix<2>>,
+    /// Solver impedance parameters, as `solref`.
+    pub solimp: Option<Prefix<5>>,
+    /// Asked for as `equality="vert"` (MuJoCo's `mjEQ_FLEXVERT`): made as an
+    /// edge equality is, then refused after the keyframes, a stated
+    /// limitation (registry `D-FLEX-VERT-EQUALITY`).
+    pub vertices: bool,
 }
 
 /// Container for equality constraints from `<equality>` element.
@@ -2244,6 +2288,8 @@ pub struct MjcfEquality {
     pub distances: Vec<MjcfDistance>,
     /// Tendon equality constraints.
     pub tendons: Vec<MjcfTendonEquality>,
+    /// Flex equality constraints.
+    pub flexes: Vec<MjcfFlexEquality>,
     /// Document order: `(kind, index_within_kind_vec)`.
     ///
     /// MuJoCo processes equality constraints in XML document order, not grouped
@@ -2304,6 +2350,15 @@ impl MjcfEquality {
         self
     }
 
+    /// Add a flex equality constraint.
+    #[must_use]
+    pub fn with_flex(mut self, flex: MjcfFlexEquality) -> Self {
+        let idx = self.flexes.len();
+        self.flexes.push(flex);
+        self.order.push((EqualityKind::Flex, idx));
+        self
+    }
+
     /// Check if there are any equality constraints.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -2312,6 +2367,7 @@ impl MjcfEquality {
             && self.joints.is_empty()
             && self.distances.is_empty()
             && self.tendons.is_empty()
+            && self.flexes.is_empty()
     }
 
     /// Get the total number of equality constraints.
@@ -2322,6 +2378,7 @@ impl MjcfEquality {
             + self.joints.len()
             + self.distances.len()
             + self.tendons.len()
+            + self.flexes.len()
     }
 }
 
@@ -4096,6 +4153,38 @@ impl Default for MjcfKeyframe {
 // Model
 // ============================================================================
 
+/// A flex's `elastic2d` (`<elasticity elastic2d>`, MuJoCo's `elastic2d_map`,
+/// `xml_native_reader.cc:924-929`): the 2-D elasticity of a dim-2 flex, none
+/// by default (`mjs_defaultFlex`). A flex of dim 1 or 3 has none whatever it
+/// says, as MuJoCo's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum FlexElastic2d {
+    /// No 2-D elasticity (`none`).
+    #[default]
+    None,
+    /// Bending (`bend`).
+    Bend,
+    /// Stretching, MuJoCo's membrane (`stretch`).
+    Stretch,
+    /// Bending and stretching (`both`).
+    Both,
+}
+
+impl FlexElastic2d {
+    /// `bend` or `both`.
+    #[must_use]
+    pub fn bends(self) -> bool {
+        matches!(self, Self::Bend | Self::Both)
+    }
+
+    /// `stretch` or `both`.
+    #[must_use]
+    pub fn stretches(self) -> bool {
+        matches!(self, Self::Stretch | Self::Both)
+    }
+}
+
 /// Parsed `<flex>` element from `<deformable>`.
 ///
 /// Represents a deformable flex body with vertices, elements, and material/collision
@@ -4182,9 +4271,12 @@ pub struct MjcfFlex {
     pub damping: f64,
     /// Shell thickness `[m]` (dim=2 only). -1 = "not set".
     pub thickness: f64,
+    /// Its 2-D elasticity (`elastic2d`).
+    pub elastic2d: FlexElastic2d,
 
     /// Bending model selection (default: Cotangent = MuJoCo-conformant).
-    /// CortenForge extension attribute — not in MuJoCo schema.
+    /// CortenForge extension attribute — not in MuJoCo schema; written only
+    /// beside `elastic2d` bend or both.
     pub bending_model: FlexBendingType,
 
     // --- <flex><edge> child element attributes ---
@@ -4193,6 +4285,13 @@ pub struct MjcfFlex {
     pub edge_stiffness: f64,
     /// Passive edge damping coefficient. Default 0.0 = disabled.
     pub edge_damping: f64,
+    /// A `<flexcomp>`'s `<edge equality="true">` or `"vert"`: the loader gives
+    /// the flex an unnamed, active flex equality after the document's
+    /// `<equality>` elements, unless the flexcomp is rigid (every vertex
+    /// pinned), as MuJoCo 3.5.0's flexcomp makes one
+    /// (`user_flexcomp.cc:463-467`, `:643-649`); a vertex one is refused after
+    /// the keyframes ([`MjcfFlexcompEdgeEquality::vertices`]).
+    pub edge_equality: Option<MjcfFlexcompEdgeEquality>,
 
     // --- Internal / derived ---
     /// Total mass `[kg]` for uniform distribution across all vertices (including pinned).
@@ -4273,11 +4372,13 @@ impl Default for MjcfFlex {
             poisson: 0.0,
             damping: 0.0,
             thickness: -1.0, // MuJoCo default sentinel "not set"; was 0.001
+            elastic2d: FlexElastic2d::None,
             // Bending model (CortenForge extension)
             bending_model: FlexBendingType::Cotangent,
             // <edge> child element
             edge_stiffness: 0.0,
             edge_damping: 0.0,
+            edge_equality: None,
             // Internal
             mass: None,
             density: 1000.0,

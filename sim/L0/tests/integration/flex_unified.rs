@@ -32,8 +32,8 @@ fn diamond_bodies(flex: &str, positions: &str, damping: Option<&str>) -> (String
 // MJCF Fixtures
 // ============================================================================
 
-/// AC1: Small 2D cloth (2x2 quad = 4 vertices, 4 edges, 2 triangles) for gravity drape.
-/// Uses explicit vertices with soft constraints to ensure stability.
+/// AC1: Small 2D cloth (2x2 quad = 4 vertices, 5 edges, 2 triangles) for gravity drape.
+/// Uses explicit vertices.
 fn cloth_5x5_mjcf() -> &'static str {
     r#"
     <mujoco model="cloth_drape">
@@ -48,7 +48,7 @@ fn cloth_5x5_mjcf() -> &'static str {
         <deformable>
             <flex name="cloth" dim="2" radius="0.005" body="cloth_v0 cloth_v1 cloth_v2 cloth_v3" element="0 1 2  1 3 2">
                 <contact margin="0.001" solref="0.5 2.0"/>
-                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <elasticity elastic2d="bend" young="50" damping="5.0" thickness="0.01"/>
             </flex>
         </deformable>
     </mujoco>
@@ -94,8 +94,9 @@ fn cable_20seg_mjcf() -> &'static str {
     "#
 }
 
-/// AC3: Single tetrahedron (4 vertices) falling under gravity for compression test.
-/// Uses PGS solver with soft parameters.
+/// AC3: Single tetrahedron (4 vertices) falling under gravity for compression test,
+/// its edges held by a flex equality. Uses PGS solver with soft parameters. No
+/// Young's modulus: a dim-3 flex's is refused (registry `D-FLEX-TET-ELASTICITY`).
 fn solid_3x3x3_mjcf() -> &'static str {
     r#"
     <mujoco model="soft_body">
@@ -110,9 +111,10 @@ fn solid_3x3x3_mjcf() -> &'static str {
         <deformable>
             <flex name="block" dim="3" radius="0.02" body="block_v0 block_v1 block_v2 block_v3" element="0 1 2 3">
                 <contact margin="0.005" solref="0.5 2.0"/>
-                <elasticity young="100" poisson="0.3" damping="10.0"/>
+                <elasticity poisson="0.3" damping="10.0"/>
             </flex>
         </deformable>
+        <equality><flex flex="block"/></equality>
     </mujoco>
     "#
 }
@@ -143,7 +145,7 @@ fn cloth_on_sphere_mjcf() -> &'static str {
         <deformable>
             <flex name="cloth" dim="2" radius="0.02" body="cloth_v0 cloth_v1 cloth_v2 cloth_v3" element="0 1 2  1 3 2">
                 <contact margin="0.01" condim="3" solref="0.5 2.0" friction="0.5"/>
-                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <elasticity elastic2d="bend" young="50" damping="5.0" thickness="0.01"/>
             </flex>
         </deformable>
     </mujoco>
@@ -164,6 +166,7 @@ fn single_edge_mjcf() -> &'static str {
                 <elasticity young="1000.0" damping="1.0"/>
             </flex>
         </deformable>
+        <equality><flex flex="spring"/></equality>
     </mujoco>
     "#
 }
@@ -189,7 +192,7 @@ fn bending_strip_mjcf() -> &'static str {
         </worldbody>
         <deformable>
             <flex name="strip" dim="2" body="strip_v0 strip_v1 strip_v2 strip_v3 strip_v4 strip_v5 strip_v6 strip_v7" element="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6">
-                <elasticity young="1e6" damping="1.0" thickness="0.005" bending_model="bridson"/>
+                <elasticity elastic2d="bend" young="1e6" damping="1.0" thickness="0.005" bending_model="bridson"/>
             </flex>
         </deformable>
     </mujoco>
@@ -209,7 +212,7 @@ fn pinned_vertices_mjcf() -> &'static str {
         </worldbody>
         <deformable>
             <flex name="cloth" dim="2" body="cloth_v0 cloth_v1 cloth_v2 cloth_v3" element="0 1 2  1 3 2">
-                <elasticity young="1e5" damping="0.01" thickness="0.001"/>
+                <elasticity elastic2d="bend" young="1e5" damping="0.01" thickness="0.001"/>
             </flex>
         </deformable>
     </mujoco>
@@ -228,7 +231,7 @@ fn flex_roundtrip_mjcf() -> &'static str {
         </worldbody>
         <deformable>
             <flex name="test_flex" dim="2" body="test_flex_v0 test_flex_v1 test_flex_v2" element="0 1 2">
-                <elasticity young="5e4" thickness="0.002"/>
+                <elasticity elastic2d="bend" young="5e4" thickness="0.002"/>
             </flex>
         </deformable>
     </mujoco>
@@ -243,7 +246,7 @@ fn flexcomp_grid_mjcf() -> &'static str {
         <deformable>
             <flexcomp name="grid" type="grid" count="5 5 1" spacing="0.04 0.04 0.04"
                       dim="2" density="200">
-                <elasticity young="1e5" thickness="0.001"/>
+                <elasticity elastic2d="bend" young="1e5" thickness="0.001"/>
             </flexcomp>
         </deformable>
     </mujoco>
@@ -288,7 +291,7 @@ fn mixed_rigid_flex_mjcf() -> &'static str {
         </worldbody>
         <deformable>
             <flex name="cloth" dim="2" body="cloth_v0 cloth_v1 cloth_v2 cloth_v3" element="0 1 2  1 3 2">
-                <elasticity young="5e4" damping="0.1" thickness="0.001"/>
+                <elasticity elastic2d="bend" young="5e4" damping="0.1" thickness="0.001"/>
             </flex>
         </deformable>
     </mujoco>
@@ -471,10 +474,6 @@ fn ac3_solid_compression() {
     assert!(rest_volume > 0.0, "rest volume should be positive");
 
     // Simulate under gravity for 2 seconds — verify stability (no NaN, no blow-up)
-    // NOTE: Without volume constraints, the tet may collapse or invert under gravity.
-    // MuJoCo has no dedicated volume constraint; volume preservation is implicit from
-    // the SVK continuum model (not yet implemented). Edge constraints alone cannot
-    // prevent inversion of a single tetrahedron.
     for step in 0..2000 {
         if let Err(e) = data.step(&model) {
             let max_vel = data.qvel.iter().fold(0.0_f64, |mx, v| mx.max(v.abs()));
@@ -493,6 +492,18 @@ fn ac3_solid_compression() {
     // Vertices should have fallen under gravity (not stuck)
     let any_moved = data.flexvert_xpos.iter().any(|v| v.z < -0.5);
     assert!(any_moved, "solid should have fallen under gravity");
+
+    // Held by its edge equality, the tetrahedron keeps its shape: every edge
+    // within 1% of its rest length (MuJoCo 3.5.0, the same document: 0.04%
+    // at the end; without the equality its vertices fall apart, 89%).
+    for (e, &[a, b]) in model.flexedge_vert.iter().enumerate() {
+        let length = (data.flexvert_xpos[b] - data.flexvert_xpos[a]).norm();
+        let rest = model.flexedge_length0[e];
+        assert!(
+            (length / rest - 1.0).abs() < 0.01,
+            "edge {e}: {length} against {rest}"
+        );
+    }
 }
 
 // ============================================================================
@@ -962,7 +973,7 @@ fn flexcomp_damping_is_implicit_under_implicitspringdamper() {
         <option gravity="0 0 0" integrator="implicitspringdamper"/>
         <deformable>
             <flexcomp name="grid" type="grid" count="3 3 1" spacing="0.04 0.04 0.04" dim="2" mass="1">
-                <elasticity young="1e5" thickness="0.001" damping="0.3"/>
+                <elasticity elastic2d="bend" young="1e5" thickness="0.001" damping="0.3"/>
             </flexcomp>
         </deformable>
     </mujoco>
@@ -1030,7 +1041,7 @@ fn flexcomp_damping_is_its_slides_joint_damping() {
         <option gravity="0 0 0"/>
         <deformable>
             <flexcomp name="grid" type="grid" count="3 3 1" spacing="0.04 0.04 0.04" dim="2" mass="1">
-                <elasticity young="1e5" thickness="0.001" damping="0.3"/>
+                <elasticity elastic2d="bend" young="1e5" thickness="0.001" damping="0.3"/>
             </flexcomp>
         </deformable>
     </mujoco>
@@ -1342,7 +1353,7 @@ fn ac19_bending_damping_only() {
         </worldbody>
         <deformable>
             <flex name="strip" dim="2" body="strip_v0 strip_v1 strip_v2 strip_v3 strip_v4 strip_v5 strip_v6 strip_v7" element="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6">
-                <elasticity young="0" damping="1.0" thickness="0.005"/>
+                <elasticity elastic2d="bend" young="0" damping="1.0" thickness="0.005"/>
             </flex>
         </deformable>
     </mujoco>
@@ -1378,7 +1389,7 @@ fn ac19_bending_damping_only() {
 #[test]
 fn ac20_bending_stability_clamp() {
     // §42B: Uses bending_model="bridson" — the stability clamp is Bridson-specific.
-    // Cotangent bending has no per-vertex stability clamp (linear force, constant matrix).
+    // Cotangent bending has no per-vertex stability clamp.
     // Very high Young's modulus with a relatively large timestep.
     // k_max = 1/(dt^2) = 1/(0.01^2) = 10_000.
     // Kirchhoff-Love: D = E * t^3 / (12 * (1 - nu^2))
@@ -1399,9 +1410,10 @@ fn ac20_bending_stability_clamp() {
         </worldbody>
         <deformable>
             <flex name="strip" dim="2" body="strip_v0 strip_v1 strip_v2 strip_v3 strip_v4 strip_v5 strip_v6 strip_v7" element="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6">
-                <elasticity young="1e12" poisson="0.3" damping="0.001" thickness="0.005" bending_model="bridson"/>
+                <elasticity elastic2d="bend" young="1e12" poisson="0.3" damping="0.001" thickness="0.005" bending_model="bridson"/>
             </flex>
         </deformable>
+        <equality><flex flex="strip"/></equality>
     </mujoco>
     "#;
 
@@ -1460,7 +1472,7 @@ fn ac21_zero_hinge_simulation() {
         </worldbody>
         <deformable>
             <flex name="tri" dim="2" body="tri_v0 tri_v1 tri_v2" element="0 1 2">
-                <elasticity young="5e4" damping="0.1" thickness="0.002"/>
+                <elasticity elastic2d="bend" young="5e4" damping="0.1" thickness="0.002"/>
             </flex>
         </deformable>
     </mujoco>
@@ -1519,7 +1531,7 @@ fn test_flex_vertex_bodies_start_at_their_bodies() {
         </worldbody>
         <deformable>
             <flex name="tri" dim="2" body="tri_v0 tri_v1 tri_v2" element="0 1 2">
-                <elasticity young="5e4" damping="0.1" thickness="0.002"/>
+                <elasticity elastic2d="bend" young="5e4" damping="0.1" thickness="0.002"/>
             </flex>
         </deformable>
     </mujoco>
@@ -1746,7 +1758,7 @@ fn s30_ac1_default_bitmask_collides() {
         <deformable>
             <flex name="cloth" dim="2" radius="0.02" body="cloth_v0 cloth_v1 cloth_v2 cloth_v3" element="0 1 2  1 3 2">
                 <contact margin="0.005" solref="0.02 1.0"/>
-                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <elasticity elastic2d="bend" young="50" damping="5.0" thickness="0.01"/>
             </flex>
         </deformable>
     </mujoco>
@@ -1783,7 +1795,7 @@ fn s30_ac2_flex_contype_zero_no_collision() {
         <deformable>
             <flex name="cloth" dim="2" radius="0.02" body="cloth_v0 cloth_v1 cloth_v2 cloth_v3" element="0 1 2  1 3 2">
                 <contact contype="0" conaffinity="0" margin="0.005"/>
-                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <elasticity elastic2d="bend" young="50" damping="5.0" thickness="0.01"/>
             </flex>
         </deformable>
     </mujoco>
@@ -1824,7 +1836,7 @@ fn s30_ac3_geom_conaffinity_zero_no_collision() {
         <deformable>
             <flex name="cloth" dim="2" radius="0.02" body="cloth_v0 cloth_v1 cloth_v2 cloth_v3" element="0 1 2  1 3 2">
                 <contact margin="0.005"/>
-                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <elasticity elastic2d="bend" young="50" damping="5.0" thickness="0.01"/>
             </flex>
         </deformable>
     </mujoco>
@@ -1871,7 +1883,7 @@ fn s30_ac4_custom_bitmask_groups() {
         <deformable>
             <flex name="cloth" dim="2" radius="0.02" body="cloth_v0 cloth_v1 cloth_v2 cloth_v3" element="0 1 2  1 3 2">
                 <contact contype="2" conaffinity="2" margin="0.005"/>
-                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <elasticity elastic2d="bend" young="50" damping="5.0" thickness="0.01"/>
             </flex>
         </deformable>
     </mujoco>
@@ -1914,7 +1926,7 @@ fn s30_ac4_incompatible_bitmask_no_collision() {
         <deformable>
             <flex name="cloth" dim="2" radius="0.02" body="cloth_v0 cloth_v1 cloth_v2 cloth_v3" element="0 1 2  1 3 2">
                 <contact contype="2" conaffinity="2" margin="0.005"/>
-                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <elasticity elastic2d="bend" young="50" damping="5.0" thickness="0.01"/>
             </flex>
         </deformable>
     </mujoco>
@@ -1951,7 +1963,7 @@ fn s30_ac4_asymmetric_bitmask_collides() {
         <deformable>
             <flex name="cloth" dim="2" radius="0.02" body="cloth_v0 cloth_v1 cloth_v2 cloth_v3" element="0 1 2  1 3 2">
                 <contact contype="2" conaffinity="0" margin="0.005"/>
-                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <elasticity elastic2d="bend" young="50" damping="5.0" thickness="0.01"/>
             </flex>
         </deformable>
     </mujoco>
@@ -1985,7 +1997,7 @@ fn s30_ac8_mjcf_parsing_defaults() {
         <deformable>
             <flex name="cloth" dim="2" body="cloth_v0 cloth_v1 cloth_v2" element="0 1 2">
                 <contact margin="0.001"/>
-                <elasticity young="50" thickness="0.01"/>
+                <elasticity elastic2d="bend" young="50" thickness="0.01"/>
             </flex>
         </deformable>
     </mujoco>
@@ -2008,7 +2020,7 @@ fn s30_ac8_mjcf_parsing_defaults() {
         <deformable>
             <flex name="cloth" dim="2" body="cloth_v0 cloth_v1 cloth_v2" element="0 1 2">
                 <contact contype="3" conaffinity="5" margin="0.001"/>
-                <elasticity young="50" thickness="0.01"/>
+                <elasticity elastic2d="bend" young="50" thickness="0.01"/>
             </flex>
         </deformable>
     </mujoco>
@@ -2412,7 +2424,7 @@ fn spec_a_square_shell_mjcf() -> &'static str {
         </worldbody>
         <deformable>
             <flex name="shell" dim="2" body="shell_v0 shell_v1 shell_v2 shell_v3" element="0 1 2  1 3 2">
-                <elasticity young="100" damping="0.1" thickness="0.01"/>
+                <elasticity elastic2d="bend" young="100" damping="0.1" thickness="0.01"/>
             </flex>
         </deformable>
     </mujoco>
@@ -2438,8 +2450,8 @@ fn spec_a_rigid_cable_mjcf() -> &'static str {
     "#
 }
 
-/// MJCF fixture: 3-vertex cable with edge constraints (solref != 0),
-/// no stiffness/damping — tests constraint-only J path.
+/// MJCF fixture: 3-vertex cable whose edges a flex equality holds, with no
+/// stiffness or damping — tests the constraint-only J path.
 fn spec_a_constraint_cable_mjcf() -> &'static str {
     r#"
     <mujoco model="spec_a_constraint">
@@ -2451,10 +2463,10 @@ fn spec_a_constraint_cable_mjcf() -> &'static str {
         </worldbody>
         <deformable>
             <flex name="cable" dim="1" body="cable_v0 cable_v1 cable_v2" element="0 1  1 2">
-                <edge solref="-100 -10"/>
                 <elasticity young="0" damping="0"/>
             </flex>
         </deformable>
+        <equality><flex flex="cable"/></equality>
     </mujoco>
     "#
 }
@@ -2810,6 +2822,7 @@ fn spec_a_t9_zero_length_edge() {
                 <elasticity young="100" damping="0.1"/>
             </flex>
         </deformable>
+        <equality><flex flex="cable"/></equality>
     </mujoco>
     "#;
     let model = load_model(mjcf).expect("load");
@@ -2870,7 +2883,7 @@ fn spec_a_t10_multi_flex_model() {
                 <elasticity young="50" damping="0.1"/>
             </flex>
             <flex name="shell" dim="2" body="shell_v0 shell_v1 shell_v2 shell_v3" element="0 1 2  1 3 2">
-                <elasticity young="200" damping="0.1" thickness="0.01"/>
+                <elasticity elastic2d="bend" young="200" damping="0.1" thickness="0.01"/>
             </flex>
         </deformable>
     </mujoco>
@@ -2963,7 +2976,7 @@ fn specb_t1_equilateral_diamond_precomputation() {
   <worldbody>{bodies}</worldbody>
   <deformable>
     <flex name="diamond" dim="2" radius="0.005" body="{names}" element="0 1 2  1 0 3">
-      <elasticity young="1e4" poisson="0.3" thickness="0.01" damping="0.0"/>
+      <elasticity elastic2d="bend" young="1e4" poisson="0.3" thickness="0.01" damping="0.0"/>
     </flex>
   </deformable>
 </mujoco>"#
@@ -3042,7 +3055,7 @@ fn specb_t2_boundary_edge_single_triangle() {
   </worldbody>
   <deformable>
     <flex name="single_tri" dim="2" radius="0.005" body="single_tri_v0 single_tri_v1 single_tri_v2" element="0 1 2">
-      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <elasticity elastic2d="bend" young="1e4" poisson="0.3" thickness="0.01"/>
     </flex>
   </deformable>
 </mujoco>"#;
@@ -3080,7 +3093,7 @@ fn specb_t4_curved_reference_asymmetric_diamond() {
   </worldbody>
   <deformable>
     <flex name="curved" dim="2" radius="0.005" body="curved_v0 curved_v1 curved_v2 curved_v3" element="0 1 2  1 0 3">
-      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <elasticity elastic2d="bend" young="1e4" poisson="0.3" thickness="0.01"/>
     </flex>
   </deformable>
 </mujoco>"#;
@@ -3170,7 +3183,7 @@ fn specb_t12_flap_topology_4x4_grid() {
   </worldbody>
   <deformable>
     <flex name="grid" dim="2" radius="0.005" body="grid_v0 grid_v1 grid_v2 grid_v3 grid_v4 grid_v5 grid_v6 grid_v7 grid_v8 grid_v9 grid_v10 grid_v11 grid_v12 grid_v13 grid_v14 grid_v15" element="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6  4 5 8  5 9 8  5 6 9  6 10 9  6 7 10  7 11 10  8 9 12  9 13 12  9 10 13  10 14 13  10 11 14  11 15 14">
-      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <elasticity elastic2d="bend" young="1e4" poisson="0.3" thickness="0.01"/>
     </flex>
   </deformable>
 </mujoco>"#;
@@ -3235,7 +3248,7 @@ fn specb_t13_zero_thickness_zero_bending() {
   </worldbody>
   <deformable>
     <flex name="zero_thick" dim="2" radius="0.005" body="zero_thick_v0 zero_thick_v1 zero_thick_v2 zero_thick_v3" element="0 1 2  1 0 3">
-      <elasticity young="1e4" poisson="0.3" thickness="0.0"/>
+      <elasticity elastic2d="bend" young="1e4" poisson="0.3" thickness="0.0"/>
     </flex>
   </deformable>
 </mujoco>"#;
@@ -3260,7 +3273,7 @@ fn specb_t14_default_bending_type() {
   </worldbody>
   <deformable>
     <flex name="default_bend" dim="2" radius="0.005" body="default_bend_v0 default_bend_v1 default_bend_v2" element="0 1 2">
-      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <elasticity elastic2d="bend" young="1e4" poisson="0.3" thickness="0.01"/>
     </flex>
   </deformable>
 </mujoco>"#;
@@ -3283,7 +3296,7 @@ fn specb_t14b_bridson_bending_type_parses() {
   </worldbody>
   <deformable>
     <flex name="bridson_bend" dim="2" radius="0.005" body="bridson_bend_v0 bridson_bend_v1 bridson_bend_v2" element="0 1 2">
-      <elasticity young="1e4" poisson="0.3" thickness="0.01" bending_model="bridson"/>
+      <elasticity elastic2d="bend" young="1e4" poisson="0.3" thickness="0.01" bending_model="bridson"/>
     </flex>
   </deformable>
 </mujoco>"#;
@@ -3316,7 +3329,7 @@ fn specb_t3_cotangent_runtime_force_deflected_diamond() {
   <worldbody>{bodies}</worldbody>
   <deformable>
     <flex name="diamond" dim="2" radius="0.005" body="{names}" element="0 1 2  1 0 3">
-      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <elasticity elastic2d="bend" young="1e4" poisson="0.3" thickness="0.01"/>
     </flex>
   </deformable>
 </mujoco>"#
@@ -3458,7 +3471,7 @@ fn specb_t6_rigid_flex_bending_skipped() {
   </worldbody>
   <deformable>
     <flex name="rigid_shell" dim="2" body="rigid_shell_v0 rigid_shell_v1 rigid_shell_v2 rigid_shell_v3" element="0 1 2  1 0 3">
-      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <elasticity elastic2d="bend" young="1e4" poisson="0.3" thickness="0.01"/>
     </flex>
   </deformable>
 </mujoco>"#;
@@ -3497,7 +3510,7 @@ fn specb_t7_bridson_regression() {
         </worldbody>
         <deformable>
             <flex name="strip" dim="2" body="strip_v0 strip_v1 strip_v2 strip_v3 strip_v4 strip_v5 strip_v6 strip_v7" element="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6">
-                <elasticity young="1e6" damping="1.0" thickness="0.005" bending_model="bridson"/>
+                <elasticity elastic2d="bend" young="1e6" damping="1.0" thickness="0.005" bending_model="bridson"/>
             </flex>
         </deformable>
     </mujoco>
@@ -3585,7 +3598,7 @@ fn specb_t8_damper_with_flex_damping_multiplier() {
   <worldbody>{bodies}</worldbody>
   <deformable>
     <flex name="diamond" dim="2" radius="0.005" body="{names}" element="0 1 2  1 0 3">
-      <elasticity young="1e4" poisson="0.3" damping="0.5" thickness="0.01"/>
+      <elasticity elastic2d="bend" young="1e4" poisson="0.3" damping="0.5" thickness="0.01"/>
     </flex>
   </deformable>
 </mujoco>"#
@@ -3647,7 +3660,7 @@ fn specb_t9_disable_spring_gate() {
   <worldbody>{bodies}</worldbody>
   <deformable>
     <flex name="diamond" dim="2" radius="0.005" body="{names}" element="0 1 2  1 0 3">
-      <elasticity young="1e4" poisson="0.3" damping="0.5" thickness="0.01"/>
+      <elasticity elastic2d="bend" young="1e4" poisson="0.3" damping="0.5" thickness="0.01"/>
     </flex>
   </deformable>
 </mujoco>"#
@@ -3701,7 +3714,7 @@ fn specb_t10_disable_damper_gate() {
   <worldbody>{bodies}</worldbody>
   <deformable>
     <flex name="diamond" dim="2" radius="0.005" body="{names}" element="0 1 2  1 0 3">
-      <elasticity young="1e4" poisson="0.3" damping="0.5" thickness="0.01"/>
+      <elasticity elastic2d="bend" young="1e4" poisson="0.3" damping="0.5" thickness="0.01"/>
     </flex>
   </deformable>
 </mujoco>"#
@@ -3742,8 +3755,8 @@ fn specb_t10_disable_damper_gate() {
 /// §42B T11: Cotangent stability — very high stiffness, no clamp needed (AC11).
 #[test]
 fn specb_t11_cotangent_stability_no_clamp() {
-    // Default cotangent bending model with very high stiffness.
-    // Cotangent is stable without per-vertex clamp (linear force, constant B matrix).
+    // The cotangent bending model with a very high stiffness and no clamp:
+    // 500 steps from the tips' push keep every vertex finite and within 100.
     let mjcf = r#"
     <mujoco model="stiff_cotangent">
         <option gravity="0 0 -9.81" timestep="0.01"/>
@@ -3759,7 +3772,7 @@ fn specb_t11_cotangent_stability_no_clamp() {
         </worldbody>
         <deformable>
             <flex name="strip" dim="2" body="strip_v0 strip_v1 strip_v2 strip_v3 strip_v4 strip_v5 strip_v6 strip_v7" element="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6">
-                <elasticity young="1e12" poisson="0.3" damping="0.001" thickness="0.005"/>
+                <elasticity elastic2d="bend" young="1e12" poisson="0.3" damping="0.001" thickness="0.005"/>
             </flex>
         </deformable>
     </mujoco>
@@ -3778,7 +3791,7 @@ fn specb_t11_cotangent_stability_no_clamp() {
     data.qvel[v3_dof + 2] = -1.0;
     data.qvel[v7_dof + 2] = -1.0;
 
-    // 500 steps — should remain stable without clamp
+    // 500 steps
     for _ in 0..500 {
         data.step(&model).expect("step failed");
     }
@@ -3815,10 +3828,10 @@ fn specb_t15_mixed_bending_models() {
   <worldbody>{cotangent_bodies}{bridson_bodies}</worldbody>
   <deformable>
     <flex name="cotangent_flex" dim="2" radius="0.005" body="{cotangent_names}" element="0 1 2  1 0 3">
-      <elasticity young="1e4" poisson="0.3" damping="0.1" thickness="0.01"/>
+      <elasticity elastic2d="bend" young="1e4" poisson="0.3" damping="0.1" thickness="0.01"/>
     </flex>
     <flex name="bridson_flex" dim="2" radius="0.005" body="{bridson_names}" element="0 1 2  1 0 3">
-      <elasticity young="1e4" poisson="0.3" damping="0.1" thickness="0.01" bending_model="bridson"/>
+      <elasticity elastic2d="bend" young="1e4" poisson="0.3" damping="0.1" thickness="0.01" bending_model="bridson"/>
     </flex>
   </deformable>
 </mujoco>"#
@@ -4027,20 +4040,17 @@ fn edge_velocities(model: &Model, data: &sim_core::Data) -> Vec<([usize; 2], f64
 /// stiffness, an edge damping or the flex's damping needs them; otherwise
 /// they stay 0, and so do the edges' velocities, `J·qvel`
 /// (`engine_core_smooth.c:682-686`, `engine_forward.c:228-230`; ledger
-/// L153). The grid of [`free_grid_moving`] with its edge equality removed
-/// (sim-mjcf gives every flex one, Rigid-loading L31): every velocity 0, as
-/// MuJoCo's loaded grid, and each of the four makes MuJoCo's velocities with
-/// an edge damping, bit for bit (`gen_flex_edge_velocity_reference.py`).
+/// L153). The grid of [`free_grid_moving`], which no equality names: every
+/// velocity 0, as MuJoCo's loaded grid, and each of the four makes MuJoCo's
+/// velocities with an edge damping, bit for bit
+/// (`gen_flex_edge_velocity_reference.py`).
 /// sim-core's own bending damping does not read the edges' Jacobians, so it
 /// makes none.
 #[test]
 fn edge_jacobians_and_velocities_are_made_only_where_mujoco_makes_them() {
-    let (mut model, data) = free_grid_moving();
-    let flex_equality = (0..model.neq)
-        .find(|&eq| model.eq_type[eq] == sim_core::EqualityType::Flex)
-        .expect("the flex's edge equality");
-    model.eq_active[flex_equality] = false;
-    model.flex_edgeequality[0] = false;
+    let (model, data) = free_grid_moving();
+    assert_eq!(model.neq, 0);
+    assert_eq!(model.flex_edgeequality, vec![false]);
 
     let run = |model: &Model| {
         let mut data = data.clone();
@@ -4161,8 +4171,7 @@ fn a_flex_marked_rigid_keeps_no_edge_jacobian_velocity_or_spring_force() {
 }
 
 /// A 3 × 3 cloth (mass 0.1, radius 0.01) 5 mm into a plane on a static
-/// body, equality constraints off (sim-mjcf's edge equality, Rigid-loading
-/// L31, and MuJoCo's flexcomp has none): MuJoCo 3.5.0's flexcomp, its
+/// body, equality constraints off on both sides: MuJoCo 3.5.0's flexcomp, its
 /// vertices and elements as MuJoCo compiles them
 /// (`scripts/gen_flex_contact_weight_reference.py`).
 const CLOTH_ON_A_STATIC_FLOOR: &str = r#"<mujoco>

@@ -980,6 +980,16 @@ pub enum StepError {
         /// The equality.
         eq: usize,
     },
+    /// Sleep is enabled and equality `eq`, a flex equality, is active:
+    /// MuJoCo 3.5.0 raises an error in the position stage then ("flex
+    /// equality does not yet support sleeping", `mj_wakeEquality`,
+    /// `engine_sleep.c:401-403`), refused by the calls that refuse
+    /// [`Self::TendonEqualityWithSleep`]. The first active tendon or flex
+    /// equality in index order is the one named.
+    FlexEqualityWithSleep {
+        /// The equality.
+        eq: usize,
+    },
     /// With sleep enabled, the inverse dynamics' position stage
     /// ([`Data::inverse`](crate::Data::inverse), from `MjStage::None`) met a
     /// contact between two geoms, not excluded, one of whose bodies sleeps:
@@ -1071,6 +1081,10 @@ impl std::fmt::Display for StepError {
                 f,
                 "equality {eq}: tendon equality does not yet support sleeping"
             ),
+            Self::FlexEqualityWithSleep { eq } => write!(
+                f,
+                "equality {eq}: flex equality does not yet support sleeping"
+            ),
             Self::ContactWithSleepingGeom { contact, geom } => {
                 write!(f, "contact {contact} involves sleeping geom {geom}")
             }
@@ -1127,8 +1141,8 @@ pub enum ResetError {
         root_body: usize,
     },
     /// The forward pass a reset runs before putting the `Init` trees to sleep
-    /// failed: a tendon equality with sleep, on which MuJoCo's reset raises
-    /// the same error, or the implicit spring-damper integrator's
+    /// failed: a tendon or flex equality with sleep, on which MuJoCo's reset
+    /// raises the same error, or the implicit spring-damper integrator's
     /// factorization.
     InitForward(StepError),
 }

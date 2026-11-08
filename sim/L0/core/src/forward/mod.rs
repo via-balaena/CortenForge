@@ -154,14 +154,15 @@ impl Data {
     /// Returns `Err(StepError::InvalidTimestep)` if the timestep is not
     /// positive and finite, `Err(StepError::DataShapeMismatch)` if `self`
     /// was made by a model of other dimensions or an input array was resized,
-    /// `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
-    /// tendon equality is active, `Err(StepError::UndefinedContactFrame)`
+    /// `Err(StepError::TendonEqualityWithSleep)` or
+    /// `Err(StepError::FlexEqualityWithSleep)` if sleep is enabled and a
+    /// tendon or flex equality is active, `Err(StepError::UndefinedContactFrame)`
     /// if a contact's normal, as its collision function wrote it, is shorter
     /// than 0.5, and `Err(StepError::ConstraintWithoutTree)` if, at the dense
     /// size with islands, a contact between two static geoms made rows.
     pub fn step1(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
-        check::check_tendon_equality_sleep(model)?;
+        check::check_equality_sleep(model)?;
 
         // Validate state before stepping
         check::mj_check_pos(model, self);
@@ -251,8 +252,8 @@ impl Data {
     /// - The timestep is not positive and finite (`InvalidTimestep`)
     /// - `self` was made by a model of other dimensions, or an input array
     ///   was resized (`DataShapeMismatch`)
-    /// - Sleep is enabled and a tendon equality is active
-    ///   (`TendonEqualityWithSleep`)
+    /// - Sleep is enabled and a tendon or flex equality is active
+    ///   (`TendonEqualityWithSleep`, `FlexEqualityWithSleep`)
     /// - `ENABLE_FWDINV` is set under an integrator the discrete inverse
     ///   dynamics refuse, and the forward pass made constraint rows, so that
     ///   the comparison reaches the inverse (`UnsupportedInverseDiscrete`)
@@ -286,7 +287,7 @@ impl Data {
         skipfactor: bool,
     ) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
-        check::check_tendon_equality_sleep(model)?;
+        check::check_equality_sleep(model)?;
 
         // Validate state before stepping — void, auto-resets internally.
         check::mj_check_pos(model, self);
@@ -338,9 +339,10 @@ impl Data {
     /// Returns `Err(StepError::InvalidTimestep)` if the timestep is not
     /// positive and finite, `Err(StepError::DataShapeMismatch)` if `self` was
     /// made by a model of other dimensions or an input array was resized,
-    /// `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
-    /// tendon equality is active, `Err(StepError::UndefinedContactFrame)` if a
-    /// contact's normal, as its collision function wrote it, is shorter than
+    /// `Err(StepError::TendonEqualityWithSleep)` or
+    /// `Err(StepError::FlexEqualityWithSleep)` if sleep is enabled and a
+    /// tendon or flex equality is active, `Err(StepError::UndefinedContactFrame)`
+    /// if a contact's normal, as its collision function wrote it, is shorter than
     /// 0.5, `Err(StepError::ConstraintWithoutTree)` if, at the dense size with
     /// islands, a contact between two static geoms made rows, and
     /// `Err(StepError::CholeskyFailed)` under the implicit spring-damper
@@ -349,7 +351,7 @@ impl Data {
     /// factor is the integrator's (`integrate`), not this pass's.
     pub fn forward(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
-        check::check_tendon_equality_sleep(model)?;
+        check::check_equality_sleep(model)?;
         self.forward_core(model, true)
     }
 
@@ -393,7 +395,8 @@ impl Data {
     /// Returns `Err(StepError)` if the timestep is not positive and finite,
     /// if `self` was made by a model of other dimensions or an input array
     /// was resized, if `skipstage` is `MjStage::None` with sleep enabled and a
-    /// tendon equality active or a contact's normal shorter than 0.5
+    /// tendon or flex equality active (`TendonEqualityWithSleep`,
+    /// `FlexEqualityWithSleep`) or a contact's normal shorter than 0.5
     /// (`UndefinedContactFrame`) or, at the dense size with islands, a contact
     /// between two static geoms that made rows (`ConstraintWithoutTree`), or
     /// if the implicit spring-damper integrator's factorization fails or
@@ -406,7 +409,7 @@ impl Data {
     ) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
         if skipstage == MjStage::None {
-            check::check_tendon_equality_sleep(model)?;
+            check::check_equality_sleep(model)?;
         }
         self.forward_skip_unchecked(model, skipstage, skipsensor)
     }

@@ -1,7 +1,7 @@
 //! Equality constraint processing.
 //!
-//! Converts MJCF `<equality>` elements (connect, weld, joint, distance, tendon)
-//! into Model arrays. Handles body/joint/geom/tendon name resolution, polynomial
+//! Converts MJCF `<equality>` elements (connect, weld, joint, distance, tendon,
+//! flex) and a flexcomp's edge equality into Model arrays. Handles body/joint/geom/tendon name resolution, polynomial
 //! coefficient packing, and default parameter application.
 //!
 //! Constraints are processed in **XML document order** (not grouped by type),
@@ -13,10 +13,23 @@ use nalgebra::Vector3;
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
-    EqualityKind, MjcfConnect, MjcfDistance, MjcfEquality, MjcfJointEquality, MjcfTendonEquality,
-    MjcfWeld,
+    EqualityKind, MjcfConnect, MjcfDistance, MjcfEquality, MjcfFlex, MjcfFlexEquality,
+    MjcfJointEquality, MjcfTendonEquality, MjcfWeld,
 };
 use sim_core::{EqualityType, Model, SameFrame};
+
+/// A document's flex equality, kept for
+/// [`ModelBuilder::check_flex_equalities`]: its equality id, its position in
+/// `<equality>`, its name and its flex's, and whether its empty `flex` stands
+/// beside an unnamed flex, which MuJoCo binds it to (`user_objects.cc:6005`).
+#[derive(Debug, Clone)]
+pub struct FlexEqualityRef {
+    eq_id: usize,
+    index: usize,
+    name: Option<String>,
+    flex: String,
+    unnamed: bool,
+}
 
 /// The form a `<connect>` is written in.
 pub enum ConnectForm<'a> {
@@ -108,7 +121,13 @@ impl ModelBuilder {
     /// to produce the same eq_id assignment as MuJoCo.
     ///
     /// Must be called AFTER all bodies and joints are processed (requires name lookups).
-    pub(crate) fn process_equality_constraints(&mut self, equality: &MjcfEquality) -> Result<()> {
+    /// A flex equality's flex is looked up by name in `flexes`, whose order
+    /// is the flexes' ids.
+    pub(crate) fn process_equality_constraints(
+        &mut self,
+        equality: &MjcfEquality,
+        flexes: &[MjcfFlex],
+    ) -> Result<()> {
         for (i, &(kind, idx)) in equality.order.iter().enumerate() {
             let (name, done) = match kind {
                 EqualityKind::Connect => {
@@ -130,6 +149,11 @@ impl ModelBuilder {
                 EqualityKind::Tendon => {
                     let t = &equality.tendons[idx];
                     (t.name.as_deref(), self.process_tendon_equality(t))
+                }
+                EqualityKind::Flex => {
+                    let f = &equality.flexes[idx];
+                    self.process_flex_equality(f, flexes, i);
+                    (f.name.as_deref(), Ok(()))
                 }
             };
             done.map_err(|e| {
@@ -435,6 +459,139 @@ impl ModelBuilder {
         }
         self.eq_name.push(ten_eq.name.clone());
         Ok(())
+    }
+
+    /// Process a flex equality constraint (MuJoCo's `mjEQ_FLEX`): one row
+    /// for each edge of the flex it names that is not rigid, with the
+    /// equality's `solref` and `solimp`. A name no flex in `flexes` has, and
+    /// a rigid flex, are refused by [`Self::check_flex_equalities`] once the
+    /// flexes are built. A `<flexvert>`, and an empty `flex` beside an
+    /// unnamed flex, are refused after the keyframes
+    /// ([`ModelBuilder::flex_equality_fault`]).
+    fn process_flex_equality(
+        &mut self,
+        flex_eq: &MjcfFlexEquality,
+        flexes: &[MjcfFlex],
+        index: usize,
+    ) {
+        let flex_id = flexes
+            .iter()
+            .position(|f| !f.name.is_empty() && f.name == flex_eq.flex)
+            .unwrap_or(usize::MAX);
+        let unnamed = flex_eq.flex.is_empty() && flexes.iter().any(|f| f.name.is_empty());
+        let at = || Location::nth(ElementKind::Equality, flex_eq.name.as_deref(), index);
+        if flex_eq.vertices {
+            self.defer_flex_equality_fault(
+                MjcfError::unsupported(
+                    "a flex vertex equality (`<equality><flexvert>`, MuJoCo's mjEQ_FLEXVERT)",
+                )
+                .at(at()),
+            );
+        }
+        if unnamed {
+            self.defer_flex_equality_fault(MjcfError::undefined(ElementKind::Flex, "").at(at()));
+        }
+        self.flex_equalities.push(FlexEqualityRef {
+            eq_id: self.eq_type.len(),
+            index,
+            name: flex_eq.name.clone(),
+            flex: flex_eq.flex.clone(),
+            unnamed,
+        });
+        self.push_flex_equality(
+            flex_id,
+            flex_eq.active.unwrap_or(true),
+            written_over(flex_eq.solref, DEFAULT_SOLREF),
+            written_over(flex_eq.solimp, DEFAULT_SOLIMP),
+            flex_eq.name.clone(),
+        );
+    }
+
+    /// Each flexcomp's `<edge equality="true">` equality, after the
+    /// document's equalities and once the flexes are built: MuJoCo makes a
+    /// flexcomp's as it reads `<worldbody>`, which it reads after `<equality>`
+    /// (`mjXReader::Parse`), and none for a rigid flexcomp
+    /// (`user_flexcomp.cc:463-466`, `:643-649`). Unnamed and active, with
+    /// MuJoCo's default `solref` and `solimp` unless the `<edge>` writes them.
+    /// One `equality="vert"` asks for is made so, and refused after the
+    /// keyframes ([`ModelBuilder::flex_equality_fault`]).
+    pub(crate) fn process_flexcomp_equalities(&mut self, flexes: &[MjcfFlex]) {
+        for (flex_id, flex) in flexes.iter().enumerate() {
+            if let Some(edge) = &flex.edge_equality
+                && !self.flex_rigid[flex_id]
+            {
+                if edge.vertices {
+                    self.defer_flex_equality_fault(
+                        MjcfError::unsupported(
+                            "a flexcomp's vertex equality (`<edge equality=vert>`, MuJoCo's mjEQ_FLEXVERT)",
+                        )
+                        .at(Location::nth(ElementKind::Flex, Some(&flex.name), flex_id)),
+                    );
+                }
+                self.push_flex_equality(
+                    flex_id,
+                    true,
+                    written_over(edge.solref, DEFAULT_SOLREF),
+                    written_over(edge.solimp, DEFAULT_SOLIMP),
+                    None,
+                );
+            }
+        }
+    }
+
+    /// One flex equality's arrays.
+    fn push_flex_equality(
+        &mut self,
+        flex_id: usize,
+        active: bool,
+        solref: [f64; 2],
+        solimp: [f64; 5],
+        name: Option<String>,
+    ) {
+        self.eq_type.push(EqualityType::Flex);
+        self.eq_obj1id.push(flex_id);
+        self.eq_obj2id.push(usize::MAX);
+        self.eq_data.push([0.0; 11]);
+        self.eq_active.push(active);
+        self.eq_solimp.push(solimp);
+        self.eq_solref.push(solref);
+        let eq_id = self.eq_name.len();
+        if let Some(ref name) = name {
+            self.eq_name_to_id.insert(name.clone(), eq_id);
+        }
+        self.eq_name.push(name);
+    }
+
+    /// MuJoCo's checks of a flex equality, in its order for each equality:
+    /// the flex it names exists (`mjCEquality::ResolveReferences`,
+    /// `user_objects.cc:6006-6009`), and is not rigid (`Compile`,
+    /// `:6055-6057`).
+    pub(crate) fn check_flex_equalities(&self) -> Result<()> {
+        for r in &self.flex_equalities {
+            let at = || Location::nth(ElementKind::Equality, r.name.as_deref(), r.index);
+            let flex_id = self.eq_obj1id[r.eq_id];
+            if flex_id == usize::MAX && r.unnamed {
+                // Refused after the keyframes (registry `D-FLEX-EQ-NO-NAME`).
+                continue;
+            }
+            if flex_id == usize::MAX {
+                return Err(MjcfError::undefined(ElementKind::Flex, &r.flex).at(at()));
+            }
+            if self.flex_rigid[flex_id] {
+                return Err(MjcfError::invalid_model(format!(
+                    "rigid flex '{}' in equality constraint {}",
+                    r.flex, r.eq_id
+                ))
+                .at(at()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Keep `fault`, a flex equality MuJoCo makes and this crate refuses
+    /// after the keyframes, unless an earlier equality's is kept.
+    fn defer_flex_equality_fault(&mut self, fault: MjcfError) {
+        self.flex_equality_fault.get_or_insert(fault);
     }
 
     /// Get world-space position and orientation of a body at build time.

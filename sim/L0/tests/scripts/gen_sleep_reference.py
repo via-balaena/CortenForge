@@ -149,11 +149,13 @@ REFUSALS: two models whose init-asleep tree cannot sleep (A8's initmix,
 joined by a connect, and initmix_contact, resting on an awake sphere), at
 compile, which makes a Data; a tendon equality with sleep enabled, at
 the first mj_forward; and the same with a tree that starts asleep, at
-compile.
+compile; and those two for a flex equality, on a two-vertex dim-1 flex;
+and a flex equality before a tendon equality, and after it, at the first
+mj_forward: MuJoCo raises on the first in index order.
 
-Its `tendon_equality_calls` entry holds, for that tendon equality active
-and made inactive, the message each MuJoCo call raises on a fresh Data, or
-null: mj_forward, mj_step, mj_step1, mj_step2, mj_forwardSkip from each
+Its `tendon_equality_calls` and `flex_equality_calls` entries hold, for that
+tendon or flex equality active and made inactive, the message each MuJoCo
+call raises on a fresh Data, or null: mj_forward, mj_step, mj_step1, mj_step2, mj_forwardSkip from each
 stage, mj_Euler, mjd_transitionFD and mjd_inverseFD. Its `init_timestep`
 entry holds tree_asleep after mj_makeData of the box that starts asleep
 with a timestep of 0 and of -0.001. Its `init_mocap` entry holds, for a
@@ -357,6 +359,21 @@ def box_rest(opt='', flags=''):
 
 SPHERE = '<body name="{n}" pos="{p}"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>'
 SLEEP_OPT = '<option timestep="0.002"><flag sleep="enable"/></option>'
+FLEX_VERTEX = ('<body name="{n}" pos="{p}"{s}><joint type="slide" axis="1 0 0"/>'
+               '<joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>'
+               '<inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body>')
+FLEX_ONE_EDGE = ('<deformable><flex name="c" dim="1" body="v0 v1" element="0 1">'
+                 '<contact contype="0" conaffinity="0"/></flex></deformable>')
+TENDON_AND_FLEX = (f"""<mujoco>{SLEEP_OPT}
+<worldbody>
+<body name="a" pos="0 0 1"><joint name="ja"/><geom type="sphere" size="0.05" mass="1"/></body>
+<body name="b" pos="1 0 1"><joint name="jb"/><geom type="sphere" size="0.05" mass="1"/></body>
+{FLEX_VERTEX.format(n="v0", p="0 0 2", s="")}
+{FLEX_VERTEX.format(n="v1", p="0.1 0 2", s="")}
+</worldbody>
+<tendon><fixed name="t"><joint joint="ja" coef="1"/><joint joint="jb" coef="-1"/></fixed></tendon>
+{FLEX_ONE_EDGE}
+""" + '<equality>{first}{second}</equality></mujoco>')
 
 TRACES_ACT_SLEEP = f"""<mujoco>{SLEEP_OPT}
 <worldbody>
@@ -871,6 +888,24 @@ REFUSALS = {
 </worldbody>
 <tendon><fixed name="t"><joint joint="ja" coef="1"/><joint joint="jb" coef="-1"/></fixed></tendon>
 <equality><tendon tendon1="t"/></equality></mujoco>""",
+    "flex_equality": f"""<mujoco>{SLEEP_OPT}
+<worldbody>
+{FLEX_VERTEX.format(n="v0", p="0 0 1", s="")}
+{FLEX_VERTEX.format(n="v1", p="0.1 0 1", s="")}
+</worldbody>
+{FLEX_ONE_EDGE}
+<equality><flex flex="c"/></equality></mujoco>""",
+    "init_flex_equality": f"""<mujoco>{SLEEP_OPT}
+<worldbody>
+{FLEX_VERTEX.format(n="v0", p="0 0 1", s=' sleep="init"')}
+{FLEX_VERTEX.format(n="v1", p="0.1 0 1", s="")}
+</worldbody>
+{FLEX_ONE_EDGE}
+<equality><flex flex="c"/></equality></mujoco>""",
+    "flex_then_tendon_equality": TENDON_AND_FLEX.format(
+        first='<flex flex="c"/>', second='<tendon tendon1="t"/>'),
+    "tendon_then_flex_equality": TENDON_AND_FLEX.format(
+        first='<tendon tendon1="t"/>', second='<flex flex="c"/>'),
 }
 
 POLICY = {
@@ -1016,7 +1051,7 @@ def refusal(xml):
     return None
 
 
-TENDON_EQUALITY_CALLS = {
+EQUALITY_CALLS = {
     "mj_forward": lambda m, d: mujoco.mj_forward(m, d),
     "mj_step": lambda m, d: mujoco.mj_step(m, d),
     "mj_step1": lambda m, d: mujoco.mj_step1(m, d),
@@ -1032,14 +1067,14 @@ TENDON_EQUALITY_CALLS = {
 }
 
 
-def tendon_equality_calls():
+def equality_calls(refusal, element, inactive_element):
     out = {}
-    active = REFUSALS["tendon_equality"]
-    inactive = active.replace('<tendon tendon1="t"/>', '<tendon tendon1="t" active="false"/>')
-    assert inactive != active
+    active = REFUSALS[refusal]
+    assert active.count(element) == 1, refusal
+    inactive = active.replace(element, inactive_element)
     for key, xml in (("active", active), ("inactive", inactive)):
         calls = {}
-        for name, call in TENDON_EQUALITY_CALLS.items():
+        for name, call in EQUALITY_CALLS.items():
             m = mujoco.MjModel.from_xml_string(xml)
             try:
                 call(m, mujoco.MjData(m))
@@ -1098,7 +1133,10 @@ def main():
            "runs": finite_or_string(runs)}
     write(os.path.join(sys.argv[1], "sleep_traces.json"), {"oracle": marker, "traces": finite_or_string(traces)})
     doc["refusals"] = [{"name": name, "xml": REFUSALS[name], "message": msg} for name, msg in refusals.items()]
-    doc["tendon_equality_calls"] = tendon_equality_calls()
+    doc["tendon_equality_calls"] = equality_calls(
+        "tendon_equality", '<tendon tendon1="t"/>', '<tendon tendon1="t" active="false"/>')
+    doc["flex_equality_calls"] = equality_calls(
+        "flex_equality", '<flex flex="c"/>', '<flex flex="c" active="false"/>')
     doc["init_timestep"] = init_timestep()
     doc["init_mocap"] = init_mocap()
     doc["islands"] = islands()
