@@ -64,6 +64,8 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
 ///
+/// 17 since Rigid-loading PR RL-8b: `MjcfBody` and `MjcfFrame` took
+/// `flexcomps`, `MjcfItem` `Flexcomp`, and `MjcfFlex` `flexcomp_holder`.
 /// 16 since Rigid-loading PR RL-8a: `MjcfEquality` took `flexes`,
 /// `EqualityKind` `Flex`, and `MjcfFlex` `edge_equality` and `elastic2d`.
 /// 15 since Rigid-loading PR RL-7d: `MjcfOption`'s `o_margin` is kept as
@@ -89,7 +91,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// one below mjMINVAL is refused (Rigid-loading PR RL-3b): a version-6 file
 /// holds 0.0 there for a flexcomp that did not write it. 6 since `MjcfFlex`
 /// took `vertex_bodies` (Rigid-loading L10).
-pub const MJB_VERSION: u32 = 16;
+pub const MJB_VERSION: u32 = 17;
 
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;

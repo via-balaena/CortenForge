@@ -884,10 +884,9 @@ fn each_moving_body_check_and_total_mass_is_mujocos() {
 }
 
 /// A flexcomp's vertex bodies are bodies to the moving-body check and to
-/// `settotalmass`. This crate reads a flexcomp only inside `<deformable>`,
-/// which MuJoCo 3.5.0 refuses, and MuJoCo's form (in `<worldbody>`) is
-/// skipped here (ledger L358), so each document below is the `<deformable>`
-/// form of one MuJoCo loaded in its own form, and expects MuJoCo's result
+/// `settotalmass`. Each document below is the `<deformable>` form, which
+/// this crate also reads and MuJoCo 3.5.0 refuses (ledger L387), of one
+/// MuJoCo loaded in its own form (in `<worldbody>`), and expects MuJoCo's result
 /// there (2026-11-02): mass 4e-15 refused; mass 3.2e-14 with inertiabox 2,
 /// each vertex body 8e-15 with moments 2.1333333333333335e-14;
 /// `settotalmass="10"` beside a sphere's body, each vertex body

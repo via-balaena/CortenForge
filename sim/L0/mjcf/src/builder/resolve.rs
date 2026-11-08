@@ -21,10 +21,10 @@ use crate::types::{
 
 /// A body or frame still to visit, with the `childclass` its contents take
 /// where they name no class of their own, and (for a frame) the body that
-/// holds it.
+/// holds it and that body's class, which a flexcomp in the frame takes.
 enum Pending<'a> {
     Body(&'a mut MjcfBody, Option<String>),
-    Frame(&'a mut MjcfFrame, Option<String>, String),
+    Frame(&'a mut MjcfFrame, Option<String>, String, Option<String>),
 }
 
 /// Every element given its class: the body tree's (`apply_to_body_tree`),
@@ -178,7 +178,10 @@ fn equality_tag(kind: EqualityKind) -> &'static str {
 
 /// Each geom, joint and site of the body tree given its class: its own, else
 /// the `childclass` of the nearest body or frame holding it (`main` where
-/// none has one); a `<freejoint>` takes none, as MuJoCo makes it. A geom's
+/// none has one); a `<freejoint>` takes none, as MuJoCo makes it. A
+/// flexcomp records the class of the body holding it, a frame around it
+/// giving it none (measured on MuJoCo 3.5.0), for its vertex bodies' joints
+/// and spheres. A geom's
 /// and a site's `fromto` is then made into its `pos`, `quat` and `size` in
 /// its own frame, which a frame or fusion composes after, as MuJoCo compiles
 /// the element before either. Each `childclass` is
@@ -197,6 +200,7 @@ fn apply_to_body_tree(world: &mut MjcfBody, resolver: &DefaultResolver) -> Resul
                     sites,
                     frames,
                     children,
+                    flexcomps,
                     ..
                 } = body;
                 if let Some(cc) = childclass.as_deref() {
@@ -215,6 +219,9 @@ fn apply_to_body_tree(world: &mut MjcfBody, resolver: &DefaultResolver) -> Resul
                 }
                 apply_to_geoms(geoms, resolver, effective.as_deref(), name)?;
                 apply_to_sites(sites, resolver, effective.as_deref(), name)?;
+                for flexcomp in flexcomps.iter_mut() {
+                    flexcomp.class.clone_from(&effective);
+                }
                 // Popped frames first, then child bodies, each in the order
                 // written; a body's elements are visited by kind (joints,
                 // geoms, sites), not as they interleave in the document.
@@ -222,10 +229,15 @@ fn apply_to_body_tree(world: &mut MjcfBody, resolver: &DefaultResolver) -> Resul
                     pending.push(Pending::Body(child, effective.clone()));
                 }
                 for frame in frames.iter_mut().rev() {
-                    pending.push(Pending::Frame(frame, effective.clone(), name.clone()));
+                    pending.push(Pending::Frame(
+                        frame,
+                        effective.clone(),
+                        name.clone(),
+                        effective.clone(),
+                    ));
                 }
             }
-            Pending::Frame(frame, inherited, body) => {
+            Pending::Frame(frame, inherited, body, body_class) => {
                 if let Some(cc) = frame.childclass.as_deref() {
                     resolver.class(Some(cc)).map_err(|e| {
                         e.at(Location::named(
@@ -238,11 +250,19 @@ fn apply_to_body_tree(world: &mut MjcfBody, resolver: &DefaultResolver) -> Resul
                 let effective = frame.childclass.clone().or(inherited);
                 apply_to_geoms(&mut frame.geoms, resolver, effective.as_deref(), &body)?;
                 apply_to_sites(&mut frame.sites, resolver, effective.as_deref(), &body)?;
+                for flexcomp in &mut frame.flexcomps {
+                    flexcomp.class.clone_from(&body_class);
+                }
                 for child in frame.bodies.iter_mut().rev() {
                     pending.push(Pending::Body(child, effective.clone()));
                 }
                 for sub in frame.frames.iter_mut().rev() {
-                    pending.push(Pending::Frame(sub, effective.clone(), body.clone()));
+                    pending.push(Pending::Frame(
+                        sub,
+                        effective.clone(),
+                        body.clone(),
+                        body_class.clone(),
+                    ));
                 }
             }
         }

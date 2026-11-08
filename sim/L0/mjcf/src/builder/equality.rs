@@ -598,7 +598,10 @@ impl ModelBuilder {
     ///
     /// Body 0 (world) returns identity. Non-world bodies are indexed into
     /// `body_world_pos/quat` at `(body_id - 1)`.
-    fn body_world_pose(&self, body_id: usize) -> (Vector3<f64>, nalgebra::UnitQuaternion<f64>) {
+    pub(crate) fn body_world_pose(
+        &self,
+        body_id: usize,
+    ) -> (Vector3<f64>, nalgebra::UnitQuaternion<f64>) {
         if body_id == 0 {
             (Vector3::zeros(), nalgebra::UnitQuaternion::identity())
         } else {

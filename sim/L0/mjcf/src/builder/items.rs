@@ -2,7 +2,9 @@
 //! ([`MjcfBody::items`], [`MjcfFrame::items`]), for the passes that expand
 //! frames and composites where they are written.
 
-use crate::types::{MjcfBody, MjcfComposite, MjcfFrame, MjcfGeom, MjcfItem, MjcfJoint, MjcfSite};
+use crate::types::{
+    MjcfBody, MjcfComposite, MjcfFlexcomp, MjcfFrame, MjcfGeom, MjcfItem, MjcfJoint, MjcfSite,
+};
 
 /// One element of a body or a frame, owned.
 pub(super) enum Element {
@@ -12,6 +14,8 @@ pub(super) enum Element {
     Body(MjcfBody),
     Frame(MjcfFrame),
     Composite(MjcfComposite),
+    // Boxed: a flexcomp is the largest element by far.
+    Flexcomp(Box<MjcfFlexcomp>),
 }
 
 /// What a body or a frame holds, moved out of it: each kind's list and the
@@ -25,6 +29,7 @@ pub(super) struct Contents {
     bodies: Vec<MjcfBody>,
     frames: Vec<MjcfFrame>,
     composites: Vec<MjcfComposite>,
+    flexcomps: Vec<MjcfFlexcomp>,
 }
 
 impl Contents {
@@ -38,6 +43,7 @@ impl Contents {
             bodies: std::mem::take(&mut body.children),
             frames: std::mem::take(&mut body.frames),
             composites: std::mem::take(&mut body.composites),
+            flexcomps: std::mem::take(&mut body.flexcomps),
         }
     }
 
@@ -50,13 +56,14 @@ impl Contents {
             bodies: std::mem::take(&mut frame.bodies),
             frames: std::mem::take(&mut frame.frames),
             composites: std::mem::take(&mut frame.composites),
+            flexcomps: std::mem::take(&mut frame.flexcomps),
             ..Self::default()
         }
     }
 
     /// Its elements in the order `items` gives them, then each element no
-    /// entry reaches, each list in its own order, frames and then composites
-    /// last (`MjcfBody::items`).
+    /// entry reaches, each list in its own order, frames, composites and then
+    /// flexcomps last (`MjcfBody::items`).
     pub(super) fn into_elements(self) -> Vec<Element> {
         let Self {
             items,
@@ -66,6 +73,7 @@ impl Contents {
             bodies,
             frames,
             composites,
+            flexcomps,
         } = self;
         let mut joints = joints.into_iter();
         let mut geoms = geoms.into_iter();
@@ -73,6 +81,7 @@ impl Contents {
         let mut bodies = bodies.into_iter();
         let mut frames = frames.into_iter();
         let mut composites = composites.into_iter();
+        let mut flexcomps = flexcomps.into_iter();
         let mut elements: Vec<Element> = items
             .iter()
             .filter_map(|item| match item {
@@ -82,6 +91,7 @@ impl Contents {
                 MjcfItem::Body => bodies.next().map(Element::Body),
                 MjcfItem::Frame => frames.next().map(Element::Frame),
                 MjcfItem::Composite => composites.next().map(Element::Composite),
+                MjcfItem::Flexcomp => flexcomps.next().map(|f| Element::Flexcomp(Box::new(f))),
             })
             .collect();
         elements.extend(joints.map(Element::Joint));
@@ -90,6 +100,7 @@ impl Contents {
         elements.extend(bodies.map(Element::Body));
         elements.extend(frames.map(Element::Frame));
         elements.extend(composites.map(Element::Composite));
+        elements.extend(flexcomps.map(|f| Element::Flexcomp(Box::new(f))));
         elements
     }
 
@@ -120,6 +131,10 @@ impl Contents {
                 self.composites.push(composite);
                 MjcfItem::Composite
             }
+            Element::Flexcomp(flexcomp) => {
+                self.flexcomps.push(*flexcomp);
+                MjcfItem::Flexcomp
+            }
         };
         self.items.push(item);
     }
@@ -139,6 +154,7 @@ impl Contents {
         body.children = self.bodies;
         body.frames = self.frames;
         body.composites = self.composites;
+        body.flexcomps = self.flexcomps;
     }
 
     /// The elements put back into `frame`, whose lists `take_from_frame`
@@ -151,6 +167,7 @@ impl Contents {
         frame.bodies = self.bodies;
         frame.frames = self.frames;
         frame.composites = self.composites;
+        frame.flexcomps = self.flexcomps;
     }
 }
 
@@ -178,6 +195,7 @@ mod tests {
                 Element::Body(b) => format!("body {}", b.name),
                 Element::Frame(f) => format!("frame {}", f.name.as_deref().unwrap_or("")),
                 Element::Composite(c) => format!("composite {}", c.prefix),
+                Element::Flexcomp(f) => format!("flexcomp {}", f.name),
             })
             .collect()
     }

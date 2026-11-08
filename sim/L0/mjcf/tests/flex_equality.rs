@@ -4,8 +4,9 @@
 //!
 //! Each expected value was measured on MuJoCo 3.5.0 for the same model: the
 //! `<flex>` documents as written here, each vertex a body of its own; the
-//! `<flexcomp>` ones in MuJoCo's form, the flexcomp in a body, which MuJoCo
-//! reads where this crate reads it in `<deformable>`.
+//! `<flexcomp>` ones in MuJoCo's form, the flexcomp in a body, where these
+//! documents write it in `<deformable>`, a form this crate also reads and
+//! MuJoCo refuses (ledger L387).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

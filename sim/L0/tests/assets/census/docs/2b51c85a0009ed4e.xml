@@ -1,0 +1,1 @@
+<mujoco><worldbody><flexcomp name="f" type="disc" count="3 3 1" spacing="0.1 0.1 0.1"/></worldbody></mujoco>

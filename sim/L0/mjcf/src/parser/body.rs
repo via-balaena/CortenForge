@@ -15,6 +15,7 @@ use crate::types::{
 use super::attrs::{Attrs, skip_element};
 use super::composite::parse_composite;
 use super::extension::parse_plugin_ref;
+use super::flexcomp::parse_flexcomp;
 
 /// Parse worldbody element (`empty`: it closed itself, so it has no children).
 pub(super) fn parse_worldbody<R: BufRead>(reader: &mut Reader<R>, empty: bool) -> Result<MjcfBody> {
@@ -54,6 +55,12 @@ pub(super) fn parse_worldbody<R: BufRead>(reader: &mut Reader<R>, empty: bool) -
                         let composite = parse_composite(reader, e, child_empty)?;
                         worldbody.composites.push(composite);
                         worldbody.items.push(MjcfItem::Composite);
+                    }
+                    b"flexcomp" => {
+                        worldbody
+                            .flexcomps
+                            .push(parse_flexcomp(reader, e, child_empty)?);
+                        worldbody.items.push(MjcfItem::Flexcomp);
                     }
                     tag @ (b"replicate" | b"attach") => return Err(attach_refusal(tag)),
                     name => skip_element(reader, name, child_empty)?,
@@ -137,6 +144,10 @@ pub(super) fn parse_body<R: BufRead>(
                         let composite = parse_composite(reader, e, child_empty)?;
                         body.composites.push(composite);
                         body.items.push(MjcfItem::Composite);
+                    }
+                    b"flexcomp" => {
+                        body.flexcomps.push(parse_flexcomp(reader, e, child_empty)?);
+                        body.items.push(MjcfItem::Flexcomp);
                     }
                     b"plugin" => body.plugin = Some(parse_plugin_ref(reader, e, child_empty)?),
                     tag @ (b"replicate" | b"attach") => return Err(attach_refusal(tag)),
@@ -407,6 +418,12 @@ pub(super) fn parse_frame<R: BufRead>(
                             .composites
                             .push(parse_composite(reader, e, child_empty)?);
                         frame.items.push(MjcfItem::Composite);
+                    }
+                    b"flexcomp" => {
+                        frame
+                            .flexcomps
+                            .push(parse_flexcomp(reader, e, child_empty)?);
+                        frame.items.push(MjcfItem::Flexcomp);
                     }
                     tag @ (b"camera" | b"light") => {
                         tracing::warn!(

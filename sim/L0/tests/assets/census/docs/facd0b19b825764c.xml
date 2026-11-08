@@ -1,0 +1,1 @@
+<mujoco><worldbody><flexcomp name="f" type="direct" dim="1" point="0 0 0  1 0 0  2 0 0" element="0 2" scale="2 1 1"/></worldbody></mujoco>

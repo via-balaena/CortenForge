@@ -38,6 +38,31 @@ pub fn normvec<const N: usize>(v: &mut [f64; N]) -> f64 {
     nrm
 }
 
+/// MuJoCo's `mjuu_rotVecQuat` (`user_util.cc:583-608`): `quat` as written,
+/// not normalised, turns `vec`; a zero vector stays zero, and the quaternion
+/// (1, 0, 0, 0) copies it.
+// The two shortcuts compare exactly, as MuJoCo's (`vec[0] == 0 && …`).
+#[allow(clippy::float_cmp)]
+pub fn rot_vec_quat(vec: [f64; 3], quat: [f64; 4]) -> [f64; 3] {
+    if vec == [0.0; 3] {
+        return [0.0; 3];
+    }
+    if quat == [1.0, 0.0, 0.0, 0.0] {
+        return vec;
+    }
+    let [w, x, y, z] = quat;
+    let tmp = [
+        w * vec[0] + y * vec[2] - z * vec[1],
+        w * vec[1] + z * vec[0] - x * vec[2],
+        w * vec[2] + x * vec[1] - y * vec[0],
+    ];
+    [
+        vec[0] + 2.0 * (y * tmp[2] - z * tmp[1]),
+        vec[1] + 2.0 * (z * tmp[0] - x * tmp[2]),
+        vec[2] + 2.0 * (x * tmp[1] - y * tmp[0]),
+    ]
+}
+
 /// `mjuu_z2quat` (`user_util.cc:395-408`): the turn (w, x, y, z) of the z
 /// axis onto `vec`, about their cross product made unit, or about x where
 /// `normvec` returns 0 for it (a norm below 1e-7).

@@ -9,7 +9,8 @@ use crate::error::{MjcfError, Result};
 use crate::keywords;
 
 use crate::types::{
-    FlexVertexBodies, MjcfFlex, MjcfFlexcompEdgeEquality, MjcfSkin, MjcfSkinBone, MjcfSkinVertex,
+    FlexVertexBodies, FlexcompType, MjcfFlex, MjcfFlexcompEdgeEquality, MjcfSkin, MjcfSkinBone,
+    MjcfSkinVertex,
 };
 
 use super::attrs::{Attrs, skip_element};
@@ -399,7 +400,7 @@ fn flexcomp_mesh(e: &BytesStart) -> Result<MjcfFlex> {
 
     let comp_type = a
         .keyword("type", keywords::flexcomp_type)?
-        .unwrap_or("grid");
+        .unwrap_or(FlexcompType::Grid);
     // MuJoCo's first checks of a flexcomp, in its order (`mjCFlexcomp::Make`,
     // `user_flexcomp.cc:114-124`): its dim, then its count, here before the
     // mesh is generated from them.
@@ -421,8 +422,8 @@ fn flexcomp_mesh(e: &BytesStart) -> Result<MjcfFlex> {
     let spacing = a.array::<3>("spacing")?.unwrap_or([0.02; 3]);
 
     match comp_type {
-        "grid" => generate_grid(&mut flex, count, spacing),
-        "box" => generate_box_mesh(&mut flex, count, spacing),
+        FlexcompType::Grid => generate_grid(&mut flex, count, spacing),
+        FlexcompType::Box => generate_box_mesh(&mut flex, count, spacing),
         // A type of MuJoCo's this `<deformable>` form does not generate (the
         // form itself is sim-mjcf's, refused by MuJoCo's schema).
         other => {
@@ -430,7 +431,8 @@ fn flexcomp_mesh(e: &BytesStart) -> Result<MjcfFlex> {
                 "flexcomp",
                 "type",
                 format!(
-                    "sim-mjcf's <deformable><flexcomp> generates only grid and box, not {other}"
+                    "sim-mjcf's <deformable><flexcomp> generates only grid and box, not {}",
+                    other.word()
                 ),
             ));
         }

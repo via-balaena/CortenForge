@@ -231,10 +231,9 @@ fn contacts_in_mujoco_body_pair_order() {
     }
 }
 
-/// MuJoCo's list for an `order` flex case against ours: sim-mjcf does not
-/// load MuJoCo's `<flexcomp>` in a body (ledger L152), so the same flex is
-/// built as a `<flex>` of vertex bodies at MuJoCo's vertex positions, with
-/// its elements, beside `bodies`, the case's other bodies.
+/// MuJoCo's list for an `order` flex case against ours: the same flex built
+/// as a `<flex>` of vertex bodies at MuJoCo's vertex positions, with its
+/// elements, beside `bodies`, the case's other bodies.
 fn flex_lists_as_mujoco(name: &str, bodies: &str) {
     let case = &golden()["order"][name];
     let join = |v: Vec<String>| v.join(" ");

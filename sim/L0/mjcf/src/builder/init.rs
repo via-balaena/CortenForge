@@ -227,6 +227,7 @@ impl ModelBuilder {
             eq_name_to_id: HashMap::new(),
             flex_equalities: Vec::new(),
             flex_equality_fault: None,
+            flexcomp_fault: None,
 
             // Equality constraints (populated by process_equality_constraints)
             eq_type: vec![],
