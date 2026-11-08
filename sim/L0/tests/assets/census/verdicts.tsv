@@ -2798,6 +2798,7 @@ d12545a9166b2374	agree
 d15b355038b576fd	both-refuse
 d15d3a25eca670a3	both-refuse
 d1b5caf409541092	agree
+d1c15ddf1b5896c1	model:nbody	divergence=D-FLEX-PINNED-BODY
 d1d5405e2c698043	both-refuse
 d1d72fa5052f7f0f	both-refuse
 d1f292b8f45d919b	mj-refuses	divergence=D-FLEX-BENDING-MODEL

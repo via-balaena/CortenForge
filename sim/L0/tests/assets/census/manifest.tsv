@@ -3502,3 +3502,4 @@ dedfd11225e8180c	sim/L0/mjcf/tests/refusal_order.rs:2405
 e2079f20c38923f8	sim/L0/mjcf/tests/refusal_order.rs:1753
 eaf1bc3139076470	sim/L0/mjcf/tests/refusal_order.rs:1771
 f9cc636adde3cdc7	sim/L0/mjcf/tests/refusal_order.rs:1759
+d1c15ddf1b5896c1	sim/L0/mjcf/src/mjb.rs:615
