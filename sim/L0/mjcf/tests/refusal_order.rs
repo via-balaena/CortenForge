@@ -104,12 +104,9 @@
 //! crate once read for its own flexcomp) are made where the reader meets
 //! them, so before every check made after parsing, as MuJoCo's schema walk
 //! makes them before any value is read; a fault the parser meets written
-//! before them is named first here: `SCHEMA_COSTS` (ledger L353). A fault
-//! MuJoCo names first that the parser passes over (an unknown element or
-//! attribute, a repeated unique child, written before them) or meets after
-//! them (an XML syntax error written after them: MuJoCo's XML reader reads
-//! the whole document before its schema walk) is named after them here:
-//! `REFUSAL_FIRST_COSTS` (ledgers L315, L353).
+//! before them is named first here: `SCHEMA_COSTS` (ledger L353); and
+//! `REFUSAL_FIRST_COSTS` pins each kind measured where MuJoCo names the other
+//! fault and this crate the refusal (ledgers L315, L353).
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, with the reason its row gives as MuJoCo's (RL-6a's measured
@@ -146,9 +143,8 @@
 //! of its six refusals beside a fault of every stage, written before and
 //! after it) set a `<flexcomp>` in `<deformable>` or a `<flex>`'s refused
 //! attribute beside another fault: four in `TWO_FAULTS`, six in
-//! `SCHEMA_COSTS`; its review's first round's (measured 2026-11-09) set one
-//! beside a fault MuJoCo names first that this crate's parser passes over or
-//! meets after it: eight in `REFUSAL_FIRST_COSTS`.
+//! `SCHEMA_COSTS`; its review's (measured 2026-11-09) set one beside a fault
+//! MuJoCo names first: nine in `REFUSAL_FIRST_COSTS`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -2522,14 +2518,10 @@ fn a_schema_fault_beside_another_is_named_as_ledgered() {
 
 /// Two faults, one refused as MuJoCo 3.5.0's schema refuses it (as in
 /// `SCHEMA_COSTS`), where MuJoCo names the other and this crate the refused
-/// element or attribute: a schema fault written before it that this crate's
-/// parser passes over (an unknown element or attribute, a repeated unique
-/// child; ledger L315), or an XML syntax error written after it, which
-/// MuJoCo's XML reader finds before its schema walk begins, reading the
-/// whole document first, and this crate's parser meets after the refusal
-/// (ledger L353). `(what, document, MuJoCo's reason, this crate's error)`,
-/// measured 2026-11-09 (RL-8c's review, round 1). Each of the other four
-/// attributes stands as `density` does.
+/// element or attribute, one row per kind (ledgers L315, L353).
+/// `(what, document, MuJoCo's reason, this crate's error)`, measured
+/// 2026-11-09 (RL-8c's review). Each of the other four attributes stands as
+/// `density` does.
 const REFUSAL_FIRST_COSTS: &[(&str, &str, &str, &str)] = &[
     (
         "an unknown element before a deformable flexcomp",
@@ -2556,7 +2548,7 @@ const REFUSAL_FIRST_COSTS: &[(&str, &str, &str, &str)] = &[
         "unrecognized element <flexcomp> in <deformable> (line 1: deformable > flexcomp 'c')",
     ),
     (
-        "an XML syntax error after a deformable flexcomp",
+        "an end tag closing another element, after a deformable flexcomp",
         r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/></deformable><worldbody></mujoco>"#,
         "XML parse error 14: Error=XML_ERROR_MISMATCHED_ELEMENT ErrorID=14 (0xe) Line number=1: XMLElement name=worldbody",
         "unrecognized element <flexcomp> in <deformable> (line 1: deformable > flexcomp 'c')",
@@ -2574,10 +2566,16 @@ const REFUSAL_FIRST_COSTS: &[(&str, &str, &str, &str)] = &[
         "unrecognized attribute 'density' on <flex> (line 1: deformable > flex 'f')",
     ),
     (
-        "an XML syntax error after a flex's density",
+        "an end tag closing another element, after a flex's density",
         r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="1" body="a b" element="0 1" density="10"/></deformable><worldbody></mujoco>"#,
         "XML parse error 14: Error=XML_ERROR_MISMATCHED_ELEMENT ErrorID=14 (0xe) Line number=1: XMLElement name=worldbody",
         "unrecognized attribute 'density' on <flex> (line 1: deformable > flex 'f')",
+    ),
+    (
+        "an extension attribute this crate reads, before a deformable flexcomp",
+        r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="c" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="2" body="a b c" element="0 1 2"><elasticity elastic2d="bend" young="1e5" thickness="0.001" bending_model="bridson"/></flex><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/></deformable></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'bending_model'; Element 'elasticity', line 1",
+        "unrecognized element <flexcomp> in <deformable> (line 1: deformable > flexcomp 'c')",
     ),
 ];
 

@@ -5,9 +5,8 @@
 //! (`engine_setconst.c:716-750`). The grid asks for its equality with
 //! `<edge equality="true"/>`, as a MuJoCo flexcomp does.
 //!
-//! Checked against the rule, and the grid against MuJoCo 3.5.0, whose own
-//! document it is: 16 edges, 2 of them rigid, 14 rows (the unfused oracle,
-//! Rigid-loading PR RL-8c).
+//! Checked against the rule, and the grid against MuJoCo 3.5.0 (the unfused
+//! oracle, Rigid-loading PR RL-8c): 16 edges, 2 of them rigid, 14 rows.
 
 use sim_core::{ConstraintType, EqualityType, Model, StepError, mj_solve_m};
 use sim_mjcf::load_model;

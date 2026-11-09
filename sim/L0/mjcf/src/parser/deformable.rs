@@ -21,13 +21,9 @@ use super::attrs::{Attrs, skip_element};
 /// Parse deformable section (contains skin and flex elements; `empty`: it
 /// closed itself, so it has none). A `<flexcomp>` in it is refused, as MuJoCo
 /// 3.5.0's schema refuses it ('unrecognized element'), where the reader meets
-/// it. MuJoCo's order differs both ways (ledgers L315, L353; `refusal_order.rs`):
-/// it names the flexcomp before a bad value or keyword written before it, which
-/// this parser names first (`SCHEMA_COSTS`); and it names first an XML syntax
-/// error written after it (its XML reader reads the whole document before its
-/// schema walk) and a schema fault written before it that this parser passes
-/// over: an unknown element or attribute, or a repeated unique child
-/// (`REFUSAL_FIRST_COSTS`).
+/// it. MuJoCo's order beside another fault differs both ways, one kind per
+/// row of `refusal_order.rs`'s `SCHEMA_COSTS` and `REFUSAL_FIRST_COSTS`
+/// (ledgers L315, L353).
 pub(super) fn parse_deformable<R: BufRead>(
     reader: &mut Reader<R>,
     empty: bool,
@@ -275,9 +271,8 @@ pub(super) fn parse_flex_elasticity_attrs(e: &BytesStart, flex: &mut MjcfFlex) -
         flex.elastic2d = elastic2d;
     }
     // §42B S4: bending_model, an extension attribute, written only beside
-    // `elastic2d` bend or both. MuJoCo reads one `<elasticity>` (its schema
-    // refuses a second, which this parser does not: ledger L315), so the
-    // `elastic2d` beside it is the flex's.
+    // `elastic2d` bend or both. MuJoCo's schema refuses a second
+    // `<elasticity>`; this parser does not (ledger L315).
     if let Some(model) = a.keyword("bending_model", keywords::bending_model)? {
         if !flex.elastic2d.bends() {
             return Err(MjcfError::invalid_value(
