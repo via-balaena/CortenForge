@@ -286,6 +286,12 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart, compiler: &mut MjcfCompiler) 
     if let Some(ifg) = a.keyword("inertiafromgeom", keywords::inertia_from_geom)? {
         compiler.inertiafromgeom = ifg;
     }
+    // Exactly two integers, as MuJoCo's reader takes them (measured: one is
+    // "not enough data", three "too much data", a fraction a bad format); a
+    // range whose first end is above its second selects no geom.
+    if let Some(range) = a.int_array::<2>("inertiagrouprange")? {
+        compiler.inertiagrouprange = range;
+    }
 
     // A6. boundmass / boundinertia
     if let Some(bm) = a.real("boundmass")? {

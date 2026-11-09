@@ -581,6 +581,81 @@ fn each_geom_check_is_mujocos() {
     check(GEOMS);
 }
 
+/// `(name, document, expected)`: geoms outside `inertiagrouprange`, which
+/// neither count in their body's mass nor are checked for a negative mass or
+/// density (`user_objects.cc:2163-2170`, `:2429-2432`), loaded by MuJoCo
+/// 3.5.0 on the census's unfused oracle (2026-11-09).
+const GROUPS: &[(&str, &str, Expect)] = &[
+    (
+        "negative_density_out_of_range",
+        r#"<mujoco><compiler inertiagrouprange="0 2"/><worldbody><body name="b"><freejoint/><geom type="sphere" size="0.1"/><geom type="sphere" size="0.1" pos="0.3 0 0" group="3" density="-5"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 4.188790204786391],
+            inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+        },
+    ),
+    (
+        "group_6_outside_the_default_range",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom type="sphere" size="0.1"/><geom type="box" size="0.1 0.1 0.1" pos="0.3 0 0" group="6"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 4.188790204786391],
+            inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+        },
+    ),
+    (
+        "a_moving_bodys_only_geom_out_of_range",
+        r#"<mujoco><compiler inertiagrouprange="0 2"/><worldbody><body name="b"><freejoint/><geom type="sphere" size="0.1" group="4"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia of moving bodies must be larger than mjMINVAL"),
+    ),
+    (
+        "a_static_bodys_only_geom_out_of_range",
+        r#"<mujoco><compiler inertiagrouprange="0 2"/><worldbody><body name="b" pos="0 0 1" euler="0 0 45"><geom type="sphere" size="0.1" group="4"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 0.0],
+            inertia: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        },
+    ),
+    (
+        "a_range_reaching_below_zero",
+        r#"<mujoco><compiler inertiagrouprange="-1 3"/><worldbody><body><freejoint/><geom size=".1" group="1"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 4.188790204786391],
+            inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+        },
+    ),
+    (
+        "a_reversed_range_selects_no_geom",
+        r#"<mujoco><compiler inertiagrouprange="5 0"/><worldbody><body><freejoint/><geom size=".1" group="1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass and inertia of moving bodies must be larger than mjMINVAL"),
+    ),
+];
+
+#[test]
+fn each_inertia_group_rule_is_mujocos() {
+    check(GROUPS);
+}
+
 /// `(name, document, expected)`, generated from the oracle's results.
 const BODIES: &[(&str, &str, Expect)] = &[
     (

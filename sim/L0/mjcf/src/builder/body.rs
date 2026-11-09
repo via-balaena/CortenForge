@@ -174,8 +174,14 @@ impl ModelBuilder {
         self.body_world_pos.push(world_pos);
         self.body_world_quat.push(world_quat);
 
+        let selected: Vec<MjcfGeom> = body
+            .geoms
+            .iter()
+            .filter(|geom| self.selects(geom))
+            .cloned()
+            .collect();
         let (mass, inertia, ipos, iquat) =
-            self.resolve_body_inertia(body, &body.geoms).map_err(|e| {
+            self.resolve_body_inertia(body, &selected).map_err(|e| {
                 e.with_location_if_unknown(Location::nth(
                     ElementKind::Body,
                     Some(&body.name),
@@ -256,15 +262,16 @@ impl ModelBuilder {
         }
         self.body_geom_num.push(body.geoms.len());
         // A geom infers its body's inertia where the body writes no
-        // `<inertial>` or `inertiafromgeom` is true (`user_objects.cc:2429-2432`;
-        // MuJoCo also asks the geom's group to be in `inertiagrouprange`, which
-        // this crate does not read, ledger L375).
+        // `<inertial>` or `inertiafromgeom` is true, and its group is in
+        // `inertiagrouprange` (`inferinertia`, `user_objects.cc:2429-2432`);
+        // only such a geom is checked for a negative mass or density
+        // (`:3781-3807`).
         let infers =
             body.inertial.is_none() || self.compiler.inertiafromgeom == InertiaFromGeom::True;
         let negative = body
             .geoms
             .iter()
-            .position(|geom| infers && self.negative_mass(geom));
+            .position(|geom| infers && self.in_inertia_groups(geom) && self.negative_mass(geom));
         let full_and_diagonal = body.inertial.as_ref().is_some_and(|inertial| {
             inertial.fullinertia.is_some()
                 && inertial.diaginertia.is_some_and(|d| d != Vector3::zeros())
@@ -276,13 +283,12 @@ impl ModelBuilder {
             triangle: false,
         });
         // Under `inertiafromgeom="true"` MuJoCo replaces the `<inertial>`
-        // only where it selects a geom, one whose mass is above mjEPS
-        // (`InertiaFromGeom`, `user_objects.cc:2163-2170`; the group range
-        // is not read, ledger L375); where it selects none, it keeps the
-        // `<inertial>` and raises a negative value to its bound.
+        // only where it selects a geom ([`Self::selects`]); where it selects
+        // none, it keeps the `<inertial>` and raises a negative value to its
+        // bound.
         if self.compiler.inertiafromgeom == InertiaFromGeom::True
             && self.kept_negative_inertial.is_none()
-            && !body.geoms.iter().any(|geom| self.geom_mass(geom) > MJ_EPS)
+            && !body.geoms.iter().any(|geom| self.selects(geom))
         {
             self.kept_negative_inertial = body
                 .inertial
@@ -308,6 +314,21 @@ impl ModelBuilder {
         }
 
         Ok(body_id)
+    }
+
+    /// Whether a geom's group is in `inertiagrouprange`, both ends included
+    /// (`user_objects.cc:2167-2168`, `:2431-2432`; a geom's group is 0
+    /// unless written).
+    fn in_inertia_groups(&self, geom: &MjcfGeom) -> bool {
+        let [first, last] = self.compiler.inertiagrouprange;
+        (first..=last).contains(&geom.group.unwrap_or(0))
+    }
+
+    /// Whether MuJoCo 3.5.0 selects a geom to give its body its inertia
+    /// (`InertiaFromGeom`, `user_objects.cc:2163-2170`): its group in
+    /// `inertiagrouprange` and its mass above mjEPS.
+    fn selects(&self, geom: &MjcfGeom) -> bool {
+        self.in_inertia_groups(geom) && self.geom_mass(geom) > MJ_EPS
     }
 
     /// Whether MuJoCo 3.5.0's compiler gives `geom` a negative mass or
@@ -503,13 +524,13 @@ impl ModelBuilder {
     fn resolve_body_inertia(
         &self,
         body: &MjcfBody,
-        resolved_geoms: &[MjcfGeom],
+        selected: &[MjcfGeom],
     ) -> Result<(f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>)> {
         match self.compiler.inertiafromgeom {
             InertiaFromGeom::True => {
                 check_replaced_full_inertia(body.inertial.as_ref())?;
                 compute_inertia_from_geoms(
-                    resolved_geoms,
+                    selected,
                     &self.mesh_name_to_id,
                     &self.mesh_data,
                     &self.mesh_inertia_modes,
@@ -522,7 +543,7 @@ impl ModelBuilder {
                     extract_inertial_properties(inertial)
                 } else {
                     compute_inertia_from_geoms(
-                        resolved_geoms,
+                        selected,
                         &self.mesh_name_to_id,
                         &self.mesh_data,
                         &self.mesh_inertia_modes,

@@ -1,0 +1,1 @@
+<mujoco><compiler inertiagrouprange="0 2"/><worldbody><body name="b"><freejoint/><geom type="sphere" size="0.1"/><geom type="sphere" size="0.1" pos="0.3 0 0" group="3" density="-5"/></body></worldbody></mujoco>

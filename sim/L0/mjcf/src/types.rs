@@ -454,6 +454,11 @@ pub struct MjcfCompiler {
     pub autolimits: bool,
     /// Controls inertia computation from geoms.
     pub inertiafromgeom: InertiaFromGeom,
+    /// The geom groups, both ends included, whose geoms give their body its
+    /// inertia (MuJoCo's `inertiagrouprange`, default 0 to 5): a geom of
+    /// another group neither counts in its body's mass nor is checked for a
+    /// negative mass or density.
+    pub inertiagrouprange: [i32; 2],
     /// Minimum mass for non-world bodies (0 = disabled).
     pub boundmass: f64,
     /// Minimum diagonal inertia for non-world bodies (0 = disabled).
@@ -491,6 +496,7 @@ impl Default for MjcfCompiler {
             assetdir: None,
             autolimits: true,
             inertiafromgeom: InertiaFromGeom::Auto,
+            inertiagrouprange: [0, 5],
             boundmass: 0.0,
             boundinertia: 0.0,
             balanceinertia: false,

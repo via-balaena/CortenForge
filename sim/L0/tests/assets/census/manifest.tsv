@@ -3547,3 +3547,9 @@ d65890b870bf3a36	sim/L0/tests/integration/flex_unified.rs:1012
 d735efed5cb731fb	sim/L0/mjcf/tests/refusal_order.rs:2548
 e69fb7c6e125c3ff	sim/L0/mjcf/tests/refusal_order.rs:2578
 0205b804feb247dd	sim/L0/mjcf/tests/refusal_order.rs:2576
+319cc6d501967586	sim/L0/mjcf/tests/mass_checks.rs:602
+58923bdface6bf9f	sim/L0/mjcf/tests/mass_checks.rs:618
+90c3f590c16e33b4	sim/L0/mjcf/tests/mass_checks.rs:591
+94818ef741f0487b	sim/L0/mjcf/tests/mass_checks.rs:613
+b7406ed70a17382d	sim/L0/mjcf/tests/mass_checks.rs:637
+d1c945ecac2bef1c	sim/L0/mjcf/tests/mass_checks.rs:626
