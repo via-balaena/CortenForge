@@ -3553,3 +3553,5 @@ e69fb7c6e125c3ff	sim/L0/mjcf/tests/refusal_order.rs:2578
 94818ef741f0487b	sim/L0/mjcf/tests/mass_checks.rs:613
 b7406ed70a17382d	sim/L0/mjcf/tests/mass_checks.rs:637
 d1c945ecac2bef1c	sim/L0/mjcf/tests/mass_checks.rs:626
+1c3ab2281519f73f	sim/L0/mjcf/tests/mass_checks.rs:282
+e77ef61d0175fa9b	sim/L0/mjcf/tests/mass_checks.rs:639

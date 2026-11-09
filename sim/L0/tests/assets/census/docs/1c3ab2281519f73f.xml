@@ -1,0 +1,1 @@
+<mujoco><compiler inertiafromgeom="true" inertiagrouprange="0 2"/><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/><geom type="sphere" size="0.1" group="3"/></body></worldbody></mujoco>

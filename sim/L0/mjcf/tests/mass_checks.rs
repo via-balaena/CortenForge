@@ -278,6 +278,11 @@ fn a_negative_inertial_mass_or_moment_is_refused_where_mujoco_raises_it() {
             format!("{MASS} (body 's')"),
         ),
         (
+            "mass under inertiafromgeom true beside a geom outside inertiagrouprange, not selected",
+            r#"<mujoco><compiler inertiafromgeom="true" inertiagrouprange="0 2"/><worldbody><body name="s" pos="0 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/><geom type="sphere" size="0.1" group="3"/></body></worldbody></mujoco>"#,
+            format!("{MASS} (body 's')"),
+        ),
+        (
             "mass of a fused body",
             r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><body name="s" pos="0 0 0"><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/></body></body></worldbody></mujoco>"#,
             format!("{MASS} (body 's')"),
@@ -627,6 +632,21 @@ const GROUPS: &[(&str, &str, Expect)] = &[
         Expect::Loads {
             mass: &[0.0, 0.0],
             inertia: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        },
+    ),
+    (
+        "a_geom_on_the_ranges_upper_end",
+        r#"<mujoco><compiler inertiagrouprange="0 2"/><worldbody><body name="b"><freejoint/><geom type="sphere" size="0.1" group="2"/></body></worldbody></mujoco>"#,
+        Expect::Loads {
+            mass: &[0.0, 4.188790204786391],
+            inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
         },
     ),
     (
