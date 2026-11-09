@@ -1061,7 +1061,8 @@ mod tests {
     /// root's NOTICE, fail twice (an unpublished member with no licences,
     /// NOTICE or README adds nothing), once with only the facade's, pass with
     /// both, and fail again when the dependency's README is not the one its
-    /// own name and description give.
+    /// own name and description give, when it lacks the prefix, and when a
+    /// section of the NOTICE carries no `Copyright` line.
     #[test]
     fn check_at_reads_each_crates_packaging() {
         let root = std::env::temp_dir().join(format!("cf-check-at-{}", std::process::id()));
@@ -1141,6 +1142,11 @@ mod tests {
             &member_readme("member", "member", "Does one thing"),
         );
         let unprefixed = check_at(&root);
+        let bare = "---\nMUJOCO\n\nnames no crate\n";
+        for dir in [root.clone(), root.join(FACADE), root.join("member")] {
+            write(dir.join("NOTICE"), bare);
+        }
+        let uncopyrighted = check_at(&root);
         let _ = std::fs::remove_dir_all(&root);
         let err = neither.expect_err("crates without the NOTICE must fail");
         assert!(err.to_string().starts_with("2 problem(s)"), "{err}");
@@ -1151,6 +1157,8 @@ mod tests {
         assert!(err.to_string().starts_with("1 problem(s)"), "{err}");
         let err = unprefixed.expect_err("a member without the prefix must fail");
         assert!(err.to_string().starts_with("1 problem(s)"), "{err}");
+        let err = uncopyrighted.expect_err("a NOTICE section with no Copyright line must fail");
+        assert!(err.to_string().starts_with("2 problem(s)"), "{err}");
     }
 
     /// A crate whose packaging breaks no rule: the root's files, the README its
