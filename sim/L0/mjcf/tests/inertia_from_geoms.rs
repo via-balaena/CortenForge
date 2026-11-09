@@ -46,14 +46,23 @@ fn geom_euler_rotates_body_inertia() {
     assert!(gap <= 1e-15, "{ours} against MuJoCo's {mujoco}: {gap:e}");
 }
 
+/// A 0.4 × 0.2 × 0.1 box mesh from the origin, its geom turned 30 degrees
+/// about z.
+const TURNED_BOX_MESH: &str = r#"<mujoco><asset><mesh name="bx" vertex="0 0 0  0.4 0 0  0.4 0.2 0  0 0.2 0  0 0 0.1  0.4 0 0.1  0.4 0.2 0.1  0 0.2 0.1" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  1 2 6  1 6 5  2 3 7  2 7 6  3 0 4  3 4 7"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="bx" euler="0 0 30"/></body></worldbody></mujoco>"#;
+
+/// The largest of `ours - mujoco`, relative to the largest of `mujoco`.
+fn relative_gap(ours: &[f64], mujoco: &[f64]) -> f64 {
+    let scale = mujoco.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+    ours.iter()
+        .zip(mujoco)
+        .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()))
+        / scale
+}
+
 #[test]
 fn a_turned_mesh_geom_turns_its_bodys_centre_of_mass() {
-    // A 0.4 × 0.2 × 0.1 box mesh from the origin, its geom turned 30
-    // degrees about z: MuJoCo's centre of mass is the mesh's, turned.
-    let model = load_model(
-        r#"<mujoco><asset><mesh name="bx" vertex="0 0 0  0.4 0 0  0.4 0.2 0  0 0.2 0  0 0 0.1  0.4 0 0.1  0.4 0.2 0.1  0 0.2 0.1" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  1 2 6  1 6 5  2 3 7  2 7 6  3 0 4  3 4 7"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="bx" euler="0 0 30"/></body></worldbody></mujoco>"#,
-    )
-    .unwrap();
+    // MuJoCo's centre of mass is the mesh's, turned.
+    let model = load_model(TURNED_BOX_MESH).unwrap();
     let mujoco = Vector3::new(0.12320508259278645, 0.1866025431590383, 0.05000000074505804);
     // MuJoCo holds a mesh's vertices in single precision (ledger L281, book
     // L35), so the centre of mass is compared within single precision.
@@ -62,6 +71,34 @@ fn a_turned_mesh_geom_turns_its_bodys_centre_of_mass() {
         gap <= 1e-7,
         "{} against MuJoCo's {mujoco}: {gap:e}",
         model.body_ipos[1]
+    );
+}
+
+#[test]
+fn a_turned_mesh_geom_gives_its_body_the_meshs_principal_frame_turned() {
+    // MuJoCo's frame is the geom's turn composed with the mesh's principal
+    // frame (`user_mesh.cc:1640-1686`), whose moments `eig3` orders largest
+    // first. Compared within single precision, as the centre of mass is.
+    let model = load_model(TURNED_BOX_MESH).unwrap();
+    let q = model.body_iquat[1];
+    let iquat = [q.w, q.i, q.j, q.k];
+    let mujoco_iquat = [
+        -0.18301270189221966,
+        0.6830127018922206,
+        0.18301270189221966,
+        0.6830127018922206,
+    ];
+    let gap = relative_gap(&iquat, &mujoco_iquat);
+    assert!(
+        gap <= 1e-7,
+        "{iquat:?} against MuJoCo's {mujoco_iquat:?}: {gap:e}"
+    );
+    let inertia: [f64; 3] = model.body_inertia[1].into();
+    let mujoco_inertia = [0.1333333432674411, 0.11333334177732492, 0.03333333581686027];
+    let gap = relative_gap(&inertia, &mujoco_inertia);
+    assert!(
+        gap <= 1e-7,
+        "{inertia:?} against MuJoCo's {mujoco_inertia:?}: {gap:e}"
     );
 }
 
@@ -160,6 +197,21 @@ const FROM_GEOMS: &[(&str, &str, Expect)] = &[
             inertia: [2.1049604083525657, 1.622702183927395, 0.8471389935043618],
             ipos: [0.0032371801894974525, 0.0, 0.0],
             iquat: [0.914347784560959, 0.0, 0.0, 0.40492978263949364],
+        }]),
+    ),
+    (
+        "a_box_turned_about_a_general_axis_beside_a_sphere",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom type="box" size="0.1 0.2 0.3" euler="35 50 70"/><geom type="sphere" size="0.05" pos="0.3 0 0"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 48.52359877559831,
+            inertia: [2.1250074505900955, 1.630633059754131, 0.8191610754400932],
+            ipos: [0.0032371801894974525, 0.0, 0.0],
+            iquat: [
+                0.6248478408227656,
+                0.4621161630469068,
+                0.1809599376527008,
+                0.6027166238247172,
+            ],
         }]),
     ),
     (
