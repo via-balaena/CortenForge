@@ -263,6 +263,7 @@ impl ModelBuilder {
         // compiled geom, `user_objects.cc:2158-2224`); where it selects none
         // the values before the geoms stay.
         let mut geom_fault = None;
+        let mut replaced = false;
         if from_geoms {
             // The geoms `Self::selects` selects, each mesh's properties
             // computed once.
@@ -294,6 +295,7 @@ impl ModelBuilder {
             );
             match inertia_from_geoms(&geoms, prior) {
                 Ok(Some((mass, inertia, ipos, [w, x, y, z]))) => {
+                    replaced = true;
                     self.body_mass[body_id] = mass;
                     self.body_inertia[body_id] = Vector3::from(inertia);
                     self.body_ipos[body_id] = Vector3::from(ipos);
@@ -305,6 +307,22 @@ impl ModelBuilder {
                 Ok(None) => refuse_non_finite_inertial(&before_geoms).map_err(at_body)?,
                 Err(fault) => geom_fault = Some(fault),
             }
+        }
+        // A body that neither an `<inertial>` nor a selected geom gives an
+        // inertial frame takes its own pose as one, its pose in the
+        // `<frame>` holding it where one does (`user_objects.cc:2442-2446`,
+        // before the frame composes into the body's pose at `:2474`).
+        if body.inertial.is_none() && !replaced {
+            let (pos, quat) = body
+                .pose_in_frame
+                .map_or((body_pos, body_quat), |(pos, q)| {
+                    (
+                        pos,
+                        UnitQuaternion::new_unchecked(Quaternion::new(q[0], q[1], q[2], q[3])),
+                    )
+                });
+            self.body_ipos[body_id] = pos;
+            self.body_iquat[body_id] = quat;
         }
         // A geom infers its body's inertia where the body writes no
         // `<inertial>` or `inertiafromgeom` is true, and its group is in

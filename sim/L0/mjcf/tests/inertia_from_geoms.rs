@@ -342,3 +342,130 @@ fn a_body_whose_one_geoms_inertia_overflows_is_refused_where_mujoco_loads_it() {
     .unwrap_or_default();
     assert!(error.contains("not finite"), "{error}");
 }
+
+/// `(name, document, expected)`, generated as [`FROM_GEOMS`]: a body that
+/// neither an `<inertial>` nor a selected geom gives an inertial frame takes
+/// its own pose as one, its pose in the `<frame>` holding it where one does
+/// (`user_objects.cc:2442-2446`); an `<inertial>` kept under
+/// `inertiafromgeom="true"` keeps its own.
+const NO_INERTIAL_FRAME: &[(&str, &str, Expect)] = &[
+    (
+        "massless_body_inertial_frame_as_mujoco",
+        r#"<mujoco><worldbody><body name="m" pos="1 0 0" euler="0 30 0"/></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 0.0,
+            inertia: [0.0, 0.0, 0.0],
+            ipos: [1.0, 0.0, 0.0],
+            iquat: [0.9659258262890683, 0.0, 0.25881904510252074, 0.0],
+        }]),
+    ),
+    (
+        "a_massless_body_under_a_hinge",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint type="hinge" axis="0 1 0"/><geom type="sphere" size="0.05"/><body name="tip" pos="0.04 0 -0.1"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&[
+            Body {
+                mass: 0.5235987755982989,
+                inertia: [
+                    0.000523598775598299,
+                    0.000523598775598299,
+                    0.000523598775598299,
+                ],
+                ipos: [0.0, 0.0, 0.0],
+                iquat: [1.0, 0.0, 0.0, 0.0],
+            },
+            Body {
+                mass: 0.0,
+                inertia: [0.0, 0.0, 0.0],
+                ipos: [0.04, 0.0, -0.1],
+                iquat: [1.0, 0.0, 0.0, 0.0],
+            },
+        ]),
+    ),
+    (
+        "a_body_whose_only_geom_has_mass_0",
+        r#"<mujoco><worldbody><body name="s" pos="0.5 0 0" euler="0 0 30"><geom type="sphere" size="0.1" mass="0"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 0.0,
+            inertia: [0.0, 0.0, 0.0],
+            ipos: [0.5, 0.0, 0.0],
+            iquat: [0.9659258262890683, 0.0, 0.0, 0.25881904510252074],
+        }]),
+    ),
+    (
+        "a_static_bodys_only_geom_out_of_range",
+        r#"<mujoco><compiler inertiagrouprange="0 2"/><worldbody><body name="b" pos="0 0 1" euler="0 0 45"><geom type="sphere" size="0.1" group="4"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 0.0,
+            inertia: [0.0, 0.0, 0.0],
+            ipos: [0.0, 0.0, 1.0],
+            iquat: [0.9238795325112867, 0.0, 0.0, 0.3826834323650898],
+        }]),
+    ),
+    (
+        "a_massless_body_at_the_origin_turned",
+        r#"<mujoco><worldbody><body name="m" euler="0 0 60"/></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 0.0,
+            inertia: [0.0, 0.0, 0.0],
+            ipos: [0.0, 0.0, 0.0],
+            iquat: [0.8660254037844387, 0.0, 0.0, 0.49999999999999994],
+        }]),
+    ),
+    (
+        "a_massless_body_in_a_turned_frame_takes_its_pose_in_the_frame",
+        r#"<mujoco><worldbody><frame pos="0 1 0" euler="0 0 90"><body name="m" pos="1 0 0" euler="0 30 0"/></frame></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 0.0,
+            inertia: [0.0, 0.0, 0.0],
+            ipos: [1.0, 0.0, 0.0],
+            iquat: [0.9659258262890683, 0.0, 0.25881904510252074, 0.0],
+        }]),
+    ),
+    (
+        "a_massless_body_in_a_frame_under_a_moving_body",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint type="hinge" axis="0 1 0"/><geom type="sphere" size="0.05"/><frame pos="0.1 0 0" euler="0 0 45"><body name="tip" pos="0.04 0 -0.1" euler="10 0 0"/></frame></body></worldbody></mujoco>"#,
+        Expect::Loads(&[
+            Body {
+                mass: 0.5235987755982989,
+                inertia: [
+                    0.000523598775598299,
+                    0.000523598775598299,
+                    0.000523598775598299,
+                ],
+                ipos: [0.0, 0.0, 0.0],
+                iquat: [1.0, 0.0, 0.0, 0.0],
+            },
+            Body {
+                mass: 0.0,
+                inertia: [0.0, 0.0, 0.0],
+                ipos: [0.04, 0.0, -0.1],
+                iquat: [0.9961946980917455, 0.08715574274765817, 0.0, 0.0],
+            },
+        ]),
+    ),
+    (
+        "inertiafromgeom_false_and_no_inertial",
+        r#"<mujoco><compiler inertiafromgeom="false"/><worldbody><body name="s" pos="0.5 0 0" euler="0 0 30"><geom type="box" size="0.1 0.2 0.3"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 0.0,
+            inertia: [0.0, 0.0, 0.0],
+            ipos: [0.5, 0.0, 0.0],
+            iquat: [0.9659258262890683, 0.0, 0.0, 0.25881904510252074],
+        }]),
+    ),
+    (
+        "true_keeps_an_inertials_frame_where_no_geom_is_selected",
+        r#"<mujoco><compiler inertiafromgeom="true" inertiagrouprange="0 2"/><worldbody><body name="s" pos="0.5 0 0" euler="0 0 30"><freejoint/><inertial pos="0.1 0.2 0.3" mass="1" diaginertia="0.1 0.2 0.3"/><geom type="sphere" size="0.1" group="4"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 1.0,
+            inertia: [0.1, 0.2, 0.3],
+            ipos: [0.1, 0.2, 0.3],
+            iquat: [1.0, 0.0, 0.0, 0.0],
+        }]),
+    ),
+];
+
+#[test]
+fn a_body_with_no_inertial_frame_takes_its_own() {
+    check(NO_INERTIAL_FRAME);
+}

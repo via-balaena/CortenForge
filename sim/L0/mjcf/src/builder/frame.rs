@@ -241,6 +241,7 @@ fn dissolve(
                         continue;
                     }
                 };
+                b.pose_in_frame = Some((b.pos, quat_to_wxyz(&body_quat)));
                 let mut bpos = b.pos;
                 let mut bquat = body_quat;
                 frame_accum_child(&pos, &quat, &mut bpos, &mut bquat);

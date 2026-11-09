@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1921
+# agree_floor 1929
 001bc4149d608b24	agree
 002cac6fc120ff66	both-refuse
 00308b83da9d8bab	agree
@@ -727,6 +727,7 @@
 34876fd7dc1d49ff	both-refuse
 348da12f74b6427c	both-refuse
 34ae22eae87a77b9	model:actuator_lengthrange;dyn:agree
+34cd265148f7b8f5	agree
 34e084197442a3f7	agree
 34f23cc1753b0e81	agree
 350b72e8324146f5	both-refuse
@@ -1268,6 +1269,7 @@
 5a7341e54083808f	agree
 5aa55def31566e0c	agree
 5acdee5e5d512ec8	both-refuse
+5ad5bcfbd159af7b	agree
 5ae38adb3e90f25f	both-refuse
 5b09b5261dae0bab	agree
 5b0be944805dc663	agree
@@ -1339,6 +1341,7 @@
 5fe11cf81bf72aa8	agree
 5fe75956ac349da7	both-refuse
 5ff5f7653f1db1d8	ours-refused	divergence=D-MUSCLE-NEGATIVE
+600c56b5fe821c85	agree
 6054644a34fbb75a	agree
 606b67cbe1d529be	both-refuse
 60735925c39084f6	agree
@@ -1729,6 +1732,7 @@
 7d34184c5e7fc697	mj-refuses
 7d45e1679577e6fc	agree
 7d4b71cb3bc9b4a2	both-refuse
+7d9749f4d69ce186	agree
 7da3d52c5be24536	agree
 7dacdd0453660dca	agree
 7dc520b04e1680c8	both-refuse
@@ -2249,6 +2253,7 @@ a533b49287977ab7	both-refuse
 a53df2b96f2a34e4	both-refuse
 a54eb1102c8502e8	both-refuse
 a55c1bdb63dee0b2	both-refuse
+a580d05fa8f53dd9	agree
 a5addcac3e6fcaa6	agree
 a5b83a0cb0d5a4da	agree
 a5c537655549ad9b	agree
@@ -2273,6 +2278,7 @@ a6fb60bd3bbe23a4	model:meaninertia;dyn:e1:t0:qM
 a7128f4d225c0e86	agree
 a7349e72845270f3	both-refuse
 a73ec2b9b7a13808	agree
+a75f7f41b2ca629f	agree
 a76a4bf3fc5fb89c	both-refuse
 a787dff224eddbf4	agree
 a7a114928339530d	both-refuse
@@ -3123,6 +3129,7 @@ e6ea68ac5717d086	agree
 e6ef45ff6a349cb9	both-refuse
 e707546b05a14b7a	agree
 e73aa65a04bf927a	both-refuse
+e743d601cc209fb9	agree
 e760971781c2d0e5	agree
 e7684905da766c66	both-refuse
 e77721e8d908b261	both-refuse
@@ -3269,6 +3276,7 @@ f168754a941dced0	agree
 f18c95e82cef4700	ours-refused	divergence=D-AUTO-RANGE
 f19920b4f9858386	both-refuse
 f1bf5b588b32c4a6	both-refuse
+f1c58c68ee39e152	agree
 f1c8c57aad343895	both-refuse
 f1d75303d804165b	both-refuse
 f1dc74ca987dbaae	both-refuse
