@@ -28,9 +28,7 @@ qfrc_gravcomp after mj_forward. The models, all with sleep enabled:
   nothing, two with damping only, and a tendon whose wraps reach tree 3
   before tree 2;
 - flex: a free body and a 2 x 2 flexcomp grid, whose four vertex bodies are
-  trees. The case also holds `ours_xml`, the same grid in the
-  `<deformable><flexcomp>` form, which the test loads (MuJoCo refuses that
-  form; ledger L387);
+  trees;
 - gravcomp: a static body and a free body with gravity compensation;
 - tendon_one_tree: a stiff fixed tendon over two hinges of one tree, and a
   second tree.
@@ -932,23 +930,11 @@ def awake_after(m, step):
     return ints(d.body_awake)
 
 
-OURS_XML = {
-    "flex": """<mujoco><option><flag sleep="enable"/></option>
-<worldbody>
-<body name="f" pos="3 0 1"><freejoint/><geom type="sphere" size="0.1"/></body>
-</worldbody>
-<deformable><flexcomp name="cloth" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" pos="0 0 1" dim="2"
-  radius="0.01" mass="0.1"/></deformable>
-</mujoco>""",
-}
-
-
 def tree_case(name, xml):
     m = mujoco.MjModel.from_xml_string(xml)
     out = {
         "name": name,
         "xml": xml,
-        "ours_xml": OURS_XML.get(name),
         "ntree": int(m.ntree),
         "body_treeid": ints(m.body_treeid),
         "tree_bodyadr": ints(m.tree_bodyadr),

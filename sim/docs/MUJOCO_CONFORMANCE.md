@@ -94,7 +94,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `<sensor>` | ✓ | ✓ | Various sensor types |
 | `<keyframe>` | ✓ | ✓ | State snapshots: `<key>` elements with qpos/qvel/act/ctrl/mpos/mquat/time, `Data::reset_to_keyframe()` |
 | `<flex>` | ✓ | ✓ | MuJoCo's form: `body` names the vertex bodies, `element` the elements; a vertex body must be jointless with no joint above it, or have three slides along x, y and z, unrotated, with no joint or mocap body above it, one per vertex at its origin (else refused, a stated limitation); `node` refused; parsed via `parse_flex()` + `process_flex_bodies()` |
-| `<flexcomp>` | ✓ | ✓ | Procedural flex generation: grid (2D shell), box (3D solid), cable (1D); parsed via `parse_flexcomp()` |
+| `<flexcomp>` | ✓ | ✓ | In a body, a frame or the world body, made as MuJoCo's `mjCFlexcomp::Make` makes it, of every type but `mesh` and `gmsh` (refused); the forms sim-core does not run refused, as `builder/flexcomp.rs`'s module doc lists them; one in `<deformable>` refused, as MuJoCo's schema refuses it; parsed via `parse_flexcomp()` |
 
 #### Body/Geom/Joint attributes
 | Attribute | MuJoCo | sim-mjcf | Notes |

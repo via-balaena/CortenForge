@@ -469,24 +469,21 @@ fn a_composite_count_takes_at_most_three_and_a_flexcomp_count_and_spacing_three(
         r#"<mujoco><worldbody><composite type="cable" count="5 1 1 1" curve="s 0 0" size="1"><geom size="0.01"/></composite></worldbody></mujoco>"#,
     );
     assert_count(&err, "composite", "count", ValueCount::AtMost(3), 4);
-    // The <deformable> form, which this crate also reads and MuJoCo refuses
-    // (ledger L387); the counts were measured in MuJoCo's form, in a body.
     let err = refused(
-        r#"<mujoco><worldbody/><deformable><flexcomp name="f" type="grid" count="2 2" spacing="1 1 1" dim="2"/></deformable></mujoco>"#,
+        r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="2 2" spacing="1 1 1" dim="2"/></worldbody></mujoco>"#,
     );
     assert_count(&err, "flexcomp", "count", ValueCount::Exactly(3), 2);
     let err = refused(
-        r#"<mujoco><worldbody/><deformable><flexcomp name="f" type="grid" count="2 2 1" spacing="1.0" dim="2"/></deformable></mujoco>"#,
+        r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="2 2 1" spacing="1.0" dim="2"/></worldbody></mujoco>"#,
     );
     assert_count(&err, "flexcomp", "spacing", ValueCount::Exactly(3), 1);
 }
 
 #[test]
 fn a_flexcomp_spaces_its_grid_along_each_axis() {
-    // MuJoCo's grid, in a body, spans 2 in y as well (measured; ledger L152
-    // has the form).
+    // MuJoCo's grid spans 2 in y (measured).
     let m = load(
-        r#"<mujoco><worldbody/><deformable><flexcomp name="f" type="grid" count="2 2 1" spacing="1 2 3" dim="2"/></deformable></mujoco>"#,
+        r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="2 2 1" spacing="1 2 3" dim="2"/></worldbody></mujoco>"#,
     );
     let mut d = m.make_data();
     d.forward(&m).unwrap();
@@ -1087,10 +1084,10 @@ fn at_most_31_actuator_groups_are_disabled() {
 
 #[test]
 fn a_box_flexcomp_spaces_its_grid_along_z() {
-    // sim-mjcf's box generator, not MuJoCo's (ledger L52 U09): the spacing is
-    // read per axis, as MuJoCo reads it.
+    // The spacing is read per axis, as MuJoCo reads it: its box spans 3 in z
+    // (measured).
     let m = load(
-        r#"<mujoco><worldbody/><deformable><flexcomp name="f" type="box" count="2 2 2" spacing="1 1 3"/></deformable></mujoco>"#,
+        r#"<mujoco><worldbody><flexcomp name="f" type="box" count="2 2 2" spacing="1 1 3"/></worldbody></mujoco>"#,
     );
     let mut d = m.make_data();
     d.forward(&m).unwrap();
@@ -1235,7 +1232,7 @@ fn an_index_or_a_count_below_zero_or_with_a_fraction_is_refused() {
         (flex("-1", "0 1"), "flex", "dim"),
         (flex("1", "0 1  1 -2"), "flex", "element"),
         (
-            r#"<mujoco><worldbody/><deformable><flexcomp name="f" type="grid" count="-1 3 1" spacing="1 1 1" dim="2"/></deformable></mujoco>"#.to_string(),
+            r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="-1 3 1" spacing="1 1 1" dim="2"/></worldbody></mujoco>"#.to_string(),
             "flexcomp",
             "count",
         ),

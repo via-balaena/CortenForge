@@ -1,6 +1,8 @@
-//! `<deformable>` flex / flexcomp / skin parsing.
+//! `<deformable>`'s `<flex>` and `<skin>` parsing. A `<flexcomp>` in it is
+//! refused, as MuJoCo 3.5.0's schema refuses it; MuJoCo reads one in a body
+//! (`super::flexcomp`).
 
-use nalgebra::{Quaternion, UnitQuaternion, Vector3};
+use nalgebra::Vector3;
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
@@ -8,10 +10,7 @@ use std::io::BufRead;
 use crate::error::{MjcfError, Result};
 use crate::keywords;
 
-use crate::types::{
-    FlexVertexBodies, FlexcompType, MjcfFlex, MjcfFlexcompEdgeEquality, MjcfSkin, MjcfSkinBone,
-    MjcfSkinVertex,
-};
+use crate::types::{MjcfFlex, MjcfSkin, MjcfSkinBone, MjcfSkinVertex};
 
 use super::attrs::{Attrs, skip_element};
 
@@ -20,7 +19,11 @@ use super::attrs::{Attrs, skip_element};
 // ============================================================================
 
 /// Parse deformable section (contains skin and flex elements; `empty`: it
-/// closed itself, so it has none).
+/// closed itself, so it has none). A `<flexcomp>` in it is refused, as MuJoCo
+/// 3.5.0's schema refuses it ('unrecognized element'), where the reader meets
+/// it. MuJoCo's order beside another fault differs both ways, one kind per
+/// row of `refusal_order.rs`'s `SCHEMA_COSTS` and `REFUSAL_FIRST_COSTS`
+/// (ledgers L315, L353).
 pub(super) fn parse_deformable<R: BufRead>(
     reader: &mut Reader<R>,
     empty: bool,
@@ -39,7 +42,9 @@ pub(super) fn parse_deformable<R: BufRead>(
                 match e.name().as_ref() {
                     b"skin" => skins.push(parse_skin(reader, e, child_empty)?),
                     b"flex" => flex_bodies.push(parse_flex(reader, e, child_empty)?),
-                    b"flexcomp" => flex_bodies.push(parse_flexcomp(reader, e, child_empty)?),
+                    b"flexcomp" => {
+                        return Err(MjcfError::unknown_element("flexcomp", "deformable"));
+                    }
                     name => skip_element(reader, name, child_empty)?,
                 }
             }
@@ -59,19 +64,22 @@ pub(super) fn parse_deformable<R: BufRead>(
 /// Parse a `<flex>` element: MuJoCo 3.5.0's, whose vertices are the bodies
 /// `body` names, with `vertex` offsets and `element` ids, and its `<contact>`,
 /// `<elasticity>` and `<edge>` children. MuJoCo's schema refuses the
-/// `<vertex>`, `<element>` and `<pin>` children and the `mass` sim-mjcf once
-/// read, before a missing `body` or `element`, as here; a bad attribute value
-/// read here before a refused child is refused first here, the child first
-/// by MuJoCo's schema (Rigid-loading L47). `empty`: it closed itself, so it
-/// has no children.
+/// `<vertex>`, `<element>` and `<pin>` children, and the attributes sim-mjcf
+/// once read for its own flexcomp (`mass`, `density`, `inertiabox`, `scale`,
+/// `quat`, `file`: the first written, before any of this `<flex>`'s values is
+/// read, as MuJoCo's schema names it; other faults beside it:
+/// [`parse_deformable`]), before a missing `body` or `element`, as here; a bad
+/// attribute value read here before a refused child is refused first here,
+/// the child first by MuJoCo's schema (Rigid-loading L47). `empty`: it closed
+/// itself, so it has no children.
 pub(super) fn parse_flex<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
     empty: bool,
 ) -> Result<MjcfFlex> {
     let a = Attrs::new(start)?;
-    if a.has("mass") {
-        return Err(MjcfError::unknown_attribute("flex", "mass"));
+    if let Some(name) = a.first_of(&["mass", "density", "inertiabox", "scale", "quat", "file"]) {
+        return Err(MjcfError::unknown_attribute("flex", name));
     }
     let mut flex = parse_flex_attrs(start)?;
     read_flex_data(&a, &mut flex)?;
@@ -165,15 +173,11 @@ fn read_flex_data(a: &Attrs, flex: &mut MjcfFlex) -> Result<()> {
     Ok(())
 }
 
-/// Parse direct `<flex>` / `<flexcomp>` top-level attributes.
-///
-/// Only parses attributes that belong directly on the element: `name`, `dim`, `radius`, `mass`.
-/// Contact, elasticity, and edge attributes belong on child elements and are parsed
-/// by `parse_flex_contact_attrs`, `parse_flex_elasticity_attrs`, `parse_flex_edge_attrs`.
-///
-/// `mass` distributes total mass uniformly across all vertices (MuJoCo `<flexcomp mass="...">`).
-/// `density` is a non-standard fallback for element-based mass lumping.
-pub(super) fn parse_flex_attrs(e: &BytesStart) -> Result<MjcfFlex> {
+/// A `<flex>`'s own attributes: `name`, `dim`, `radius` and `group`. Its
+/// contact, elasticity and edge attributes are its children's, read by
+/// `parse_flex_contact_attrs`, `parse_flex_elasticity_attrs` and
+/// `parse_flex_edge_attrs`.
+fn parse_flex_attrs(e: &BytesStart) -> Result<MjcfFlex> {
     let a = Attrs::new(e)?;
     let mut flex = MjcfFlex::default();
 
@@ -190,22 +194,6 @@ pub(super) fn parse_flex_attrs(e: &BytesStart) -> Result<MjcfFlex> {
     // Visualization group (0-5).
     if let Some(group) = a.int("group")? {
         flex.group = group;
-    }
-    // MuJoCo: <flexcomp mass="..."> distributes total mass uniformly across all vertices.
-    // When present, overrides element-based mass lumping from density.
-    if let Some(mass) = a.real("mass")? {
-        flex.mass = Some(mass);
-    }
-    // Flexcomp attributes (DT-88)
-    if let Some(inertiabox) = a.real("inertiabox")? {
-        flex.inertiabox = inertiabox;
-    }
-    flex.flexcomp_scale = a.vec3("scale")?;
-    if let Some([w, x, y, z]) = a.array::<4>("quat")? {
-        flex.flexcomp_quat = Some(UnitQuaternion::from_quaternion(Quaternion::new(w, x, y, z)));
-    }
-    if let Some(s) = a.string("file") {
-        flex.flexcomp_file = Some(s);
     }
     Ok(flex)
 }
@@ -283,8 +271,8 @@ pub(super) fn parse_flex_elasticity_attrs(e: &BytesStart, flex: &mut MjcfFlex) -
         flex.elastic2d = elastic2d;
     }
     // §42B S4: bending_model, an extension attribute, written only beside
-    // `elastic2d` bend or both. MuJoCo reads one `<elasticity>` (its schema
-    // refuses a second), so the `elastic2d` beside it is the flex's.
+    // `elastic2d` bend or both. MuJoCo's schema refuses a second
+    // `<elasticity>`; this parser does not (ledger L315).
     if let Some(model) = a.keyword("bending_model", keywords::bending_model)? {
         if !flex.elastic2d.bends() {
             return Err(MjcfError::invalid_value(
@@ -311,173 +299,7 @@ pub(super) fn parse_flex_edge_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> Resu
     Ok(())
 }
 
-/// Parse a `<flexcomp>`'s `<edge>`: its passive coefficients, and the edge
-/// equality it asks for with that equality's `solref` and `solimp`
-/// (`xml_native_reader.cc:2769-2775`). `equality="vert"` (MuJoCo's
-/// `mjEQ_FLEXVERT`) is kept as asked: the builder refuses the equality it
-/// makes after the keyframes (registry `D-FLEX-VERT-EQUALITY`).
-fn parse_flexcomp_edge_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> Result<()> {
-    parse_flex_edge_attrs(e, flex)?;
-    let a = Attrs::new(e)?;
-    let equality = a.keyword("equality", keywords::flex_edge_equality)?;
-    let (solref, solimp) = (a.prefix("solref")?, a.prefix("solimp")?);
-    let vertices = match equality {
-        None | Some(keywords::FlexEdgeEquality::None) => return Ok(()),
-        Some(keywords::FlexEdgeEquality::Edges) => false,
-        Some(keywords::FlexEdgeEquality::Vertices) => true,
-    };
-    flex.edge_equality = Some(MjcfFlexcompEdgeEquality {
-        solref,
-        solimp,
-        vertices,
-    });
-    Ok(())
-}
-
-/// Parse a `<flexcomp>` element (procedural mesh generation).
-///
-/// Generates vertices and elements based on the `type` attribute (grid, box, cylinder).
-/// `empty`: it closed itself, so it has no children.
-pub(super) fn parse_flexcomp<R: BufRead>(
-    reader: &mut Reader<R>,
-    start: &BytesStart,
-    empty: bool,
-) -> Result<MjcfFlex> {
-    let mut flex = flexcomp_mesh(start)?;
-    if empty {
-        return Ok(flex);
-    }
-
-    // Parse child elements (<contact>, <elasticity>, <edge>, <pin>)
-    let mut buf = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
-                let child_empty = matches!(event, Event::Empty(_));
-                match e.name().as_ref() {
-                    b"contact" => parse_flex_contact_attrs(e, &mut flex)?,
-                    b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex)?,
-                    b"edge" => parse_flexcomp_edge_attrs(e, &mut flex)?,
-                    b"pin" => {
-                        if let Some(ids) = indices(&Attrs::new(e)?, "id")? {
-                            flex.pinned.extend(ids);
-                        }
-                    }
-                    _ => {}
-                }
-                skip_element(reader, e.name().as_ref(), child_empty)?;
-            }
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"flexcomp" => break,
-            Ok(Event::Eof) => {
-                return Err(MjcfError::eof_in("flexcomp"));
-            }
-            Ok(_) => {}
-            Err(e) => return Err(MjcfError::xml(e)),
-        }
-        buf.clear();
-    }
-
-    // MuJoCo refuses a flexcomp that stretches beside the equality its
-    // `<edge>` asks for, `vert` too (`xml_native_reader.cc:2789-2791`).
-    if flex.elastic2d.stretches() && flex.edge_equality.is_some() {
-        return Err(MjcfError::invalid_value(
-            "flexcomp",
-            "elastic2d",
-            "elasticity and edge constraints cannot both be present",
-        ));
-    }
-    Ok(flex)
-}
-
-/// A `<flexcomp>`'s attributes and the mesh they generate. MuJoCo reads
-/// `count` and `spacing` as exactly three values each (`xml_native_reader.cc`).
-fn flexcomp_mesh(e: &BytesStart) -> Result<MjcfFlex> {
-    let a = Attrs::new(e)?;
-    // A flexcomp makes its vertices' bodies; MuJoCo 3.5.0's schema has no
-    // `body` on it ("unrecognized attribute", measured).
-    if a.has("body") {
-        return Err(MjcfError::unknown_attribute("flexcomp", "body"));
-    }
-    let mut flex = parse_flex_attrs(e)?;
-    flex.vertex_bodies = FlexVertexBodies::Generated;
-
-    let comp_type = a
-        .keyword("type", keywords::flexcomp_type)?
-        .unwrap_or(FlexcompType::Grid);
-    // MuJoCo's first checks of a flexcomp, in its order (`mjCFlexcomp::Make`,
-    // `user_flexcomp.cc:114-124`): its dim, then its count, here before the
-    // mesh is generated from them.
-    if !(1..=3).contains(&flex.dim) {
-        return Err(MjcfError::invalid_value(
-            "flexcomp",
-            "dim",
-            "Invalid dim, must be between 1 and 3",
-        ));
-    }
-    let count = parse_flexcomp_count(&a)?;
-    if count.contains(&0) {
-        return Err(MjcfError::invalid_value(
-            "flexcomp",
-            "count",
-            "Count too small",
-        ));
-    }
-    let spacing = a.array::<3>("spacing")?.unwrap_or([0.02; 3]);
-
-    match comp_type {
-        FlexcompType::Grid => generate_grid(&mut flex, count, spacing),
-        FlexcompType::Box => generate_box_mesh(&mut flex, count, spacing),
-        // A type of MuJoCo's this `<deformable>` form does not generate (the
-        // form itself is sim-mjcf's, refused by MuJoCo's schema).
-        other => {
-            return Err(MjcfError::invalid_value(
-                "flexcomp",
-                "type",
-                format!(
-                    "sim-mjcf's <deformable><flexcomp> generates only grid and box, not {}",
-                    other.word()
-                ),
-            ));
-        }
-    }
-
-    // Apply scale and rotation to generated vertices (DT-88)
-    apply_flexcomp_transforms(&mut flex);
-
-    Ok(flex)
-}
-
-/// Apply flexcomp scale and quat transforms to generated vertices.
-/// Order: scale first (component-wise), then quaternion rotation.
-pub(super) fn apply_flexcomp_transforms(flex: &mut MjcfFlex) {
-    if let Some(scale) = flex.flexcomp_scale {
-        for v in &mut flex.vertices {
-            v.x *= scale.x;
-            v.y *= scale.y;
-            v.z *= scale.z;
-        }
-    }
-    if let Some(ref quat) = flex.flexcomp_quat {
-        for v in &mut flex.vertices {
-            *v = quat.transform_vector(v);
-        }
-    }
-}
-
-/// Parse flexcomp count attribute (3 ints).
-pub(super) fn parse_flexcomp_count(a: &Attrs) -> Result<[usize; 3]> {
-    let Some(count) = a.int_array::<3>("count")? else {
-        return Ok([10, 10, 1]);
-    };
-    let mut out = [0; 3];
-    for (o, n) in out.iter_mut().zip(count) {
-        *o = usize::try_from(n)
-            .map_err(|_| MjcfError::invalid_value("flexcomp", "count", "a count is negative"))?;
-    }
-    Ok(out)
-}
-
-/// Non-negative integers: vertex, element or pin indices.
+/// Non-negative integers: vertex or element indices.
 fn indices(a: &Attrs, name: &str) -> Result<Option<Vec<usize>>> {
     a.int_vector(name)?
         .map(|ints| {
@@ -494,81 +316,6 @@ fn indices(a: &Attrs, name: &str) -> Result<Option<Vec<usize>>> {
                 .collect()
         })
         .transpose()
-}
-
-/// Generate a 2D grid mesh for flexcomp type="grid".
-#[allow(clippy::cast_precision_loss)] // mesh dimensions never exceed 2^52
-pub(super) fn generate_grid(flex: &mut MjcfFlex, count: [usize; 3], spacing: [f64; 3]) {
-    flex.dim = 2;
-    let nx = count[0];
-    let ny = count[1];
-
-    // Generate vertices
-    for iy in 0..ny {
-        for ix in 0..nx {
-            let x = ix as f64 * spacing[0];
-            let y = iy as f64 * spacing[1];
-            flex.vertices.push(Vector3::new(x, y, 0.0));
-        }
-    }
-
-    // Generate triangles (2 per quad)
-    for iy in 0..(ny - 1) {
-        for ix in 0..(nx - 1) {
-            let v00 = iy * nx + ix;
-            let v10 = iy * nx + ix + 1;
-            let v01 = (iy + 1) * nx + ix;
-            let v11 = (iy + 1) * nx + ix + 1;
-            flex.elements.push(vec![v00, v10, v01]);
-            flex.elements.push(vec![v10, v11, v01]);
-        }
-    }
-}
-
-/// Generate a 3D box mesh for flexcomp type="box".
-#[allow(clippy::cast_precision_loss)] // mesh dimensions never exceed 2^52
-pub(super) fn generate_box_mesh(flex: &mut MjcfFlex, count: [usize; 3], spacing: [f64; 3]) {
-    flex.dim = 3;
-    let nx = count[0];
-    let ny = count[1];
-    let nz = count[2];
-
-    // Generate vertices
-    for iz in 0..nz {
-        for iy in 0..ny {
-            for ix in 0..nx {
-                let x = ix as f64 * spacing[0];
-                let y = iy as f64 * spacing[1];
-                let z = iz as f64 * spacing[2];
-                flex.vertices.push(Vector3::new(x, y, z));
-            }
-        }
-    }
-
-    // Generate tetrahedra (5 per cube)
-    for iz in 0..(nz - 1) {
-        for iy in 0..(ny - 1) {
-            for ix in 0..(nx - 1) {
-                let v = |dx: usize, dy: usize, dz: usize| -> usize {
-                    (iz + dz) * ny * nx + (iy + dy) * nx + (ix + dx)
-                };
-                // 5-tet decomposition of a cube
-                let v000 = v(0, 0, 0);
-                let v100 = v(1, 0, 0);
-                let v010 = v(0, 1, 0);
-                let v110 = v(1, 1, 0);
-                let v001 = v(0, 0, 1);
-                let v101 = v(1, 0, 1);
-                let v011 = v(0, 1, 1);
-                let v111 = v(1, 1, 1);
-                flex.elements.push(vec![v000, v100, v010, v001]);
-                flex.elements.push(vec![v100, v110, v010, v111]);
-                flex.elements.push(vec![v001, v101, v100, v111]);
-                flex.elements.push(vec![v001, v011, v010, v111]);
-                flex.elements.push(vec![v100, v010, v001, v111]);
-            }
-        }
-    }
 }
 
 /// Parse a skin element and its children (`empty`: it closed itself, so it

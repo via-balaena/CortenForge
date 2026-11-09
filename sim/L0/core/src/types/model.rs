@@ -499,11 +499,6 @@ pub struct Model {
     /// Per-flex: bending damping (passive damper, N·m·s/rad).
     /// Proportional damping: b = damping × k_bend.
     pub flex_bend_damping: Vec<f64>,
-    /// Per-flex: density. Units depend on dim:
-    /// dim=1 (cable): linear density kg/m.
-    /// dim=2 (shell): volumetric density kg/m³ (multiplied by thickness for area density).
-    /// dim=3 (solid): volumetric density kg/m³.
-    pub flex_density: Vec<f64>,
     /// Visualization group (0–5) for each flex. Used by renderers for group-based filtering.
     pub flex_group: Vec<i32>,
     /// Per-flex: true if ALL vertices have invmass == 0 (entire flex is rigid).

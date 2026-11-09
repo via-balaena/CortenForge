@@ -296,7 +296,6 @@ impl Model {
             flex_edgeequality: vec![],
             flex_bend_stiffness: vec![],
             flex_bend_damping: vec![],
-            flex_density: vec![],
             flex_group: vec![],
             flex_rigid: vec![],
             flex_bending_type: vec![],

@@ -287,7 +287,6 @@ impl ModelBuilder {
             flex_young: vec![],
             flex_poisson: vec![],
             flex_thickness: vec![],
-            flex_density: vec![],
             flex_group: vec![],
             flex_rigid: vec![],
             flex_bending_type: vec![],

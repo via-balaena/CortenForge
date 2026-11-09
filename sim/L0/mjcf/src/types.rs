@@ -4400,9 +4400,7 @@ pub struct MjcfFlex {
     pub radius: f64,
     /// A `<flex>`'s vertex bodies, one per vertex: each vertex is the body
     /// it names, as MuJoCo 3.5.0's `vertbody`; a body-level flexcomp's names
-    /// the bodies it made, and its holding body for a pinned point. Refused
-    /// on a `<deformable><flexcomp>`, whose vertex bodies the loader makes
-    /// ([`FlexVertexBodies::Generated`]), as the parser refuses `body` on one.
+    /// the bodies it made, and its holding body for a pinned point.
     pub body: Vec<String>,
     /// A `<flex>`'s `node` bodies (MuJoCo's trilinear interpolation): refused,
     /// a stated limitation, after MuJoCo's checks of its collisions, its node
@@ -4410,9 +4408,6 @@ pub struct MjcfFlex {
     /// empty when the attribute is omitted or empty; a body-level flexcomp of
     /// an interpolated dof fills it, and its flex is refused for its node after
     /// the keyframes (`D-FLEXCOMP-FORM`), a `<flex>`'s where the builder meets it.
-    /// Refused on a `<deformable><flexcomp>` built in code; such a
-    /// flexcomp's in a document is not read (MuJoCo's schema refuses it,
-    /// Rigid-loading L47's).
     pub node: Vec<String>,
     /// Visualization group (0-5).
     pub group: i32,
@@ -4492,59 +4487,19 @@ pub struct MjcfFlex {
     /// the keyframes ([`MjcfFlexcompEdgeEquality::vertices`]).
     pub edge_equality: Option<MjcfFlexcompEdgeEquality>,
 
-    // --- Internal / derived ---
-    /// Total mass `[kg]` for uniform distribution across all vertices (including pinned).
-    /// MuJoCo semantics: `mass / npnt` per vertex, pinned share silently discarded.
-    /// When `Some`, overrides element-based mass lumping from `density`; below
-    /// mjMINVAL it is refused, as MuJoCo's flexcomp refuses it.
-    pub mass: Option<f64>,
-    /// Volumetric density [kg/m³] (dim=2,3) or linear density [kg/m] (dim=1).
-    /// Fallback for element-based mass lumping when `mass` is `None`.
-    pub density: f64,
-
-    // --- Flexcomp attributes (DT-88) ---
-    /// A flexcomp's inertia box size: each vertex body's inertia is
-    /// `mass · (2 · inertiabox²) / 3` about each axis, MuJoCo's formula
-    /// (`user_flexcomp.cc:470-471`); MuJoCo's default 0.005, at least
-    /// mjMINVAL.
-    pub inertiabox: f64,
-    /// Flexcomp non-uniform scale applied to generated vertices.
-    pub flexcomp_scale: Option<Vector3<f64>>,
-    /// Flexcomp rotation quaternion applied to generated vertices (after scale).
-    pub flexcomp_quat: Option<UnitQuaternion<f64>>,
-    /// Flexcomp mesh/grid file path.
-    pub flexcomp_file: Option<String>,
-
     // --- Structural data arrays ---
     /// A `<flex>`'s `vertex`: each vertex's offset in its body (sim-mjcf
     /// takes only zero offsets, but a body-level flexcomp's on its holding
-    /// body; empty when the attribute is omitted). Where the loader makes the
-    /// vertex bodies (a `<deformable><flexcomp>`), each vertex's position.
+    /// body; empty when the attribute is omitted).
     pub vertices: Vec<Vector3<f64>>,
     /// Element connectivity (each element is a list of vertex indices).
     pub elements: Vec<Vec<usize>>,
-    /// Pinned vertex indices (infinite mass, fixed in place).
-    pub pinned: Vec<usize>,
-    /// Where the vertex bodies come from.
-    pub vertex_bodies: FlexVertexBodies,
     /// The body holding the body-level `<flexcomp>` that made this flex, or
     /// `None` for a `<flex>`: a vertex on it is a pinned point (every point of
     /// a rigid flexcomp), which the builder gives a jointless body of its own
     /// (registry `D-FLEX-PINNED-BODY`), and what sim-core does not take of
     /// it is refused after the keyframes.
     pub flexcomp_holder: Option<String>,
-}
-
-/// Where a flex's vertex bodies come from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum FlexVertexBodies {
-    /// Each vertex is the body [`MjcfFlex::body`] names: a `<flex>`'s and a
-    /// body-level flexcomp's, as MuJoCo 3.5.0's `vertbody`.
-    #[default]
-    Named,
-    /// The loader makes a body for each vertex: a `<deformable><flexcomp>`'s.
-    Generated,
 }
 
 impl Default for MjcfFlex {
@@ -4585,19 +4540,9 @@ impl Default for MjcfFlex {
             edge_stiffness: 0.0,
             edge_damping: 0.0,
             edge_equality: None,
-            // Internal
-            mass: None,
-            density: 1000.0,
-            // Flexcomp attributes (DT-88)
-            inertiabox: 0.005,
-            flexcomp_scale: None,
-            flexcomp_quat: None,
-            flexcomp_file: None,
             // Structural data
             vertices: Vec::new(),
             elements: Vec::new(),
-            pinned: Vec::new(),
-            vertex_bodies: FlexVertexBodies::Named,
             flexcomp_holder: None,
         }
     }

@@ -156,7 +156,7 @@ Every open question the 21 research sections raise, deduplicated, with the secti
 | Q80 | 2-body cables MuJoCo refuses | A3 O-6; A9 §3 | load / refuse | load | (a) | lenient, named in 01-decisions; test A9 §3.5 |
 | Q81 | flex attribute form and what `<flex body=…>` means; also `node=`, `<elasticity damping>`, an empty `element`, element- vs vertex-based flex contacts | A4 Q1; A20 §1B.4, §1B.7, "Open for Jon" 5 | MuJoCo's meaning + explicit vertex bodies / keep ours as an extension, flex outside the census | A4: rewrite as "same meaning"; A20: the meaning differs, a spec decision is missing | **(c)** | C7 |
 | Q82 | `muscle@actearly` | A4 Q2 | allowlist / rewrite | allowlist | (b) | adopted |
-| Q83 | `<deformable><flexcomp>` | A4 Q3 | allowlist / rename | allowlist | (b) | adopted |
+| Q83 | `<deformable><flexcomp>` | A4 Q3 | allowlist / rename | allowlist | (b) | adopted; replaced in Rigid-loading PR RL-8c: refused (11-settled A4-Q3) |
 | Q84 | overlay ↔ parser sync guard | A4 Q4 | read-tracking in `cfg(test)` / none | read-tracking | (b) | adopted |
 | Q85 | iterative `Drop` for `MjcfBody` | A4 Q5 | add / leave | measure drop alone; add if > 512 KB | (b) | adopted |
 | Q86 | hex floats | A4 Q6 | refuse / implement | refuse | (a) | stated limitation |
@@ -248,8 +248,8 @@ Measured defects or gaps a section handed off and no section's commit list picke
 | U05 | `BiasType::Muscle` reads `gainprm`, MuJoCo `biasprm` | A11 §6 item 3 | (a) | parity | P33 |
 | U06 | a flex doc plus any `gravcomp` body panics at `rne.rs:357` | A20 §1B.5 | (a) | MuJoCo loads it | L10a |
 | U07 | an empty flex `element` loads a 1-vertex flex; MuJoCo refuses | A20 §1B.3 C7 | (a) | "no spec row" | L10 |
-| U08 | `<deformable><flexcomp spacing="…">` parsed as one f64; `pos` not applied | A13 §5 | (b) | our extension (A4-Q3) | — |
-| U09 | our flex grid generator's vertex order and diagonal differ from MuJoCo's | A13 §5 | (b) | matters for D3's fixture (A13 §3.7) | — |
+| U08 | `<deformable><flexcomp spacing="…">` parsed as one f64; `pos` not applied | A13 §5 | (b) | our extension (A4-Q3); refused since Rigid-loading PR RL-8c (11-settled A4-Q3) | — |
+| U09 | our flex grid generator's vertex order and diagonal differ from MuJoCo's | A13 §5 | (b) | matters for D3's fixture (A13 §3.7); the generator is deleted in Rigid-loading PR RL-8c, and D3's fixture is written in the body-level form, made as MuJoCo makes it | — |
 | U10 | sim-urdf writes URDF `rpy` as intrinsic `xyz` | A20 §1A.3.9 | (a) | parity with MuJoCo's URDF reader; 3.4e-3 inertia residual "not isolated" | L43 |
 | U11 | spatial tendon velocity over a sphere wrap reads 0 at the initial forward | A20 §1A.3.9 | (a) | not isolated | P29 (isolates it) |
 | U12 | no dim-3 or 2-D membrane flex elasticity in sim-core | A9 §7 H6 | **(c)** | implement later or refuse as a limitation: scope | L32 |

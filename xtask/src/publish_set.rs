@@ -42,8 +42,24 @@ closure over normal and build dependencies (optional ones included):
   - every crate inside it has LICENSE-APACHE, LICENSE-MIT and NOTICE identical
     to the workspace root's, and a README.md. Each of the three is a symlink
     to the root's file, which cargo packages as the file itself. Every crate
-    but the facade has exactly the README its name, library name and
-    description give; the failure prints it;
+    but the facade has exactly the README its name, library name, description
+    and the upstream projects it ports code from give; the failure prints it;
+  - for each upstream project the set ports code from (MuJoCo, OpenSim), every
+    crate inside it whose `src` cites the project is on one of two closed
+    lists: the crates holding code ported from it, each named in the first
+    paragraph of the project's section of the root NOTICE and each README
+    saying so, or the crates citing it only as a reference. A crate on either
+    list whose `src` no longer cites it is a problem; so is a crate in the set
+    that the section's first paragraph names and the first list does not, and
+    a section that carries no `Copyright` line. A citation is what the
+    project's `cited_by` in `UPSTREAMS` matches (for MuJoCo a source file
+    named with its extension, for OpenSim a path into its source tree or its
+    repository's name), in a regular UTF-8 file under `src`; the tests,
+    examples and benches cargo also packages are not read.
+    This sees citations, not derivation: a port that cites nothing in those
+    forms goes unseen. It does not check what the copyright lines say (they
+    are read from the upstream's own tree, which it does not have). A crate
+    on a list that leaves the set is the unit tests' to catch;
   - no crate inside it sets `include`, or a `readme` other than README.md, and
     each `exclude` entry is a plain path (letters, digits, `.`, `_`, `-` and
     `/` only) naming none of those four files. This reads the manifest, not
@@ -67,6 +83,67 @@ const README: &str = "README.md";
 
 /// What every crate in the set but the facade is named with.
 const PREFIX: &str = "cortenforge-";
+
+/// A project the set ports code from, under that project's own licence
+/// (ledger L401, L402): each crate holding its code says so in its README, and
+/// the root NOTICE names the crate in the project's section.
+struct Upstream {
+    /// Its name, as the README paragraph gives it.
+    name: &'static str,
+    /// Where its source lives, which the README paragraph links.
+    url: &'static str,
+    /// Whom the README paragraph says CortenForge is not affiliated with.
+    not_affiliated_with: &'static str,
+    /// The heading line of its section in the root NOTICE.
+    section: &'static str,
+    /// What, in a crate's `src`, cites it: a regex.
+    cited_by: &'static str,
+    /// The crates in the set holding code ported from it.
+    ports: &'static [&'static str],
+    /// The crates in the set whose `src` cites it only as a reference.
+    cites: &'static [&'static str],
+}
+
+/// The upstream projects, each with its two closed lists: every crate in the
+/// set whose `src` matches `cited_by` is on `ports` or `cites`, and every crate
+/// on either matches it.
+const UPSTREAMS: [Upstream; 2] = [
+    Upstream {
+        name: "MuJoCo",
+        url: "https://github.com/google-deepmind/mujoco",
+        not_affiliated_with: "Google DeepMind",
+        section: "MUJOCO",
+        // A MuJoCo source file named with its extension, as a port cites it:
+        // a file of its `engine`, `user`, `xml`, `thread`, `render` or `ui`
+        // sources, one of its `mj*.h` and `mujoco.h` headers, or a plugin's
+        // source by its path (`plugin/elasticity/cable.cc`). The name MuJoCo
+        // alone is no citation: crates that only read or write MJCF say it too.
+        cited_by: r"\b(?:(?:engine|user|xml|thread|render|ui)(?:_[a-z0-9_]+)?\.(?:c|cc|h)|mj[a-z]+\.h|mujoco\.h|plugin/[a-z_]+/[a-z0-9_]+\.(?:cc|h))\b",
+        ports: &[
+            "cortenforge-geometry",
+            "cortenforge-sim-core",
+            "cortenforge-sim-mjcf",
+            "cortenforge-sim-urdf",
+        ],
+        // A test's comment giving the lines of `engine_forward.c` whose
+        // behaviour the test asserts (`langevin.rs`).
+        cites: &["cortenforge-sim-thermostat"],
+    },
+    Upstream {
+        name: "OpenSim",
+        url: "https://github.com/opensim-org/opensim-core",
+        not_affiliated_with: "Stanford University or the OpenSim project",
+        section: "OPENSIM",
+        // A path into OpenSim's source tree (`OpenSim/Common`,
+        // `OpenSim/Actuators`) or its repository's name. Neither the name
+        // OpenSim alone (sim-core says it of the models it was checked
+        // against) nor a file or class name alone is seen.
+        cited_by: r"\b(?:OpenSim/[A-Z][A-Za-z]*|opensim-core)\b",
+        // `forward/millard.rs`: OpenSim's `Millard2012EquilibriumMuscle`.
+        ports: &["cortenforge-sim-core"],
+        cites: &[],
+    },
+];
 
 /// Whether an `exclude` entry is a plain path: letters, digits, `.`, `_`, `-`
 /// and `/`. Anything else (a glob, an escape, a brace, whitespace) is syntax
@@ -132,19 +209,25 @@ pub(crate) fn check_at(root: &Path) -> Result<()> {
     let set = closure(&packages)?;
     let mut found = problems(&packages, &set);
     found.extend(prefix_problems(&set));
+    let notice_path = workspace_root.join("NOTICE");
+    let notice = std::fs::read_to_string(&notice_path)
+        .with_context(|| format!("read {}", notice_path.display()))?;
     for name in set.keys() {
         let pkg = &packages[name];
         let dir = pkg
             .dir
             .as_deref()
             .with_context(|| format!("`cargo metadata` gave no manifest path for `{name}`"))?;
+        let packaging = packaging(workspace_root, dir)?;
         found.extend(packaging_problems(
             name,
             pkg.lib.as_deref(),
             pkg.description.as_deref(),
-            &packaging(workspace_root, dir)?,
+            &packaging,
         ));
+        found.extend(upstream_problems(name, &packaging.citations, &notice));
     }
+    found.extend(notice_problems(&notice));
     if !found.is_empty() {
         for problem in &found {
             eprintln!("  ✗ {problem}");
@@ -384,6 +467,9 @@ struct Packaging {
     unreadable: Vec<&'static str>,
     /// The manifest's `exclude` entries.
     exclude: Vec<String>,
+    /// For each of [`UPSTREAMS`], in order, the first citation of it in the
+    /// crate's `src` ([`upstream_citations`]).
+    citations: Vec<Option<String>>,
 }
 
 /// Read a crate's packaging from its directory `dir`, against the workspace
@@ -446,13 +532,157 @@ fn packaging(root: &Path, dir: &Path) -> Result<Packaging> {
         readme_key,
         unreadable,
         exclude,
+        citations: upstream_citations(&dir.join("src"))?,
     })
+}
+
+/// For each of [`UPSTREAMS`], in order, the first file under `src` (the files
+/// walked in name order; one that is not UTF-8 skipped) that cites it, as
+/// `src/<path>: <the citation>`; `None` where no file does, or there is no
+/// `src`. It reads the regular files under `src` on disk.
+fn upstream_citations(src: &Path) -> Result<Vec<Option<String>>> {
+    let patterns = UPSTREAMS
+        .iter()
+        .map(|upstream| {
+            regex::Regex::new(upstream.cited_by)
+                .with_context(|| format!("{}'s `cited_by`", upstream.name))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut found = vec![None; UPSTREAMS.len()];
+    if !src.is_dir() {
+        return Ok(found);
+    }
+    for entry in walkdir::WalkDir::new(src).sort_by_file_name() {
+        let entry = entry.with_context(|| format!("walk {}", src.display()))?;
+        let path = entry.path();
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        let Ok(text) = String::from_utf8(bytes) else {
+            continue;
+        };
+        let within = path
+            .strip_prefix(src)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        for (slot, pattern) in found.iter_mut().zip(&patterns) {
+            if slot.is_none() {
+                *slot = pattern
+                    .find(&text)
+                    .map(|cited| format!("src/{within}: `{}`", cited.as_str()));
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Crate `name` against each of [`UPSTREAMS`]' two lists, given the first
+/// citation of each that its `src` holds (`citations`, in their order) and the
+/// root `notice`.
+fn upstream_problems(name: &str, citations: &[Option<String>], notice: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for (upstream, citation) in UPSTREAMS.iter().zip(citations) {
+        let (project, section) = (upstream.name, upstream.section);
+        let ports = upstream.ports.contains(&name);
+        let cites = upstream.cites.contains(&name);
+        match citation {
+            Some(at) if !ports && !cites => found.push(format!(
+                "`{name}`'s {at} cites {project}: put the crate on {project}'s `ports` in \
+                 `UPSTREAMS` if it holds code ported from {project} (its README and the \
+                 NOTICE's {section} section then name it), or on its `cites` if it only \
+                 refers to it"
+            )),
+            None if ports || cites => found.push(format!(
+                "`{name}` is on {project}'s `{}` in `UPSTREAMS`, but its `src` no longer \
+                 cites {project}: take it off",
+                if ports { "ports" } else { "cites" }
+            )),
+            _ => {}
+        }
+        let named = notice_section(notice, section).is_some_and(|s| s.names.contains(name));
+        match (ports, named) {
+            (true, false) => found.push(format!(
+                "the root NOTICE's {section} section does not name `{name}`, which holds \
+                 code ported from {project}"
+            )),
+            (false, true) => found.push(format!(
+                "the root NOTICE's {section} section names `{name}`, which is not on \
+                 {project}'s `ports` in `UPSTREAMS`"
+            )),
+            _ => {}
+        }
+    }
+    found
+}
+
+/// A section of the root NOTICE, as [`notice_section`] reads it.
+struct NoticeSection {
+    /// The words of its first paragraph, split at anything but letters,
+    /// digits, `-` and `_`, so a crate it names is one of them.
+    names: BTreeSet<String>,
+    /// Whether any of its lines starts with `Copyright`.
+    copyright: bool,
+}
+
+/// `notice`'s section headed `section`: the lines after the line that is the
+/// heading alone, up to the next `---` rule. `None` when there is none.
+fn notice_section(notice: &str, section: &str) -> Option<NoticeSection> {
+    let mut lines = notice.lines().skip_while(|line| line.trim() != section);
+    lines.next()?;
+    let body: Vec<&str> = lines.take_while(|line| !line.starts_with("---")).collect();
+    let names = body
+        .iter()
+        .skip_while(|line| line.trim().is_empty())
+        .take_while(|line| !line.trim().is_empty())
+        .flat_map(|line| line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_')))
+        .filter(|word| !word.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let copyright = body
+        .iter()
+        .any(|line| line.trim_start().starts_with("Copyright"));
+    Some(NoticeSection { names, copyright })
+}
+
+/// Each of [`UPSTREAMS`]' sections in the root `notice` that carries no
+/// `Copyright` line. A section that is missing is the porting crates' problem
+/// ([`upstream_problems`]).
+fn notice_problems(notice: &str) -> Vec<String> {
+    UPSTREAMS
+        .iter()
+        .filter(|upstream| notice_section(notice, upstream.section).is_some_and(|s| !s.copyright))
+        .map(|upstream| {
+            format!(
+                "the root NOTICE's {} section carries no `Copyright` line",
+                upstream.section
+            )
+        })
+        .collect()
 }
 
 /// The README of every crate in the set but the facade: the crate's name and
 /// description, the name code uses for it, then what it is part of and its
+/// licence, and for each of [`UPSTREAMS`] it ports code from, that code's
 /// licence.
 fn member_readme(name: &str, lib: &str, description: &str) -> String {
+    let ported: String = UPSTREAMS
+        .iter()
+        .filter(|upstream| upstream.ports.contains(&name))
+        .map(|upstream| {
+            format!(
+                "\nPortions of this crate are ported from [{project}]({url}), translated to \
+                 Rust and changed. Those portions are licensed under the Apache License, \
+                 Version 2.0, whichever license you take for the rest; `NOTICE` carries \
+                 {project}'s copyright notices. CortenForge is not affiliated with or \
+                 endorsed by {whom}.\n",
+                project = upstream.name,
+                url = upstream.url,
+                whom = upstream.not_affiliated_with,
+            )
+        })
+        .collect();
     format!(
         "# {name}\n\n{description}\n\nIn code, this crate is `{lib}`.\n\n\
          This crate is part of [CortenForge](https://github.com/via-balaena/CortenForge), \
@@ -461,7 +691,7 @@ fn member_readme(name: &str, lib: &str, description: &str) -> String {
          in the rest of the SDK.\n\n\
          Licensed under either of the Apache License, Version 2.0, or the MIT license, at \
          your option. Both texts ship with this crate, with a `NOTICE` that carries the \
-         disclaimer.\n"
+         disclaimer.\n{ported}"
     )
 }
 
@@ -537,8 +767,8 @@ fn packaging_problems(
     let wanted = member_readme(name, lib, description);
     if *readme != wanted {
         found.push(format!(
-            "`{name}`'s {README} is not the one its name, library name and description \
-             give; it should read:\n{wanted}"
+            "`{name}`'s {README} is not the one its name, library name, description and \
+             ported code give; it should read:\n{wanted}"
         ));
     }
     found
@@ -830,7 +1060,8 @@ mod tests {
     /// root's NOTICE, fail twice (an unpublished member with no licences,
     /// NOTICE or README adds nothing), once with only the facade's, pass with
     /// both, and fail again when the dependency's README is not the one its
-    /// own name and description give.
+    /// own name and description give, when it lacks the prefix, and when a
+    /// section of the NOTICE carries no `Copyright` line.
     #[test]
     fn check_at_reads_each_crates_packaging() {
         let root = std::env::temp_dir().join(format!("cf-check-at-{}", std::process::id()));
@@ -910,6 +1141,11 @@ mod tests {
             &member_readme("member", "member", "Does one thing"),
         );
         let unprefixed = check_at(&root);
+        let bare = "---\nMUJOCO\n\nnames no crate\n";
+        for dir in [root.clone(), root.join(FACADE), root.join("member")] {
+            write(dir.join("NOTICE"), bare);
+        }
+        let uncopyrighted = check_at(&root);
         let _ = std::fs::remove_dir_all(&root);
         let err = neither.expect_err("crates without the NOTICE must fail");
         assert!(err.to_string().starts_with("2 problem(s)"), "{err}");
@@ -920,6 +1156,8 @@ mod tests {
         assert!(err.to_string().starts_with("1 problem(s)"), "{err}");
         let err = unprefixed.expect_err("a member without the prefix must fail");
         assert!(err.to_string().starts_with("1 problem(s)"), "{err}");
+        let err = uncopyrighted.expect_err("a NOTICE section with no Copyright line must fail");
+        assert!(err.to_string().starts_with("2 problem(s)"), "{err}");
     }
 
     /// A crate whose packaging breaks no rule: the root's files, the README its
@@ -935,6 +1173,7 @@ mod tests {
             readme_key: None,
             unreadable: Vec::new(),
             exclude: vec!["COMPLETION.md".to_owned(), "docs/".to_owned()],
+            citations: vec![None; UPSTREAMS.len()],
         }
     }
 
@@ -1126,5 +1365,289 @@ mod tests {
         assert_eq!(read_b.readme, None);
         assert_eq!(read_b.readme_key, None);
         assert_eq!(read_b.unreadable, ["exclude"]);
+    }
+
+    /// Each upstream's `cited_by` compiles, and its two lists hold crates of
+    /// the set's prefix, none on both.
+    #[test]
+    fn each_upstreams_lists_are_apart_and_prefixed() {
+        for upstream in &UPSTREAMS {
+            regex::Regex::new(upstream.cited_by).expect("`cited_by` compiles");
+            for name in upstream.ports.iter().chain(upstream.cites) {
+                assert!(name.starts_with(PREFIX), "{name}");
+            }
+            for name in upstream.ports {
+                assert!(
+                    !upstream.cites.contains(name),
+                    "`{name}` is on both of {}'s lists",
+                    upstream.name
+                );
+            }
+        }
+    }
+
+    /// Every crate on an upstream's lists is in the workspace's release set, so
+    /// a renamed or dropped crate's old name cannot stay on one.
+    #[test]
+    fn every_crate_on_an_upstreams_lists_is_in_the_set() {
+        let set = release_set(Path::new(env!("CARGO_MANIFEST_DIR"))).expect("the release set");
+        for upstream in &UPSTREAMS {
+            for name in upstream.ports.iter().chain(upstream.cites) {
+                assert!(
+                    set.contains(*name),
+                    "{}'s `{name}` is not in the release set",
+                    upstream.name
+                );
+            }
+        }
+    }
+
+    /// A NOTICE with a section per upstream naming exactly its `ports`, a crate
+    /// named before the first section, and one after a rule that ends the last.
+    fn notice_naming_the_ports() -> String {
+        let mut notice = String::from("CortenForge, with cortenforge-before\n");
+        for upstream in &UPSTREAMS {
+            notice.push_str(&format!(
+                "---\n{}\n\n{} include portions ported.\n\n    Copyright 2021 A\n\n\
+                 Not affiliated; cortenforge-later is named in a later paragraph.\n\n",
+                upstream.section,
+                upstream.ports.join(", ")
+            ));
+        }
+        notice.push_str("---\nTHIRD-PARTY DATA\n\ncortenforge-after\n");
+        notice
+    }
+
+    /// A crate whose `src` cites an upstream is on one of its lists, a crate
+    /// on either still cites it, and the upstream's NOTICE section names
+    /// exactly the crates on its `ports`.
+    #[test]
+    fn a_citation_and_the_notice_hold_a_crate_to_the_lists() {
+        let notice = notice_naming_the_ports();
+        let cited = |mujoco: bool, opensim: bool| {
+            vec![
+                mujoco.then(|| "src/a.rs: `engine_forward.c`".to_owned()),
+                opensim.then(|| "src/a.rs: `OpenSim/Common`".to_owned()),
+            ]
+        };
+        let none = Vec::<String>::new();
+        assert_eq!(
+            upstream_problems("cortenforge-sim-core", &cited(true, true), &notice),
+            none
+        );
+        assert_eq!(
+            upstream_problems("cortenforge-sim-urdf", &cited(true, false), &notice),
+            none
+        );
+        assert_eq!(
+            upstream_problems("cortenforge-sim-thermostat", &cited(true, false), &notice),
+            none
+        );
+        assert_eq!(
+            upstream_problems("cortenforge-a", &cited(false, false), &notice),
+            none
+        );
+
+        let found = upstream_problems("cortenforge-a", &cited(true, true), &notice);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(
+            found[0].starts_with(
+                "`cortenforge-a`'s src/a.rs: `engine_forward.c` cites MuJoCo: put the crate on \
+                 MuJoCo's `ports`"
+            ),
+            "{found:?}"
+        );
+        assert!(
+            found[1].contains("`OpenSim/Common` cites OpenSim: put"),
+            "{found:?}"
+        );
+
+        assert_eq!(
+            upstream_problems("cortenforge-sim-core", &cited(false, true), &notice),
+            [
+                "`cortenforge-sim-core` is on MuJoCo's `ports` in `UPSTREAMS`, but its `src` no \
+              longer cites MuJoCo: take it off"
+            ]
+        );
+        let found = upstream_problems("cortenforge-sim-thermostat", &cited(false, false), &notice);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("on MuJoCo's `cites`"), "{found:?}");
+
+        let without = notice.replacen("cortenforge-sim-urdf", "", 1);
+        assert_eq!(
+            upstream_problems("cortenforge-sim-urdf", &cited(true, false), &without),
+            ["the root NOTICE's MUJOCO section does not name `cortenforge-sim-urdf`, which holds \
+              code ported from MuJoCo"]
+        );
+        let with = notice.replacen(
+            "cortenforge-geometry",
+            "cortenforge-geometry, cortenforge-sim-thermostat",
+            1,
+        );
+        assert_eq!(
+            upstream_problems("cortenforge-sim-thermostat", &cited(true, false), &with),
+            ["the root NOTICE's MUJOCO section names `cortenforge-sim-thermostat`, which is not \
+              on MuJoCo's `ports` in `UPSTREAMS`"]
+        );
+        assert_eq!(
+            upstream_problems("cortenforge-geometry", &cited(true, false), "no sections\n").len(),
+            1
+        );
+        let words = notice_section(&notice, "OPENSIM")
+            .expect("the section")
+            .names;
+        assert!(words.contains("cortenforge-sim-core"), "{words:?}");
+        for outside in [
+            "cortenforge-sim-mjcf",
+            "cortenforge-before",
+            "cortenforge-after",
+            "cortenforge-later",
+        ] {
+            assert!(!words.contains(outside), "{outside} in {words:?}");
+        }
+        assert_eq!(notice_problems(&notice), Vec::<String>::new());
+        let bare = notice.replacen("    Copyright 2021 A\n", "", 1);
+        assert_eq!(
+            notice_problems(&bare),
+            ["the root NOTICE's MUJOCO section carries no `Copyright` line"]
+        );
+        let last = notice
+            .rfind("    Copyright 2021 A\n")
+            .expect("OPENSIM's line");
+        let mut opensim_bare = notice.clone();
+        opensim_bare.replace_range(last..last + "    Copyright 2021 A\n".len(), "");
+        assert_eq!(
+            notice_problems(&opensim_bare),
+            ["the root NOTICE's OPENSIM section carries no `Copyright` line"]
+        );
+        assert_eq!(notice_problems("no sections\n"), Vec::<String>::new());
+    }
+
+    /// Each upstream's `cited_by` finds every form its comment names, and none
+    /// of the others listed with it.
+    #[test]
+    fn each_upstreams_pattern_finds_its_citation_forms() {
+        let cases: [(&str, &[&str], &[&str]); 2] = [
+            (
+                "MuJoCo",
+                &[
+                    "engine_forward.c:288",
+                    "engine_util_sparse.h",
+                    "user_mesh.cc",
+                    "user_init.c",
+                    "xml.cc",
+                    "xml_util.h",
+                    "thread_pool.cc",
+                    "render_gl3.c",
+                    "ui_main.c",
+                    "mjmodel.h",
+                    "mujoco.h",
+                    "plugin/elasticity/cable.cc",
+                ],
+                &[
+                    "self.h",
+                    "test.c",
+                    "user_meshes",
+                    "engine_passive",
+                    "mjmodel",
+                    "MuJoCo",
+                ],
+            ),
+            (
+                "OpenSim",
+                &[
+                    "OpenSim/Common",
+                    "OpenSim/Actuators",
+                    "opensim-org/opensim-core",
+                ],
+                &[
+                    "OpenSim",
+                    "validated vs OpenSim 4.6",
+                    "OpenSim-validated",
+                    "SmoothSegmentedFunction.cpp",
+                ],
+            ),
+        ];
+        for (name, seen, unseen) in cases {
+            let upstream = UPSTREAMS.iter().find(|u| u.name == name).expect(name);
+            let pattern = regex::Regex::new(upstream.cited_by).expect("compiles");
+            for text in seen {
+                assert!(pattern.is_match(text), "{name} should see {text:?}");
+            }
+            for text in unseen {
+                assert!(!pattern.is_match(text), "{name} should not see {text:?}");
+            }
+        }
+    }
+
+    /// Citations are read from every UTF-8 file under `src`, the first in name
+    /// order; a file that is not UTF-8 is skipped, and names like a citation's
+    /// that are none are not citations.
+    #[test]
+    fn upstream_citations_reads_the_utf8_files_under_src() {
+        let root = std::env::temp_dir().join(format!("cf-citations-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("src");
+        std::fs::create_dir_all(src.join("b")).expect("make dirs");
+        std::fs::create_dir_all(root.join("empty/src")).expect("make dirs");
+        let write = |path: &str, text: &str| std::fs::write(src.join(path), text).expect("write");
+        write(
+            "a.rs",
+            "// self.h made.h filled.h test.c user_meshes OpenSim, validated vs OpenSim\n",
+        );
+        write(
+            "s.wgsl",
+            "// MuJoCo skips it (`engine_forward.c:288-292`).\n",
+        );
+        let mut bytes = vec![0xff, 0xfe];
+        bytes.extend_from_slice(b" OpenSim/Common\n");
+        std::fs::write(src.join("b/d.bin"), bytes).expect("write");
+        write("notes.md", "OpenSim/Actuators\n");
+        write("z.rs", "// user_mesh.cc\n");
+
+        let read = upstream_citations(&src);
+        let missing = upstream_citations(&root.join("missing"));
+        let empty = upstream_citations(&root.join("empty/src"));
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            read.expect("read src"),
+            [
+                Some("src/s.wgsl: `engine_forward.c`".to_owned()),
+                Some("src/notes.md: `OpenSim/Actuators`".to_owned())
+            ]
+        );
+        assert_eq!(missing.expect("no src"), [None, None]);
+        assert_eq!(empty.expect("an empty src"), [None, None]);
+    }
+
+    /// A crate's README carries a paragraph for each upstream it ports code
+    /// from, in [`UPSTREAMS`]' order, and none for any other.
+    #[test]
+    fn a_crates_readme_says_where_its_ported_code_is_from() {
+        let plain = member_readme("cortenforge-a", "cortenforge_a", "Does one thing");
+        let mjcf = member_readme("cortenforge-sim-mjcf", "sim_mjcf", "Does one thing");
+        let core = member_readme("cortenforge-sim-core", "sim_core", "Does one thing");
+        assert!(!plain.contains("Portions of this crate"), "{plain}");
+        assert_eq!(mjcf.matches("Portions of this crate").count(), 1, "{mjcf}");
+        assert!(
+            mjcf.contains("[MuJoCo](https://github.com/google-deepmind/mujoco)"),
+            "{mjcf}"
+        );
+        assert!(
+            mjcf.ends_with("not affiliated with or endorsed by Google DeepMind.\n"),
+            "{mjcf}"
+        );
+        assert!(!mjcf.contains("OpenSim"), "{mjcf}");
+        let at = |what: &str| {
+            core.find(what)
+                .unwrap_or_else(|| panic!("{what} not in {core}"))
+        };
+        assert!(at("[MuJoCo](") < at("[OpenSim](https://github.com/opensim-org/opensim-core)"));
+        assert!(
+            core.ends_with(
+                "not affiliated with or endorsed by Stanford University or the OpenSim project.\n"
+            ),
+            "{core}"
+        );
     }
 }

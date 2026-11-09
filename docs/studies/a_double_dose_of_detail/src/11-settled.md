@@ -28,7 +28,7 @@ Each line: the call, why, and where the appendix records what would differ if it
 | A3-O5 | cylinder `bias[1..3]` | refused when non-zero (MuJoCo reads 3 values into one double) | rule: stricter |
 | A4-Q1 | flex `<vertex>`/`<element>` children | replaced by C7: MuJoCo's meaning — `<flex body=…>` names existing bodies, in-tree flex docs are rewritten to declare their vertex bodies, our child form is refused | Jon, third round |
 | A4-Q2 | `muscle@actearly` | allowlist | implemented, 1 use |
-| A4-Q3 | `<deformable><flexcomp>` | allowlist (path differs from MuJoCo's body-level `flexcomp`) | 3 docs |
+| A4-Q3 | `<deformable><flexcomp>` | allowlist (path differs from MuJoCo's body-level `flexcomp`). **Replaced in Rigid-loading PR RL-8c**: refused, as MuJoCo 3.5.0's schema refuses it, and its generated-vertex path deleted; the in-tree documents are written in the body-level form Rigid-loading PR RL-8b makes as MuJoCo does (22-rigid-loading L47) | 3 docs |
 | A4-Q4 | overlay ↔ parser sync | read-tracking assertion in `cfg(test)` | otherwise an accepted attribute can silently go unread again |
 | A4-Q5 | `MjcfBody` drop recursion | measure drop alone first; iterative `Drop` if > 512 KB | A4 §11 |
 | A4-Q6 | hex floats | refused, limitation (0 uses) | MuJoCo accepts them via `strtod` |
@@ -45,5 +45,5 @@ Each line: the call, why, and where the appendix records what would differ if it
 | A5-Q10 | repeated `<pair>` | both kept (parity) | flips `builder/contact.rs:261` |
 | A6-Q2 | flex element length ≠ dim+1 | refused | MuJoCo `user_mesh.cc:4108-4116` |
 | A6-Q4 | Model's hash fields | left | no byte-comparing consumer |
-| flex `density` | read nowhere today (71 docs set it, 44 to ≠ 1000) | removed from the docs, then refused by the schema | MuJoCo's `<flex>` has no `density`; dead |
+| flex `density` | read nowhere today (71 docs set it, 44 to ≠ 1000) | removed from the docs, then refused by the schema. **Replaced in Rigid-loading PR RL-8c**: refused by the parser, before the schema, beside `inertiabox`, `scale`, `quat` and `file` (22-rigid-loading L47) | MuJoCo's `<flex>` has no `density`; dead |
 | A1 open | `energy` flag `pub` | `pub(crate)` | A1 §5 |

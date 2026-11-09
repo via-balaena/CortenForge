@@ -99,6 +99,14 @@
 //! crate names the flexcomp's, as it names a composite's; and a parse fault
 //! or an unknown class written after the flexcomp before Make's checks, as
 //! before: `FLEXCOMP_COSTS` (ledger L353).
+//! RL-8c's refusals of what MuJoCo 3.5.0's schema refuses (a `<flexcomp>` in
+//! `<deformable>`; on a `<flex>` the first written of the attributes this
+//! crate once read for its own flexcomp) are made where the reader meets
+//! them, so before every check made after parsing, as MuJoCo's schema walk
+//! makes them before any value is read; a fault the parser meets written
+//! before them is named first here: `SCHEMA_COSTS` (ledger L353); and
+//! `REFUSAL_FIRST_COSTS` pins each kind measured where MuJoCo names the other
+//! fault and this crate the refusal (ledgers L315, L353).
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, with the reason its row gives as MuJoCo's (RL-6a's measured
@@ -120,17 +128,23 @@
 //! distance beside another fault: in `TWO_FAULTS`, sixteen of the 87
 //! two-fault documents generated at its start; in `SENSOR_COSTS`, the twelve
 //! of the 87 this crate names otherwise and its review's first round's
-//! nineteen. RL-8a's (measured 2026-11-07, a flexcomp written in a body for
-//! MuJoCo; most of them its review's first round's, RA's) set a flex's
-//! thickness, a flex equality, a flex vertex equality, a flexcomp's stretch
-//! beside its edge equality, or a refusal made after the keyframes beside
-//! another fault: thirteen in `TWO_FAULTS`, five in `FLEX_COSTS`. RL-8b's
+//! nineteen. RL-8a's (measured 2026-11-07; most of them its review's first
+//! round's, RA's) set a flex's thickness, a flex equality, a flex vertex
+//! equality, a flexcomp's stretch beside its edge equality, or a refusal made
+//! after the keyframes beside another fault: fifteen in `TWO_FAULTS`, three
+//! in `FLEX_COSTS`. RL-8b's
 //! (measured 2026-11-07, the 503 two-fault documents generated at its start,
 //! each fault alone refused by MuJoCo but the forms it loads) set a
 //! flexcomp's check or a refused form beside another fault: four in
 //! `TWO_FAULTS`, six in `FLEXCOMP_COSTS`; its review's first round's set two
 //! of Make's checks in one flexcomp (eight in `TWO_FAULTS`) and two
 //! flexcomps of one name (one in `FLEXCOMP_COSTS`).
+//! RL-8c's (measured 2026-11-08, its two-fault set of 149 documents: each
+//! of its six refusals beside a fault of every stage, written before and
+//! after it) set a `<flexcomp>` in `<deformable>` or a `<flex>`'s refused
+//! attribute beside another fault: four in `TWO_FAULTS`, six in
+//! `SCHEMA_COSTS`; its review's (measured 2026-11-09) set one beside a fault
+//! MuJoCo names first: nine in `REFUSAL_FIRST_COSTS`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1648,7 +1662,7 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "a flexcomp's vertex equality then a joint axis",
-        r#"<mujoco><default></default><worldbody><body name="j" pos="5 0 0"><joint type="hinge" axis="0 0 0"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1" radius="0.005"><edge equality="vert"/><contact contype="0" conaffinity="0"/></flexcomp></deformable><equality></equality></mujoco>"#,
+        r#"<mujoco><default></default><worldbody><body name="j" pos="5 0 0"><joint type="hinge" axis="0 0 0"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1" radius="0.005"><edge equality="vert"/><contact contype="0" conaffinity="0"/></flexcomp></worldbody><equality></equality></mujoco>"#,
         "axis too small in joint",
         "invalid axis on <joint>: axis too small (joint 'j_joint0' in body 'j')",
     ),
@@ -1660,15 +1674,27 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "a flexcomp's vertex equality then a flex equality's unknown flex",
-        r#"<mujoco><default></default><worldbody></worldbody><deformable><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1" radius="0.005"><edge equality="vert"/><contact contype="0" conaffinity="0"/></flexcomp></deformable><equality><flex flex="nope"/></equality></mujoco>"#,
+        r#"<mujoco><default></default><worldbody><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1" radius="0.005"><edge equality="vert"/><contact contype="0" conaffinity="0"/></flexcomp></worldbody><equality><flex flex="nope"/></equality></mujoco>"#,
         "unknown element 'nope' in equality constraint",
         "unknown flex 'nope' (equality #0)",
     ),
     (
         "a flexcomp's stretch beside its vertex equality",
-        r#"<mujoco><default></default><worldbody></worldbody><deformable><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><edge equality="vert"/><elasticity elastic2d="stretch"/><contact contype="0" conaffinity="0"/></flexcomp></deformable><equality></equality></mujoco>"#,
+        r#"<mujoco><default></default><worldbody><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><edge equality="vert"/><elasticity elastic2d="stretch"/><contact contype="0" conaffinity="0"/></flexcomp></worldbody><equality></equality></mujoco>"#,
         "elasticity and edge constraints cannot both be present",
-        "invalid elastic2d on <flexcomp>: elasticity and edge constraints cannot both be present (line 1: deformable > flexcomp 'c' > contact)",
+        "invalid elastic2d on <flexcomp>: elasticity and edge constraints cannot both be present (line 1: worldbody > flexcomp 'c' > contact)",
+    ),
+    (
+        "a flexcomp's stretch beside its edge equality then its contact's keyword",
+        r#"<mujoco><default></default><worldbody><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><contact selfcollide="bogus"/><edge equality="true"/><elasticity elastic2d="stretch"/></flexcomp></worldbody><equality></equality></mujoco>"#,
+        "elasticity and edge constraints cannot both be present",
+        "invalid elastic2d on <flexcomp>: elasticity and edge constraints cannot both be present (line 1: worldbody > flexcomp 'c' > elasticity)",
+    ),
+    (
+        "a flexcomp's stretch beside its edge equality then its count",
+        r#"<mujoco><default></default><worldbody><flexcomp name="c" type="grid" count="0 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><edge equality="true"/><elasticity elastic2d="stretch"/></flexcomp></worldbody><equality></equality></mujoco>"#,
+        "elasticity and edge constraints cannot both be present",
+        "invalid elastic2d on <flexcomp>: elasticity and edge constraints cannot both be present (line 1: worldbody > flexcomp 'c' > elasticity)",
     ),
     (
         "a flex equality's unknown flex then a tendon's negative armature",
@@ -1783,6 +1809,30 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><worldbody><flexcomp name="f" type="direct" dim="1" point="0 0 0 1 0 0" element="0 5"><pin id="9"/></flexcomp></worldbody></mujoco>"#,
         "element 1 has point id 5, number of points is 2",
         "invalid element on <flexcomp>: element 1 has point id 5, number of points is 2 (flex 'f')",
+    ),
+    (
+        "a deformable flexcomp after a joint's range",
+        r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="r"><joint type="hinge" range="2 1" limited="true"/><geom size="0.1"/></body></worldbody><deformable><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/></deformable></mujoco>"#,
+        "Schema violation: unrecognized element",
+        "unrecognized element <flexcomp> in <deformable> (line 1: deformable > flexcomp 'c')",
+    ),
+    (
+        "a deformable flexcomp after a repeated name",
+        r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="dup"/><body name="dup"/></worldbody><deformable><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/></deformable></mujoco>"#,
+        "Schema violation: unrecognized element",
+        "unrecognized element <flexcomp> in <deformable> (line 1: deformable > flexcomp 'c')",
+    ),
+    (
+        "a flex's density after an unknown class",
+        r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><geom class="nope" size="0.1"/></worldbody><deformable><flex name="f" dim="1" body="a b" element="0 1" density="10"/></deformable></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'density'",
+        "unrecognized attribute 'density' on <flex> (line 1: deformable > flex 'f')",
+    ),
+    (
+        "a flex's quat before a keyframe's size",
+        r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="1" body="a b" element="0 1" quat="1 0 0 0"/></deformable><keyframe><key qpos="1 2 3 4 5 6 7 8 9"/></keyframe></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'quat'",
+        "unrecognized attribute 'quat' on <flex> (line 1: deformable > flex 'f')",
     ),
 ];
 
@@ -2296,17 +2346,14 @@ fn a_sensors_fault_beside_another_is_named_as_ledgered() {
     assert!(moved.is_empty(), "{}", moved.join("\n"));
 }
 
-/// Two faults, one a flex's thickness, a flex equality's flex, or a
-/// flexcomp's stretch beside its edge equality, where this crate names the
-/// other: the thickness and the flex equalities are checked with the checks
-/// RL-6a added, after every check this crate makes before building the
-/// model, and a flexcomp's stretch once its children are read, where a
-/// flexcomp's count and its children's keywords are refused while parsing,
-/// a flex's repeated vertex when the flexes are built, a connect's body when
-/// the equalities are made and a tendon's joint when the tendons are made;
-/// MuJoCo 3.5.0 checks the flex first (ledger L353). `(what, document, MuJoCo's reason,
-/// this crate's error)`, measured 2026-11-07 (RL-8a's review round 1, a
-/// flexcomp written in a body for MuJoCo).
+/// Two faults, one a flex's thickness or a flex equality's flex, where this
+/// crate names the other: the thickness and the flex equalities are checked
+/// with the checks RL-6a added, after every check this crate makes before
+/// building the model, where a flex's repeated vertex is refused when the
+/// flexes are built, a connect's body when the equalities are made and a
+/// tendon's joint when the tendons are made; MuJoCo 3.5.0 checks the flex
+/// first (ledger L353). `(what, document, MuJoCo's reason, this crate's
+/// error)`, measured 2026-11-07 (RL-8a's review round 1).
 const FLEX_COSTS: &[(&str, &str, &str, &str)] = &[
     (
         "a flex equality's unknown flex then a later connect's unknown body",
@@ -2321,20 +2368,8 @@ const FLEX_COSTS: &[(&str, &str, &str, &str)] = &[
         "invalid element on <flex>: repeated vertex in element (flex 'g')",
     ),
     (
-        "a flexcomp's stretch beside its edge equality then its contact's keyword",
-        r#"<mujoco><default></default><worldbody></worldbody><deformable><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><contact selfcollide="bogus"/><edge equality="true"/><elasticity elastic2d="stretch"/></flexcomp></deformable><equality></equality></mujoco>"#,
-        "elasticity and edge constraints cannot both be present",
-        "invalid keyword \"bogus\" in attribute 'selfcollide' on <contact> (line 1: deformable > flexcomp 'c' > contact)",
-    ),
-    (
-        "a flexcomp's stretch beside its edge equality then its count",
-        r#"<mujoco><default></default><worldbody></worldbody><deformable><flexcomp name="c" type="grid" count="0 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><edge equality="true"/><elasticity elastic2d="stretch"/></flexcomp></deformable><equality></equality></mujoco>"#,
-        "elasticity and edge constraints cannot both be present",
-        "invalid count on <flexcomp>: Count too small (line 1: deformable > flexcomp 'c')",
-    ),
-    (
         "a flex equality's rigid flexcomp then a tendon's unknown joint",
-        r#"<mujoco><default></default><worldbody></worldbody><deformable><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><pin id="0 1 2 3"/><contact contype="0" conaffinity="0"/></flexcomp></deformable><equality><flex flex="c"/></equality><tendon><fixed armature="-1"><joint joint="nojoint" coef="1"/></fixed></tendon></mujoco>"#,
+        r#"<mujoco><default></default><worldbody><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><pin id="0 1 2 3"/><contact contype="0" conaffinity="0"/></flexcomp></worldbody><equality><flex flex="c"/></equality><tendon><fixed armature="-1"><joint joint="nojoint" coef="1"/></fixed></tendon></mujoco>"#,
         "rigid flex 'c' in equality constraint 0",
         "unknown joint 'nojoint' (tendon #0)",
     ),
@@ -2412,6 +2447,142 @@ const FLEXCOMP_COSTS: &[(&str, &str, &str, &str)] = &[
 fn a_flexcomp_fault_beside_another_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in FLEXCOMP_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, one refused as MuJoCo 3.5.0's schema refuses it (a `<flexcomp>`
+/// in `<deformable>`, or on a `<flex>` an attribute this crate once read for
+/// its own flexcomp), where this crate names a fault its parser meets written
+/// before it, and MuJoCo's schema, walking the whole document before any
+/// value is read, names the refused element or attribute: ledger L353 holds
+/// each. `(what, document, MuJoCo's reason, this crate's error)`, measured
+/// 2026-11-08 (RL-8c's two-fault set). Each of the other four attributes
+/// stands as `density` does.
+const SCHEMA_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "a parse fault before a deformable flexcomp",
+        r#"<mujoco><option timestep="abc"/><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/></deformable></mujoco>"#,
+        "Schema violation: unrecognized element",
+        "bad number \"abc\" in attribute 'timestep' on <option> (line 1: option)",
+    ),
+    (
+        "a keyword before a deformable flexcomp",
+        r#"<mujoco><option integrator="sausage"/><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/></deformable></mujoco>"#,
+        "Schema violation: unrecognized element",
+        "invalid keyword \"sausage\" in attribute 'integrator' on <option> (line 1: option)",
+    ),
+    (
+        "a frame's two orientations before a deformable flexcomp",
+        r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><frame euler="0 0 1" axisangle="0 0 1 1"><geom size="0.1"/></frame></worldbody><deformable><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/></deformable></mujoco>"#,
+        "Schema violation: unrecognized element",
+        "<frame> may set only one of: axisangle, euler (line 1: worldbody > frame)",
+    ),
+    (
+        "a parse fault before a flex's density",
+        r#"<mujoco><option timestep="abc"/><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="1" body="a b" element="0 1" density="10"/></deformable></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'density'",
+        "bad number \"abc\" in attribute 'timestep' on <option> (line 1: option)",
+    ),
+    (
+        "a keyword before a flex's density",
+        r#"<mujoco><option integrator="sausage"/><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="1" body="a b" element="0 1" density="10"/></deformable></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'density'",
+        "invalid keyword \"sausage\" in attribute 'integrator' on <option> (line 1: option)",
+    ),
+    (
+        "a frame's two orientations before a flex's density",
+        r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><frame euler="0 0 1" axisangle="0 0 1 1"><geom size="0.1"/></frame></worldbody><deformable><flex name="f" dim="1" body="a b" element="0 1" density="10"/></deformable></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'density'",
+        "<frame> may set only one of: axisangle, euler (line 1: worldbody > frame)",
+    ),
+];
+
+#[test]
+fn a_schema_fault_beside_another_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in SCHEMA_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, one refused as MuJoCo 3.5.0's schema refuses it (as in
+/// `SCHEMA_COSTS`), where MuJoCo names the other and this crate the refused
+/// element or attribute, one row per kind (ledgers L315, L353).
+/// `(what, document, MuJoCo's reason, this crate's error)`, measured
+/// 2026-11-09 (RL-8c's review). Each of the other four attributes stands as
+/// `density` does.
+const REFUSAL_FIRST_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "an unknown element before a deformable flexcomp",
+        r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><blob/></worldbody><deformable><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/></deformable></mujoco>"#,
+        "Schema violation: unrecognized element; Element 'blob', line 1",
+        "unrecognized element <flexcomp> in <deformable> (line 1: deformable > flexcomp 'c')",
+    ),
+    (
+        "an unknown attribute on another element before a deformable flexcomp",
+        r#"<mujoco><option blob="1"/><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/></deformable></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'blob'; Element 'option', line 1",
+        "unrecognized element <flexcomp> in <deformable> (line 1: deformable > flexcomp 'c')",
+    ),
+    (
+        "an unknown attribute on the deformable holding a flexcomp",
+        r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable blob="1"><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/></deformable></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'blob'; Element 'deformable', line 1",
+        "unrecognized element <flexcomp> in <deformable> (line 1: deformable > flexcomp 'c')",
+    ),
+    (
+        "a repeated unique child of a flex before a deformable flexcomp",
+        r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="1" body="a b" element="0 1"><contact/><contact/></flex><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/></deformable></mujoco>"#,
+        "Schema violation: unique element 'contact' found 2 times; Element 'flex', line 1",
+        "unrecognized element <flexcomp> in <deformable> (line 1: deformable > flexcomp 'c')",
+    ),
+    (
+        "an end tag closing another element, after a deformable flexcomp",
+        r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/></deformable><worldbody></mujoco>"#,
+        "XML parse error 14: Error=XML_ERROR_MISMATCHED_ELEMENT ErrorID=14 (0xe) Line number=1: XMLElement name=worldbody",
+        "unrecognized element <flexcomp> in <deformable> (line 1: deformable > flexcomp 'c')",
+    ),
+    (
+        "an unknown element before a flex's density",
+        r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><blob/></worldbody><deformable><flex name="f" dim="1" body="a b" element="0 1" density="10"/></deformable></mujoco>"#,
+        "Schema violation: unrecognized element; Element 'blob', line 1",
+        "unrecognized attribute 'density' on <flex> (line 1: deformable > flex 'f')",
+    ),
+    (
+        "an unknown attribute of the same flex written before its density",
+        r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="1" body="a b" element="0 1" blob="1" density="10"/></deformable></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'blob'; Element 'flex', line 1",
+        "unrecognized attribute 'density' on <flex> (line 1: deformable > flex 'f')",
+    ),
+    (
+        "an end tag closing another element, after a flex's density",
+        r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="1" body="a b" element="0 1" density="10"/></deformable><worldbody></mujoco>"#,
+        "XML parse error 14: Error=XML_ERROR_MISMATCHED_ELEMENT ErrorID=14 (0xe) Line number=1: XMLElement name=worldbody",
+        "unrecognized attribute 'density' on <flex> (line 1: deformable > flex 'f')",
+    ),
+    (
+        "an extension attribute this crate reads, before a deformable flexcomp",
+        r#"<mujoco><worldbody><body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="c" pos="0 1 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flex name="f" dim="2" body="a b c" element="0 1 2"><elasticity elastic2d="bend" young="1e5" thickness="0.001" bending_model="bridson"/></flex><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/></deformable></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'bending_model'; Element 'elasticity', line 1",
+        "unrecognized element <flexcomp> in <deformable> (line 1: deformable > flexcomp 'c')",
+    ),
+];
+
+#[test]
+fn a_fault_named_first_by_mujoco_beside_a_refusal_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in REFUSAL_FIRST_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),

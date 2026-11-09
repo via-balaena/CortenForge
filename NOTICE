@@ -6,8 +6,11 @@ at your option. You may obtain copies in the accompanying LICENSE-APACHE and
 LICENSE-MIT files, or at http://www.apache.org/licenses/LICENSE-2.0 and
 http://opensource.org/licenses/MIT respectively.
 
-This NOTICE accompanies the Apache-2.0 option; recipients who take the software
-under the MIT license instead are bound only by that license's terms.
+This NOTICE accompanies the Apache-2.0 option. The portions ported from MuJoCo
+and OpenSim, named under MUJOCO and OPENSIM below, are licensed under the
+Apache License, Version 2.0, whichever license a recipient takes for the rest;
+for the rest, recipients who take the software under the MIT license instead
+are bound only by that license's terms.
 
 ------------------------------------------------------------------------------
 DISCLAIMER
@@ -44,6 +47,50 @@ measurement before any real-world reliance.
 To the fullest extent permitted by law, Via Balaena and its contributors accept
 no liability for any injury, loss, or damage arising from this software or
 anything made with it.
+
+------------------------------------------------------------------------------
+MUJOCO
+
+cortenforge-geometry, cortenforge-sim-core, cortenforge-sim-mjcf and
+cortenforge-sim-urdf, and in this repository sim-gpu, include portions ported
+from MuJoCo (https://github.com/google-deepmind/mujoco), translated to Rust and
+changed. MuJoCo's source code is licensed under the Apache License, Version
+2.0, the text in the accompanying LICENSE-APACHE file. The MuJoCo source files
+those portions cite carry these copyright notices, as they stand at MuJoCo
+3.5.0, which has no NOTICE file:
+
+    Copyright 2021 DeepMind Technologies Limited
+    Copyright 2022 DeepMind Technologies Limited
+    Copyright 2023 DeepMind Technologies Limited
+    Copyright 2024 DeepMind Technologies Limited
+    Copyright 2025 DeepMind Technologies Limited
+    Copyright 2016 Svetoslav Kolev
+
+CortenForge is not affiliated with, sponsored by, or endorsed by Google
+DeepMind.
+
+------------------------------------------------------------------------------
+OPENSIM
+
+cortenforge-sim-core includes portions ported from OpenSim
+(https://github.com/opensim-org/opensim-core), translated to Rust and changed:
+its Millard2012EquilibriumMuscle (OpenSim/Actuators), with the force-length and
+force-velocity curves built as OpenSim/Common's SmoothSegmentedFunction,
+SegmentedQuinticBezierToolkit and SmoothSegmentedFunctionFactory build them,
+the fiber kinematics of its MuscleFixedWidthPennationModel, its fiber damping,
+its minimum fiber length clamp and its floor on the tendon force. OpenSim's
+source code is licensed under the Apache License, Version 2.0, the text in the
+accompanying LICENSE-APACHE file. Its NOTICE file carries this attribution, as
+it stands at OpenSim 4.6:
+
+    OpenSim is developed at Stanford University and supported by the US
+    National Institutes of Health (U54 GM072970, P2C HD065690, U54 EB020405)
+    and by DARPA through the Warrior Web program.
+
+    Copyright (c) 2005-2017 Stanford University and the Authors
+
+CortenForge is not affiliated with, sponsored by, or endorsed by Stanford
+University or the OpenSim project.
 
 ------------------------------------------------------------------------------
 THIRD-PARTY DATA

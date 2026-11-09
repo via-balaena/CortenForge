@@ -5,8 +5,8 @@
 //! (`engine_setconst.c:716-750`). The grid asks for its equality with
 //! `<edge equality="true"/>`, as a MuJoCo flexcomp does.
 //!
-//! Checked against the rule: MuJoCo refuses this crate's `<deformable>`
-//! documents.
+//! Checked against the rule, and the grid against MuJoCo 3.5.0 (the unfused
+//! oracle, Rigid-loading PR RL-8c): 16 edges, 2 of them rigid, 14 rows.
 
 use sim_core::{ConstraintType, EqualityType, Model, StepError, mj_solve_m};
 use sim_mjcf::load_model;
@@ -18,12 +18,12 @@ const MJ_MINVAL: f64 = 1e-15;
 /// between pinned vertices rigid (A13 §3.3).
 const PINNED_GRID: &str = r#"<mujoco>
   <option gravity="0 0 -9.81" timestep="0.001"/>
-  <deformable>
+  <worldbody>
     <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="0.9">
       <edge equality="true"/>
       <pin id="0 1 2"/>
     </flexcomp>
-  </deformable>
+  </worldbody>
 </mujoco>"#;
 
 fn flex_equality(model: &Model) -> usize {
@@ -145,10 +145,8 @@ fn a_flex_equality_with_sleep_enabled_is_refused() {
             r#"<option gravity="0 0 -9.81" timestep="0.001"><flag sleep="enable"/></option>"#,
         )
         .replace(
-            "</deformable>",
-            r#"</deformable>
-  <worldbody>
-    <geom type="plane" size="5 5 0.1" pos="0 0 -2"/>
+            "</worldbody>",
+            r#"  <geom type="plane" size="5 5 0.1" pos="0 0 -2"/>
     <body name="box" pos="3 0 -1.9">
       <freejoint/>
       <geom type="box" size="0.1 0.1 0.1" mass="1"/>

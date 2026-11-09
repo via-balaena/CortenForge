@@ -2033,30 +2033,83 @@ fn test_duplicate_sensor_sections_merge() {
 }
 
 // ========================================================================
-// DT-16: density attribute on <flex> silently ignored
+// DT-16: density and the other attributes of this crate's former flexcomp on
+// <flex>, refused
 // ========================================================================
 
+/// `density`, `inertiabox`, `scale`, `quat`, `file` and `mass` on a `<flex>`
+/// are refused as unknown attributes, as MuJoCo 3.5.0's schema refuses each
+/// ('unrecognized attribute', measured); of two the first written is named,
+/// before a bad value of either, as MuJoCo names it (measured), and before a
+/// bad value of any of the `<flex>`'s attributes, written before or after it
+/// (measured: `dim`, `radius`, `element`). `density` was
+/// ignored and the others read for this crate's `<deformable><flexcomp>`.
 #[test]
-fn dt16_flex_density_attribute_silently_ignored() {
-    // DT-16 regression: density="500" on <flex> should be ignored (non-conformant).
-    // The MjcfFlex.density field stays at default 1000.0.
-    let model = parse_mjcf_str(
-        r#"
-            <mujoco model="dt16_density">
+fn dt16_flex_density_attribute_is_refused() {
+    let flex = |attrs: &str| {
+        format!(
+            r#"<mujoco model="dt16_density">
                 <worldbody>
                   <body name="test_v0" pos="0 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="500.0" diaginertia="1e-15 1e-15 1e-15"/></body>
                   <body name="test_v1" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="500.0" diaginertia="1e-15 1e-15 1e-15"/></body>
                 </worldbody>
                 <deformable>
-                    <flex name="test" dim="1" density="500" body="test_v0 test_v1" element="0 1">
+                    <flex name="test" dim="1" {attrs} body="test_v0 test_v1" element="0 1">
                     </flex>
                 </deformable>
-            </mujoco>
-            "#,
-    )
-    .unwrap();
-    assert_eq!(model.flex.len(), 1);
-    assert_relative_eq!(model.flex[0].density, 1000.0, epsilon = 1e-15);
+            </mujoco>"#
+        )
+    };
+    let refused = |attrs: &str| match parse_mjcf_str(&flex(attrs)) {
+        Err(MjcfError::UnknownAttribute {
+            element, attribute, ..
+        }) => {
+            assert_eq!(element, "flex", "{attrs}");
+            attribute
+        }
+        other => panic!("{attrs}: {other:?}"),
+    };
+    for (attrs, named) in [
+        (r#"density="500""#, "density"),
+        (r#"inertiabox="0.1""#, "inertiabox"),
+        (r#"scale="1 1 1""#, "scale"),
+        (r#"quat="1 0 0 0""#, "quat"),
+        (r#"file="x.obj""#, "file"),
+        (r#"mass="1""#, "mass"),
+        (r#"quat="1 0 0 0" mass="1""#, "quat"),
+        (r#"mass="1" quat="1 0 0 0""#, "mass"),
+        (r#"density="1" inertiabox="1""#, "density"),
+        (r#"inertiabox="1" density="1""#, "inertiabox"),
+        (r#"quat="a b c d" density="1""#, "quat"),
+        (r#"density="1" quat="a b c d""#, "density"),
+    ] {
+        assert_eq!(refused(attrs), named, "{attrs}");
+    }
+    let dim_first = flex(r#"density="1""#).replace(r#"dim="1""#, r#"dim="9""#);
+    match parse_mjcf_str(&dim_first) {
+        Err(MjcfError::UnknownAttribute { attribute, .. }) => assert_eq!(attribute, "density"),
+        other => panic!("{other:?}"),
+    }
+    for (doc, named) in [
+        (
+            flex(r#"density="1""#).replace(r#"dim="1""#, r#"dim="abc""#),
+            "density",
+        ),
+        (flex(r#"radius="x" density="1""#), "density"),
+        (
+            flex(r#"density="1""#).replace(r#"element="0 1""#, r#"element="0 -1""#),
+            "density",
+        ),
+        (flex(r#"scale="1 1""#), "scale"),
+    ] {
+        match parse_mjcf_str(&doc) {
+            Err(MjcfError::UnknownAttribute { attribute, .. }) => {
+                assert_eq!(attribute, named, "{doc}");
+            }
+            other => panic!("{doc}: {other:?}"),
+        }
+    }
+    parse_mjcf_str(&flex("")).expect("without them");
 }
 
 #[test]

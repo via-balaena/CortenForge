@@ -881,9 +881,9 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
-| 1D (cable) | Yes | `<flexcomp type="cable">` | ✅ **Pipeline** (unified flex architecture) | - | - |
-| 2D (shell) | Yes | `<flexcomp type="grid">` | ✅ **Pipeline** (unified flex architecture) | - | - |
-| 3D (solid) | Yes | `<flexcomp type="box">` | ✅ **Pipeline** (unified flex architecture) | - | - |
+| 1D | Yes | `<flex dim="1">`, `<flexcomp dim="1">` | ✅ **Pipeline** (unified flex architecture) | - | - |
+| 2D (shell) | Yes | `<flex dim="2">`, `<flexcomp dim="2">` | ✅ **Pipeline** (unified flex architecture) | - | - |
+| 3D (solid) | Yes | `<flex dim="3">`, `<flexcomp dim="3">` | ✅ **Pipeline** (unified flex architecture) | - | - |
 | Edge-length constraints | Yes (`mjEQ_FLEX`) | `EqualityType::Flex` | ✅ **Pipeline** (unified Jacobian rows in `assemble_unified_constraints()`) | - | - |
 | Bending (dihedral) | Yes (passive forces) | Passive spring-damper in `mj_fwd_passive()` | ✅ **Pipeline** (Bridson et al. 2003 gradient) | - | - |
 | Flex-rigid collision | Yes | `collide_body_flex()` → regular `Contact` entries | ✅ **Pipeline** (MuJoCo's element collision, broadphase and midphase) | - | - |
@@ -897,13 +897,13 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 | `<flexcomp mass="...">` attribute | Yes (total mass → per-vertex) | ~~Non-standard `density` extension~~ → `mass` attr parsed, uniform `mass/npnt` distribution | ✅ **Done** — [#27E](./todo/future_work_7.md) | - | - |
 | Body-coupled flex vertex CRBA + FK | Yes (vertices ARE bodies; `mj_crb`/`mj_rne` have zero flex code) | ~~`flexvert_bodyid` stored but dead; diagonal `m*I₃` blocks only~~ → Vertices promoted to real bodies with 3 slide joints; standard CRBA/RNE/FK handles all flex physics | ✅ **Done** — [#27F](./todo/future_work_7.md) | - | - |
 
-> ✅ **Unified flex architecture (§6B).** A flex vertex's DOFs are its body's (a `<flex>`'s vertex bodies are declared bodies; a body-level `<flexcomp>`'s take its place among its holding body's children; a `<deformable><flexcomp>`'s come after every other body). Edge constraints enter the unified Jacobian as a flex equality's rows (`EqualityType::Flex`). Bending acts as passive spring-damper forces in `mj_fwd_passive()` (matching MuJoCo `engine_passive.c`). Flex-rigid contacts are regular `Contact` entries (discriminated by `flex_vertex: Option<usize>`). The previous `sim-deformable` crate (XPBD solver) has been deleted — useful code migrated to `builder/`. See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) ✅.
+> ✅ **Unified flex architecture (§6B).** A flex vertex's DOFs are its body's (a `<flex>`'s vertex bodies are declared bodies; a body-level `<flexcomp>`'s take its place among its holding body's children). Edge constraints enter the unified Jacobian as a flex equality's rows (`EqualityType::Flex`). Bending acts as passive spring-damper forces in `mj_fwd_passive()` (matching MuJoCo `engine_passive.c`). Flex-rigid contacts are regular `Contact` entries (discriminated by `flex_vertex: Option<usize>`). The previous `sim-deformable` crate (XPBD solver) has been deleted — useful code migrated to `builder/`. See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) ✅.
 >
 > **Key pipeline functions:** `collide_body_flex()`, `mj_flex()` (FK → xpos). Post-§27F: `mj_crba_flex()`, `mj_factor_flex()`, `mj_fwd_position_flex()`, and `mj_integrate_pos_flex()` have been **deleted** — flex vertices are now real bodies with 3 slide joints, so the standard CRBA/RNE/FK/integration handles everything.
 >
 > **Material model:** Young's modulus → bending stiffness via Kirchhoff-Love, for a dim-2 flex under `elastic2d` bend (a membrane, `stretch` or `both` with a Young's modulus and a positive thickness, and a dim-3 flex's Young's modulus are refused, registry `D-FLEX-MEMBRANE`, `D-FLEX-TET-ELASTICITY`). Proportional damping. Pinned vertices: `invmass = 0`.
 >
-> **MJCF parsing:** `<flex>` (MuJoCo's form: its vertices are the bodies it names) and `<flexcomp>` (procedural: grid, box, cable) parsed in `sim-mjcf`. Edge/hinge topology computed at build time.
+> **MJCF parsing:** `<flex>` (MuJoCo's form: its vertices are the bodies it names) and a body-level `<flexcomp>` (every type MuJoCo 3.5.0 has but `mesh` and `gmsh`, refused; one in `<deformable>` refused, as MuJoCo's schema refuses it) parsed in `sim-mjcf`. Edge/hinge topology computed at build time.
 >
 > **Tests:** 21 acceptance tests in `flex_unified.rs` (AC1–AC21) covering cloth drape, contacts, edge stiffness, bending, pinned vertices, MJCF round-trip, stability clamp, and more.
 
@@ -1115,7 +1115,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | `<equality>` | Full | `<connect>`, `<weld>`, `<joint>`, `<distance>`, `<flex>` (edge-length) — unified solver rows for all solver types |
 | `<keyframe>` | Full | `<key>` elements with qpos/qvel/act/ctrl/mpos/mquat/time; `Data::reset_to_keyframe()` |
 | `<flex>` | Partial | MuJoCo's form: `body` names the vertex bodies, `element` the elements; a vertex body jointless with no joint above it, or with three slides along x, y and z, unrotated, with no joint or mocap body above it, one per vertex at its origin (else refused, a stated limitation); `node` (trilinear interpolation) refused; parsed via `parse_flex()` + `process_flex_bodies()` |
-| `<flexcomp>` | Full | Procedural flex body generation: grid (2D shell), box (3D solid), cable (1D); parsed via `parse_flexcomp()` |
+| `<flexcomp>` | Partial | In a body, a frame or the world body, made as MuJoCo's `mjCFlexcomp::Make` makes it, of every type but `mesh` and `gmsh` (refused); the forms sim-core does not run refused, as `builder/flexcomp.rs`'s module doc lists them; one in `<deformable>` refused, as MuJoCo's schema refuses it; parsed via `parse_flexcomp()` |
 
 **Supported Joint Types:**
 - `hinge` → `RevoluteJoint` (1 DOF rotation)

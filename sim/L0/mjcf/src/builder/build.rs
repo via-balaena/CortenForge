@@ -294,7 +294,6 @@ impl ModelBuilder {
             flex_edgeequality: vec![],
             flex_bend_stiffness: self.flex_bend_stiffness,
             flex_bend_damping: self.flex_bend_damping,
-            flex_density: self.flex_density,
             flex_group: self.flex_group,
             flex_rigid: self.flex_rigid,
             flex_bending_type: self.flex_bending_type,
@@ -1179,66 +1178,6 @@ mod tests {
         .expect("load");
         let j1 = model.jnt_name_to_id["j1"];
         assert_eq!(model.jnt_user[j1], vec![10.0, 20.0]);
-    }
-
-    /// T13: Flexcomp scale + quat transform.
-    #[test]
-    fn t13_flexcomp_scale_quat_transform() {
-        let mjcf = crate::parse_mjcf_str(
-            r#"<mujoco>
-            <worldbody/>
-            <deformable>
-                <flexcomp type="grid" count="2 2 1" spacing="1 1 1"
-                    scale="2 3 1" quat="0.7071068 0 0 0.7071068"/>
-            </deformable>
-            </mujoco>"#,
-        )
-        .expect("parse");
-        // Grid 2x2 with spacing 1.0 generates (row-major): (0,0,0), (1,0,0), (0,1,0), (1,1,0)
-        // Scale (2,3,1): (0,0,0), (2,0,0), (0,3,0), (2,3,0)
-        // Quat w=0.707 z=0.707 → 90° rotation about Z: (x,y,z) → (-y,x,z)
-        // idx0: (0,0,0)→(0,0,0), idx1: (2,0,0)→(0,2,0),
-        // idx2: (0,3,0)→(-3,0,0), idx3: (2,3,0)→(-3,2,0)
-        let flex = &mjcf.flex[0];
-        assert_eq!(flex.vertices.len(), 4);
-        let eps = 1e-6;
-        // Compare in generation order (row-major: iy then ix)
-        let expected = [
-            [0.0, 0.0, 0.0],
-            [0.0, 2.0, 0.0],
-            [-3.0, 0.0, 0.0],
-            [-3.0, 2.0, 0.0],
-        ];
-        for (i, (v, e)) in flex.vertices.iter().zip(expected.iter()).enumerate() {
-            assert!(
-                (v.x - e[0]).abs() < eps && (v.y - e[1]).abs() < eps && (v.z - e[2]).abs() < eps,
-                "vertex {i}: got [{:.6}, {:.6}, {:.6}], expected [{:.6}, {:.6}, {:.6}]",
-                v.x,
-                v.y,
-                v.z,
-                e[0],
-                e[1],
-                e[2]
-            );
-        }
-    }
-
-    /// T14: Flexcomp inertiabox and file parsed.
-    #[test]
-    fn t14_flexcomp_inertiabox_and_file() {
-        let mjcf = crate::parse_mjcf_str(
-            r#"<mujoco>
-            <worldbody/>
-            <deformable>
-                <flexcomp type="grid" count="2 2 1" spacing="1 1 1"
-                    inertiabox="0.5" file="mesh.obj"/>
-            </deformable>
-            </mujoco>"#,
-        )
-        .expect("parse");
-        let flex = &mjcf.flex[0];
-        assert!((flex.inertiabox - 0.5).abs() < 1e-10);
-        assert_eq!(flex.flexcomp_file, Some("mesh.obj".to_string()));
     }
 
     /// T15: User data physics inertness — user data must not affect simulation.

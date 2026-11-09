@@ -884,23 +884,20 @@ fn each_moving_body_check_and_total_mass_is_mujocos() {
 }
 
 /// A flexcomp's vertex bodies are bodies to the moving-body check and to
-/// `settotalmass`. Each document below is the `<deformable>` form, which
-/// this crate also reads and MuJoCo 3.5.0 refuses (ledger L387), of one
-/// MuJoCo loaded in its own form (in `<worldbody>`), and expects MuJoCo's result
-/// there (2026-11-02): mass 4e-15 refused; mass 3.2e-14 with inertiabox 2,
+/// `settotalmass`. Each document below expects MuJoCo 3.5.0's result
+/// (2026-11-02): mass 4e-15 refused; mass 3.2e-14 with inertiabox 2,
 /// each vertex body 8e-15 with moments 2.1333333333333335e-14;
 /// `settotalmass="10"` beside a sphere's body, each vertex body
-/// 0.4818078783940578 and the sphere's 8.072768486423769 (MuJoCo lists the
-/// vertex bodies at the flexcomp's place in the document, here after the
-/// sphere's; this crate after every body); and the bounds, which reach each
-/// vertex body: mass 4e-15 under `boundmass="1" boundinertia="1"`, each 1.0
+/// 0.4818078783940578 and the sphere's 8.072768486423769 (the vertex bodies
+/// at the flexcomp's place in the document, after the sphere's); and the
+/// bounds, which reach each vertex body: mass 4e-15 under `boundmass="1" boundinertia="1"`, each 1.0
 /// with moments 1.0, and mass 1 under `boundmass="0.5"`, each 0.5 with moments
 /// 4.166666666666667e-06.
 #[test]
 fn a_flexcomps_vertex_bodies_are_checked_and_scaled_as_mujocos() {
     let flexcomp = |compiler: &str, body: &str, mass: &str, inertiabox: &str| {
         format!(
-            r#"<mujoco>{compiler}<worldbody>{body}</worldbody><deformable><flexcomp name="cloth" type="grid" count="2 2 1" spacing="0.04 0.04 0.04" dim="2" mass="{mass}" inertiabox="{inertiabox}"><edge equality="false"/></flexcomp></deformable></mujoco>"#
+            r#"<mujoco>{compiler}<worldbody>{body}<flexcomp name="cloth" type="grid" count="2 2 1" spacing="0.04 0.04 0.04" dim="2" mass="{mass}" inertiabox="{inertiabox}"><edge equality="false"/></flexcomp></worldbody></mujoco>"#
         )
     };
     let error = load_model(&flexcomp("", "", "4e-15", "0.005"))
@@ -989,7 +986,7 @@ fn each_flex_vertex_mass_follows_its_body() {
 
     let flexcomp = |compiler: &str, body: &str| {
         format!(
-            r#"<mujoco>{compiler}<worldbody>{body}</worldbody><deformable><flexcomp name="cloth" type="grid" count="2 2 1" spacing="0.04 0.04 0.04" dim="2" mass="1" inertiabox="0.005"><edge equality="false"/></flexcomp></deformable></mujoco>"#
+            r#"<mujoco>{compiler}<worldbody>{body}<flexcomp name="cloth" type="grid" count="2 2 1" spacing="0.04 0.04 0.04" dim="2" mass="1" inertiabox="0.005"><edge equality="false"/></flexcomp></worldbody></mujoco>"#
         )
     };
     follows(&load_model(&flexcomp(r#"<compiler boundmass="0.5"/>"#, "")).expect("loads"));
