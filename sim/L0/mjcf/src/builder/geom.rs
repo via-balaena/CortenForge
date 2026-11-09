@@ -4,7 +4,7 @@
 //! Includes helpers for computing mass, inertia, fromto poses, and
 //! size vector conversion for each geom type.
 
-use nalgebra::{Matrix3, Quaternion, UnitQuaternion, Vector3, Vector4};
+use nalgebra::{Matrix3, Vector3, Vector4};
 use sim_core::GeomType;
 
 use super::fluid::compute_geom_fluid;
@@ -227,22 +227,17 @@ fn convert_geom_type(geom_type: Option<MjcfGeomType>) -> GeomType {
     }
 }
 
-/// Compute the effective center of mass of a geom in the body frame.
-///
-/// For primitive geoms, the local COM is at the geom origin (`geom.pos`).
-/// For mesh geoms, the mesh may have a non-zero internal COM in mesh-local
-/// coordinates. The effective COM is `geom.pos + R * mesh_com` where R is
-/// the geom's orientation in the body frame.
-pub fn geom_effective_com(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Vector3<f64> {
-    let pos = geom.pos.unwrap_or_else(Vector3::zeros);
-    let q = geom.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0));
-    if let Some(&(_, mesh_com, _)) = mesh_props
-        && mesh_com.norm() > 1e-14
-    {
-        let r = UnitQuaternion::from_quaternion(Quaternion::new(q[0], q[1], q[2], q[3]));
-        return pos + r.transform_vector(&mesh_com);
+/// What a mesh geom's unit-density inertia is multiplied by: its written
+/// mass over its mesh's volume, or its density where that volume is at most
+/// 1e-10 or no mass is written (book Rigid-loading L35's).
+pub fn mesh_inertia_scale(geom: &MjcfGeom, volume: f64) -> f64 {
+    let density = geom.density.unwrap_or(1000.0);
+    let mass = geom.mass.unwrap_or_else(|| density * volume.abs());
+    if volume.abs() > 1e-10 {
+        mass / volume.abs()
+    } else {
+        density
     }
-    pos
 }
 
 /// A site's type (sphere is the MuJoCo default), held to MuJoCo's geom
@@ -597,14 +592,7 @@ pub fn compute_geom_inertia(
         }
         MjcfGeomType::Mesh => {
             if let Some(&(volume, _, inertia_unit)) = mesh_props {
-                let density = geom.density.unwrap_or(1000.0);
-                let mass_actual = geom.mass.unwrap_or_else(|| density * volume.abs());
-                let scale = if volume.abs() > 1e-10 {
-                    mass_actual / volume.abs()
-                } else {
-                    density
-                };
-                inertia_unit * scale
+                inertia_unit * mesh_inertia_scale(geom, volume)
             } else {
                 Matrix3::from_diagonal(&Vector3::new(0.001, 0.001, 0.001))
             }

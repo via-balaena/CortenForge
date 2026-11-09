@@ -565,22 +565,22 @@ fn broadphase_culls_touching_spheres_as_mujoco() {
 /// loads as MuJoCo compiles it (`bumpy`: 9 × 9, elevations multiples of 1/8
 /// from 0 to 1, rows symmetric; each body turned by its frame, so its
 /// inertial frame is the body's in both, ledger L195), at two spots each:
-/// the height after every 50th of 1000 steps against MuJoCo's. A sphere's,
-/// a cylinder's, a capsule's and an ellipsoid's bit for bit on macOS arm64,
-/// where the golden was made (a capsule rolls off the field's edge as
-/// MuJoCo's does). A box's within 5e-2: sim-mjcf compiles its inertia an ulp
-/// off MuJoCo's in x (ledger L368), and with MuJoCo's written in,
-/// `trajectory_parity` runs it bit for bit. Elsewhere a sphere, a capsule
-/// and an ellipsoid within 5e-12 and a cylinder within 5e-3: the bodies take
-/// sines and cosines, which a libm need not round correctly, and those
-/// bounds are set above the largest gaps measured with such results moved
-/// by an ulp (chunk 3e's fourth review and its fix-diff pass):
+/// the height after every 50th of 1000 steps against MuJoCo's. Each body's
+/// bit for bit on macOS arm64, where the golden was made (a capsule rolls
+/// off the field's edge as MuJoCo's does; the box's since its inertia is
+/// copied from its geom as MuJoCo copies it, book Rigid-loading L33, where
+/// before it was an ulp off, ledger L368). Elsewhere a sphere, a capsule and
+/// an ellipsoid within 5e-12, a cylinder within 5e-3 and a box within 5e-2:
+/// the bodies take sines and cosines, which a libm need not round
+/// correctly, and those bounds are set above the largest gaps measured with
+/// such results moved by an ulp (chunk 3e's fourth review and its fix-diff
+/// pass):
 ///
 /// | bodies | measured on macOS arm64 | an ulp moved |
 /// |---|---|---|
 /// | sphere, capsule, ellipsoid | 0 | at most 1.45e-12 |
 /// | cylinder | 0 | 2.0e-3 |
-/// | box | 8.7e-3 | 2.2e-2 |
+/// | box | 0 | 2.2e-2 |
 #[test]
 fn bodies_on_a_bumpy_height_field_as_mujoco() {
     let golden = golden();
@@ -589,10 +589,10 @@ fn bodies_on_a_bumpy_height_field_as_mujoco() {
         let mut data = model.make_data();
         let want = floats(&case["z"]);
         let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
-        let bound = if name.starts_with("box") {
-            5e-2
-        } else if exact {
+        let bound = if exact {
             0.0
+        } else if name.starts_with("box") {
+            5e-2
         } else if name.starts_with("cylinder") {
             5e-3
         } else {
@@ -1047,9 +1047,7 @@ fn body_hierarchies_are_mujocos() {
 
 /// Scenes of bodies of several geoms, so every pair of bodies goes through
 /// the midphase, each body's inertial frame given (the hierarchies' boxes
-/// are in it, and sim-mjcf's principal axes are not MuJoCo's on many
-/// bodies, book Rigid-loading L03 and ledger L195; measured on these rafts,
-/// their frames inferred: the same six leaf pairs in another order). The
+/// are in it). The
 /// geom pairs the contact filter is called with, in order, are MuJoCo's,
 /// with the midphase on and with it off (`DISABLE_MIDPHASE`), each in
 /// MuJoCo's type order, and the contacts MuJoCo's (the same geoms in order,

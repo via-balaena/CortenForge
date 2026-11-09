@@ -536,10 +536,7 @@ fn forward_as_mujoco(
 /// every platform the pass keeps the dual solve's own acceleration
 /// (`dualFinish`'s), bit for bit: the same rows solved again from the same
 /// warmstart give it, where one remade from the forces would round otherwise.
-/// CG's scenes carry each body's inertial as MuJoCo compiles it: as written,
-/// sim-mjcf compiles the arm capsule's inertial frame otherwise (ledgers L195,
-/// L261; Rigid-loading's L33 copies one geom's frame, L14 a fromto's axis),
-/// which moves the mass matrix by an ulp at six of CG's states.
+/// CG's scenes carry each body's inertial as MuJoCo compiles it.
 #[test]
 fn a_forward_pass_with_a_dual_solver_matches_mujoco_3_5_0() {
     let g = golden();

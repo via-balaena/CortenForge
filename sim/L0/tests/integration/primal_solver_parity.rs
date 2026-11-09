@@ -211,17 +211,23 @@ fn solve_given_mujocos_inputs(name: &str, case: &Value) -> Data {
     }
     data.efc_aref.copy_from_slice(&floats(&case["efc_aref"]));
     // sim-core's own regularization is MuJoCo's bit for bit, but in the
-    // condim-6 cases, whose torsional and rolling rows take P38's, and the
-    // chain's, whose bodies' and dofs' invweight0 round otherwise: its
-    // capsules' inertias as sim-mjcf compiles them, in another inertial frame
-    // and ulps off (ledgers L368, L195; with the inertias written out,
-    // impedance_parity's `inertial_chain`, MuJoCo's bit for bit).
-    if !name.contains("_6") && !name.contains("_chain_") {
-        assert_bits(
-            &format!("{name} efc_R"),
-            &data.efc_R,
-            &floats(&case["efc_R"]),
-        );
+    // condim-6 cases, whose torsional and rolling rows take P38's. The
+    // chain's capsules take their inertial frames from their `fromto`
+    // through `atan2`, `sin` and `cos` (book Rigid-loading L14, L33), which
+    // another platform's libm may round otherwise: its regularization is
+    // MuJoCo's bit for bit on macOS arm64, where the golden was made,
+    // elsewhere within 1e-13 · max(1, |MuJoCo's|), a NaN never.
+    let efc_r = floats(&case["efc_R"]);
+    let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    if name.contains("_chain_") && !exact {
+        for (i, (a, b)) in data.efc_R.iter().zip(&efc_r).enumerate() {
+            assert!(
+                name.contains("_6") || (a - b).abs() <= 1e-13 * b.abs().max(1.0),
+                "{name} efc_R[{i}]: {a:e}, MuJoCo {b:e}"
+            );
+        }
+    } else if !name.contains("_6") {
+        assert_bits(&format!("{name} efc_R"), &data.efc_R, &efc_r);
     }
     data.efc_D.copy_from_slice(&floats(&case["efc_D"]));
     data.efc_R.copy_from_slice(&floats(&case["efc_R"]));
