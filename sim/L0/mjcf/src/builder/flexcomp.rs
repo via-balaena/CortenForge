@@ -35,8 +35,8 @@ use nalgebra::{Vector3, Vector4};
 use crate::defaults::DefaultResolver;
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
-    FlexVertexBodies, FlexcompDof, FlexcompType, MjcfBody, MjcfCompiler, MjcfFlex, MjcfFlexcomp,
-    MjcfGeom, MjcfGeomType, MjcfInertial, MjcfItem, MjcfJoint, MjcfJointType, Prefix,
+    FlexcompDof, FlexcompType, MjcfBody, MjcfCompiler, MjcfFlex, MjcfFlexcomp, MjcfGeom,
+    MjcfGeomType, MjcfInertial, MjcfItem, MjcfJoint, MjcfJointType, Prefix,
 };
 
 use super::geom::resolve_geom_fromto;
@@ -349,7 +349,6 @@ fn make(
                     .collect()
             })
             .collect(),
-        vertex_bodies: FlexVertexBodies::Named,
         flexcomp_holder: Some(holder.to_string()),
         ..fc.flex.clone()
     };

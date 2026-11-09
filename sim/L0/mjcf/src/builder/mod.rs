@@ -890,7 +890,6 @@ pub struct ModelBuilder {
     pub(crate) flex_young: Vec<f64>,
     pub(crate) flex_poisson: Vec<f64>,
     pub(crate) flex_thickness: Vec<f64>,
-    pub(crate) flex_density: Vec<f64>,
     pub(crate) flex_group: Vec<i32>,
     pub(crate) flex_rigid: Vec<bool>,
     pub(crate) flex_contype: Vec<u32>,

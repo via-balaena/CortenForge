@@ -288,6 +288,15 @@ impl Attrs {
         self.text(name).is_some()
     }
 
+    /// Of `names`, the first the element writes, in its document order (the
+    /// one MuJoCo's schema names of two it refuses).
+    pub(super) fn first_of(&self, names: &[&str]) -> Option<&str> {
+        self.list
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .find(|key| names.contains(key))
+    }
+
     /// A boolean, MuJoCo's `bool_map` keyword: exactly `false` or `true`.
     pub(super) fn boolean(&self, name: &str) -> Result<Option<bool>> {
         self.keyword(name, |s| match s {
