@@ -2040,7 +2040,9 @@ fn test_duplicate_sensor_sections_merge() {
 /// `density`, `inertiabox`, `scale`, `quat`, `file` and `mass` on a `<flex>`
 /// are refused as unknown attributes, as MuJoCo 3.5.0's schema refuses each
 /// ('unrecognized attribute', measured); of two the first written is named,
-/// before a bad value of either, as MuJoCo names it (measured). `density` was
+/// before a bad value of either, as MuJoCo names it (measured), and before a
+/// bad value of any of the `<flex>`'s attributes, written before or after it
+/// (measured: `dim`, `radius`, `element`). `density` was
 /// ignored and the others read for this crate's `<deformable><flexcomp>`.
 #[test]
 fn dt16_flex_density_attribute_is_refused() {
@@ -2087,6 +2089,25 @@ fn dt16_flex_density_attribute_is_refused() {
     match parse_mjcf_str(&dim_first) {
         Err(MjcfError::UnknownAttribute { attribute, .. }) => assert_eq!(attribute, "density"),
         other => panic!("{other:?}"),
+    }
+    for (doc, named) in [
+        (
+            flex(r#"density="1""#).replace(r#"dim="1""#, r#"dim="abc""#),
+            "density",
+        ),
+        (flex(r#"radius="x" density="1""#), "density"),
+        (
+            flex(r#"density="1""#).replace(r#"element="0 1""#, r#"element="0 -1""#),
+            "density",
+        ),
+        (flex(r#"scale="1 1""#), "scale"),
+    ] {
+        match parse_mjcf_str(&doc) {
+            Err(MjcfError::UnknownAttribute { attribute, .. }) => {
+                assert_eq!(attribute, named, "{doc}");
+            }
+            other => panic!("{doc}: {other:?}"),
+        }
     }
     parse_mjcf_str(&flex("")).expect("without them");
 }

@@ -944,13 +944,14 @@ fn flexcomp_damping_is_implicit_under_implicitspringdamper() {
         <default><joint damping="0.3"/></default>
         <worldbody>
             <flexcomp name="grid" type="grid" count="3 3 1" spacing="0.04 0.04 0.04" dim="2" mass="1">
-                <elasticity elastic2d="bend" young="1e5" thickness="0.001" damping="0.3"/>
+                <elasticity elastic2d="bend" young="1e5" thickness="0.001" damping="0.7"/>
             </flexcomp>
         </worldbody>
     </mujoco>
     "#;
     let model = load_model(xml).expect("load");
     assert!(model.dof_damping.iter().all(|&d| d == 0.3));
+    assert_eq!(model.flex_damping, [0.7]);
     let damper = |model: &Model| {
         let mut data = model.make_data();
         for (i, v) in data.qvel.iter_mut().enumerate() {
@@ -999,7 +1000,8 @@ fn flexcomp_vertex_qposadr_is_its_first_slides() {
 
 /// A flexcomp's slides take their joint damping from the holding body's class,
 /// as MuJoCo's (the flex's own `<elasticity damping>` is its bending
-/// damper's): `dof_damping` is the class's on every slide, and `qfrc_damper`
+/// damper's; 0.7 here against the class's 0.3, MuJoCo's `dof_damping` 0.3 and
+/// `flex_damping` 0.7, measured): `dof_damping` is the class's on every slide, and `qfrc_damper`
 /// is the same model's with the slides undamped, plus `-damping * qvel` on
 /// each dof (to a few ulp: the bending terms are summed onto it in another
 /// order). That model keeps the flex's damping, so this does not see an
@@ -1013,7 +1015,7 @@ fn flexcomp_damping_is_its_slides_joint_damping() {
         <default><joint damping="0.3"/></default>
         <worldbody>
             <flexcomp name="grid" type="grid" count="3 3 1" spacing="0.04 0.04 0.04" dim="2" mass="1">
-                <elasticity elastic2d="bend" young="1e5" thickness="0.001" damping="0.3"/>
+                <elasticity elastic2d="bend" young="1e5" thickness="0.001" damping="0.7"/>
             </flexcomp>
         </worldbody>
     </mujoco>
@@ -1026,6 +1028,7 @@ fn flexcomp_damping_is_its_slides_joint_damping() {
         model.dof_damping
     );
     assert!(model.jnt_damping.iter().all(|&d| d == 0.3));
+    assert_eq!(model.flex_damping, [0.7]);
     let damper = |model: &Model| {
         let mut data = model.make_data();
         for (i, v) in data.qvel.iter_mut().enumerate() {

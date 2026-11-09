@@ -695,12 +695,13 @@ fn of_two_flexcomps_refused_after_the_keyframes_the_first_written_is_named() {
 
 /// A `<flexcomp>` in `<deformable>` is refused, as MuJoCo 3.5.0's schema
 /// refuses it ('unrecognized element'), whatever it writes and before a fault
-/// written after it (measured, each document); MuJoCo reads a flexcomp in a
-/// body.
+/// written after it, in the same `<deformable>` or later (measured, each
+/// document); MuJoCo reads a flexcomp in a body.
 #[test]
 fn a_flexcomp_in_deformable_is_refused() {
     let flexcomp =
         r#"<flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/>"#;
+    let bodies = r#"<body name="a"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><body name="b" pos="1 0 0"><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body>"#;
     for doc in [
         format!("<mujoco><deformable>{flexcomp}</deformable></mujoco>"),
         "<mujoco><deformable><flexcomp/></deformable></mujoco>".to_string(),
@@ -711,6 +712,15 @@ fn a_flexcomp_in_deformable_is_refused() {
         ),
         format!(
             r#"<mujoco><deformable>{flexcomp}</deformable><keyframe><key qpos="1"/></keyframe></mujoco>"#
+        ),
+        format!(
+            r#"<mujoco><worldbody>{bodies}</worldbody><deformable>{flexcomp}<flex name="f" dim="1" body="a b" element="0 1" density="10"/></deformable></mujoco>"#
+        ),
+        format!(
+            r#"<mujoco><worldbody>{bodies}</worldbody><deformable>{flexcomp}<skin vertex="a"/></deformable></mujoco>"#
+        ),
+        format!(
+            r#"<mujoco><worldbody>{bodies}</worldbody><deformable>{flexcomp}<flex name="f" dim="abc" body="a b" element="0 1"/></deformable></mujoco>"#
         ),
     ] {
         match load_model(&doc) {

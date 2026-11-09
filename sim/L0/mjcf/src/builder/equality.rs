@@ -513,8 +513,9 @@ impl ModelBuilder {
     /// (`mjXReader::Parse`), and none for one its `Make` takes as rigid
     /// (`user_flexcomp.cc:463-466`, `:643-649`): Make has dropped it. One
     /// whose compiled flex alone is rigid (an unused free point dropped) keeps
-    /// it, and `check_flex_equalities` refuses it, as MuJoCo's compiler does. Unnamed and active, with
-    /// MuJoCo's default `solref` and `solimp` unless the `<edge>` writes them.
+    /// it, and `check_flex_equalities` refuses it, as MuJoCo's compiler does.
+    /// Unnamed and active, with MuJoCo's default `solref` and `solimp` unless
+    /// the `<edge>` writes them.
     /// One `equality="vert"` asks for is made so, and refused after the
     /// keyframes ([`ModelBuilder::flex_equality_fault`]).
     pub(crate) fn process_flexcomp_equalities(&mut self, flexes: &[MjcfFlex]) {

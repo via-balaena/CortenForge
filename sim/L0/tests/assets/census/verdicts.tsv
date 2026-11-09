@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1902
+# agree_floor 1903
 001bc4149d608b24	agree
 002cac6fc120ff66	both-refuse
 00308b83da9d8bab	agree
@@ -450,6 +450,7 @@
 2084726d71be95bf	agree
 20883ec72736dcf2	agree
 208cf64b2790668d	both-refuse
+2093f0e0d09dce79	mj-refuses
 20b95213ed0f993a	agree
 20c754f771d9ddb9	agree
 20d855b0fac192b4	agree
@@ -639,6 +640,7 @@
 2fac9a084f9e799f	agree
 2fcd4f3996d2c446	agree
 2fd0d3c468f14ad6	agree
+2fed532c7df48f55	both-refuse
 2fef0830a5acd6a5	mj-refuses
 2fef3adf2d6aff01	agree
 2ff26bd31bc3e252	both-refuse
@@ -789,6 +791,7 @@
 3956540f8d553508	agree
 39584eefa9ea2e0d	agree
 39ba3f1f2bc7645a	both-refuse
+39fd4df50c9b8c3a	both-refuse
 3a07f107b943ab4d	agree
 3a13c90a262a82ab	agree
 3a1e78e0e6a31111	agree
@@ -1037,6 +1040,7 @@
 4af59fb13781c870	agree
 4affeddb5bd71d0e	agree
 4b0f0d96cd8136f1	agree
+4b18a04404e2fe4d	both-refuse
 4b1aea632df79ca6	both-refuse
 4b3aefba40506743	agree
 4b497fd99782861a	model:actuator_lengthrange;dyn:agree
@@ -1300,6 +1304,7 @@
 5dfbbb75fa6293c3	agree
 5e1581d7042fb492	agree
 5e1b61951ebe595c	agree
+5e1f68323c697e84	both-refuse
 5e2685274f22f3e7	both-refuse
 5e30786e38a9c86e	both-refuse
 5e4e8d2ca3d251b7	ours-refused	divergence=D-AUTO-RANGE
@@ -2182,6 +2187,7 @@ a21c83e3a2d22c3e	agree
 a259ab8ef4096dcd	both-refuse
 a26535e27ec4457a	agree
 a26b692ba4312717	agree
+a27102db3e99fc57	both-refuse
 a2821d818e56cff5	both-refuse
 a291539ce514e6fe	agree
 a2af719fc1350713	agree
@@ -2376,6 +2382,7 @@ b07cdbea120ff7ce	both-refuse
 b09c5cada8d882f3	agree
 b0a455017b4d7559	agree
 b0ab7185bad4ebd8	agree
+b0b0df86fbd5235f	both-refuse
 b0cc7ee3f82e54e0	both-refuse
 b0d2d8dda0890089	both-refuse
 b0e5a70305656fe3	both-refuse
@@ -2878,6 +2885,7 @@ d5eabf30f6f7e672	agree
 d5fce8ce2113ab3d	agree
 d62eb4a175d851b2	both-refuse
 d63d5e89d9c6b10e	agree
+d65890b870bf3a36	agree
 d661271e1bf22618	both-refuse
 d664ca10a65e6f36	agree
 d69021dc30ab8b49	mj-refuses	divergence=D-FLEX-BENDING-MODEL
@@ -2888,6 +2896,7 @@ d6ce8144027a1358	agree
 d6d7031332a2c358	agree
 d70998fb4ff09add	agree
 d72ea476f3c31053	agree
+d735efed5cb731fb	both-refuse
 d736e327d57f0c46	agree
 d7437218ee6824a7	agree
 d743cf4702e34daf	agree
@@ -3084,6 +3093,7 @@ e64076f828aed57d	agree
 e65195a5627e3a15	both-refuse
 e65cde59e9e237af	agree
 e67472e1681c2d87	agree
+e69fb7c6e125c3ff	both-refuse
 e6a8fc5ad5bb52c4	agree
 e6cc4b19185315a2	agree
 e6d19c599a7d9ca9	agree

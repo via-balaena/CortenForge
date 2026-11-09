@@ -21,8 +21,13 @@ use super::attrs::{Attrs, skip_element};
 /// Parse deformable section (contains skin and flex elements; `empty`: it
 /// closed itself, so it has none). A `<flexcomp>` in it is refused, as MuJoCo
 /// 3.5.0's schema refuses it ('unrecognized element'), where the reader meets
-/// it; MuJoCo's schema names it before every other fault in the document but
-/// an unknown attribute written before it (ledger L353).
+/// it. MuJoCo's order differs both ways (ledgers L315, L353; `refusal_order.rs`):
+/// it names the flexcomp before a bad value or keyword written before it, which
+/// this parser names first (`SCHEMA_COSTS`); and it names first an XML syntax
+/// error written after it (its XML reader reads the whole document before its
+/// schema walk) and a schema fault written before it that this parser passes
+/// over: an unknown element or attribute, or a repeated unique child
+/// (`REFUSAL_FIRST_COSTS`).
 pub(super) fn parse_deformable<R: BufRead>(
     reader: &mut Reader<R>,
     empty: bool,
@@ -65,8 +70,9 @@ pub(super) fn parse_deformable<R: BufRead>(
 /// `<elasticity>` and `<edge>` children. MuJoCo's schema refuses the
 /// `<vertex>`, `<element>` and `<pin>` children, and the attributes sim-mjcf
 /// once read for its own flexcomp (`mass`, `density`, `inertiabox`, `scale`,
-/// `quat`, `file`: the first written, before any value is read, as MuJoCo's
-/// schema names it), before a missing `body` or `element`, as here; a bad
+/// `quat`, `file`: the first written, before any of this `<flex>`'s values is
+/// read, as MuJoCo's schema names it; other faults beside it:
+/// [`parse_deformable`]), before a missing `body` or `element`, as here; a bad
 /// attribute value read here before a refused child is refused first here,
 /// the child first by MuJoCo's schema (Rigid-loading L47). `empty`: it closed
 /// itself, so it has no children.
@@ -270,7 +276,8 @@ pub(super) fn parse_flex_elasticity_attrs(e: &BytesStart, flex: &mut MjcfFlex) -
     }
     // §42B S4: bending_model, an extension attribute, written only beside
     // `elastic2d` bend or both. MuJoCo reads one `<elasticity>` (its schema
-    // refuses a second), so the `elastic2d` beside it is the flex's.
+    // refuses a second, which this parser does not: ledger L315), so the
+    // `elastic2d` beside it is the flex's.
     if let Some(model) = a.keyword("bending_model", keywords::bending_model)? {
         if !flex.elastic2d.bends() {
             return Err(MjcfError::invalid_value(
