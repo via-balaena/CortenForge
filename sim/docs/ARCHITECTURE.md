@@ -468,14 +468,14 @@ and the sim-mjcf `builder/flex.rs` module.
 
 | Dimension | Use Cases | MJCF Element |
 |-----------|-----------|--------------|
-| 1D (cable) | Ropes, cables | `<flexcomp type="cable">` |
-| 2D (shell) | Membranes, cloth, shells | `<flexcomp type="grid">` |
-| 3D (solid) | Tetrahedral volumetric meshes | `<flexcomp type="box">` |
+| 1D | Ropes, cables | `<flex dim="1">`, `<flexcomp dim="1">` |
+| 2D (shell) | Membranes, cloth, shells | `<flex dim="2">`, `<flexcomp dim="2">` |
+| 3D (solid) | Tetrahedral volumetric meshes | `<flex dim="3">`, `<flexcomp dim="3">` |
 
 **Architecture:** A flex vertex's DOFs are its body's: a `<flex>`'s vertex
 bodies are declared bodies, wherever they sit in the tree; a body-level
-`<flexcomp>`'s take its place among its holding body's children, as MuJoCo's,
-and a `<deformable><flexcomp>`'s are appended after every other body. Edge constraints enter the unified Jacobian as a flex equality's
+`<flexcomp>`'s take its place among its holding body's children, as MuJoCo's.
+Edge constraints enter the unified Jacobian as a flex equality's
 rows (`EqualityType::Flex`, one per non-rigid edge).
 Bending acts as passive spring-damper forces in `mj_fwd_passive()` (matching
 MuJoCo `engine_passive.c`). Flex-rigid contacts are regular `Contact` entries
@@ -485,16 +485,19 @@ MuJoCo `engine_passive.c`). Flex-rigid contacts are regular `Contact` entries
 Flex vertices are bodies with slide joints, so the rigid CRBA, kinematics and
 integration handle them (`MUJOCO_GAP_ANALYSIS.md`, §27F).
 
-**Material model:** Young's modulus, Poisson's ratio, density, thickness,
-damping. Bending stiffness derived from material (Kirchhoff-Love) for a dim-2
-flex under `elastic2d` bend; a membrane (`stretch` or `both` with a Young's
+**Material model:** Young's modulus, Poisson's ratio, thickness, damping.
+Bending stiffness derived from material (Kirchhoff-Love) for a dim-2 flex
+under `elastic2d` bend; a membrane (`stretch` or `both` with a Young's
 modulus and a positive thickness) and a dim-3 flex's Young's modulus are
 refused (registry `D-FLEX-MEMBRANE`, `D-FLEX-TET-ELASTICITY`). Pinned vertices
 have `invmass = 0`.
 
 **Parsed from MJCF:** `<flex>` (MuJoCo's form: its vertices are the bodies it
-names, each jointless or with three slides along x, y and z) and
-`<flexcomp>` (procedural generation: grid, box, cable types).
+names, each jointless or with three slides along x, y and z) and a
+`<flexcomp>` in a body, a frame or the world body, made as MuJoCo's
+`mjCFlexcomp::Make` makes it, of every type MuJoCo 3.5.0 has but `mesh` and
+`gmsh` (refused); one in `<deformable>` is refused, as MuJoCo's schema
+refuses it.
 
 See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) for the full
 specification. The previous `sim-deformable` crate (XPBD solver) has been
@@ -567,10 +570,11 @@ MuJoCo's `user_api.cc`), populating `actuator_gaintype`, `actuator_biastype`,
 Muscle parameters are parsed and transferred; `compute_actuator_params()`
 resolves `lengthrange` and `acc0`; a negative `F0` stays in the model and is
 resolved at each call (`muscle_f0`).
-`<flex>` and `<flexcomp>` elements are parsed via `parse_flex()` /
-`parse_flexcomp()` and processed by `process_flex()` in `builder/flex.rs`,
-which computes edge/hinge topology, bending stiffness from material properties,
-and element rest volumes.
+A `<flex>` is parsed by `parse_flex()` (`parser/deformable.rs`) and a
+`<flexcomp>` by `parse_flexcomp()` (`parser/flexcomp.rs`), made into bodies and
+a flex by `builder/flexcomp.rs`; `process_flex_bodies()` in `builder/flex.rs`
+computes edge/hinge topology, bending stiffness from material properties, and
+element rest volumes.
 
 ### sim-urdf
 
