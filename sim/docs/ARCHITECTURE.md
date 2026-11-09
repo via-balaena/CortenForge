@@ -496,8 +496,9 @@ have `invmass = 0`.
 names, each jointless or with three slides along x, y and z) and a
 `<flexcomp>` in a body, a frame or the world body, made as MuJoCo's
 `mjCFlexcomp::Make` makes it, of every type MuJoCo 3.5.0 has but `mesh` and
-`gmsh` (refused); one in `<deformable>` is refused, as MuJoCo's schema
-refuses it.
+`gmsh` (refused), the forms sim-core does not run refused as
+`builder/flexcomp.rs`'s module doc lists them; one in `<deformable>` is
+refused, as MuJoCo's schema refuses it.
 
 See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) for the full
 specification. The previous `sim-deformable` crate (XPBD solver) has been
@@ -522,7 +523,8 @@ sim-mjcf/src/builder/
 ├── actuator.rs     # Actuator expansion (8 shortcut types → general)
 ├── sensor.rs       # Sensor wiring (32 pipeline sensor types)
 ├── tendon.rs       # Tendon processing (fixed + spatial)
-├── flex.rs         # Flex/flexcomp processing (edges, hinges, volumes)
+├── flex.rs         # Flex processing (vertex bodies, edges, hinges, volumes)
+├── flexcomp.rs     # <flexcomp>, made as MuJoCo's mjCFlexcomp::Make makes it
 ├── mass.rs         # Mass computation + post-processing
 ├── mesh.rs         # Mesh asset processing
 ├── asset.rs        # Asset management (textures, materials)

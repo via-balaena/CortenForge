@@ -45,5 +45,5 @@ Each line: the call, why, and where the appendix records what would differ if it
 | A5-Q10 | repeated `<pair>` | both kept (parity) | flips `builder/contact.rs:261` |
 | A6-Q2 | flex element length ≠ dim+1 | refused | MuJoCo `user_mesh.cc:4108-4116` |
 | A6-Q4 | Model's hash fields | left | no byte-comparing consumer |
-| flex `density` | read nowhere today (71 docs set it, 44 to ≠ 1000) | removed from the docs, then refused by the schema. **Done in Rigid-loading PR RL-8c**, before the schema: refused by the parser, beside `inertiabox`, `scale`, `quat` and `file` (22-rigid-loading L47) | MuJoCo's `<flex>` has no `density`; dead |
+| flex `density` | read nowhere today (71 docs set it, 44 to ≠ 1000) | removed from the docs, then refused by the schema. **Replaced in Rigid-loading PR RL-8c**: refused by the parser, before the schema, beside `inertiabox`, `scale`, `quat` and `file` (22-rigid-loading L47) | MuJoCo's `<flex>` has no `density`; dead |
 | A1 open | `energy` flag `pub` | `pub(crate)` | A1 §5 |
