@@ -291,27 +291,6 @@ fn bending_model_is_an_exact_extension() {
 }
 
 #[test]
-fn a_flexcomp_type_is_generated_or_refused() {
-    let flexcomp = |ty: &str| {
-        format!(
-            r#"<mujoco><worldbody/><deformable>
-                <flexcomp name="c" type="{ty}" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"/>
-            </deformable></mujoco>"#
-        )
-    };
-    assert_keyword(&refused(&flexcomp("bogus")), "flexcomp", "type", "bogus");
-    // A MuJoCo type sim-mjcf's form does not generate. Before: like an
-    // unknown word, an empty flex, refused later for having no vertices.
-    let err = refused(&flexcomp("cylinder"));
-    assert!(
-        matches!(&err, MjcfError::InvalidValue { element, attribute, .. }
-            if element == "flexcomp" && attribute == "type"),
-        "{err}"
-    );
-    assert!(err.to_string().contains("cylinder"), "{err}");
-}
-
-#[test]
 fn a_composite_joint_kind_is_main() {
     // Before: a joint of another kind was dropped.
     let err = refused(

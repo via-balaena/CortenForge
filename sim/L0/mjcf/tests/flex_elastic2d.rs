@@ -225,12 +225,12 @@ fn the_poisson_ratio_is_checked_first() {
     );
 }
 
-/// A `<deformable><flexcomp>` grid with `children`.
+/// A flexcomp grid with `children`.
 fn flexcomp(children: &str) -> String {
     format!(
-        r#"<mujoco><option gravity="0 0 0"/><deformable>
+        r#"<mujoco><option gravity="0 0 0"/><worldbody>
 <flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2"><contact contype="0" conaffinity="0"/>{children}</flexcomp>
-</deformable></mujoco>"#
+</worldbody></mujoco>"#
     )
 }
 

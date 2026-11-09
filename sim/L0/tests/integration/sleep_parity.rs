@@ -21,12 +21,9 @@ fn golden() -> Value {
         .expect("sleep golden parses")
 }
 
-/// The case's model: its `ours_xml` where sim-mjcf reads the model in
-/// another form than MuJoCo (the generator says which and why), else its
-/// `xml`.
+/// The case's model, from its `xml`.
 fn model_of(case: &Value) -> Model {
-    let xml = case["ours_xml"].as_str().or_else(|| case["xml"].as_str());
-    load_model(xml.expect("xml")).expect("load")
+    load_model(case["xml"].as_str().expect("xml")).expect("load")
 }
 
 /// MuJoCo's ids, its -1 as `usize::MAX`.

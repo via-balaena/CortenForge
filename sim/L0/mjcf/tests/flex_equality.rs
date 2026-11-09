@@ -2,11 +2,9 @@
 //! naming the flex, or a `<flexcomp>`'s `<edge equality="true">`, and none
 //! otherwise.
 //!
-//! Each expected value was measured on MuJoCo 3.5.0 for the same model: the
-//! `<flex>` documents as written here, each vertex a body of its own; the
-//! `<flexcomp>` ones in MuJoCo's form, the flexcomp in a body, where these
-//! documents write it in `<deformable>`, a form this crate also reads and
-//! MuJoCo refuses (ledger L387).
+//! Each expected value was measured on MuJoCo 3.5.0 for the same document:
+//! the `<flex>` ones each vertex a body of its own, the `<flexcomp>` ones in
+//! the world body.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -60,12 +58,12 @@ fn cloth(children: &str, default: &str, equality: &str) -> String {
     format!(
         r#"<mujoco>
             <default>{default}</default>
-            <deformable>
+            <worldbody>
                 <flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2" mass="1">
                     {children}
                     <contact contype="0" conaffinity="0"/>
                 </flexcomp>
-            </deformable>
+            </worldbody>
             <equality>{equality}</equality>
         </mujoco>"#
     )
@@ -260,19 +258,19 @@ fn a_flexcomps_vertex_equality_and_an_unknown_keyword_are_refused() {
 #[test]
 fn a_flexcomps_equality_follows_the_documents() {
     // MuJoCo makes a flexcomp's equality while it reads `<worldbody>`, after
-    // `<equality>`: `f`'s equality, then `c`'s. The flex ids are this crate's:
-    // it numbers the flexes as written, `c` 0 and `f` 1, where MuJoCo, reading
-    // `<deformable>` before the flexcomp in `<worldbody>`, numbers `f` 0 and
-    // `c` 1 (its `eq_obj1id` `[0, 1]`).
+    // `<equality>`: `f`'s equality, then `c`'s, `f` flex 0 and `c` flex 1
+    // (its `eq_obj1id` `[0, 1]`, measured).
     let bodies = square_bodies(1);
     let xml = format!(
         r#"<mujoco>
-            <worldbody>{bodies}</worldbody>
-            <deformable>
+            <worldbody>
+                {bodies}
                 <flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2" mass="1">
                     <edge equality="true"/>
                     <contact contype="0" conaffinity="0"/>
                 </flexcomp>
+            </worldbody>
+            <deformable>
                 <flex name="f" dim="2" body="v0 v1 v2 v3" element="0 1 2  1 3 2">
                     <contact contype="0" conaffinity="0"/>
                 </flex>
@@ -281,7 +279,7 @@ fn a_flexcomps_equality_follows_the_documents() {
         </mujoco>"#
     );
     let model = load_model(&xml).unwrap();
-    assert_eq!(model.eq_obj1id, vec![1, 0]);
+    assert_eq!(model.eq_obj1id, vec![0, 1]);
 }
 
 #[test]

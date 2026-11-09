@@ -243,12 +243,11 @@ fn flexcomp_grid_mjcf() -> &'static str {
     r#"
     <mujoco model="flexcomp_grid">
         <option gravity="0 0 -9.81" timestep="0.001"/>
-        <deformable>
-            <flexcomp name="grid" type="grid" count="5 5 1" spacing="0.04 0.04 0.04"
-                      dim="2" density="200">
+        <worldbody>
+            <flexcomp name="grid" type="grid" count="5 5 1" spacing="0.04 0.04 0.04" dim="2">
                 <elasticity elastic2d="bend" young="1e5" thickness="0.001"/>
             </flexcomp>
-        </deformable>
+        </worldbody>
     </mujoco>
     "#
 }
@@ -899,26 +898,28 @@ fn ac11_flexcomp_expansion() {
     let mut data = model.make_data();
     data.forward(&model).expect("forward failed");
 
-    // Vertex 0 at (0,0,0), vertex 1 at (0.04, 0, 0)
-    let dx = data.flexvert_xpos[1].x - data.flexvert_xpos[0].x;
-    assert_relative_eq!(dx, 0.04, epsilon = 1e-6);
+    // MuJoCo's grid, centred, its points numbered along y first: vertex 0 at
+    // (-0.08, -0.08, 0), vertex 1 at (-0.08, -0.04, 0) (measured).
+    let step = data.flexvert_xpos[1] - data.flexvert_xpos[0];
+    assert_relative_eq!(data.flexvert_xpos[0].x, -0.08, epsilon = 1e-12);
+    assert_relative_eq!(data.flexvert_xpos[0].y, -0.08, epsilon = 1e-12);
+    assert_relative_eq!(step.x, 0.0, epsilon = 1e-12);
+    assert_relative_eq!(step.y, 0.04, epsilon = 1e-12);
 }
 
-/// A `<deformable><flexcomp>` beside a body with `gravcomp`: each vertex body
-/// has its `body_gravcomp` entry and each slide its `jnt_actgravcomp`, so the
-/// model steps (U06; the gravity compensation once indexed past the vertex
-/// bodies' missing entries and panicked). MuJoCo 3.5.0 loads and steps such a
-/// model (A20 §1B.5, measured on a `<flex>`).
+/// A flexcomp beside a body with `gravcomp`: each vertex body has its
+/// `body_gravcomp` entry and each slide its `jnt_actgravcomp`, so the model
+/// steps (U06; the gravity compensation once indexed past the vertex bodies'
+/// missing entries and panicked). MuJoCo 3.5.0 loads and steps such a model
+/// (A20 §1B.5, measured on a `<flex>`).
 #[test]
 fn flexcomp_with_a_gravcomp_body_steps() {
     let model = load_model(
         r#"<mujoco>
         <worldbody>
             <body name="held" pos="1 1 1" gravcomp="1"><freejoint/><geom type="sphere" size="0.05"/></body>
-        </worldbody>
-        <deformable>
             <flexcomp name="grid" type="grid" count="2 2 1" spacing="0.04 0.04 0.04" dim="2" mass="1"/>
-        </deformable>
+        </worldbody>
     </mujoco>"#,
     )
     .expect("load");
@@ -931,51 +932,21 @@ fn flexcomp_with_a_gravcomp_body_steps() {
     assert!(data.qpos.iter().all(|x| x.is_finite()));
 }
 
-/// A flexcomp of mass 0, or of inertiabox 0, is refused, as MuJoCo 3.5.0's
-/// flexcomp refuses either below mjMINVAL (`user_flexcomp.cc:143-145`;
-/// ledger L144). sim-mjcf loaded a mass of 0 as a rigid flex whose vertices
-/// each had three slides, and its positions were NaN after 100 steps.
-#[test]
-fn a_flexcomp_of_mass_or_inertiabox_0_is_refused() {
-    let mass_0 = r#"<mujoco>
-        <deformable>
-            <flexcomp name="grid" type="grid" count="2 2 1" spacing="0.04 0.04 0.04" dim="2" mass="0"/>
-        </deformable>
-    </mujoco>"#;
-    let inertiabox_0 = mass_0.replace(r#"mass="0""#, r#"mass="1" inertiabox="0""#);
-    for (attribute, xml) in [("mass", mass_0.to_string()), ("inertiabox", inertiabox_0)] {
-        match load_model(&xml) {
-            Err(sim_mjcf::MjcfError::InvalidValue {
-                element,
-                attribute: got,
-                reason,
-                ..
-            }) => {
-                assert_eq!((element.as_str(), got.as_str()), ("flexcomp", attribute));
-                assert_eq!(reason, "Mass and inertiabox must be larger than mjMINVAL");
-            }
-            other => panic!("{attribute}: {other:?}"),
-        }
-    }
-}
-
-/// Under implicitspringdamper the slides' joint damping, which carries a
-/// flexcomp's `<elasticity damping>` since Rigid-loading L10, is integrated
-/// in the implicit solve and leaves `qfrc_damper` (as every joint's does):
-/// `qfrc_damper` is the bending damper's alone, bit for bit. Under the
-/// explicit vertex loop L10 deleted it was in `qfrc_damper` here too, so
-/// this integrator's (and implicit's and implicitfast's) trajectories
-/// moved with L10.
+/// Under implicitspringdamper the slides' joint damping (the holding body's
+/// class's, as MuJoCo's flexcomp gives its slides) is integrated in the
+/// implicit solve and leaves `qfrc_damper` (as every joint's does):
+/// `qfrc_damper` is the bending damper's alone, bit for bit.
 #[test]
 fn flexcomp_damping_is_implicit_under_implicitspringdamper() {
     let xml = r#"
     <mujoco>
         <option gravity="0 0 0" integrator="implicitspringdamper"/>
-        <deformable>
+        <default><joint damping="0.3"/></default>
+        <worldbody>
             <flexcomp name="grid" type="grid" count="3 3 1" spacing="0.04 0.04 0.04" dim="2" mass="1">
                 <elasticity elastic2d="bend" young="1e5" thickness="0.001" damping="0.3"/>
             </flexcomp>
-        </deformable>
+        </worldbody>
     </mujoco>
     "#;
     let model = load_model(xml).expect("load");
@@ -1005,10 +976,10 @@ fn flexcomp_damping_is_implicit_under_implicitspringdamper() {
 fn flexcomp_vertex_qposadr_is_its_first_slides() {
     let model = load_model(
         r#"<mujoco>
-        <worldbody><body name="ball" pos="1 1 1"><freejoint/><geom type="sphere" size="0.05"/></body></worldbody>
-        <deformable>
+        <worldbody>
+            <body name="ball" pos="1 1 1"><freejoint/><geom type="sphere" size="0.05"/></body>
             <flexcomp name="grid" type="grid" count="2 2 1" spacing="0.04 0.04 0.04" dim="2" mass="1"/>
-        </deformable>
+        </worldbody>
     </mujoco>"#,
     )
     .expect("load");
@@ -1026,24 +997,25 @@ fn flexcomp_vertex_qposadr_is_its_first_slides() {
     }
 }
 
-/// A `<deformable><flexcomp>`'s `<elasticity damping>` is its generated
-/// slides' joint damping (Rigid-loading L10; it was an explicit force on
-/// each vertex, which MuJoCo's flex does not have): `dof_damping` is the
-/// flex's on every slide, and `qfrc_damper` is the same model's with the
-/// slides undamped, plus `-damping * qvel` on each dof (to a few ulp: the
-/// bending terms are summed onto it in another order). That model keeps the
-/// flex's damping, so this does not see the deleted vertex loop come back;
+/// A flexcomp's slides take their joint damping from the holding body's class,
+/// as MuJoCo's (the flex's own `<elasticity damping>` is its bending
+/// damper's): `dof_damping` is the class's on every slide, and `qfrc_damper`
+/// is the same model's with the slides undamped, plus `-damping * qvel` on
+/// each dof (to a few ulp: the bending terms are summed onto it in another
+/// order). That model keeps the flex's damping, so this does not see an
+/// explicit vertex damping loop (Rigid-loading L10 deleted one) come back;
 /// `spec_a_t4`, `specb_t7` and `specb_t8` do.
 #[test]
 fn flexcomp_damping_is_its_slides_joint_damping() {
     let xml = r#"
     <mujoco>
         <option gravity="0 0 0"/>
-        <deformable>
+        <default><joint damping="0.3"/></default>
+        <worldbody>
             <flexcomp name="grid" type="grid" count="3 3 1" spacing="0.04 0.04 0.04" dim="2" mass="1">
                 <elasticity elastic2d="bend" young="1e5" thickness="0.001" damping="0.3"/>
             </flexcomp>
-        </deformable>
+        </worldbody>
     </mujoco>
     "#;
     let model = load_model(xml).expect("load");

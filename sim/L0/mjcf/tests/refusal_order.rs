@@ -120,11 +120,11 @@
 //! distance beside another fault: in `TWO_FAULTS`, sixteen of the 87
 //! two-fault documents generated at its start; in `SENSOR_COSTS`, the twelve
 //! of the 87 this crate names otherwise and its review's first round's
-//! nineteen. RL-8a's (measured 2026-11-07, a flexcomp written in a body for
-//! MuJoCo; most of them its review's first round's, RA's) set a flex's
-//! thickness, a flex equality, a flex vertex equality, a flexcomp's stretch
-//! beside its edge equality, or a refusal made after the keyframes beside
-//! another fault: thirteen in `TWO_FAULTS`, five in `FLEX_COSTS`. RL-8b's
+//! nineteen. RL-8a's (measured 2026-11-07; most of them its review's first
+//! round's, RA's) set a flex's thickness, a flex equality, a flex vertex
+//! equality, a flexcomp's stretch beside its edge equality, or a refusal made
+//! after the keyframes beside another fault: fifteen in `TWO_FAULTS`, three
+//! in `FLEX_COSTS`. RL-8b's
 //! (measured 2026-11-07, the 503 two-fault documents generated at its start,
 //! each fault alone refused by MuJoCo but the forms it loads) set a
 //! flexcomp's check or a refused form beside another fault: four in
@@ -1648,7 +1648,7 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "a flexcomp's vertex equality then a joint axis",
-        r#"<mujoco><default></default><worldbody><body name="j" pos="5 0 0"><joint type="hinge" axis="0 0 0"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body></worldbody><deformable><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1" radius="0.005"><edge equality="vert"/><contact contype="0" conaffinity="0"/></flexcomp></deformable><equality></equality></mujoco>"#,
+        r#"<mujoco><default></default><worldbody><body name="j" pos="5 0 0"><joint type="hinge" axis="0 0 0"/><inertial pos="0 0 0" mass="0.1" diaginertia="1e-6 1e-6 1e-6"/></body><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1" radius="0.005"><edge equality="vert"/><contact contype="0" conaffinity="0"/></flexcomp></worldbody><equality></equality></mujoco>"#,
         "axis too small in joint",
         "invalid axis on <joint>: axis too small (joint 'j_joint0' in body 'j')",
     ),
@@ -1660,15 +1660,27 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "a flexcomp's vertex equality then a flex equality's unknown flex",
-        r#"<mujoco><default></default><worldbody></worldbody><deformable><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1" radius="0.005"><edge equality="vert"/><contact contype="0" conaffinity="0"/></flexcomp></deformable><equality><flex flex="nope"/></equality></mujoco>"#,
+        r#"<mujoco><default></default><worldbody><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1" radius="0.005"><edge equality="vert"/><contact contype="0" conaffinity="0"/></flexcomp></worldbody><equality><flex flex="nope"/></equality></mujoco>"#,
         "unknown element 'nope' in equality constraint",
         "unknown flex 'nope' (equality #0)",
     ),
     (
         "a flexcomp's stretch beside its vertex equality",
-        r#"<mujoco><default></default><worldbody></worldbody><deformable><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><edge equality="vert"/><elasticity elastic2d="stretch"/><contact contype="0" conaffinity="0"/></flexcomp></deformable><equality></equality></mujoco>"#,
+        r#"<mujoco><default></default><worldbody><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><edge equality="vert"/><elasticity elastic2d="stretch"/><contact contype="0" conaffinity="0"/></flexcomp></worldbody><equality></equality></mujoco>"#,
         "elasticity and edge constraints cannot both be present",
-        "invalid elastic2d on <flexcomp>: elasticity and edge constraints cannot both be present (line 1: deformable > flexcomp 'c' > contact)",
+        "invalid elastic2d on <flexcomp>: elasticity and edge constraints cannot both be present (line 1: worldbody > flexcomp 'c' > contact)",
+    ),
+    (
+        "a flexcomp's stretch beside its edge equality then its contact's keyword",
+        r#"<mujoco><default></default><worldbody><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><contact selfcollide="bogus"/><edge equality="true"/><elasticity elastic2d="stretch"/></flexcomp></worldbody><equality></equality></mujoco>"#,
+        "elasticity and edge constraints cannot both be present",
+        "invalid elastic2d on <flexcomp>: elasticity and edge constraints cannot both be present (line 1: worldbody > flexcomp 'c' > elasticity)",
+    ),
+    (
+        "a flexcomp's stretch beside its edge equality then its count",
+        r#"<mujoco><default></default><worldbody><flexcomp name="c" type="grid" count="0 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><edge equality="true"/><elasticity elastic2d="stretch"/></flexcomp></worldbody><equality></equality></mujoco>"#,
+        "elasticity and edge constraints cannot both be present",
+        "invalid elastic2d on <flexcomp>: elasticity and edge constraints cannot both be present (line 1: worldbody > flexcomp 'c' > elasticity)",
     ),
     (
         "a flex equality's unknown flex then a tendon's negative armature",
@@ -2296,17 +2308,14 @@ fn a_sensors_fault_beside_another_is_named_as_ledgered() {
     assert!(moved.is_empty(), "{}", moved.join("\n"));
 }
 
-/// Two faults, one a flex's thickness, a flex equality's flex, or a
-/// flexcomp's stretch beside its edge equality, where this crate names the
-/// other: the thickness and the flex equalities are checked with the checks
-/// RL-6a added, after every check this crate makes before building the
-/// model, and a flexcomp's stretch once its children are read, where a
-/// flexcomp's count and its children's keywords are refused while parsing,
-/// a flex's repeated vertex when the flexes are built, a connect's body when
-/// the equalities are made and a tendon's joint when the tendons are made;
-/// MuJoCo 3.5.0 checks the flex first (ledger L353). `(what, document, MuJoCo's reason,
-/// this crate's error)`, measured 2026-11-07 (RL-8a's review round 1, a
-/// flexcomp written in a body for MuJoCo).
+/// Two faults, one a flex's thickness or a flex equality's flex, where this
+/// crate names the other: the thickness and the flex equalities are checked
+/// with the checks RL-6a added, after every check this crate makes before
+/// building the model, where a flex's repeated vertex is refused when the
+/// flexes are built, a connect's body when the equalities are made and a
+/// tendon's joint when the tendons are made; MuJoCo 3.5.0 checks the flex
+/// first (ledger L353). `(what, document, MuJoCo's reason, this crate's
+/// error)`, measured 2026-11-07 (RL-8a's review round 1).
 const FLEX_COSTS: &[(&str, &str, &str, &str)] = &[
     (
         "a flex equality's unknown flex then a later connect's unknown body",
@@ -2321,20 +2330,8 @@ const FLEX_COSTS: &[(&str, &str, &str, &str)] = &[
         "invalid element on <flex>: repeated vertex in element (flex 'g')",
     ),
     (
-        "a flexcomp's stretch beside its edge equality then its contact's keyword",
-        r#"<mujoco><default></default><worldbody></worldbody><deformable><flexcomp name="c" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><contact selfcollide="bogus"/><edge equality="true"/><elasticity elastic2d="stretch"/></flexcomp></deformable><equality></equality></mujoco>"#,
-        "elasticity and edge constraints cannot both be present",
-        "invalid keyword \"bogus\" in attribute 'selfcollide' on <contact> (line 1: deformable > flexcomp 'c' > contact)",
-    ),
-    (
-        "a flexcomp's stretch beside its edge equality then its count",
-        r#"<mujoco><default></default><worldbody></worldbody><deformable><flexcomp name="c" type="grid" count="0 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><edge equality="true"/><elasticity elastic2d="stretch"/></flexcomp></deformable><equality></equality></mujoco>"#,
-        "elasticity and edge constraints cannot both be present",
-        "invalid count on <flexcomp>: Count too small (line 1: deformable > flexcomp 'c')",
-    ),
-    (
         "a flex equality's rigid flexcomp then a tendon's unknown joint",
-        r#"<mujoco><default></default><worldbody></worldbody><deformable><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><pin id="0 1 2 3"/><contact contype="0" conaffinity="0"/></flexcomp></deformable><equality><flex flex="c"/></equality><tendon><fixed armature="-1"><joint joint="nojoint" coef="1"/></fixed></tendon></mujoco>"#,
+        r#"<mujoco><default></default><worldbody><flexcomp name="c" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" dim="2" mass="1"><pin id="0 1 2 3"/><contact contype="0" conaffinity="0"/></flexcomp></worldbody><equality><flex flex="c"/></equality><tendon><fixed armature="-1"><joint joint="nojoint" coef="1"/></fixed></tendon></mujoco>"#,
         "rigid flex 'c' in equality constraint 0",
         "unknown joint 'nojoint' (tendon #0)",
     ),
