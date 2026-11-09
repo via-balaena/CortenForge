@@ -77,9 +77,9 @@ at your option.
 
 Portions of some crates are ported from
 [MuJoCo](https://github.com/google-deepmind/mujoco) and
-[OpenSim](https://github.com/opensim-org/opensim-core), both licensed under the
-Apache License, Version 2.0; those portions stay under it whichever license you
-take for the rest. [NOTICE](./NOTICE)'s MUJOCO and OPENSIM sections name the
+[OpenSim](https://github.com/opensim-org/opensim-core), whose source code is
+licensed under the Apache License, Version 2.0; those portions stay under it
+whichever license you take for the rest. [NOTICE](./NOTICE)'s MUJOCO and OPENSIM sections name the
 crates and carry the projects' copyright notices. CortenForge is not affiliated
 with or endorsed by Google DeepMind, Stanford University or the OpenSim project.
 

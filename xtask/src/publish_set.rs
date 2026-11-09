@@ -51,12 +51,11 @@ closure over normal and build dependencies (optional ones included):
     saying so, or the crates citing it only as a reference. A crate on either
     list whose `src` no longer cites it is a problem; so is a crate in the set
     that the section's first paragraph names and the first list does not, and
-    a section that carries no `Copyright` line. A citation is a MuJoCo source
-    file named with its extension (an `engine_`, `user_`, `xml_`, `thread_`,
-    `render_` or `ui_` file, an `mj*.h` or `mujoco.h` header, or a
-    `plugin/<dir>/<file>` source), or a path into OpenSim's source tree
-    (`OpenSim/Common`, ...) or its repository's name, in any UTF-8 file under
-    `src`; the tests, examples and benches cargo also packages are not read.
+    a section that carries no `Copyright` line. A citation is what the
+    project's `cited_by` in `UPSTREAMS` matches (for MuJoCo a source file
+    named with its extension, for OpenSim a path into its source tree or its
+    repository's name), in a regular UTF-8 file under `src`; the tests,
+    examples and benches cargo also packages are not read.
     This sees citations, not derivation: a port that cites nothing in those
     forms goes unseen. It does not check what the copyright lines say (they
     are read from the upstream's own tree, which it does not have). A crate
@@ -136,9 +135,9 @@ const UPSTREAMS: [Upstream; 2] = [
         not_affiliated_with: "Stanford University or the OpenSim project",
         section: "OPENSIM",
         // A path into OpenSim's source tree (`OpenSim/Common`,
-        // `OpenSim/Actuators`) or its repository's name. The name OpenSim
-        // alone is no citation: sim-core says it of the models it was checked
-        // against.
+        // `OpenSim/Actuators`) or its repository's name. Neither the name
+        // OpenSim alone (sim-core says it of the models it was checked
+        // against) nor a file or class name alone is seen.
         cited_by: r"\b(?:OpenSim/[A-Z][A-Za-z]*|opensim-core)\b",
         // `forward/millard.rs`: OpenSim's `Millard2012EquilibriumMuscle`.
         ports: &["cortenforge-sim-core"],
@@ -540,7 +539,7 @@ fn packaging(root: &Path, dir: &Path) -> Result<Packaging> {
 /// For each of [`UPSTREAMS`], in order, the first file under `src` (the files
 /// walked in name order; one that is not UTF-8 skipped) that cites it, as
 /// `src/<path>: <the citation>`; `None` where no file does, or there is no
-/// `src`. It reads the files on disk, as cargo packages them, under `src` only.
+/// `src`. It reads the regular files under `src` on disk.
 fn upstream_citations(src: &Path) -> Result<Vec<Option<String>>> {
     let patterns = UPSTREAMS
         .iter()
@@ -1428,7 +1427,7 @@ mod tests {
         let cited = |mujoco: bool, opensim: bool| {
             vec![
                 mujoco.then(|| "src/a.rs: `engine_forward.c`".to_owned()),
-                opensim.then(|| "src/a.rs: `OpenSim`".to_owned()),
+                opensim.then(|| "src/a.rs: `OpenSim/Common`".to_owned()),
             ]
         };
         let none = Vec::<String>::new();
@@ -1459,7 +1458,7 @@ mod tests {
             "{found:?}"
         );
         assert!(
-            found[1].contains("`OpenSim` cites OpenSim: put"),
+            found[1].contains("`OpenSim/Common` cites OpenSim: put"),
             "{found:?}"
         );
 
@@ -1512,11 +1511,20 @@ mod tests {
             notice_problems(&bare),
             ["the root NOTICE's MUJOCO section carries no `Copyright` line"]
         );
+        let last = notice
+            .rfind("    Copyright 2021 A\n")
+            .expect("OPENSIM's line");
+        let mut opensim_bare = notice.clone();
+        opensim_bare.replace_range(last..last + "    Copyright 2021 A\n".len(), "");
+        assert_eq!(
+            notice_problems(&opensim_bare),
+            ["the root NOTICE's OPENSIM section carries no `Copyright` line"]
+        );
         assert_eq!(notice_problems("no sections\n"), Vec::<String>::new());
     }
 
-    /// Each upstream's `cited_by` finds every form its comment names and none
-    /// of the near misses its comment says it does not see.
+    /// Each upstream's `cited_by` finds every form its comment names, and none
+    /// of the others listed with it.
     #[test]
     fn each_upstreams_pattern_finds_its_citation_forms() {
         let cases: [(&str, &[&str], &[&str]); 2] = [
@@ -1588,14 +1596,14 @@ mod tests {
             "// self.h made.h filled.h test.c user_meshes OpenSim, validated vs OpenSim\n",
         );
         write(
-            "b/c.rs",
+            "s.wgsl",
             "// MuJoCo skips it (`engine_forward.c:288-292`).\n",
         );
         let mut bytes = vec![0xff, 0xfe];
         bytes.extend_from_slice(b" OpenSim/Common\n");
         std::fs::write(src.join("b/d.bin"), bytes).expect("write");
         write("notes.md", "OpenSim/Actuators\n");
-        write("z.wgsl", "// user_mesh.cc\n");
+        write("z.rs", "// user_mesh.cc\n");
 
         let read = upstream_citations(&src);
         let missing = upstream_citations(&root.join("missing"));
@@ -1604,7 +1612,7 @@ mod tests {
         assert_eq!(
             read.expect("read src"),
             [
-                Some("src/b/c.rs: `engine_forward.c`".to_owned()),
+                Some("src/s.wgsl: `engine_forward.c`".to_owned()),
                 Some("src/notes.md: `OpenSim/Actuators`".to_owned())
             ]
         );
