@@ -3590,3 +3590,12 @@ d9307b3c1d54af39	sim/L0/mjcf/tests/inertia_from_geoms.rs:505
 e7c78effda9d93aa	sim/L0/mjcf/tests/inertia_from_geoms.rs:540
 f4ad9539f353231e	sim/L0/mjcf/tests/inertia_from_geoms.rs:490
 f9e663c024676b65	sim/L0/mjcf/tests/inertia_from_geoms.rs:480
+0cba70b570d00e98	sim/L0/mjcf/tests/refusal_order.rs:2660
+2a241a26c8676919	sim/L0/mjcf/tests/refusal_order.rs:2642
+48b37a0f93d1556c	sim/L0/mjcf/tests/refusal_order.rs:1864
+628bf5d758b9029d	sim/L0/mjcf/tests/refusal_order.rs:2648
+769ab93bfc88071e	sim/L0/mjcf/tests/refusal_order.rs:1852
+a05bebab3f38e33e	sim/L0/mjcf/tests/refusal_order.rs:1846
+ccb41fdae1a7b888	sim/L0/mjcf/tests/refusal_order.rs:1858
+d1e30f13c824740e	sim/L0/mjcf/tests/refusal_order.rs:2636
+df164deaf48ff2c7	sim/L0/mjcf/tests/refusal_order.rs:2654

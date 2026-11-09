@@ -145,6 +145,13 @@
 //! attribute beside another fault: four in `TWO_FAULTS`, six in
 //! `SCHEMA_COSTS`; its review's (measured 2026-11-09) set one beside a fault
 //! MuJoCo names first: nine in `REFUSAL_FIRST_COSTS`.
+//! RL-9a's (measured 2026-11-09, its two-fault set of 95 documents: seven
+//! faults of a body's inertia, each alone and beside a fault of each of
+//! eleven stages) set an `<inertial>`'s orientation alternative or a body's
+//! principal axes from its geoms beside another fault: four in `TWO_FAULTS`,
+//! five in `INERTIAL_COSTS`, each against a check this crate makes before it
+//! builds a body (a geom's size, an actuator's joint), where MuJoCo compiles
+//! the body first.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1834,6 +1841,30 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "Schema violation: unrecognized attribute: 'quat'",
         "unrecognized attribute 'quat' on <flex> (line 1: deformable > flex 'f')",
     ),
+    (
+        "an inertial's degenerate xyaxes then a later body's zero hinge axis",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0"><joint type="hinge" axis="0 0 0"/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "error 'yaxis too small' in inertia alternative (body 'n')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a later body's moments' triangle",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 5"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "error 'yaxis too small' in inertia alternative (body 'n')",
+    ),
+    (
+        "a body's geoms' principal axes then its own geom's size",
+        r#"<mujoco><worldbody><body name="n"><geom type="cylinder" size="1e-7 1" mass="0.5"/><geom type="cylinder" size="1e-7 1" mass="0.5" pos="0 0 3"/><geom type="box" size="0.1 0.1 0"/></body></worldbody></mujoco>"#,
+        "size 2 must be positive in geom",
+        "invalid size on <geom>: size 2 must be positive (geom #2 in body 'n')",
+    ),
+    (
+        "an earlier moving body below mjMINVAL then a body's geoms' principal axes",
+        r#"<mujoco><worldbody><body name="p" pos="-2 0 0"><freejoint/><geom type="sphere" size="0.1" mass="0"/></body><body name="n"><geom type="cylinder" size="1e-7 1" mass="0.5"/><geom type="cylinder" size="1e-7 1" mass="0.5" pos="0 0 3"/></body></worldbody></mujoco>"#,
+        "error 'inertia must have positive eigenvalues' in alternative for principal axes",
+        "error 'inertia must have positive eigenvalues' in alternative for principal axes (body 'n')",
+    ),
 ];
 
 #[test]
@@ -2583,6 +2614,59 @@ const REFUSAL_FIRST_COSTS: &[(&str, &str, &str, &str)] = &[
 fn a_fault_named_first_by_mujoco_beside_a_refusal_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in REFUSAL_FIRST_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, one an `<inertial>`'s orientation alternative or a body's
+/// principal axes from its geoms, where this crate names the other one than
+/// MuJoCo 3.5.0: ledger L353 holds each. MuJoCo compiles a body, its
+/// `<inertial>` and then its geoms, before a later body and before the
+/// actuators; this crate checks every geom's size and every actuator's
+/// joint before it builds any body. `(what, document, MuJoCo's reason, this
+/// crate's error)`, measured 2026-11-09 (RL-9a's two-fault set).
+const INERTIAL_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "an inertial's degenerate xyaxes then its own body's geom's size",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/><geom type="box" size="0.1 0.1 0"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "invalid size on <geom>: size 2 must be positive (geom #0 in body 'n')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a later body's geom's size",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0"><freejoint/><geom type="sphere" size="0.1"/><geom type="box" size="0.1 0.1 0"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "invalid size on <geom>: size 2 must be positive (geom #1 in body 'q')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then an actuator's unknown joint",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body></worldbody><actuator><motor joint="nope"/></actuator></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "unknown joint 'nope' (actuator #0)",
+    ),
+    (
+        "a body's geoms' principal axes then a later body's geom's size",
+        r#"<mujoco><worldbody><body name="n"><geom type="cylinder" size="1e-7 1" mass="0.5"/><geom type="cylinder" size="1e-7 1" mass="0.5" pos="0 0 3"/></body><body name="q" pos="2 0 0"><freejoint/><geom type="sphere" size="0.1"/><geom type="box" size="0.1 0.1 0"/></body></worldbody></mujoco>"#,
+        "error 'inertia must have positive eigenvalues' in alternative for principal axes",
+        "invalid size on <geom>: size 2 must be positive (geom #3 in body 'q')",
+    ),
+    (
+        "a body's geoms' principal axes then an actuator's unknown joint",
+        r#"<mujoco><worldbody><body name="n"><geom type="cylinder" size="1e-7 1" mass="0.5"/><geom type="cylinder" size="1e-7 1" mass="0.5" pos="0 0 3"/></body></worldbody><actuator><motor joint="nope"/></actuator></mujoco>"#,
+        "error 'inertia must have positive eigenvalues' in alternative for principal axes",
+        "unknown joint 'nope' (actuator #0)",
+    ),
+];
+
+#[test]
+fn an_inertia_fault_beside_another_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in INERTIAL_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),
