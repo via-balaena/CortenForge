@@ -12,7 +12,7 @@ use super::mass::{
     GeomInertiaFault, InertialGeom, InertialValues, MJ_MINVAL, PlacedGeom, geom_hfield_size,
     geom_mesh_props, inertia_from_geoms, inertial_values, refuse_non_finite_inertial,
 };
-use super::orientation::{MJ_EPS, resolve_orientation};
+use super::orientation::{MJ_EPS, OrientationError, resolve_orientation};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::keywords;
 use crate::types::{InertiaFromGeom, MjcfBody, MjcfGeom};
@@ -30,6 +30,9 @@ pub struct BodyFaults {
     /// value where the geom infers its body's inertia
     /// ([`ModelBuilder::negative_mass`]).
     pub negative_geom: Option<usize>,
+    /// Its `<inertial>`'s orientation alternative is refused
+    /// (`user_objects.cc:2420-2425`), before its geoms' checks.
+    pub inertial_alt: Option<OrientationError>,
     /// Its inertia from its geoms is refused ([`inertia_from_geoms`]), after
     /// its geoms' checks.
     pub from_geoms: Option<GeomInertiaFault>,
@@ -183,7 +186,8 @@ impl ModelBuilder {
         // The `<inertial>` before the body's geoms, as MuJoCo's
         // `mjCBody::Compile` reads it (`user_objects.cc:2402-2427`); where
         // the geoms give the inertia, it is set after them (below).
-        let (before_geoms, from_geoms) = self.inertia_before_geoms(body).map_err(at_body)?;
+        let (before_geoms, from_geoms, inertial_alt) =
+            self.inertia_before_geoms(body).map_err(at_body)?;
         let (mass, inertia, ipos, iquat) = before_geoms;
 
         // Track joint/DOF addresses for this body
@@ -342,6 +346,7 @@ impl ModelBuilder {
         self.body_faults.push(BodyFaults {
             full_and_diagonal,
             negative_geom: negative.map(|k| geom_adr + k),
+            inertial_alt,
             from_geoms: geom_fault,
             negative: false,
             triangle: false,
@@ -493,6 +498,13 @@ impl ModelBuilder {
                 )
                 .at(self.body_location(body)));
             }
+            if let Some(alternative) = faults.inertial_alt {
+                return Err(MjcfError::invalid_model(format!(
+                    "error '{}' in inertia alternative",
+                    alternative.reason
+                ))
+                .at(self.body_location(body)));
+            }
             let start = self.body_geom_adr[body];
             for geom in start..start + self.body_geom_num[body] {
                 if geom_turn(geom) != body_turn(body) {
@@ -586,15 +598,37 @@ impl ModelBuilder {
     /// give it where MuJoCo selects any: under `inertiafromgeom="true"`, or
     /// `"auto"` where it writes no `<inertial>` (`user_objects.cc:2436-2439`).
     /// An `<inertial>` its geoms cannot replace is refused here where it is
-    /// not finite ([`refuse_non_finite_inertial`]).
-    fn inertia_before_geoms(&self, body: &MjcfBody) -> Result<(InertialValues, bool)> {
+    /// not finite ([`refuse_non_finite_inertial`]). The `<inertial>`'s frame
+    /// is its quaternion or orientation alternative as a body's is resolved
+    /// (`:2420-2425`); an alternative MuJoCo refuses is returned, for
+    /// [`Self::check_bodies`] to refuse in MuJoCo's order, and the identity
+    /// taken in its place.
+    fn inertia_before_geoms(
+        &self,
+        body: &MjcfBody,
+    ) -> Result<(InertialValues, bool, Option<OrientationError>)> {
         let from_geoms = match self.compiler.inertiafromgeom {
             InertiaFromGeom::True => true,
             InertiaFromGeom::Auto => body.inertial.is_none(),
             InertiaFromGeom::False => false,
         };
+        let mut refused = None;
         let values = match &body.inertial {
-            Some(inertial) => inertial_values(inertial)?,
+            Some(inertial) => {
+                let frame = resolve_orientation(
+                    inertial.quat,
+                    inertial.euler,
+                    inertial.axisangle,
+                    inertial.xyaxes,
+                    inertial.zaxis,
+                    &self.compiler,
+                )
+                .unwrap_or_else(|alternative| {
+                    refused = Some(alternative);
+                    UnitQuaternion::identity()
+                });
+                inertial_values(inertial, frame)?
+            }
             None => (
                 0.0,
                 Vector3::zeros(),
@@ -605,7 +639,7 @@ impl ModelBuilder {
         if !from_geoms {
             refuse_non_finite_inertial(&values)?;
         }
-        Ok((values, from_geoms))
+        Ok((values, from_geoms, refused))
     }
 }
 

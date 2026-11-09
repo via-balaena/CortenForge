@@ -1148,6 +1148,15 @@ pub struct MjcfInertial {
     pub pos: Vector3<f64>,
     /// Orientation of principal axes (quaternion: w x y z).
     pub quat: Vector4<f64>,
+    /// The principal axes as Euler angles, in place of `quat` (MuJoCo's
+    /// inertial orientation alternatives, at most one written).
+    pub euler: Option<Vector3<f64>>,
+    /// The principal axes as an axis and an angle, in place of `quat`.
+    pub axisangle: Option<Vector4<f64>>,
+    /// The principal axes' x and y directions, in place of `quat`.
+    pub xyaxes: Option<[f64; 6]>,
+    /// The principal z axis's direction, in place of `quat`.
+    pub zaxis: Option<Vector3<f64>>,
     /// Mass in kg.
     pub mass: f64,
     /// Diagonal inertia (Ixx, Iyy, Izz) - if specified.
@@ -1161,6 +1170,10 @@ impl Default for MjcfInertial {
         Self {
             pos: Vector3::zeros(),
             quat: Vector4::new(1.0, 0.0, 0.0, 0.0), // Identity quaternion (w, x, y, z)
+            euler: None,
+            axisangle: None,
+            xyaxes: None,
+            zaxis: None,
             mass: 1.0,
             diaginertia: None,
             fullinertia: None,

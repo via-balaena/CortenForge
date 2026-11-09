@@ -15,7 +15,7 @@ use super::ModelBuilder;
 use super::eig3::{eig3, full_inertia};
 use super::geom::{compute_geom_inertia, compute_geom_mass, mesh_inertia_scale};
 use super::mesh::{MeshProps, compute_mesh_inertia_by_mode, resolve_mesh};
-use super::orientation::{MJ_EPS, mulquat, mulvecmat, quat_from_wxyz, quat2mat};
+use super::orientation::{MJ_EPS, mulquat, mulvecmat, quat2mat};
 use crate::error::{MjcfError, Result};
 use crate::types::{MeshInertia, MjcfGeom, MjcfGeomType, MjcfInertial};
 
@@ -83,13 +83,18 @@ impl ModelBuilder {
 pub type InertialValues = (f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>);
 
 /// An `<inertial>`'s values as MuJoCo 3.5.0's compiler makes them, before a
-/// body's geoms (`user_objects.cc:2402-2427`). A `fullinertia` is made
-/// principal as `mjuu_fullInertia` makes it (`:2413-2417`): its moments in
-/// decreasing order and their frame in `iquat`, refused where the smallest
-/// is below mjEPS. What it makes may not be finite (a `fullinertia` near the
-/// largest double), which MuJoCo keeps or, under `inertiafromgeom="true"`,
-/// replaces with its geoms'.
-pub fn inertial_values(inertial: &MjcfInertial) -> Result<InertialValues> {
+/// body's geoms (`user_objects.cc:2402-2427`), its principal axes `frame`
+/// where it writes no `fullinertia` (its quaternion or orientation
+/// alternative, resolved by the caller). A `fullinertia` is made principal
+/// as `mjuu_fullInertia` makes it (`:2413-2417`): its moments in decreasing
+/// order and their frame in `iquat`, refused where the smallest is below
+/// mjEPS. What it makes may not be finite (a `fullinertia` near the largest
+/// double), which MuJoCo keeps or, under `inertiafromgeom="true"`, replaces
+/// with its geoms'.
+pub fn inertial_values(
+    inertial: &MjcfInertial,
+    frame: UnitQuaternion<f64>,
+) -> Result<InertialValues> {
     let mass = inertial.mass;
     let ipos = inertial.pos;
 
@@ -106,10 +111,10 @@ pub fn inertial_values(inertial: &MjcfInertial) -> Result<InertialValues> {
         Ok((mass, Vector3::from(moments), ipos, iquat))
     } else if let Some(diag) = inertial.diaginertia {
         // Diagonal inertia already in principal axes
-        Ok((mass, diag, ipos, quat_from_wxyz(inertial.quat)))
+        Ok((mass, diag, ipos, frame))
     } else {
         // MuJoCo's default inertia is 0 (`mjs_defaultBody`, `user_init.c:75-76`).
-        Ok((mass, Vector3::zeros(), ipos, quat_from_wxyz(inertial.quat)))
+        Ok((mass, Vector3::zeros(), ipos, frame))
     }
 }
 
@@ -684,8 +689,10 @@ mod tests {
             quat: nalgebra::Vector4::new(half, 0.0, 0.0, half),
             ..full
         };
-        let (_, _, _, plain) = super::inertial_values(&full).expect("principal");
-        let (_, _, _, kept) = super::inertial_values(&turned).expect("principal");
+        let identity = nalgebra::UnitQuaternion::identity();
+        let turn = nalgebra::UnitQuaternion::from_euler_angles(0.0, 0.0, 1.0);
+        let (_, _, _, plain) = super::inertial_values(&full, identity).expect("principal");
+        let (_, _, _, kept) = super::inertial_values(&turned, turn).expect("principal");
         assert_eq!(plain, kept);
     }
 }

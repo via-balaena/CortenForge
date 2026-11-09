@@ -469,3 +469,115 @@ const NO_INERTIAL_FRAME: &[(&str, &str, Expect)] = &[
 fn a_body_with_no_inertial_frame_takes_its_own() {
     check(NO_INERTIAL_FRAME);
 }
+
+/// `(name, document, expected)`, generated as [`FROM_GEOMS`]: an
+/// `<inertial>`'s principal axes from its quaternion, made unit by
+/// `mjuu_normvec`, or from its orientation alternative, resolved as a
+/// body's is (`user_objects.cc:2386`, `:2420-2425`).
+const INERTIAL_FRAME: &[(&str, &str, Expect)] = &[
+    (
+        "euler",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 2 3" euler="0 0 90"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 1.0,
+            inertia: [1.0, 2.0, 3.0],
+            ipos: [0.0, 0.0, 0.0],
+            iquat: [0.7071067811865476, 0.0, 0.0, 0.7071067811865475],
+        }]),
+    ),
+    (
+        "axisangle_in_radians",
+        r#"<mujoco><compiler angle="radian"/><worldbody><body name="b"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 2 3" axisangle="1 1 0 0.7"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 1.0,
+            inertia: [1.0, 2.0, 3.0],
+            ipos: [0.0, 0.0, 0.0],
+            iquat: [
+                0.9393727128473789,
+                0.24246536490574871,
+                0.24246536490574871,
+                0.0,
+            ],
+        }]),
+    ),
+    (
+        "xyaxes",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 2 3" xyaxes="0 1 0 -1 0 0"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 1.0,
+            inertia: [1.0, 2.0, 3.0],
+            ipos: [0.0, 0.0, 0.0],
+            iquat: [0.7071067811865476, 0.0, 0.0, 0.7071067811865475],
+        }]),
+    ),
+    (
+        "zaxis",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 2 3" zaxis="1 0 0"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 1.0,
+            inertia: [1.0, 2.0, 3.0],
+            ipos: [0.0, 0.0, 0.0],
+            iquat: [0.7071067811865476, 0.0, 0.7071067811865475, 0.0],
+        }]),
+    ),
+    (
+        "euler_in_another_sequence",
+        r#"<mujoco><compiler eulerseq="zyx"/><worldbody><body name="b"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 2 3" euler="10 20 30"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 1.0,
+            inertia: [1.0, 2.0, 3.0],
+            ipos: [0.0, 0.0, 0.0],
+            iquat: [
+                0.9515485246437885,
+                0.2392983377447303,
+                0.18930785741199999,
+                0.03813457647485015,
+            ],
+        }]),
+    ),
+    (
+        "a_quaternion_made_unit_as_mujoco_makes_it",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 2 3" quat="0.3 0.1 0.2 0.4"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 1.0,
+            inertia: [1.0, 2.0, 3.0],
+            ipos: [0.0, 0.0, 0.0],
+            iquat: [
+                0.5477225575051661,
+                0.18257418583505536,
+                0.3651483716701107,
+                0.7302967433402214,
+            ],
+        }]),
+    ),
+    (
+        "a_degenerate_xyaxes",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body></worldbody></mujoco>"#,
+        Expect::Refused("error 'yaxis too small' in inertia alternative"),
+    ),
+    (
+        "a_zero_zaxis",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" zaxis="0 0 0"/></body></worldbody></mujoco>"#,
+        Expect::Refused("error 'zaxis too small' in inertia alternative"),
+    ),
+    (
+        "a_zero_zaxis_named_before_its_bodys_bad_condim",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 2 3" zaxis="0 0 0"/><geom type="sphere" size="0.1" condim="2"/></body></worldbody></mujoco>"#,
+        Expect::Refused("error 'zaxis too small' in inertia alternative"),
+    ),
+    (
+        "an_earlier_bodys_bad_condim_named_before_a_zero_zaxis",
+        r#"<mujoco><worldbody><body name="a"><freejoint/><geom type="sphere" size="0.1" condim="2"/></body><body name="b"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 2 3" zaxis="0 0 0"/></body></worldbody></mujoco>"#,
+        Expect::Refused("invalid condim in geom"),
+    ),
+    (
+        "an_earlier_bodys_bad_geom_named_before_a_zero_zaxis",
+        r#"<mujoco><worldbody><body name="a"><freejoint/><geom type="box" size="0.1 0.1 0" mass="1"/></body><body name="b"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 2 3" zaxis="0 0 0"/></body></worldbody></mujoco>"#,
+        Expect::Refused("size 2 must be positive"),
+    ),
+];
+
+#[test]
+fn an_inertials_frame_is_mujocos() {
+    check(INERTIAL_FRAME);
+}

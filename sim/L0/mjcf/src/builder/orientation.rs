@@ -193,11 +193,6 @@ fn unit(q: [f64; 4]) -> UnitQuaternion<f64> {
     UnitQuaternion::new_unchecked(Quaternion::new(q[0], q[1], q[2], q[3]))
 }
 
-/// Convert an MJCF quaternion `[w, x, y, z]` to a `UnitQuaternion`.
-pub fn quat_from_wxyz(q: nalgebra::Vector4<f64>) -> UnitQuaternion<f64> {
-    UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]))
-}
-
 /// An orientation as MuJoCo's compiler holds it before composing the frame
 /// holding its element (a site's, `user_objects.cc:3976-3985`; a frame's,
 /// `mjCFrame::Compile`, `:2734-2743`): its alternative where it has one, else
@@ -242,7 +237,7 @@ pub fn made_unit(q: &UnitQuaternion<f64>) -> UnitQuaternion<f64> {
 
 /// A site's orientation made unit as MuJoCo's compiler makes it (`normvec`,
 /// `user_objects.cc:3988`): left as it is where its norm lies within mjEPS of
-/// 1 (`quat_from_wxyz` divides by the norm whatever it is).
+/// 1.
 pub fn site_orientation(
     site: &MjcfSite,
     compiler: &MjcfCompiler,

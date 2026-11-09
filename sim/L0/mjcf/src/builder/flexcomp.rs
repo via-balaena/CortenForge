@@ -956,7 +956,7 @@ fn point_body(name: &str, pos: [f64; 3], mass: f64, inertia: f64) -> MjcfBody {
             quat: Vector4::new(1.0, 0.0, 0.0, 0.0),
             mass,
             diaginertia: Some(Vector3::repeat(inertia)),
-            fullinertia: None,
+            ..MjcfInertial::default()
         }),
         ..MjcfBody::default()
     }

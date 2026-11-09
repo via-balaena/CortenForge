@@ -3579,3 +3579,14 @@ a580d05fa8f53dd9	sim/L0/mjcf/tests/inertia_from_geoms.rs:458
 a75f7f41b2ca629f	sim/L0/mjcf/tests/inertia_from_geoms.rs:448
 e743d601cc209fb9	sim/L0/mjcf/tests/inertia_from_geoms.rs:354
 f1c58c68ee39e152	sim/L0/mjcf/tests/inertia_from_geoms.rs:386
+105a8756f97bfdae	sim/L0/mjcf/tests/inertia_from_geoms.rs:525
+23aedd9966baffc1	sim/L0/mjcf/tests/inertia_from_geoms.rs:570
+3816a668ec66df9f	sim/L0/mjcf/tests/inertia_from_geoms.rs:575
+4a79c2e14762dd54	sim/L0/mjcf/tests/inertia_from_geoms.rs:555
+5ba5754c88e40138	sim/L0/mjcf/tests/inertia_from_geoms.rs:565
+77a41b2b1cb9e000	sim/L0/mjcf/tests/inertia_from_geoms.rs:560
+c1a5f046adb89be3	sim/L0/mjcf/tests/inertia_from_geoms.rs:515
+d9307b3c1d54af39	sim/L0/mjcf/tests/inertia_from_geoms.rs:505
+e7c78effda9d93aa	sim/L0/mjcf/tests/inertia_from_geoms.rs:540
+f4ad9539f353231e	sim/L0/mjcf/tests/inertia_from_geoms.rs:490
+f9e663c024676b65	sim/L0/mjcf/tests/inertia_from_geoms.rs:480
