@@ -3524,3 +3524,15 @@ d238a24a2c35b2d2	sim/L0/mjcf/tests/attribute_reader.rs:486
 d4cfa13627d8d35e	sim/L0/mjcf/tests/refusal_order.rs:1663
 d6c45b072765e48f	sim/L0/tests/integration/flex_unified.rs:941
 f59a89762bfb80f0	sim/L0/tests/integration/flex_unified.rs:978
+02e5b21d810f7e61	sim/L0/mjcf/tests/refusal_order.rs:1824
+41a6de1f98f6a605	sim/L0/mjcf/tests/refusal_order.rs:1812
+61d1f75ad8e61a78	sim/L0/mjcf/tests/refusal_order.rs:2473
+61f973052d61fdb2	sim/L0/mjcf/tests/flexcomp_body.rs:706
+77b4aa000fd42693	sim/L0/mjcf/tests/flexcomp_body.rs:707
+87a1d5aec622f0d4	sim/L0/mjcf/tests/refusal_order.rs:2497
+940c0d524d90e6e1	sim/L0/mjcf/tests/refusal_order.rs:2485
+a45eaff80c3c2dd5	sim/L0/mjcf/tests/refusal_order.rs:2467
+c5b5dcfbf4dda4af	sim/L0/mjcf/tests/refusal_order.rs:1830
+c74c4e98325733ea	sim/L0/mjcf/tests/refusal_order.rs:1818
+d035752a0d4533bd	sim/L0/mjcf/tests/refusal_order.rs:2479
+d7a9aca181393004	sim/L0/mjcf/tests/refusal_order.rs:2491
