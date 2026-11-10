@@ -130,3 +130,91 @@ fn a_mesh_is_moved_then_turned_then_scaled() {
         1e-12,
     );
 }
+
+/// A unit cube mesh about the origin, its faces `faces`, with `vertices`
+/// after its eight and `attrs` on its asset, on a free body.
+fn cube_mesh(vertices: &str, faces: &str, attrs: &str) -> String {
+    format!(
+        r#"<mujoco><asset><mesh name="m" {attrs} vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5 {vertices}" face="{faces}"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#
+    )
+}
+
+/// The cube's twelve faces, each turned outward.
+const CUBE_FACES: &str =
+    "0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5";
+
+/// The cube's faces with the first turned inward: it walks the edge from
+/// vertex 0 to vertex 1 as the fifth does.
+const ONE_FACE_TURNED: &str =
+    "0 1 2  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5";
+
+// MuJoCo refuses an `exact` mesh two of whose faces walk an edge the same
+// way, counting only faces of area above sqrt(mjMINVAL) on the vertices as
+// written (`user_mesh.cc:1538-1563`), and no mesh of another mode.
+
+#[test]
+fn an_exact_mesh_with_a_face_turned_inward_is_refused() {
+    let err = load_model(&cube_mesh("", ONE_FACE_TURNED, r#"inertia="exact""#))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("inconsistent orientation") && err.contains("the vertices 1 and 2."),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_mesh_of_another_mode_with_a_face_turned_inward_loads() {
+    load_model(&cube_mesh("", ONE_FACE_TURNED, "")).unwrap();
+}
+
+#[test]
+fn a_face_of_no_area_on_an_exact_meshs_edge_is_not_counted() {
+    load_model(&cube_mesh(
+        "",
+        &format!("{CUBE_FACES}  0 1 1"),
+        r#"inertia="exact""#,
+    ))
+    .unwrap();
+}
+
+#[test]
+fn only_a_face_of_area_above_sqrt_mjminval_is_counted() {
+    // A sliver on the edge from vertex 0 to vertex 1, its third vertex one
+    // single-precision step from the edge: area 1.5e-8, below sqrt(mjMINVAL),
+    // so MuJoCo loads the mesh; 1e-4 from it, area 5e-5, it refuses it.
+    let faces = format!("{CUBE_FACES}  0 1 8");
+    load_model(&cube_mesh(
+        "0 -0.5 -0.49999997",
+        &faces,
+        r#"inertia="exact""#,
+    ))
+    .unwrap();
+    let err = load_model(&cube_mesh("0 -0.5 -0.4999", &faces, r#"inertia="exact""#))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("the vertices 1 and 2."), "{err}");
+}
+
+#[test]
+fn the_faces_counted_are_those_of_the_mesh_as_written() {
+    // Scaled by 10 the sliver's area is 1.5e-6 and scaled by 1e-3 the thin
+    // face's is 5e-11, on the other side of sqrt(mjMINVAL) from each as
+    // written; MuJoCo counts each as written.
+    let faces = format!("{CUBE_FACES}  0 1 8");
+    let exact_scaled = |scale: &str| format!(r#"inertia="exact" scale="{scale}""#);
+    load_model(&cube_mesh(
+        "0 -0.5 -0.49999997",
+        &faces,
+        &exact_scaled("10 10 10"),
+    ))
+    .unwrap();
+    let err = load_model(&cube_mesh(
+        "0 -0.5 -0.4999",
+        &faces,
+        &exact_scaled("0.001 0.001 0.001"),
+    ))
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("the vertices 1 and 2."), "{err}");
+}

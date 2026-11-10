@@ -15,6 +15,7 @@ use tracing::warn;
 
 use super::ModelBuilder;
 use super::asset::{AssetKind, resolve_asset_path};
+use super::mass::MJ_MINVAL;
 use super::orientation::{mulvecmat_t, normvec, quat2mat};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
@@ -413,8 +414,77 @@ pub fn convert_mjcf_mesh(
             ));
         }
     };
+    check_face_orientation(&vertices, &indices, mjcf_mesh)?;
     apply_transformations(&mut vertices, mjcf_mesh);
     Ok(TriangleMeshData::new(vertices, indices))
+}
+
+/// MuJoCo 3.5.0's check of an `exact` mesh's face orientation
+/// (`mjCMesh::Process`, `user_mesh.cc:1538-1563`), on its vertices as
+/// written: each face whose area is above sqrt(mjMINVAL) ([`triangle`])
+/// gives its three edges in its own order, and two faces walking one edge the
+/// same way — the edges sorted, the first repeated one — refuse the mesh,
+/// naming that edge's vertices counted from 1. A mesh of any other mode is
+/// not refused for it.
+fn check_face_orientation(
+    vertices: &[Point3<f64>],
+    indices: &[usize],
+    mjcf_mesh: &MjcfMesh,
+) -> Result<()> {
+    if mjcf_mesh.inertia.unwrap_or_default() != MeshInertia::Exact {
+        return Ok(());
+    }
+    let at = |i: usize| [vertices[i].x, vertices[i].y, vertices[i].z];
+    let mut edges = Vec::with_capacity(indices.len());
+    for face in indices.chunks_exact(3) {
+        let [v0, v1, v2] = [face[0], face[1], face[2]];
+        if triangle(&at(v0), &at(v1), &at(v2)).area > MJ_MINVAL.sqrt() {
+            edges.extend([(v0, v1), (v1, v2), (v2, v0)]);
+        }
+    }
+    edges.sort_unstable();
+    match edges.windows(2).find(|pair| pair[0] == pair[1]) {
+        Some(pair) => Err(MjcfError::asset(
+            ElementKind::Mesh,
+            &mjcf_mesh.name,
+            format!(
+                "its faces have inconsistent orientation. Please check the faces containing \
+                 the vertices {} and {}.",
+                pair[0].0 + 1,
+                pair[0].1 + 1
+            ),
+        )),
+        None => Ok(()),
+    }
+}
+
+/// A triangle's area as MuJoCo 3.5.0's `triangle` (`user_mesh.cc:155-188`)
+/// computes it, each sum and product in its order: half the length of the
+/// cross product of the edges from the first vertex, and 0 where that length
+/// is below mjMINVAL.
+#[derive(Debug, Clone, Copy)]
+struct Triangle {
+    area: f64,
+}
+
+fn triangle(v1: &[f64; 3], v2: &[f64; 3], v3: &[f64; 3]) -> Triangle {
+    let b = [v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2]];
+    let c = [v3[0] - v1[0], v3[1] - v1[1], v3[2] - v1[2]];
+    let normal = [
+        b[1] * c[2] - b[2] * c[1],
+        b[2] * c[0] - b[0] * c[2],
+        b[0] * c[1] - b[1] * c[0],
+    ];
+    let len = dot3(&normal, &normal).sqrt();
+    if len < MJ_MINVAL {
+        return Triangle { area: 0.0 };
+    }
+    Triangle { area: 0.5 * len }
+}
+
+/// `mjuu_dot3` (`user_util.cc:126-128`).
+fn dot3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// MuJoCo 3.5.0's `mjCMesh::ApplyTransformations` (`user_mesh.cc:1440-
