@@ -119,8 +119,12 @@ enum Expect {
 }
 
 /// Each case loaded as MuJoCo loads it: each body's mass, moments, centre
-/// and frame bit for bit, or MuJoCo's refusal.
+/// and frame, or MuJoCo's refusal. Bit for bit where MuJoCo's values were
+/// printed (macOS arm64); elsewhere the libm that turns an orientation
+/// alternative, a `fromto` or a body's `euler` may round otherwise, so within
+/// 1e-12 · max(1, |MuJoCo's|), which a `NaN` fails.
 fn check(cases: &[(&str, &str, Expect)]) {
+    let here = cfg!(all(target_os = "macos", target_arch = "aarch64"));
     for (name, xml, expected) in cases {
         let loaded = load_model(xml);
         match expected {
@@ -137,22 +141,26 @@ fn check(cases: &[(&str, &str, Expect)]) {
                 for (k, want) in bodies.iter().enumerate() {
                     let b = k + 1;
                     let q = model.body_iquat[b];
-                    let ours: Vec<u64> = std::iter::once(model.body_mass[b])
+                    let ours: Vec<f64> = std::iter::once(model.body_mass[b])
                         .chain(model.body_inertia[b].iter().copied())
                         .chain(model.body_ipos[b].iter().copied())
                         .chain([q.w, q.i, q.j, q.k])
-                        .map(f64::to_bits)
                         .collect();
-                    let mujoco: Vec<u64> = std::iter::once(want.mass)
+                    let mujoco: Vec<f64> = std::iter::once(want.mass)
                         .chain(want.inertia)
                         .chain(want.ipos)
                         .chain(want.iquat)
-                        .map(f64::to_bits)
                         .collect();
-                    assert_eq!(
-                        ours, mujoco,
-                        "{name}: body {b} mass, inertia, ipos, iquat {:?} {:?} {:?} {:?}",
-                        model.body_mass[b], model.body_inertia[b], model.body_ipos[b], q
+                    let same = ours.iter().zip(&mujoco).all(|(&a, &w)| {
+                        if here {
+                            a.to_bits() == w.to_bits()
+                        } else {
+                            (a - w).abs() <= 1e-12 * w.abs().max(1.0)
+                        }
+                    });
+                    assert!(
+                        same,
+                        "{name}: body {b} mass, inertia, ipos, iquat {ours:?}, MuJoCo's {mujoco:?}"
                     );
                 }
             }
