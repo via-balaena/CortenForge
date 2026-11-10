@@ -107,6 +107,11 @@
 //! before them is named first here: `SCHEMA_COSTS` (ledger L353); and
 //! `REFUSAL_FIRST_COSTS` pins each kind measured where MuJoCo names the other
 //! fault and this crate the refusal (ledgers L315, L353).
+//! RL-9b's refusal of `shellinertia` on a mesh or SDF geom with a mesh runs
+//! with RL-6d's checks of a geom, after its condim and plane checks and
+//! before its negative mass, as MuJoCo orders it; a geom's `user` data and
+//! orientation, which this crate meets as it reads the geom, come first, as
+//! in MuJoCo.
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, with the reason its row gives as MuJoCo's (RL-6a's measured
@@ -153,7 +158,10 @@
 //! a body's non-finite inertia from its geoms beside an orientation, a
 //! `fullinertia`, a reference, a mocap body's place or another body's checks:
 //! ten in `TWO_FAULTS`, twenty-six in `INERTIAL_COSTS`. Each is a sample
-//! of the pairs, not all of them.
+//! of the pairs, not all of them. RL-9b's review's (measured 2026-11-10,
+//! RB's documents) set `shellinertia` on an SDF or mesh geom beside a condim,
+//! a plane in a moving body, a `zaxis`, a `user` count or an earlier geom's
+//! negative mass: nine in `TWO_FAULTS`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1926,6 +1934,60 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><worldbody><body name="p" pos="-2 0 0"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 5"/></body><body name="s"><geom type="sphere" size="6e99"/></body></worldbody></mujoco>"#,
         "inertia must satisfy A + B >= C; use 'balanceinertia' to fix",
         "inertia must satisfy A + B >= C; use 'balanceinertia' to fix (body 'p')",
+    ),
+    (
+        "an SDF geom's shellinertia and its condim",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom type="sdf" mesh="m" shellinertia="true" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom #0 in body #1)",
+    ),
+    (
+        "a mesh geom's shellinertia and its condim",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="m" shellinertia="true" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom #0 in body #1)",
+    ),
+    (
+        "a plane in a moving body, then an SDF geom's shellinertia",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom type="plane" size="1 1 1"/><geom type="sdf" mesh="m" shellinertia="true"/></body></worldbody></mujoco>"#,
+        "plane only allowed in static bodies",
+        "plane only allowed in static bodies (geom #0 in body #1)",
+    ),
+    (
+        "a plane in a moving body, then a mesh geom's shellinertia",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom type="plane" size="1 1 1"/><geom type="mesh" mesh="m" shellinertia="true"/></body></worldbody></mujoco>"#,
+        "plane only allowed in static bodies",
+        "plane only allowed in static bodies (geom #0 in body #1)",
+    ),
+    (
+        "an SDF geom's shellinertia and its zaxis too small",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom type="sdf" mesh="m" shellinertia="true" zaxis="0 0 0"/></body></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in geom 0",
+        "invalid zaxis on <geom>: zaxis too small (geom #0 in body #1)",
+    ),
+    (
+        "an earlier geom's condim, then an SDF geom's shellinertia",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom size=".1" condim="2"/><geom type="sdf" mesh="m" shellinertia="true"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom #0 in body #1)",
+    ),
+    (
+        "an earlier body's plane, then an SDF geom's shellinertia",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="a"><freejoint/><geom type="plane" size="1 1 1"/></body><body><freejoint/><geom type="sdf" mesh="m" shellinertia="true"/></body></worldbody></mujoco>"#,
+        "plane only allowed in static bodies",
+        "plane only allowed in static bodies (geom #0 in body 'a')",
+    ),
+    (
+        "an SDF geom's shellinertia and its user over nuser_geom",
+        r#"<mujoco><size nuser_geom="1"/><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom type="sdf" mesh="m" shellinertia="true" user="1 2"/></body></worldbody></mujoco>"#,
+        "user has more values than nuser_geom in geom '' (id = 0)",
+        "invalid user on <geom>: user data exceeds nuser_geom=1",
+    ),
+    (
+        "an earlier geom's negative mass, then an SDF geom's shellinertia",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom size=".1" mass="-1"/><geom type="sdf" mesh="m" shellinertia="true"/></body></worldbody></mujoco>"#,
+        "mass, inertia or density are negative in geom",
+        "mass, inertia or density are negative in geom (geom #0 in body #1)",
     ),
 ];
 

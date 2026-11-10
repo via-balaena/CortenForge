@@ -270,6 +270,7 @@
 12ddc845f4fe7a60	mj-refuses	divergence=D-FLEX-BENDING-MODEL
 1310ec24de73227b	agree
 132949f87c9e9df5	agree
+13346a4c7642b20c	both-refuse
 13446364c47bcb81	agree
 13597ebfcfa5b0ec	agree
 137308cd48077ee9	agree
@@ -388,6 +389,7 @@
 1b347ddebfd5b94f	agree
 1b4ffaab887da954	both-refuse
 1b533efc63a89893	agree
+1b5a2cf65b95d5a9	both-refuse
 1b5cc0b82bb9c59f	agree
 1b6af483121565f6	both-refuse
 1b773f4738cc05cc	both-refuse
@@ -446,6 +448,7 @@
 1f4b932ea98f90a0	both-refuse
 1f6433e94f3e518c	both-refuse
 1f68853a8abd9f07	agree
+1f6ad2b942c2fe1c	both-refuse
 1f7ab13c78f87e7f	ours-refused	divergence=D-DAMPER-CLASS-KV
 1f7d6307ddd92a8d	model:eq_obj1id;dyn:agree	divergence=D-CONNECT-SITE
 1f9926c007337399	both-refuse
@@ -535,6 +538,7 @@
 2669f9b5f8094489	agree
 26747e04612e4515	agree
 26a2f4d642297627	mj-refuses
+26bec9121ecc4e3c	both-refuse
 26d13bc8aebd466d	mj-refuses
 26d223bffa0fba77	both-refuse
 26d50238928f5214	both-refuse
@@ -584,6 +588,7 @@
 299d3cf076a05d83	agree
 29e16a3020ea81a7	agree
 29e214226c829089	agree
+29e698f5f83322f5	both-refuse
 2a241a26c8676919	both-refuse
 2a3c0d549621bdf3	both-refuse
 2a414eeba557e9b8	agree
@@ -704,6 +709,7 @@
 31b78812f1dcfff5	agree
 31bace11e35e2d03	agree
 31d4f56e91d15c49	agree
+31dece6797510ed8	model:geom_quat;dyn:agree
 31ef3436971651f5	agree
 31fe9796893b55d5	both-refuse
 320274394e0aa6e9	agree
@@ -1273,6 +1279,7 @@
 58dc62c91ee0d7ea	both-refuse
 58f38ffb4c7f59b5	both-refuse
 58f93dee947af953	agree
+58fbd8f5b46fef23	both-refuse
 58ff5a54a7ca61c4	agree
 590435e6005ec3fd	agree
 5905207fadd977dd	agree
@@ -1529,6 +1536,7 @@
 6b253f49d6decf54	both-refuse
 6b283036b978b306	agree
 6b3434dcf0c08fc3	both-refuse
+6b347c342ca06634	both-refuse
 6b5d87bc5a7da64d	agree
 6b902b8482a8b9cd	both-refuse
 6b9fba912dd5aa19	both-refuse
@@ -1624,6 +1632,7 @@
 72212e25f0828eb3	agree
 724af57307ff942a	both-refuse
 724c1804d06efda6	model:actuator_lengthrange;dyn:agree
+726465217055fdfc	both-refuse
 726cb42d15363cfc	agree
 72974ad6eaad414b	both-refuse
 72b4114db2c0e0e6	both-refuse
@@ -3177,6 +3186,7 @@ e57a5103989259b3	agree
 e5873594b0d4f42e	agree
 e59804a6538a080e	agree
 e5a43209909cd31f	agree
+e5d1f22f626680c0	both-refuse
 e60973e68ea07fb6	ours-refused	divergence=D-FRAME-INERTIAL
 e60a4037dff29d3b	ours-refused	divergence=D-NONFINITE
 e617caab86ca940f	both-refuse

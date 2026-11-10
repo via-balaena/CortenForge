@@ -26,17 +26,6 @@ impl ModelBuilder {
             )
         };
 
-        // A mesh or SDF geom's inertia is its mesh's: MuJoCo 3.5.0 refuses
-        // `shellinertia` on one (`user_objects.cc:3744-3746`).
-        if geom.shellinertia == Some(true) && matches!(geom_type, GeomType::Mesh | GeomType::Sdf) {
-            return Err(MjcfError::invalid_value(
-                "geom",
-                "shellinertia",
-                "for mesh geoms, inertia should be specified in the mesh asset",
-            )
-            .at(at()));
-        }
-
         let (geom_mesh_ref, geom_hfield_ref) = self
             .resolve_geom_asset_links(geom, geom_type)
             .map_err(|e| e.with_location_if_unknown(at()))?;
@@ -78,6 +67,14 @@ impl ModelBuilder {
         // As resolved; a value other than 1, 3, 4 or 6 is refused once every
         // geom is built (`check_bodies`), as MuJoCo 3.5.0 refuses it.
         self.geom_condim.push(geom.condim.unwrap_or(3));
+        // A mesh or SDF geom's inertia is its mesh's: `shellinertia` on one
+        // with a mesh is refused once every geom is built (`check_bodies`),
+        // where MuJoCo 3.5.0 refuses it.
+        self.geom_shellinertia_on_mesh.push(
+            geom.shellinertia == Some(true)
+                && matches!(geom_type, GeomType::Mesh | GeomType::Sdf)
+                && geom.mesh.is_some(),
+        );
         // `contype`/`conaffinity` are MuJoCo bitmask attributes accepted as
         // i32 from XML but always non-negative by spec.
         #[allow(clippy::cast_sign_loss)]
@@ -458,7 +455,9 @@ pub(super) fn geom_volume(
 ) -> f64 {
     use std::f64::consts::PI;
     let geom_type = geom.geom_type.unwrap_or(MjcfGeomType::Sphere);
-    if geom.shellinertia == Some(true) && geom_type != MjcfGeomType::Mesh {
+    if geom.shellinertia == Some(true)
+        && !matches!(geom_type, MjcfGeomType::Mesh | MjcfGeomType::Sdf)
+    {
         return shell_area(geom, hfield_size);
     }
     let size = mass_sizes(geom, hfield_size);
@@ -529,7 +528,10 @@ pub fn compute_geom_inertia(
     let size = mass_sizes(geom, hfield_size);
     // Shell inertia for primitive geoms
     if geom.shellinertia == Some(true)
-        && geom.geom_type.unwrap_or(MjcfGeomType::Sphere) != MjcfGeomType::Mesh
+        && !matches!(
+            geom.geom_type.unwrap_or(MjcfGeomType::Sphere),
+            MjcfGeomType::Mesh | MjcfGeomType::Sdf
+        )
     {
         return compute_geom_shell_inertia(geom, hfield_size);
     }

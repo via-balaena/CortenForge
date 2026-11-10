@@ -7,7 +7,12 @@
 //! oracle (2026-11-10).
 
 // The values are MuJoCo's, printed to the last digit, and compared to it.
-#![allow(clippy::unwrap_used, clippy::unreadable_literal, clippy::float_cmp)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::unreadable_literal,
+    clippy::float_cmp,
+    clippy::approx_constant
+)]
 
 use sim_mjcf::load_model;
 
@@ -501,5 +506,154 @@ fn shellinertia_on_an_sdf_geom_is_refused() {
     assert!(
         err.contains("for mesh geoms, inertia should be specified in the mesh asset"),
         "{err}"
+    );
+}
+
+/// `obj` written to a file in `dir`, as the mesh, `attrs` on its asset, of a
+/// free body's geom.
+fn obj_mesh(dir: &std::path::Path, obj: &str, attrs: &str) -> String {
+    let path = dir.join("m.obj");
+    std::fs::write(&path, obj).unwrap();
+    format!(
+        r#"<mujoco><asset><mesh name="m" {attrs} file="{}"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
+        path.display()
+    )
+}
+
+/// A 0.3 × 0.2 × 0.6 box from (0.1, 0.1, 0.1), its coordinates not single
+/// precision values.
+const BOX_OBJ: &str = "v 0.1 0.1 0.1
+v 0.4 0.1 0.1
+v 0.4 0.3 0.1
+v 0.1 0.3 0.1
+v 0.1 0.1 0.7
+v 0.4 0.1 0.7
+v 0.4 0.3 0.7
+v 0.1 0.3 0.7
+f 1 3 2
+f 1 4 3
+f 5 6 7
+f 5 7 8
+f 1 2 6
+f 1 6 5
+f 2 3 7
+f 2 7 6
+f 3 4 8
+f 3 8 7
+f 4 1 5
+f 4 5 8";
+
+// MuJoCo's file loaders hand a mesh's vertices over as floats
+// (`user_mesh.cc:543`), so an OBJ's coordinates are single precision values,
+// as an embedded mesh's are; and it refuses a face naming no vertex
+// (`CheckInitialMesh`, `:1835-1841`).
+
+#[test]
+fn an_obj_meshs_coordinates_are_read_in_single_precision() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_body(
+        &obj_mesh(dir.path(), BOX_OBJ, ""),
+        (
+            36.00000160932538,
+            [0.2500000037252903, 0.20000000670552256, 0.3999999947845937],
+            [0.707106781186548, 0.0, 0.0, 0.707106781186548],
+            [1.3500000201165652, 1.2000000178813919, 0.39000003799796196],
+        ),
+        0.0,
+    );
+}
+
+#[test]
+fn an_obj_sliver_counted_in_single_precision_is_not_counted() {
+    // The sliver's area is 3.16e-8 on its coordinates as written, above
+    // sqrt(mjMINVAL), and 2.98e-8 in single precision, below it: MuJoCo
+    // loads the mesh.
+    let dir = tempfile::tempdir().unwrap();
+    let sliver = "v -0.5 -0.5 -0.5
+v 0.5 -0.5 -0.5
+v 0.5 0.5 -0.5
+v -0.5 0.5 -0.5
+v -0.5 -0.5 0.5
+v 0.5 -0.5 0.5
+v 0.5 0.5 0.5
+v -0.5 0.5 0.5
+v 0 -0.5 -0.49999993675
+f 1 3 2
+f 1 4 3
+f 5 6 7
+f 5 7 8
+f 1 2 6
+f 1 6 5
+f 3 4 8
+f 3 8 7
+f 1 5 8
+f 1 8 4
+f 2 3 7
+f 2 7 6
+f 1 2 9";
+    assert_body(
+        &obj_mesh(dir.path(), sliver, r#"inertia="exact""#),
+        (
+            1000.0000049670537,
+            [0.0, -1.8626451268722994e-09, -1.8626450597963253e-09],
+            [
+                0.270598056157257,
+                0.6532814799180483,
+                -0.6532814799180483,
+                0.270598056157257,
+            ],
+            [166.66666828095904, 166.66666815678266, 166.66666679084298],
+        ),
+        0.0,
+    );
+}
+
+#[test]
+fn an_obj_face_naming_no_vertex_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let pyramid = "v -0.5 -0.5 -0.5
+v 0.5 -0.5 -0.5
+v 0.5 0.5 -0.5
+v -0.5 0.5 -0.5
+v 0 0 0.5
+f 1 3 2
+f 1 4 3
+f 1 2 5
+f 2 3 5
+f 3 4 5
+f 4 1 99";
+    for attrs in [r#"inertia="exact""#, ""] {
+        let err = load_model(&obj_mesh(dir.path(), pyramid, attrs))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("in face 5, vertex index 98 does not exist"),
+            "{attrs}: {err}"
+        );
+    }
+}
+
+#[test]
+fn a_convex_mesh_too_thin_for_this_crates_hull_is_summed_over_its_faces() {
+    // A 1e-10-thick plate: MuJoCo's qhull makes its hull, this crate's hull
+    // builder makes none, and the plate's faces are its hull's.
+    assert_body(
+        r#"<mujoco><asset><mesh name="m" inertia="convex" vertex="-0.5 -0.5 -5e-11  0.5 -0.5 -5e-11  0.5 0.5 -5e-11  -0.5 0.5 -5e-11  -0.5 -0.5 5e-11  0.5 -0.5 5e-11  0.5 0.5 5e-11  -0.5 0.5 5e-11" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
+        (
+            1.0000000133514318e-07,
+            [0.0, 0.0, 0.0],
+            [
+                0.5000000000000007,
+                0.5000000000000007,
+                -0.5000000000000007,
+                0.5000000000000007,
+            ],
+            [
+                1.666666688919053e-08,
+                8.333333444595265e-09,
+                8.333333444595265e-09,
+            ],
+        ),
+        0.0,
     );
 }

@@ -232,7 +232,28 @@ pub fn load_mesh_file(
         .flat_map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
         .collect();
 
-    Ok((indexed_mesh.vertices, indices))
+    // 5. MuJoCo 3.5.0's loaders hand a file's vertices to `ProcessVertices`
+    // as floats (`user_mesh.cc:543`; tinyobjloader's for OBJ, the files'
+    // own for STL and MSH), so each is rounded to one, as an embedded
+    // mesh's are when they are read.
+    #[allow(clippy::cast_possible_truncation)] // the rounding is MuJoCo's
+    let vertices: Vec<Point3<f64>> = indexed_mesh
+        .vertices
+        .iter()
+        .map(|v| v.map(|c| f64::from(c as f32)))
+        .collect();
+
+    // 6. Each face's vertices exist (`CheckInitialMesh`,
+    // `user_mesh.cc:1835-1841`), in MuJoCo's words.
+    if let Some(i) = indices.iter().position(|&index| index >= vertices.len()) {
+        return Err(refuse(format!(
+            "in face {}, vertex index {} does not exist",
+            i / 3,
+            indices[i]
+        )));
+    }
+
+    Ok((vertices, indices))
 }
 
 /// Convert an MJCF hfield asset to `HeightFieldData`.
@@ -635,16 +656,17 @@ pub fn mesh_mass_properties(
         .map(|face| face.map(|v| at(&vertices[v as usize])))
         .collect();
     // The faces the volume and the inertia are summed over: the hull's under
-    // `convex` (MuJoCo's `GraphFaces`), the mesh's otherwise.
-    let solid: Vec<[[f64; 3]; 3]> = if mode == MeshInertia::Convex {
-        mesh.convex_hull().map_or_else(Vec::new, |hull| {
-            hull.faces
-                .iter()
-                .map(|face| face.map(|v| at(&hull.vertices[v as usize])))
-                .collect()
-        })
-    } else {
-        faces.clone()
+    // `convex` (MuJoCo's `GraphFaces`), the mesh's otherwise, and the mesh's
+    // too where this crate's hull builder makes no hull, which it does for a
+    // solid thinner than qhull's tolerance (measured: a 1e-10-thick plate,
+    // whose hull is its own faces).
+    let solid: Vec<[[f64; 3]; 3]> = match (mode, mesh.convex_hull()) {
+        (MeshInertia::Convex, Some(hull)) => hull
+            .faces
+            .iter()
+            .map(|face| face.map(|v| at(&hull.vertices[v as usize])))
+            .collect(),
+        _ => faces.clone(),
     };
     let shell = mode == MeshInertia::Shell;
     let legacy = mode == MeshInertia::Legacy;

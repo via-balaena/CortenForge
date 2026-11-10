@@ -80,6 +80,7 @@ impl ModelBuilder {
             geom_size: vec![],
             geom_friction: vec![],
             geom_condim: vec![],
+            geom_shellinertia_on_mesh: vec![],
             geom_contype: vec![],
             geom_conaffinity: vec![],
             geom_name: vec![],
