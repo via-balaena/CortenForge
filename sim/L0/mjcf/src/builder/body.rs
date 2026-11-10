@@ -4,15 +4,15 @@
 //! traversing the kinematic tree. Handles worldbody geoms/sites, mocap
 //! validation, inertia computation dispatch, and child body recursion.
 
-use nalgebra::{UnitQuaternion, Vector3};
+use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 
 use super::ModelBuilder;
 use super::geom::{compute_geom_mass, geom_volume};
 use super::mass::{
-    MJ_MINVAL, check_replaced_full_inertia, compute_inertia_from_geoms,
-    extract_inertial_properties, geom_hfield_size, geom_mesh_props,
+    GeomInertiaFault, InertialGeom, InertialValues, MJ_MINVAL, PlacedGeom, geom_hfield_size,
+    geom_mesh_props, inertia_from_geoms, inertial_values, refuse_non_finite_inertial,
 };
-use super::orientation::{MJ_EPS, resolve_orientation};
+use super::orientation::{MJ_EPS, OrientationError, resolve_orientation};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::keywords;
 use crate::types::{InertiaFromGeom, MjcfBody, MjcfGeom};
@@ -30,6 +30,12 @@ pub struct BodyFaults {
     /// value where the geom infers its body's inertia
     /// ([`ModelBuilder::negative_mass`]).
     pub negative_geom: Option<usize>,
+    /// Its `<inertial>`'s orientation alternative is refused
+    /// (`user_objects.cc:2420-2425`), before its geoms' checks.
+    pub inertial_alt: Option<OrientationError>,
+    /// Its inertia from its geoms is refused ([`inertia_from_geoms`]), after
+    /// its geoms' checks.
+    pub from_geoms: Option<GeomInertiaFault>,
     /// Its mass or a principal moment is negative after `boundmass` and
     /// `boundinertia` ([`ModelBuilder::apply_mass_pipeline`],
     /// `user_objects.cc:2457-2459`).
@@ -174,14 +180,15 @@ impl ModelBuilder {
         self.body_world_pos.push(world_pos);
         self.body_world_quat.push(world_quat);
 
-        let (mass, inertia, ipos, iquat) =
-            self.resolve_body_inertia(body, &body.geoms).map_err(|e| {
-                e.with_location_if_unknown(Location::nth(
-                    ElementKind::Body,
-                    Some(&body.name),
-                    body_id,
-                ))
-            })?;
+        let at_body = |e: MjcfError| {
+            e.with_location_if_unknown(Location::nth(ElementKind::Body, Some(&body.name), body_id))
+        };
+        // The `<inertial>` before the body's geoms, as MuJoCo's
+        // `mjCBody::Compile` reads it (`user_objects.cc:2402-2427`); where
+        // the geoms give the inertia, it is set after them (below).
+        let (before_geoms, from_geoms, inertial_alt) =
+            self.inertia_before_geoms(body).map_err(at_body)?;
+        let (mass, inertia, ipos, iquat) = before_geoms;
 
         // Track joint/DOF addresses for this body
         let jnt_adr = self.jnt_type.len();
@@ -255,16 +262,85 @@ impl ModelBuilder {
             self.process_geom(geom, body_id)?;
         }
         self.body_geom_num.push(body.geoms.len());
+        // A body's inertia from the geoms MuJoCo selects, each in its frame
+        // as `process_geom` resolved it (`InertiaFromGeom` reads each
+        // compiled geom, `user_objects.cc:2158-2224`); where it selects none
+        // the values before the geoms stay.
+        let mut geom_fault = None;
+        let mut replaced = false;
+        if from_geoms {
+            // The geoms in `inertiagrouprange` whose mass is above mjEPS, the
+            // predicate of [`Self::selects`] on the mass `InertialGeom`
+            // computes, each mesh's properties computed once.
+            let geoms: Vec<InertialGeom> = body
+                .geoms
+                .iter()
+                .enumerate()
+                .filter(|(_, geom)| self.in_inertia_groups(geom))
+                .map(|(k, geom)| {
+                    let placed = PlacedGeom {
+                        geom,
+                        pos: self.geom_pos[geom_adr + k],
+                        quat: self.geom_quat[geom_adr + k],
+                    };
+                    let mesh = geom_mesh_props(
+                        geom,
+                        &self.mesh_name_to_id,
+                        &self.mesh_data,
+                        &self.mesh_inertia_modes,
+                    );
+                    let hfield = geom_hfield_size(geom, &self.hfield_name_to_id, &self.hfield_size);
+                    InertialGeom::new(&placed, mesh.as_ref(), hfield)
+                })
+                .filter(|geom| geom.mass > MJ_EPS)
+                .collect();
+            let prior = (
+                [inertia.x, inertia.y, inertia.z],
+                [iquat.w, iquat.i, iquat.j, iquat.k],
+            );
+            match inertia_from_geoms(&geoms, prior) {
+                Ok(Some((mass, inertia, ipos, [w, x, y, z]))) => {
+                    replaced = true;
+                    self.body_mass[body_id] = mass;
+                    self.body_inertia[body_id] = Vector3::from(inertia);
+                    self.body_ipos[body_id] = Vector3::from(ipos);
+                    self.body_iquat[body_id] =
+                        UnitQuaternion::new_unchecked(Quaternion::new(w, x, y, z));
+                }
+                // An `<inertial>` kept under `inertiafromgeom="true"` is
+                // refused as it would be under "auto" where it is not finite.
+                Ok(None) => refuse_non_finite_inertial(&before_geoms).map_err(at_body)?,
+                Err(fault) => geom_fault = Some(fault),
+            }
+        }
+        // A body that neither an `<inertial>` nor a selected geom gives an
+        // inertial frame takes its own pose as one, as written in the
+        // `<frame>` or body holding it (`user_objects.cc:2442-2446`, before
+        // the frame composes into the body's pose at `:2474` and before
+        // `fusestatic`, `user_model.cc:4932-4937`).
+        if body.inertial.is_none() && !replaced {
+            let (pos, quat) = body
+                .pose_as_written
+                .map_or((body_pos, body_quat), |(pos, q)| {
+                    (
+                        pos,
+                        UnitQuaternion::new_unchecked(Quaternion::new(q[0], q[1], q[2], q[3])),
+                    )
+                });
+            self.body_ipos[body_id] = pos;
+            self.body_iquat[body_id] = quat;
+        }
         // A geom infers its body's inertia where the body writes no
-        // `<inertial>` or `inertiafromgeom` is true (`user_objects.cc:2429-2432`;
-        // MuJoCo also asks the geom's group to be in `inertiagrouprange`, which
-        // this crate does not read, ledger L375).
+        // `<inertial>` or `inertiafromgeom` is true, and its group is in
+        // `inertiagrouprange` (`inferinertia`, `user_objects.cc:2429-2432`);
+        // only such a geom is checked for a negative mass or density
+        // (`:3781-3807`).
         let infers =
             body.inertial.is_none() || self.compiler.inertiafromgeom == InertiaFromGeom::True;
         let negative = body
             .geoms
             .iter()
-            .position(|geom| infers && self.negative_mass(geom));
+            .position(|geom| infers && self.in_inertia_groups(geom) && self.negative_mass(geom));
         let full_and_diagonal = body.inertial.as_ref().is_some_and(|inertial| {
             inertial.fullinertia.is_some()
                 && inertial.diaginertia.is_some_and(|d| d != Vector3::zeros())
@@ -272,17 +348,18 @@ impl ModelBuilder {
         self.body_faults.push(BodyFaults {
             full_and_diagonal,
             negative_geom: negative.map(|k| geom_adr + k),
+            inertial_alt,
+            from_geoms: geom_fault,
             negative: false,
             triangle: false,
         });
         // Under `inertiafromgeom="true"` MuJoCo replaces the `<inertial>`
-        // only where it selects a geom, one whose mass is above mjEPS
-        // (`InertiaFromGeom`, `user_objects.cc:2163-2170`; the group range
-        // is not read, ledger L375); where it selects none, it keeps the
-        // `<inertial>` and raises a negative value to its bound.
+        // only where it selects a geom ([`Self::selects`]); where it selects
+        // none, it keeps the `<inertial>` and raises a negative value to its
+        // bound.
         if self.compiler.inertiafromgeom == InertiaFromGeom::True
             && self.kept_negative_inertial.is_none()
-            && !body.geoms.iter().any(|geom| self.geom_mass(geom) > MJ_EPS)
+            && !body.geoms.iter().any(|geom| self.selects(geom))
         {
             self.kept_negative_inertial = body
                 .inertial
@@ -308,6 +385,21 @@ impl ModelBuilder {
         }
 
         Ok(body_id)
+    }
+
+    /// Whether a geom's group is in `inertiagrouprange`, both ends included
+    /// (`user_objects.cc:2167-2168`, `:2431-2432`; a geom's group is 0
+    /// unless written).
+    fn in_inertia_groups(&self, geom: &MjcfGeom) -> bool {
+        let [first, last] = self.compiler.inertiagrouprange;
+        (first..=last).contains(&geom.group.unwrap_or(0))
+    }
+
+    /// Whether MuJoCo 3.5.0 selects a geom to give its body its inertia
+    /// (`InertiaFromGeom`, `user_objects.cc:2163-2170`): its group in
+    /// `inertiagrouprange` and its mass above mjEPS.
+    fn selects(&self, geom: &MjcfGeom) -> bool {
+        self.in_inertia_groups(geom) && self.geom_mass(geom) > MJ_EPS
     }
 
     /// Whether MuJoCo 3.5.0's compiler gives `geom` a negative mass or
@@ -352,9 +444,13 @@ impl ModelBuilder {
 
     /// MuJoCo 3.5.0's checks of each body, body by body in its order from the
     /// world, as `mjCBody::Compile` makes them: a `fullinertia` beside a
-    /// diagonal inertia (`user_objects.cc:2408-2409`); geom by geom, its
-    /// checks ([`Self::check_geom`]); a mass or moment negative after the
-    /// bounds (`:2457-2459`), then the moments' triangle
+    /// diagonal inertia (`user_objects.cc:2408-2409`); its `<inertial>`'s
+    /// orientation alternative (`:2420-2425`); geom by geom, its checks
+    /// ([`Self::check_geom`]); its inertia from its geoms (`InertiaFromGeom`,
+    /// `:2158-2224`, and this crate's refusal of one not finite, where MuJoCo
+    /// loads it: registry row D-INERTIA-NONFINITE); a mass or moment negative
+    /// after the bounds
+    /// (`:2457-2459`), then the moments' triangle
     /// ([`Self::apply_mass_pipeline`], `:2461-2469`); then the body's joints
     /// ([`Self::check_body_joints`]). A geom `fusestatic` moved into an
     /// earlier body is checked at its own body's turn, before the first body
@@ -408,6 +504,13 @@ impl ModelBuilder {
                 )
                 .at(self.body_location(body)));
             }
+            if let Some(alternative) = faults.inertial_alt {
+                return Err(MjcfError::invalid_model(format!(
+                    "error '{}' in inertia alternative",
+                    alternative.reason
+                ))
+                .at(self.body_location(body)));
+            }
             let start = self.body_geom_adr[body];
             for geom in start..start + self.body_geom_num[body] {
                 if geom_turn(geom) != body_turn(body) {
@@ -417,6 +520,9 @@ impl ModelBuilder {
                     Location::nth(ElementKind::Geom, self.geom_name[geom].as_deref(), geom)
                         .within_nth(ElementKind::Body, self.body_name[body].as_deref(), body)
                 })?;
+            }
+            if let Some(fault) = faults.from_geoms {
+                return Err(fault.error().at(self.body_location(body)));
             }
             if faults.negative {
                 return Err(
@@ -493,57 +599,53 @@ impl ModelBuilder {
         }
     }
 
-    /// Resolve inertial properties with full MuJoCo semantics.
-    ///
-    /// Dispatches based on `compiler.inertiafromgeom`:
-    /// - `True`  — always compute from geoms (overrides explicit `<inertial>`,
-    ///   whose `fullinertia` MuJoCo still refuses where it would refuse it)
-    /// - `Auto`  — compute from geoms only when no explicit `<inertial>`
-    /// - `False` — use explicit `<inertial>` or zero
-    fn resolve_body_inertia(
+    /// A body's inertia before its geoms, MuJoCo's defaults (0, the identity)
+    /// or its `<inertial>`'s ([`inertial_values`]), and whether its geoms
+    /// give it where MuJoCo selects any: under `inertiafromgeom="true"`, or
+    /// `"auto"` where it writes no `<inertial>` (`user_objects.cc:2436-2439`).
+    /// An `<inertial>` its geoms cannot replace is refused here where it is
+    /// not finite ([`refuse_non_finite_inertial`]). The `<inertial>`'s frame
+    /// is its quaternion or orientation alternative as a body's is resolved
+    /// (`:2420-2425`); an alternative MuJoCo refuses is returned, for
+    /// [`Self::check_bodies`] to refuse in MuJoCo's order among the body's own
+    /// checks, and the identity taken in its place.
+    fn inertia_before_geoms(
         &self,
         body: &MjcfBody,
-        resolved_geoms: &[MjcfGeom],
-    ) -> Result<(f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>)> {
-        match self.compiler.inertiafromgeom {
-            InertiaFromGeom::True => {
-                check_replaced_full_inertia(body.inertial.as_ref())?;
-                compute_inertia_from_geoms(
-                    resolved_geoms,
-                    &self.mesh_name_to_id,
-                    &self.mesh_data,
-                    &self.mesh_inertia_modes,
-                    &self.hfield_name_to_id,
-                    &self.hfield_size,
+    ) -> Result<(InertialValues, bool, Option<OrientationError>)> {
+        let from_geoms = match self.compiler.inertiafromgeom {
+            InertiaFromGeom::True => true,
+            InertiaFromGeom::Auto => body.inertial.is_none(),
+            InertiaFromGeom::False => false,
+        };
+        let mut refused = None;
+        let values = match &body.inertial {
+            Some(inertial) => {
+                let frame = resolve_orientation(
+                    inertial.quat,
+                    inertial.euler,
+                    inertial.axisangle,
+                    inertial.xyaxes,
+                    inertial.zaxis,
+                    &self.compiler,
                 )
+                .unwrap_or_else(|alternative| {
+                    refused = Some(alternative);
+                    UnitQuaternion::identity()
+                });
+                inertial_values(inertial, frame)?
             }
-            InertiaFromGeom::Auto => {
-                if let Some(ref inertial) = body.inertial {
-                    extract_inertial_properties(inertial)
-                } else {
-                    compute_inertia_from_geoms(
-                        resolved_geoms,
-                        &self.mesh_name_to_id,
-                        &self.mesh_data,
-                        &self.mesh_inertia_modes,
-                        &self.hfield_name_to_id,
-                        &self.hfield_size,
-                    )
-                }
-            }
-            InertiaFromGeom::False => {
-                if let Some(ref inertial) = body.inertial {
-                    extract_inertial_properties(inertial)
-                } else {
-                    Ok((
-                        0.0,
-                        Vector3::zeros(),
-                        Vector3::zeros(),
-                        UnitQuaternion::identity(),
-                    ))
-                }
-            }
+            None => (
+                0.0,
+                Vector3::zeros(),
+                Vector3::zeros(),
+                UnitQuaternion::identity(),
+            ),
+        };
+        if !from_geoms {
+            refuse_non_finite_inertial(&values)?;
         }
+        Ok((values, from_geoms, refused))
     }
 }
 

@@ -8,8 +8,10 @@
 //! Every document below was loaded by MuJoCo 3.5.0 on the census's unfused
 //! oracle (2026-11-01); each expects MuJoCo's `body_mass`, bit for bit (a sum
 //! of products and quotients of the written numbers and pi: no library call
-//! to differ between platforms), and MuJoCo's `body_inertia` within a
-//! relative 1e-12, exactly where it is 0.
+//! to differ between platforms), and MuJoCo's `body_inertia` bit for bit,
+//! a body of one geom taking that geom's as MuJoCo copies it (book
+//! Rigid-loading L33) — but a `shellinertia` box's, cylinder's or capsule's,
+//! within a relative 1e-12 (ledger L355).
 
 // The values are MuJoCo's, printed to the last digit.
 #![allow(clippy::unreadable_literal)]
@@ -615,9 +617,9 @@ fn a_geoms_mass_is_mujocos() {
     );
 }
 
-/// Each document's `body_inertia` is MuJoCo's within a relative 1e-12, and
-/// exactly 0 where MuJoCo's is (a plane, or a geom of mass 0); a value that
-/// is not a number fails.
+/// Each document's `body_inertia` is MuJoCo's bit for bit, but a
+/// `shellinertia` box's, cylinder's or capsule's, within a relative 1e-12 and
+/// exactly 0 where MuJoCo's is; a value that is not a number fails.
 #[test]
 fn a_geoms_inertia_is_mujocos() {
     let mut wrong = Vec::new();
@@ -635,8 +637,12 @@ fn a_geoms_inertia_is_mujocos() {
             .flat_map(|i| i.iter().copied())
             .collect();
         let want: Vec<f64> = mujoco.iter().flatten().copied().collect();
+        let shell = doc.contains(r#"shellinertia="true""#)
+            && ["box", "cylinder", "capsule"]
+                .iter()
+                .any(|t| doc.contains(&format!(r#"type="{t}""#)));
         let close = |&(g, w): &(f64, f64)| {
-            if w == 0.0 {
+            if w == 0.0 || !shell {
                 g.to_bits() == w.to_bits()
             } else {
                 (g - w).abs() <= 1e-12 * w.abs()

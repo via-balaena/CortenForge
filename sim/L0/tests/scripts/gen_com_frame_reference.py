@@ -33,19 +33,15 @@ Each case records, after `mj_forward` at a moved state and then
 write, so a test can check that its inputs are MuJoCo's before it compares
 the outputs, the compiled masses and inertias among them. Contacts are
 disabled throughout: the bodies' forces here are the dynamics' own. Each
-body's mass and inertia are given (`<inertial>`), not computed from geoms,
-because sim-mjcf compiles a body's moments from its geoms and a rotated
-geom's inertial frame otherwise than MuJoCo (ledgers L368, L195). The joint axes are
-axis-aligned. The cases:
+body's mass and inertia are given (`<inertial>`), not computed from geoms.
+The joint axes are axis-aligned. The cases:
 
 - compos: two trees. One hangs a hinge with an offset anchor, a ball with an
   offset anchor under it (the two with armature), then a body with a slide
   and a hinge. The other is a free body carrying a hinged body, which carries
   a jointless body with mass. Two subtree sensors make the forward pass
   compute the subtree velocities, and an accelerometer makes it compute the
-  body accelerations and forces. There is no massless body: the loader places
-  its inertial frame otherwise than MuJoCo, and refuses MuJoCo's way of giving
-  it one (ledger L212).
+  body accelerations and forces. There is no massless body.
 - chain: a hinge-hinge-ball chain with a hinge off its root (shaped as the
   mass factor golden's chain).
 - slow: compos at velocities 1e-7 of compos's.

@@ -1,0 +1,1 @@
+<mujoco><worldbody><frame pos="0 1 0" euler="0 0 90"><body name="m" pos="1 0 0" euler="0 30 0"/></frame></worldbody></mujoco>

@@ -6,18 +6,18 @@
 //! value still negative, the moments' triangle (balanced or recorded); then,
 //! after every check of the masses, settotalmass.
 
-use nalgebra::{Matrix3, Quaternion, UnitQuaternion, Vector3, Vector4};
+use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 use sim_core::mesh::TriangleMeshData;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::ModelBuilder;
-use super::eig3::full_inertia;
-use super::geom::{compute_geom_inertia, compute_geom_mass, geom_effective_com};
+use super::eig3::{eig3, full_inertia};
+use super::geom::{compute_geom_inertia, compute_geom_mass, mesh_inertia_scale};
 use super::mesh::{MeshProps, compute_mesh_inertia_by_mode, resolve_mesh};
-use super::orientation::quat_from_wxyz;
+use super::orientation::{MJ_EPS, mulquat, mulvecmat, quat2mat};
 use crate::error::{MjcfError, Result};
-use crate::types::{MeshInertia, MjcfGeom, MjcfInertial};
+use crate::types::{MeshInertia, MjcfGeom, MjcfGeomType, MjcfInertial};
 
 /// MuJoCo's `mjMINVAL` (`mjtnum.h:26`).
 pub const MJ_MINVAL: f64 = 1e-15;
@@ -79,29 +79,29 @@ impl ModelBuilder {
     }
 }
 
-/// Extract inertial properties from MjcfInertial with full MuJoCo semantics.
-///
-/// Handles both `diaginertia` and `fullinertia` specifications. A
-/// `fullinertia` is made principal as MuJoCo's compiler makes it
-/// (`mjuu_fullInertia`, `user_objects.cc:2413-2417`): its moments in
-/// decreasing order and their frame in `iquat`, refused where the smallest
-/// is below mjEPS, or where they or their frame are not finite.
-pub fn extract_inertial_properties(
+/// A body's mass, principal moments, centre of mass and inertial frame.
+pub type InertialValues = (f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>);
+
+/// An `<inertial>`'s values as MuJoCo 3.5.0's compiler makes them, before a
+/// body's geoms (`user_objects.cc:2402-2427`), its principal axes `frame`
+/// where it writes no `fullinertia` (its quaternion or orientation
+/// alternative, resolved by the caller). A `fullinertia` is made principal
+/// as `mjuu_fullInertia` makes it (`:2413-2417`): its moments in decreasing
+/// order and their frame in `iquat`, refused where the smallest is below
+/// mjEPS. What it makes may not be finite (a `fullinertia` near the largest
+/// double), which MuJoCo keeps or, under `inertiafromgeom="true"`, replaces
+/// with its geoms'.
+pub fn inertial_values(
     inertial: &MjcfInertial,
-) -> Result<(f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>)> {
+    frame: UnitQuaternion<f64>,
+) -> Result<InertialValues> {
     let mass = inertial.mass;
     let ipos = inertial.pos;
 
     // Priority: fullinertia > diaginertia > default
     if let Some(full) = inertial.fullinertia {
-        let (moments, frame) = principal_full_inertia(&full)?;
-        if !moments.iter().chain(frame.iter()).all(|x| x.is_finite()) {
-            return Err(MjcfError::invalid_value(
-                "inertial",
-                "fullinertia",
-                "its principal moments or axes are not finite",
-            ));
-        }
+        let (moments, frame) = full_inertia(&full)
+            .map_err(|reason| MjcfError::invalid_value("inertial", "fullinertia", reason))?;
         // The principal frame is the inertial frame: MuJoCo's
         // `mjuu_fullInertia` overwrites `iquat` (`user_objects.cc:2412-2416`),
         // and the parser refuses an orientation written beside a
@@ -111,29 +111,28 @@ pub fn extract_inertial_properties(
         Ok((mass, Vector3::from(moments), ipos, iquat))
     } else if let Some(diag) = inertial.diaginertia {
         // Diagonal inertia already in principal axes
-        Ok((mass, diag, ipos, quat_from_wxyz(inertial.quat)))
+        Ok((mass, diag, ipos, frame))
     } else {
         // MuJoCo's default inertia is 0 (`mjs_defaultBody`, `user_init.c:75-76`).
-        Ok((mass, Vector3::zeros(), ipos, quat_from_wxyz(inertial.quat)))
+        Ok((mass, Vector3::zeros(), ipos, frame))
     }
 }
 
-/// A `fullinertia` made principal (`full_inertia`), refused with MuJoCo's
-/// text where its smallest moment is below mjEPS.
-fn principal_full_inertia(full: &[f64; 6]) -> Result<([f64; 3], [f64; 4])> {
-    full_inertia(full).map_err(|reason| MjcfError::invalid_value("inertial", "fullinertia", reason))
-}
-
-/// MuJoCo's refusal of a `fullinertia` that `<compiler
-/// inertiafromgeom="true">` replaces with the geoms' inertia: MuJoCo makes
-/// every fullinertia principal before that (`user_objects.cc:2413-2418`), so
-/// its refusal stands, and what it makes, a non-finite one included, is
-/// replaced.
-pub fn check_replaced_full_inertia(inertial: Option<&MjcfInertial>) -> Result<()> {
-    if let Some(full) = inertial.and_then(|i| i.fullinertia) {
-        principal_full_inertia(&full)?;
+/// This crate's refusal of an `<inertial>` whose principal moments or frame
+/// are not finite, which MuJoCo loads: only a `fullinertia` can make one
+/// (the reader refuses a value that is not finite).
+pub fn refuse_non_finite_inertial(values: &InertialValues) -> Result<()> {
+    let (_, moments, _, frame) = values;
+    let frame = [frame.w, frame.i, frame.j, frame.k];
+    if moments.iter().chain(frame.iter()).all(|x| x.is_finite()) {
+        Ok(())
+    } else {
+        Err(MjcfError::invalid_value(
+            "inertial",
+            "fullinertia",
+            "its principal moments or axes are not finite",
+        ))
     }
-    Ok(())
 }
 
 /// A mesh geom's mesh properties, by its mesh's inertia mode; `None` for
@@ -172,125 +171,227 @@ pub fn geom_hfield_size<'a>(
     hfield_size.get(*id)
 }
 
-/// Compute inertia from geoms (fallback when no explicit inertial).
+/// A geom as its body's inertia reads it: the geom and its frame in its
+/// body (`pos`, `quat`), as `process_geom` resolved them from its `pos` and
+/// its quaternion or orientation alternative.
+pub struct PlacedGeom<'a> {
+    /// The geom, its classes applied.
+    pub geom: &'a MjcfGeom,
+    /// Its position in its body's frame.
+    pub pos: Vector3<f64>,
+    /// Its orientation in its body's frame.
+    pub quat: UnitQuaternion<f64>,
+}
+
+/// A geom as MuJoCo 3.5.0's `InertiaFromGeom` reads it: a compiled
+/// geom's `pos`, `quat`, `mass_` and `inertia` (`user_objects.cc:2158-2224`),
+/// its principal moments in its frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InertialGeom {
+    /// Its centre of mass in its body's frame.
+    pub pos: [f64; 3],
+    /// Its principal axes in its body's frame, (w, x, y, z).
+    pub quat: [f64; 4],
+    /// Its mass.
+    pub mass: f64,
+    /// Its principal moments about `pos`, along `quat`'s axes.
+    pub inertia: [f64; 3],
+}
+
+impl InertialGeom {
+    /// `placed` as MuJoCo holds it once compiled. A primitive's moments are
+    /// its inertia's diagonal ([`compute_geom_inertia`]) in its own frame. A
+    /// mesh's frame is moved to the mesh's centre of mass and turned to the
+    /// principal axes of the mesh's inertia, `eig3`'s (`user_mesh.cc:1640-
+    /// 1686`), accumulated into the geom's as `mjuu_frameaccum` does
+    /// (`user_objects.cc:3748-3754`), and its moments are those axes' at the
+    /// geom's density; the mesh's own numbers are this crate's (book
+    /// Rigid-loading L35's).
+    pub fn new(
+        placed: &PlacedGeom<'_>,
+        mesh_props: Option<&MeshProps>,
+        hfield_size: Option<&[f64; 4]>,
+    ) -> Self {
+        let geom = placed.geom;
+        let mass = compute_geom_mass(geom, mesh_props, hfield_size);
+        let pos = [placed.pos.x, placed.pos.y, placed.pos.z];
+        let quat = [placed.quat.w, placed.quat.i, placed.quat.j, placed.quat.k];
+        if let (Some(MjcfGeomType::Mesh), Some(&(volume, com, unit))) = (geom.geom_type, mesh_props)
+        {
+            let (eigval, mesh_quat) = eig3(&[
+                unit[(0, 0)],
+                unit[(0, 1)],
+                unit[(0, 2)],
+                unit[(0, 1)],
+                unit[(1, 1)],
+                unit[(1, 2)],
+                unit[(0, 2)],
+                unit[(1, 2)],
+                unit[(2, 2)],
+            ]);
+            let turned = mulvecmat(&[com.x, com.y, com.z], &quat2mat(&quat));
+            let scale = mesh_inertia_scale(geom, volume);
+            return Self {
+                pos: [pos[0] + turned[0], pos[1] + turned[1], pos[2] + turned[2]],
+                quat: mulquat(&quat, &mesh_quat),
+                mass,
+                // MuJoCo leaves a geom of mass 0 with an inertia of 0.
+                inertia: if mass == 0.0 {
+                    [0.0; 3]
+                } else {
+                    eigval.map(|moment| moment * scale)
+                },
+            };
+        }
+        let inertia = compute_geom_inertia(geom, mesh_props, hfield_size);
+        Self {
+            pos,
+            quat,
+            mass,
+            inertia: [inertia[(0, 0)], inertia[(1, 1)], inertia[(2, 2)]],
+        }
+    }
+}
+
+/// Why MuJoCo 3.5.0's `InertiaFromGeom` refuses a body, or this crate does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeomInertiaFault {
+    /// Its selected geoms' mass is below mjEPS (`user_objects.cc:2194-2196`).
+    MassTooSmall,
+    /// `mjuu_fullInertia` refuses the summed inertia (`:2219-2222`).
+    PrincipalAxes(&'static str),
+    /// The mass, moments, centre or frame it gives are not all finite, where
+    /// MuJoCo loads them (registry row D-INERTIA-NONFINITE).
+    NotFinite,
+}
+
+impl GeomInertiaFault {
+    /// The refusal, in MuJoCo's words where MuJoCo refuses.
+    pub fn error(self) -> MjcfError {
+        match self {
+            Self::MassTooSmall => {
+                MjcfError::invalid_model("body mass is too small, cannot compute center of mass")
+            }
+            Self::PrincipalAxes(reason) => MjcfError::invalid_model(format!(
+                "error '{reason}' in alternative for principal axes"
+            )),
+            Self::NotFinite => MjcfError::invalid_model(
+                "the body's mass or inertia computed from its geoms is not finite",
+            ),
+        }
+    }
+}
+
+/// A body's mass, principal moments, centre of mass and inertial frame
+/// (w, x, y, z), as [`inertia_from_geoms`] gives them.
+pub type BodyInertial = (f64, [f64; 3], [f64; 3], [f64; 4]);
+
+/// MuJoCo 3.5.0's `InertiaFromGeom` (`user_objects.cc:2158-2224`) over the
+/// geoms it selects (their group in `inertiagrouprange`, their mass above
+/// mjEPS), each
+/// product and sum in its order: none gives nothing; one is copied, its
+/// moments and frame as they are; several give their total mass, their
+/// centre of mass and the principal moments and axes of their inertia
+/// about it (`mjuu_globalinertia`, `mjuu_offcenter`, `mjuu_fullInertia`).
+/// Where that inertia's first entry is not a number, `mjuu_fullInertia`
+/// returns without writing (`user_util.cc:786-788`), and the body keeps
+/// `prior` (its moments and frame before its geoms).
 ///
-/// Accumulates full 3×3 inertia tensor with geom orientation handling,
-/// then eigendecomposes to extract principal inertia and orientation.
-/// Refuses a body whose mass, inertia or principal moments and axes are not
-/// finite, checked on the tensor and on its decomposition before the frame
-/// is fitted: a geom's size or place can overflow them where MuJoCo loads
-/// the body (registry row D-INERTIA-NONFINITE).
-///
-/// Mesh inertia is computed once per geom and cached across the mass and
-/// inertia passes (avoids O(3n) calls to `compute_mesh_inertia`); a height
-/// field geom's mass and inertia read its asset's sizes (`hfield_size`, by
-/// `hfield_lookup`).
-pub fn compute_inertia_from_geoms(
-    geoms: &[MjcfGeom],
-    mesh_lookup: &HashMap<String, usize>,
-    mesh_data: &[Arc<TriangleMeshData>],
-    mesh_inertia_modes: &[MeshInertia],
-    hfield_lookup: &HashMap<String, usize>,
-    hfield_size: &[[f64; 4]],
-) -> Result<(f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>)> {
-    if geoms.is_empty() {
-        // No geoms: zero mass/inertia (matches MuJoCo).
-        // Use boundmass/boundinertia to set minimums instead.
-        return Ok((
-            0.0,
-            Vector3::zeros(),
-            Vector3::zeros(),
-            UnitQuaternion::identity(),
-        ));
-    }
-
-    // Each geom's `fromto` is already its pos, quat and size (`resolve_geom_fromto`).
-
-    // Pre-compute mesh inertia once per geom (avoids 3× recomputation).
-    let mesh_props: Vec<Option<MeshProps>> = geoms
-        .iter()
-        .map(|geom| geom_mesh_props(geom, mesh_lookup, mesh_data, mesh_inertia_modes))
-        .collect();
-    let hfields: Vec<Option<&[f64; 4]>> = geoms
-        .iter()
-        .map(|geom| geom_hfield_size(geom, hfield_lookup, hfield_size))
-        .collect();
-
-    let mut total_mass = 0.0;
-    let mut com = Vector3::zeros();
-
-    // First pass: compute total mass and COM
-    // For mesh geoms, the effective center of mass in the body frame is
-    // `geom.pos + R * mesh_com` (mesh COM is in mesh-local coordinates).
-    // For primitive geoms, the local COM is at the geom origin: `geom.pos`.
-    for ((geom, props), &hfield) in geoms.iter().zip(mesh_props.iter()).zip(&hfields) {
-        let geom_mass = compute_geom_mass(geom, props.as_ref(), hfield);
-        let effective_pos = geom_effective_com(geom, props.as_ref());
-        total_mass += geom_mass;
-        com += effective_pos * geom_mass;
-    }
-
-    if total_mass > 1e-10 {
-        com /= total_mass;
-    }
-
-    // Second pass: accumulate full 3×3 inertia tensor about COM
-    let mut inertia_tensor = Matrix3::zeros();
-    for ((geom, props), &hfield) in geoms.iter().zip(mesh_props.iter()).zip(&hfields) {
-        let geom_mass = compute_geom_mass(geom, props.as_ref(), hfield);
-        let geom_inertia = compute_geom_inertia(geom, props.as_ref(), hfield);
-
-        // 1. Rotate local inertia to body frame: I_rot = R * I_local * Rᵀ
-        let q = geom.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0));
-        let r = UnitQuaternion::from_quaternion(Quaternion::new(q[0], q[1], q[2], q[3]));
-        let rot = r.to_rotation_matrix();
-        let i_rotated = rot * geom_inertia * rot.transpose();
-
-        // 2. Parallel axis theorem (full tensor):
-        //    I_shifted = I_rotated + m * (d·d * I₃ - d ⊗ d)
-        //    d = displacement from body COM to geom effective COM
-        let effective_pos = geom_effective_com(geom, props.as_ref());
-        let d = effective_pos - com;
-        let d_sq = d.dot(&d);
-        let parallel_axis = geom_mass * (Matrix3::identity() * d_sq - d * d.transpose());
-        inertia_tensor += i_rotated + parallel_axis;
-    }
-
-    let not_finite = || {
-        MjcfError::invalid_model("the body's mass or inertia computed from its geoms is not finite")
+/// A result that is not all finite is refused here, where MuJoCo loads it
+/// (D-INERTIA-NONFINITE); MuJoCo's two refusals are kept.
+pub fn inertia_from_geoms(
+    geoms: &[InertialGeom],
+    prior: ([f64; 3], [f64; 4]),
+) -> std::result::Result<Option<BodyInertial>, GeomInertiaFault> {
+    let inertial = match geoms {
+        [] => return Ok(None),
+        [geom] => (geom.mass, geom.inertia, geom.pos, geom.quat),
+        _ => {
+            let mut mass = 0.0;
+            let mut com = [0.0; 3];
+            for geom in geoms {
+                mass += geom.mass;
+                com[0] += geom.mass * geom.pos[0];
+                com[1] += geom.mass * geom.pos[1];
+                com[2] += geom.mass * geom.pos[2];
+            }
+            // Unreachable from a document: each geom here has a mass above
+            // mjEPS and there are two or more. MuJoCo's own check
+            // (`user_objects.cc:2194-2196`) is unreachable for the same
+            // reason; it is kept as MuJoCo keeps it.
+            if mass < MJ_EPS {
+                return Err(GeomInertiaFault::MassTooSmall);
+            }
+            let ipos = [com[0] / mass, com[1] / mass, com[2] / mass];
+            let mut toti = [0.0; 6];
+            for geom in geoms {
+                let dpos = [
+                    geom.pos[0] - ipos[0],
+                    geom.pos[1] - ipos[1],
+                    geom.pos[2] - ipos[2],
+                ];
+                let inert0 = global_inertia(&geom.inertia, &geom.quat);
+                let inert1 = off_center(geom.mass, &dpos);
+                for j in 0..6 {
+                    toti[j] = toti[j] + inert0[j] + inert1[j];
+                }
+            }
+            let (inertia, iquat) = if toti[0].is_nan() {
+                prior
+            } else {
+                full_inertia(&toti).map_err(GeomInertiaFault::PrincipalAxes)?
+            };
+            (mass, inertia, ipos, iquat)
+        }
     };
-    if !total_mass.is_finite() || !inertia_tensor.iter().all(|x| x.is_finite()) {
-        return Err(not_finite());
-    }
-
-    // Eigendecompose to get principal axes. MuJoCo copies a single geom's
-    // frame and moments, and finds several geoms' with `eig3`
-    // (`InertiaFromGeom`, `user_objects.cc:2157-2227`): Rigid-loading L33's.
-    // A finite tensor's moments can overflow (two geoms far apart).
-    let eigen = inertia_tensor.symmetric_eigen();
-    if !eigen
-        .eigenvalues
-        .iter()
-        .chain(eigen.eigenvectors.iter())
-        .all(|x| x.is_finite())
+    let (mass, inertia, ipos, iquat) = inertial;
+    if !std::iter::once(mass)
+        .chain(inertia)
+        .chain(ipos)
+        .chain(iquat)
+        .all(f64::is_finite)
     {
-        return Err(not_finite());
+        return Err(GeomInertiaFault::NotFinite);
     }
-    let principal_inertia = Vector3::new(
-        eigen.eigenvalues[0].abs(),
-        eigen.eigenvalues[1].abs(),
-        eigen.eigenvalues[2].abs(),
-    );
+    Ok(Some(inertial))
+}
 
-    // Eigenvectors form rotation to principal axes
-    // Ensure right-handed coordinate system
-    let mut rot = eigen.eigenvectors;
-    if rot.determinant() < 0.0 {
-        rot.set_column(2, &(-rot.column(2)));
-    }
-    let iquat = UnitQuaternion::from_rotation_matrix(&nalgebra::Rotation3::from_matrix(&rot));
+/// `mjuu_globalinertia` (`user_util.cc:509-525`): principal moments `local`
+/// along the axes of `quat`, as the inertia `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]`.
+fn global_inertia(local: &[f64; 3], quat: &[f64; 4]) -> [f64; 6] {
+    let mat = quat2mat(quat);
+    let tmp = [
+        mat[0] * local[0],
+        mat[3] * local[0],
+        mat[6] * local[0],
+        mat[1] * local[1],
+        mat[4] * local[1],
+        mat[7] * local[1],
+        mat[2] * local[2],
+        mat[5] * local[2],
+        mat[8] * local[2],
+    ];
+    [
+        mat[0] * tmp[0] + mat[1] * tmp[3] + mat[2] * tmp[6],
+        mat[3] * tmp[1] + mat[4] * tmp[4] + mat[5] * tmp[7],
+        mat[6] * tmp[2] + mat[7] * tmp[5] + mat[8] * tmp[8],
+        mat[0] * tmp[1] + mat[1] * tmp[4] + mat[2] * tmp[7],
+        mat[0] * tmp[2] + mat[1] * tmp[5] + mat[2] * tmp[8],
+        mat[3] * tmp[2] + mat[4] * tmp[5] + mat[5] * tmp[8],
+    ]
+}
 
-    Ok((total_mass, principal_inertia, com, iquat))
+/// `mjuu_offcenter` (`user_util.cc:530-537`): the inertia `mass` adds at
+/// `vec` from the centre, `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]`.
+fn off_center(mass: f64, vec: &[f64; 3]) -> [f64; 6] {
+    [
+        mass * (vec[1] * vec[1] + vec[2] * vec[2]),
+        mass * (vec[0] * vec[0] + vec[2] * vec[2]),
+        mass * (vec[0] * vec[0] + vec[1] * vec[1]),
+        -mass * vec[0] * vec[1],
+        -mass * vec[0] * vec[2],
+        -mass * vec[1] * vec[2],
+    ]
 }
 
 #[cfg(test)]
@@ -592,8 +693,10 @@ mod tests {
             quat: nalgebra::Vector4::new(half, 0.0, 0.0, half),
             ..full
         };
-        let (_, _, _, plain) = super::extract_inertial_properties(&full).expect("principal");
-        let (_, _, _, kept) = super::extract_inertial_properties(&turned).expect("principal");
+        let identity = nalgebra::UnitQuaternion::identity();
+        let turn = nalgebra::UnitQuaternion::from_euler_angles(0.0, 0.0, 1.0);
+        let (_, _, _, plain) = super::inertial_values(&full, identity).expect("principal");
+        let (_, _, _, kept) = super::inertial_values(&turned, turn).expect("principal");
         assert_eq!(plain, kept);
     }
 }

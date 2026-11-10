@@ -1,0 +1,1 @@
+<mujoco><compiler inertiafromgeom="true"/><worldbody><body name="b"><freejoint/><geom type="sphere" size="0.1" mass="1e-15"/></body></worldbody></mujoco>

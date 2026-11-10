@@ -228,9 +228,13 @@ fn t9_convex_mode_non_convex_mesh() {
     // Convex hull of L-shape is a pentagonal prism, volume = 7.0
     // mass = density × hull_volume = 1000 × 7.0 = 7000
     assert_relative_eq!(model.body_mass[1], 7000.0, epsilon = 1.0);
-    assert_relative_eq!(model.body_inertia[1].x, 6666.667, epsilon = 1.0);
-    assert_relative_eq!(model.body_inertia[1].y, 3539.683, epsilon = 1.0);
-    assert_relative_eq!(model.body_inertia[1].z, 9039.683, epsilon = 1.0);
+    // MuJoCo 3.5.0's principal moments, in its order (`eig3`, decreasing),
+    // printed by the census's unfused oracle; this crate's within a relative
+    // 1e-14 (its hull's inertia, book Rigid-loading L35's).
+    let mujoco = [9039.682539682539, 6666.666666666664, 3539.6825396825384];
+    for (ours, mujoco) in model.body_inertia[1].iter().zip(mujoco) {
+        assert_relative_eq!(*ours, mujoco, max_relative = 1e-14);
+    }
 }
 
 // ============================================================================
@@ -250,10 +254,13 @@ fn t10_legacy_mode() {
     let model = load_model(&mjcf).unwrap();
     // L-shape: exact volume = 5, legacy uses |det|/6 which equals signed det/6
     // for this L-shape (centroid inside solid), so legacy == exact: mass = 5000
+    // here. MuJoCo 3.5.0's legacy mode gives mass 5322.547508988188 and
+    // moments (7454.61, 5978.48, 2341.72): book Rigid-loading L35's.
     assert_relative_eq!(model.body_mass[1], 5000.0, epsilon = 1.0);
-    assert_relative_eq!(model.body_inertia[1].x, 5833.333, epsilon = 1.0);
-    assert_relative_eq!(model.body_inertia[1].y, 2233.333, epsilon = 1.0);
-    assert_relative_eq!(model.body_inertia[1].z, 7233.333, epsilon = 1.0);
+    // The principal moments in MuJoCo's order (`eig3`, decreasing).
+    assert_relative_eq!(model.body_inertia[1].x, 7233.333, epsilon = 1.0);
+    assert_relative_eq!(model.body_inertia[1].y, 5833.333, epsilon = 1.0);
+    assert_relative_eq!(model.body_inertia[1].z, 2233.333, epsilon = 1.0);
 }
 
 // ============================================================================

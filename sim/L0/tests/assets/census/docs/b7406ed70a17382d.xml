@@ -1,0 +1,1 @@
+<mujoco><compiler inertiagrouprange="5 0"/><worldbody><body><freejoint/><geom size=".1" group="1"/></body></worldbody></mujoco>

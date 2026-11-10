@@ -454,6 +454,11 @@ pub struct MjcfCompiler {
     pub autolimits: bool,
     /// Controls inertia computation from geoms.
     pub inertiafromgeom: InertiaFromGeom,
+    /// The geom groups, both ends included, whose geoms give their body its
+    /// inertia (MuJoCo's `inertiagrouprange`, default 0 to 5): a geom of
+    /// another group neither counts in its body's mass nor is checked for a
+    /// negative mass or density.
+    pub inertiagrouprange: [i32; 2],
     /// Minimum mass for non-world bodies (0 = disabled).
     pub boundmass: f64,
     /// Minimum diagonal inertia for non-world bodies (0 = disabled).
@@ -491,6 +496,7 @@ impl Default for MjcfCompiler {
             assetdir: None,
             autolimits: true,
             inertiafromgeom: InertiaFromGeom::Auto,
+            inertiagrouprange: [0, 5],
             boundmass: 0.0,
             boundinertia: 0.0,
             balanceinertia: false,
@@ -1142,6 +1148,15 @@ pub struct MjcfInertial {
     pub pos: Vector3<f64>,
     /// Orientation of principal axes (quaternion: w x y z).
     pub quat: Vector4<f64>,
+    /// The principal axes as Euler angles, in place of `quat` (MuJoCo's
+    /// inertial orientation alternatives, at most one written).
+    pub euler: Option<Vector3<f64>>,
+    /// The principal axes as an axis and an angle, in place of `quat`.
+    pub axisangle: Option<Vector4<f64>>,
+    /// The principal axes' x and y directions, in place of `quat`.
+    pub xyaxes: Option<[f64; 6]>,
+    /// The principal z axis's direction, in place of `quat`.
+    pub zaxis: Option<Vector3<f64>>,
     /// Mass in kg.
     pub mass: f64,
     /// Diagonal inertia (Ixx, Iyy, Izz) - if specified.
@@ -1155,6 +1170,10 @@ impl Default for MjcfInertial {
         Self {
             pos: Vector3::zeros(),
             quat: Vector4::new(1.0, 0.0, 0.0, 0.0), // Identity quaternion (w, x, y, z)
+            euler: None,
+            axisangle: None,
+            xyaxes: None,
+            zaxis: None,
             mass: 1.0,
             diaginertia: None,
             fullinertia: None,
@@ -2828,6 +2847,15 @@ pub struct MjcfBody {
     pub xyaxes: Option<[f64; 6]>,
     /// Alternative orientation as the z axis.
     pub zaxis: Option<Vector3<f64>>,
+    /// This body's pose as written in the `<frame>` or body holding it (its
+    /// position, its orientation resolved and made unit, w x y z), kept where
+    /// frame expansion or `fusestatic` composes another pose into `pos` and
+    /// `quat`. MuJoCo 3.5.0 copies this pose into the inertial frame of a
+    /// body that neither an `<inertial>` nor a selected geom gives one
+    /// (`user_objects.cc:2442-2446`), before the frame composes into the
+    /// body's pose (`:2474`) and before it fuses static bodies
+    /// (`user_model.cc:4932-4937`). `None` as read.
+    pub pose_as_written: Option<(Vector3<f64>, Vector4<f64>)>,
     /// Explicit inertial properties.
     pub inertial: Option<MjcfInertial>,
     /// Joints attached to this body.
@@ -2884,6 +2912,7 @@ impl Default for MjcfBody {
             euler: None,
             xyaxes: None,
             zaxis: None,
+            pose_as_written: None,
             inertial: None,
             joints: Vec::new(),
             geoms: Vec::new(),

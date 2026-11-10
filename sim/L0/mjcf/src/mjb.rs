@@ -64,6 +64,9 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
 ///
+/// 19 since Rigid-loading PR RL-9a: `MjcfCompiler` took `inertiagrouprange`,
+/// `MjcfBody` `pose_as_written`, and `MjcfInertial` `euler`, `axisangle`,
+/// `xyaxes` and `zaxis`.
 /// 18 since Rigid-loading PR RL-8c: `MjcfFlex` lost `mass`, `density`,
 /// `inertiabox`, `flexcomp_scale`, `flexcomp_quat`, `flexcomp_file`, `pinned`
 /// and `vertex_bodies` (the `<deformable><flexcomp>` form, refused).
@@ -94,7 +97,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// one below mjMINVAL is refused (Rigid-loading PR RL-3b): a version-6 file
 /// holds 0.0 there for a flexcomp that did not write it. 6 since `MjcfFlex`
 /// took `vertex_bodies` (Rigid-loading L10).
-pub const MJB_VERSION: u32 = 18;
+pub const MJB_VERSION: u32 = 19;
 
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;

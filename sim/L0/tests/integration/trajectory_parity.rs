@@ -5,9 +5,11 @@
 //! past its limit, a box resting on a plane, a cylinder dropped onto a box
 //! slab and onto a convex mesh slab, and five bodies dropped at two spots of
 //! a bumpy height field. Each body's inertial is written out as MuJoCo
-//! compiles it and the mesh in the frame MuJoCo moves it to (ledger L368 and
-//! Rigid-loading's L35 hold where the loader's differs). These runs close
-//! the forward side of ledgers L154, L206 and L214.
+//! compiles it (sim-mjcf compiles each the same without it:
+//! `each_written_inertial_is_the_loaders_own`) and the mesh in the frame
+//! MuJoCo moves it to (Rigid-loading's L35 holds where the loader's
+//! differs). These runs close the forward side of ledgers L154, L206 and
+//! L214.
 
 use serde_json::Value;
 
@@ -96,4 +98,45 @@ fn runs_as_mujoco_with_the_loaders_inputs_as_mujocos() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// `xml` with its `<inertial …/>` elements cut out.
+fn without_inertials(xml: &str) -> String {
+    let mut out = String::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find("<inertial") {
+        out.push_str(&rest[..start]);
+        let end = start + rest[start..].find("/>").expect("a self-closing <inertial>") + 2;
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Each scene's `<inertial>`s, written out as MuJoCo 3.5.0 compiles them,
+/// are what sim-mjcf compiles from the bodies' geoms without them, bit for
+/// bit: each body's mass, principal moments, centre of mass and frame (book
+/// Rigid-loading L33).
+#[test]
+fn each_written_inertial_is_the_loaders_own() {
+    let golden = golden();
+    for (name, case) in golden["cases"].as_object().expect("cases") {
+        let xml = case["xml"].as_str().expect("xml");
+        assert!(xml.contains("<inertial"), "{name}: no inertial written");
+        let written = sim_mjcf::load_model(xml).expect("load");
+        let derived = sim_mjcf::load_model(&without_inertials(xml)).expect("load");
+        let bits = |m: &sim_core::Model| -> Vec<u64> {
+            (0..m.nbody)
+                .flat_map(|b| {
+                    let q = m.body_iquat[b];
+                    std::iter::once(m.body_mass[b])
+                        .chain(m.body_inertia[b].iter().copied())
+                        .chain(m.body_ipos[b].iter().copied())
+                        .chain([q.w, q.i, q.j, q.k])
+                })
+                .map(f64::to_bits)
+                .collect()
+        };
+        assert_eq!(bits(&derived), bits(&written), "{name}");
+    }
 }

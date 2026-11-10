@@ -332,6 +332,10 @@ pub(super) fn parse_inertial_attrs(e: &BytesStart) -> Result<MjcfInertial> {
         inertial.quat = quat;
     }
     let orientation = a.one_orientation()?;
+    inertial.euler = a.vec3("euler")?;
+    inertial.axisangle = a.vec4("axisangle")?;
+    inertial.xyaxes = a.array("xyaxes")?;
+    inertial.zaxis = a.vec3("zaxis")?;
     inertial.mass = a
         .real("mass")?
         .ok_or_else(|| MjcfError::missing_attribute("inertial", "mass"))?;

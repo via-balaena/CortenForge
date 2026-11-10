@@ -161,9 +161,6 @@ fn t05_builder_body_xbody_distinction() {
 fn t06_body_vs_xbody_position() {
     // Body with sphere geom offset along x-axis. COM (xipos) differs from
     // joint frame origin (xpos) by the geom's pos offset.
-    // NOTE: We use explicit `pos=` (not `fromto=`) because fromto→pos conversion
-    // happens in the geom builder, not in the parsed MjcfGeom — so
-    // compute_inertia_from_geoms cannot see the computed midpoint position.
     let mjcf = r#"
         <mujoco model="t06">
             <worldbody>

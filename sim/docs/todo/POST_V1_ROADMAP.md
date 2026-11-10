@@ -167,7 +167,7 @@ DT-181 added during derivatives examples (sensor FD optimization).
 | DT-1 | T1 | Mesh defaults `apply_to_mesh()` -- root-only mesh scale defaults deferred | 10b |
 | DT-5 | T2 | `gaintype/biastype/dyntype="user"` -- callback-based types require plugin system | 10b |
 | DT-7 | T1 | `actdim` explicit override not supported (auto-detection only) | 10b |
-| DT-10 | T1 | Deferred `<compiler>` attributes: `fitaabb`, `usethread`, `alignfree`, `saveinertial`, `inertiagrouprange`, `<lengthrange>` child | 10b |
+| DT-10 | T1 | Deferred `<compiler>` attributes: `fitaabb`, `usethread`, `alignfree`, `saveinertial`, ~~`inertiagrouprange`~~ (**Done** -- Rigid-loading PR RL-9a, book L33), `<lengthrange>` child | 10b |
 | DT-12 | T1 | Programmatic API enforcement that `worldbody.childclass` must be `None` | 10b |
 | DT-15 | T1 | ~~Sentinel-value detection for `gear`/`kp`/`noise`/`cutoff` should migrate to `Option<T>`. Phase 7 Spec A added 14 sentinel-detection fields -- primary migration candidates.~~ **Done** -- Rigid-loading PR RL-5b (book L17) | 10b |
 | DT-17 | T1 | Global `<option o_margin>` override -- per-geom margin is correct foundation; this covers the separate global option | 10b |

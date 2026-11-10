@@ -282,6 +282,42 @@ fn a_position_takes_exactly_three_numbers() {
 }
 
 #[test]
+fn the_inertia_group_range_takes_exactly_two_integers() {
+    let compiler = |range: &str| {
+        format!(
+            r#"<mujoco><compiler inertiagrouprange="{range}"/><worldbody><body><freejoint/><geom size="0.1"/></body></worldbody></mujoco>"#
+        )
+    };
+    // MuJoCo 3.5.0: "does not have enough data", "has too much data", "bad
+    // format", "number is too large"; an empty value is absent.
+    assert_count(
+        &refused(&compiler("0")),
+        "compiler",
+        "inertiagrouprange",
+        ValueCount::Exactly(2),
+        1,
+    );
+    assert_count(
+        &refused(&compiler("0 1 2")),
+        "compiler",
+        "inertiagrouprange",
+        ValueCount::Exactly(2),
+        3,
+    );
+    assert_bad_number(
+        &refused(&compiler("0 2.5")),
+        "compiler",
+        "inertiagrouprange",
+    );
+    let err = refused(&compiler("0 99999999999"));
+    assert!(
+        matches!(&err, MjcfError::OutOfRange { element, attribute, .. } if element == "compiler" && attribute == "inertiagrouprange"),
+        "{err}"
+    );
+    load(&compiler(""));
+}
+
+#[test]
 fn a_geom_friction_takes_at_most_three_numbers() {
     let err = refused(
         r#"<mujoco><worldbody><body><freejoint/><geom size="0.1" friction="1 2 3 4"/></body></worldbody></mujoco>"#,
@@ -951,8 +987,7 @@ fn an_orientation_is_read_before_the_orientations_are_counted() {
     assert_count(&err, "geom", "euler", ValueCount::Exactly(3), 2);
     let err = refused(r#"<mujoco><worldbody><site euler="b" xyaxes="a"/></worldbody></mujoco>"#);
     assert_bad_number(&err, "site", "xyaxes");
-    // A body's xyaxes and zaxis, an inertial's euler: read for the count,
-    // though sim-mjcf does not otherwise read them.
+    // A body's xyaxes and zaxis, an inertial's euler.
     let err = refused(
         r#"<mujoco><worldbody><body xyaxes="abc"><geom size="0.1"/></body></worldbody></mujoco>"#,
     );

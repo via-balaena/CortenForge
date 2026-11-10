@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="s"><geom type="sphere" size="6e99"/></body><body name="q" pos="2 0 0"><freejoint/><geom type="sphere" size="0.1" condim="2"/></body></worldbody></mujoco>

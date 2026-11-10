@@ -77,7 +77,7 @@ within completed tasks, not critical gaps.
 | DT-7 | §8 | `actdim` explicit override not supported (auto-detection only) | Low | T1 |
 | ~~DT-8~~ | §8 | ~~Transmission types: `cranksite`, `slidersite`, `jointinparent` not supported~~ **Done** — Spec B (Phase 5 Session 7) | Low | T2 |
 | ~~DT-9~~ | §8 | ~~`nsample`, `interp`, `delay` — MuJoCo 3.x interpolation actuator attributes~~ **Partially done** — parsing + model/data storage landed in Spec D (Phase 5 Session 12). Runtime interpolation → DT-107, `dyntype` gating → DT-108 | Low | T2 |
-| DT-10 | §18 | Deferred `<compiler>` attributes: `fitaabb`, `usethread`, `alignfree`, `saveinertial`, `inertiagrouprange`, `<lengthrange>` child | Low | T1 |
+| DT-10 | §18 | Deferred `<compiler>` attributes: `fitaabb`, `usethread`, `alignfree`, `saveinertial`, ~~`inertiagrouprange`~~ (**Done** — Rigid-loading PR RL-9a, book L33), `<lengthrange>` child | Low | T1 |
 | ~~DT-11~~ | §20 | ~~`range` not in `MjcfJointDefaults` as a defaultable attribute~~ **Already implemented** — verified during Phase 7 Spec A review (EGT-4). | Medium | T2 |
 | DT-12 | §20 | Programmatic API enforcement that `worldbody.childclass` must be `None` | Low | T1 |
 | ~~DT-13~~ | §22 | ~~`qpos_spring` not implemented — uses `qpos0` instead (equivalent only in default case)~~ **DONE** — Phase 7 Spec A (commit `3f70616`). `qpos_spring: Vec<f64>` on Model. | Medium | T2 |

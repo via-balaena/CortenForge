@@ -52,10 +52,7 @@ solvers MuJoCo's inputs and compare every output bit for bit.
   qvel, the warmstart), over mixed_rows' scene at the five cones and condims
   above, dense and sparse, sliding and rolling, and the box: `qacc`,
   `efc_force`, `qfrc_constraint`, `solver_niter`. CG then noslip's scenes
-  have each body's inertial written out as MuJoCo compiles it: as written,
-  sim-mjcf compiles the arm capsule's inertial frame otherwise (ledgers L195,
-  L261; Rigid-loading's L33 copies one geom's frame, L14 a fromto's axis),
-  and at six of CG's states that moves the mass matrix by an ulp.
+  have each body's inertial written out as MuJoCo compiles it.
 - forward_primal: the same scenes and outputs under CG and Newton alone (no
   noslip), from MuJoCo's state after their own three steps, each body's
   inertial written out as MuJoCo compiles it.

@@ -145,6 +145,15 @@
 //! attribute beside another fault: four in `TWO_FAULTS`, six in
 //! `SCHEMA_COSTS`; its review's (measured 2026-11-09) set one beside a fault
 //! MuJoCo names first: nine in `REFUSAL_FIRST_COSTS`.
+//! RL-9a's (measured 2026-11-09, its two-fault set of 95 documents: seven
+//! faults of a body's inertia and eleven others, each alone, and the 77
+//! pairs) set an `<inertial>`'s orientation alternative or a body's
+//! principal axes from its geoms beside another fault: four in `TWO_FAULTS`,
+//! five in `INERTIAL_COSTS`; its review's (measured 2026-11-09) set those and
+//! a body's non-finite inertia from its geoms beside an orientation, a
+//! `fullinertia`, a reference, a mocap body's place or another body's checks:
+//! ten in `TWO_FAULTS`, twenty-six in `INERTIAL_COSTS`. Each is a sample
+//! of the pairs, not all of them.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1834,6 +1843,90 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "Schema violation: unrecognized attribute: 'quat'",
         "unrecognized attribute 'quat' on <flex> (line 1: deformable > flex 'f')",
     ),
+    (
+        "an inertial's degenerate xyaxes then a later body's zero hinge axis",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0"><joint type="hinge" axis="0 0 0"/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "error 'yaxis too small' in inertia alternative (body 'n')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a later body's moments' triangle",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 5"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "error 'yaxis too small' in inertia alternative (body 'n')",
+    ),
+    (
+        "a body's geoms' principal axes then its own geom's size",
+        r#"<mujoco><worldbody><body name="n"><geom type="cylinder" size="1e-7 1" mass="0.5"/><geom type="cylinder" size="1e-7 1" mass="0.5" pos="0 0 3"/><geom type="box" size="0.1 0.1 0"/></body></worldbody></mujoco>"#,
+        "size 2 must be positive in geom",
+        "invalid size on <geom>: size 2 must be positive (geom #2 in body 'n')",
+    ),
+    (
+        "an earlier moving body below mjMINVAL then a body's geoms' principal axes",
+        r#"<mujoco><worldbody><body name="p" pos="-2 0 0"><freejoint/><geom type="sphere" size="0.1" mass="0"/></body><body name="n"><geom type="cylinder" size="1e-7 1" mass="0.5"/><geom type="cylinder" size="1e-7 1" mass="0.5" pos="0 0 3"/></body></worldbody></mujoco>"#,
+        "error 'inertia must have positive eigenvalues' in alternative for principal axes",
+        "error 'inertia must have positive eigenvalues' in alternative for principal axes (body 'n')",
+    ),
+    (
+        "an earlier body's zero zaxis then an inertial's degenerate xyaxes",
+        r#"<mujoco><worldbody><body name="p" pos="-2 0 0" zaxis="0 0 0"><freejoint/><geom type="sphere" size="0.1"/></body><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body></worldbody></mujoco>"#,
+        "error 'zaxis too small' in frame alternative",
+        "invalid zaxis on <body>: zaxis too small (body 'p')",
+    ),
+    (
+        "an inertial's degenerate xyaxes beside its own body's zero hinge axis",
+        r#"<mujoco><worldbody><body name="n"><joint type="hinge" axis="0 0 0"/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "error 'yaxis too small' in inertia alternative (body 'n')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a later body's fullinertia beside a diagonal inertia",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" fullinertia="1 1 1 0 0 0"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "error 'yaxis too small' in inertia alternative (body 'n')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a later body's negative mass",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0"><freejoint/><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "error 'yaxis too small' in inertia alternative (body 'n')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a keyframe's short qpos",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body></worldbody><keyframe><key qpos="1 2"/></keyframe></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "error 'yaxis too small' in inertia alternative (body 'n')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a later body's unknown childclass",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" childclass="nope"><freejoint/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+        "unknown default childclass",
+        "unknown default class name 'nope' (body 'q')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a contact pair's unknown geom",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/><geom name="g" type="sphere" size="0.1"/></body></worldbody><contact><pair geom1="nope" geom2="g"/></contact></mujoco>"#,
+        "geom 'nope' not found in collision 0",
+        "unknown geom 'nope' (pair #0)",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a zero-zaxis frame in the world",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><frame zaxis="0 0 0"><geom type="sphere" size="0.1"/></frame></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in site -1",
+        "invalid zaxis on <frame>: zaxis too small (frame in body 'world')",
+    ),
+    (
+        "an earlier body's bad condim then a body's non-finite inertia from its geoms (D-INERTIA-NONFINITE: MuJoCo loads that body)",
+        r#"<mujoco><worldbody><body name="p" pos="-2 0 0"><freejoint/><geom type="sphere" size="0.1" condim="2"/></body><body name="s"><geom type="sphere" size="6e99"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom #0 in body 'p')",
+    ),
+    (
+        "an earlier body's inertia breaking the triangle then a body's non-finite inertia from its geoms (D-INERTIA-NONFINITE: MuJoCo loads that body)",
+        r#"<mujoco><worldbody><body name="p" pos="-2 0 0"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 5"/></body><body name="s"><geom type="sphere" size="6e99"/></body></worldbody></mujoco>"#,
+        "inertia must satisfy A + B >= C; use 'balanceinertia' to fix",
+        "inertia must satisfy A + B >= C; use 'balanceinertia' to fix (body 'p')",
+    ),
 ];
 
 #[test]
@@ -2583,6 +2676,214 @@ const REFUSAL_FIRST_COSTS: &[(&str, &str, &str, &str)] = &[
 fn a_fault_named_first_by_mujoco_beside_a_refusal_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in REFUSAL_FIRST_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, one an `<inertial>`'s orientation alternative, a body's
+/// principal axes from its geoms or its non-finite inertia from them, where
+/// this crate names the other one than MuJoCo 3.5.0 (ledger L353; the
+/// non-finite rows' first fault is one MuJoCo loads, D-INERTIA-NONFINITE).
+/// `(what, document, MuJoCo's reason, this crate's error)`, measured
+/// 2026-11-09 (RL-9a's two-fault set and its review's pairs).
+const INERTIAL_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "an inertial's degenerate xyaxes then its own body's geom's size",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/><geom type="box" size="0.1 0.1 0"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "invalid size on <geom>: size 2 must be positive (geom #0 in body 'n')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a later body's geom's size",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0"><freejoint/><geom type="sphere" size="0.1"/><geom type="box" size="0.1 0.1 0"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "invalid size on <geom>: size 2 must be positive (geom #1 in body 'q')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then an actuator's unknown joint",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body></worldbody><actuator><motor joint="nope"/></actuator></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "unknown joint 'nope' (actuator #0)",
+    ),
+    (
+        "a body's geoms' principal axes then a later body's geom's size",
+        r#"<mujoco><worldbody><body name="n"><geom type="cylinder" size="1e-7 1" mass="0.5"/><geom type="cylinder" size="1e-7 1" mass="0.5" pos="0 0 3"/></body><body name="q" pos="2 0 0"><freejoint/><geom type="sphere" size="0.1"/><geom type="box" size="0.1 0.1 0"/></body></worldbody></mujoco>"#,
+        "error 'inertia must have positive eigenvalues' in alternative for principal axes",
+        "invalid size on <geom>: size 2 must be positive (geom #3 in body 'q')",
+    ),
+    (
+        "a body's geoms' principal axes then an actuator's unknown joint",
+        r#"<mujoco><worldbody><body name="n"><geom type="cylinder" size="1e-7 1" mass="0.5"/><geom type="cylinder" size="1e-7 1" mass="0.5" pos="0 0 3"/></body></worldbody><actuator><motor joint="nope"/></actuator></mujoco>"#,
+        "error 'inertia must have positive eigenvalues' in alternative for principal axes",
+        "unknown joint 'nope' (actuator #0)",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a later body's zero zaxis, the body in a frame",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><frame pos="0 1 0"><body name="q" pos="2 0 0" zaxis="0 0 0"><freejoint/><geom type="sphere" size="0.1"/></body></frame></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "invalid zaxis on <body>: zaxis too small (body 'q')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a later body's zero zaxis",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0" zaxis="0 0 0"><freejoint/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "invalid zaxis on <body>: zaxis too small (body 'q')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a zero-zaxis frame in a later body",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0"><freejoint/><geom type="sphere" size="0.1"/><frame zaxis="0 0 0"><geom type="sphere" size="0.1"/></frame></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "invalid zaxis on <frame>: zaxis too small (frame in body 'q')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then its own body's geom's zero zaxis",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/><geom type="sphere" size="0.1" zaxis="0 0 0"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "invalid zaxis on <geom>: zaxis too small (geom #0 in body 'n')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a later body's geom's zero zaxis",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0"><freejoint/><geom type="sphere" size="0.1"/><geom type="box" size="0.1 0.1 0.1" zaxis="0 0 0"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "invalid zaxis on <geom>: zaxis too small (geom #1 in body 'q')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then its own body's site's zero zaxis",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/><site name="s" zaxis="0 0 0"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "invalid zaxis on <site>: zaxis too small (site 's' in body 'n')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a later body's site's zero zaxis",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0"><freejoint/><geom type="sphere" size="0.1"/><site name="s" zaxis="0 0 0"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "invalid zaxis on <site>: zaxis too small (site 's' in body 'q')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then its own body's geom's degenerate xyaxes",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/><geom type="sphere" size="0.1" xyaxes="1 0 0 1 0 0"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "invalid xyaxes on <geom>: yaxis too small (geom #0 in body 'n')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a later body's degenerate xyaxes",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0" xyaxes="1 0 0 1 0 0"><freejoint/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "invalid xyaxes on <body>: yaxis too small (body 'q')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a later body's geom's degenerate xyaxes",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0"><freejoint/><geom type="sphere" size="0.1" xyaxes="1 0 0 1 0 0"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "invalid xyaxes on <geom>: yaxis too small (geom #0 in body 'q')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a later body's site's degenerate xyaxes",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0"><freejoint/><geom type="sphere" size="0.1"/><site xyaxes="1 0 0 1 0 0"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "invalid xyaxes on <site>: yaxis too small (site in body 'q')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a later body's fullinertia without positive eigenvalues",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0"><freejoint/><inertial pos="0 0 0" mass="1" fullinertia="1 1 1 2 2 2"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "invalid fullinertia on <inertial>: inertia must have positive eigenvalues (body 'q')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a mocap body nested in its body",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/><body name="mc" mocap="true"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "a mocap body must be a direct child of worldbody (body 'mc')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a tendon's unknown joint",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body></worldbody><tendon><fixed name="t"><joint joint="nope" coef="1"/></fixed></tendon></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "unknown joint 'nope' (tendon 't')",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a weld's unknown body",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body></worldbody><equality><weld body1="nope"/></equality></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "unknown body 'nope' (equality #0)",
+    ),
+    (
+        "an inertial's degenerate xyaxes then a sensor's unknown joint",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body></worldbody><sensor><jointpos joint="nope"/></sensor></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "unknown joint 'nope' (sensor #0)",
+    ),
+    (
+        "an inertial's degenerate xyaxes then an exclude's unknown body",
+        r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body></worldbody><contact><exclude body1="nope" body2="n"/></contact></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "unknown body 'nope' (exclude #0)",
+    ),
+    (
+        "a body's geoms' principal axes then its own body's site's zero zaxis",
+        r#"<mujoco><worldbody><body name="n"><geom type="cylinder" size="1e-7 1" mass="0.5"/><geom type="cylinder" size="1e-7 1" mass="0.5" pos="0 0 3"/><site name="s" zaxis="0 0 0"/></body></worldbody></mujoco>"#,
+        "error 'inertia must have positive eigenvalues' in alternative for principal axes",
+        "invalid zaxis on <site>: zaxis too small (site 's' in body 'n')",
+    ),
+    (
+        "a body's geoms' principal axes then a later body's zero zaxis",
+        r#"<mujoco><worldbody><body name="n"><geom type="cylinder" size="1e-7 1" mass="0.5"/><geom type="cylinder" size="1e-7 1" mass="0.5" pos="0 0 3"/></body><body name="q" pos="2 0 0" zaxis="0 0 0"><freejoint/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+        "error 'inertia must have positive eigenvalues' in alternative for principal axes",
+        "invalid zaxis on <body>: zaxis too small (body 'q')",
+    ),
+    (
+        "a body's geoms' principal axes then a later body's geom's zero zaxis",
+        r#"<mujoco><worldbody><body name="n"><geom type="cylinder" size="1e-7 1" mass="0.5"/><geom type="cylinder" size="1e-7 1" mass="0.5" pos="0 0 3"/></body><body name="q" pos="2 0 0"><freejoint/><geom type="sphere" size="0.1"/><geom type="box" size="0.1 0.1 0.1" zaxis="0 0 0"/></body></worldbody></mujoco>"#,
+        "error 'inertia must have positive eigenvalues' in alternative for principal axes",
+        "invalid zaxis on <geom>: zaxis too small (geom #3 in body 'q')",
+    ),
+    (
+        "a body's geoms' principal axes then a later body's fullinertia without positive eigenvalues",
+        r#"<mujoco><worldbody><body name="n"><geom type="cylinder" size="1e-7 1" mass="0.5"/><geom type="cylinder" size="1e-7 1" mass="0.5" pos="0 0 3"/></body><body name="q" pos="2 0 0"><freejoint/><inertial pos="0 0 0" mass="1" fullinertia="1 1 1 2 2 2"/></body></worldbody></mujoco>"#,
+        "error 'inertia must have positive eigenvalues' in alternative for principal axes",
+        "invalid fullinertia on <inertial>: inertia must have positive eigenvalues (body 'q')",
+    ),
+    (
+        "a body's geoms' principal axes then a tendon's unknown joint",
+        r#"<mujoco><worldbody><body name="n"><geom type="cylinder" size="1e-7 1" mass="0.5"/><geom type="cylinder" size="1e-7 1" mass="0.5" pos="0 0 3"/></body></worldbody><tendon><fixed name="t"><joint joint="nope" coef="1"/></fixed></tendon></mujoco>"#,
+        "error 'inertia must have positive eigenvalues' in alternative for principal axes",
+        "unknown joint 'nope' (tendon 't')",
+    ),
+    (
+        "a body's geoms' principal axes then a sensor's unknown joint",
+        r#"<mujoco><worldbody><body name="n"><geom type="cylinder" size="1e-7 1" mass="0.5"/><geom type="cylinder" size="1e-7 1" mass="0.5" pos="0 0 3"/></body></worldbody><sensor><jointpos joint="nope"/></sensor></mujoco>"#,
+        "error 'inertia must have positive eigenvalues' in alternative for principal axes",
+        "unknown joint 'nope' (sensor #0)",
+    ),
+    (
+        "a body's non-finite inertia from its geoms (D-INERTIA-NONFINITE: MuJoCo loads that body) then a later body's zero hinge axis",
+        r#"<mujoco><worldbody><body name="s"><geom type="sphere" size="6e99"/></body><body name="q" pos="2 0 0"><joint type="hinge" axis="0 0 0"/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "the body's mass or inertia computed from its geoms is not finite (body 's')",
+    ),
+    (
+        "a body's non-finite inertia from its geoms (D-INERTIA-NONFINITE: MuJoCo loads that body) then a later body's geom's bad condim",
+        r#"<mujoco><worldbody><body name="s"><geom type="sphere" size="6e99"/></body><body name="q" pos="2 0 0"><freejoint/><geom type="sphere" size="0.1" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "the body's mass or inertia computed from its geoms is not finite (body 's')",
+    ),
+    (
+        "a body's non-finite inertia from its geoms (D-INERTIA-NONFINITE: MuJoCo loads that body) then a later body's inertia breaking the triangle",
+        r#"<mujoco><worldbody><body name="s"><geom type="sphere" size="6e99"/></body><body name="q" pos="2 0 0"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 5"/></body></worldbody></mujoco>"#,
+        "inertia must satisfy A + B >= C; use 'balanceinertia' to fix",
+        "the body's mass or inertia computed from its geoms is not finite (body 's')",
+    ),
+];
+
+#[test]
+fn an_inertia_fault_beside_another_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in INERTIAL_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),
