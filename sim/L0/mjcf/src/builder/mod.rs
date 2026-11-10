@@ -51,8 +51,8 @@ use crate::actuator_spec::ActuatorSpec;
 use crate::defaults::DefaultResolver;
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
-    MeshInertia, MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfJacobianType, MjcfKeyframe,
-    MjcfModel, MjcfOption, MjcfSolverType, Prefix,
+    MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfJacobianType, MjcfKeyframe, MjcfModel,
+    MjcfOption, MjcfSolverType, Prefix,
 };
 
 use self::compiler::{apply_discardvisual, apply_fusestatic};
@@ -663,7 +663,7 @@ pub struct ModelBuilder {
     /// Triangle mesh data with prebuilt BVH (Arc for cheap cloning).
     pub(crate) mesh_data: Vec<Arc<sim_core::mesh::TriangleMeshData>>,
     /// Per-mesh inertia computation mode (from `<mesh inertia="..."/>`).
-    pub(crate) mesh_inertia_modes: Vec<MeshInertia>,
+    pub(crate) mesh_props: Vec<mesh::MeshProps>,
 
     // Height field arrays (built from MJCF <asset><hfield> elements)
     /// Name-to-index lookup for hfield assets.

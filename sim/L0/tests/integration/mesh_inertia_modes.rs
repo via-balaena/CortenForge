@@ -252,15 +252,16 @@ fn t10_legacy_mode() {
 </mujoco>"#
     );
     let model = load_model(&mjcf).unwrap();
-    // L-shape: exact volume = 5, legacy uses |det|/6 which equals signed det/6
-    // for this L-shape (centroid inside solid), so legacy == exact: mass = 5000
-    // here. MuJoCo 3.5.0's legacy mode gives mass 5322.547508988188 and
-    // moments (7454.61, 5978.48, 2341.72): book Rigid-loading L35's.
-    assert_relative_eq!(model.body_mass[1], 5000.0, epsilon = 1.0);
+    // MuJoCo 3.5.0's, printed by the census's unfused oracle. Its legacy
+    // pyramids have their apex at the centre of the faces, (1.136, 1.136,
+    // 0.5), in the L-shape's notch: four of the twenty have a negative
+    // volume, which legacy counts positive, so the mass exceeds 5000.
+    assert_eq!(model.body_mass[1], 5322.547508988188);
     // The principal moments in MuJoCo's order (`eig3`, decreasing).
-    assert_relative_eq!(model.body_inertia[1].x, 7233.333, epsilon = 1.0);
-    assert_relative_eq!(model.body_inertia[1].y, 5833.333, epsilon = 1.0);
-    assert_relative_eq!(model.body_inertia[1].z, 2233.333, epsilon = 1.0);
+    assert_eq!(
+        <[f64; 3]>::from(model.body_inertia[1]),
+        [7454.608707160513, 5978.479712378018, 2341.7170790146465]
+    );
 }
 
 // ============================================================================

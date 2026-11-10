@@ -1,13 +1,13 @@
 //! A mesh's mass properties as MuJoCo 3.5.0 computes them (book
-//! Rigid-loading L35; `mjCMesh::Process`, `user_mesh.cc:1537-1711`), and a
+//! Rigid-loading L35; `mjCMesh::Process`, `user_mesh.cc:1537-1708`), and a
 //! mesh geom's mass and inertia from them, through the body it gives them
 //! to.
 //!
 //! Every expected value was printed by MuJoCo 3.5.0 on the census's unfused
 //! oracle (2026-11-10).
 
-// The values are MuJoCo's, printed to the last digit.
-#![allow(clippy::unwrap_used, clippy::unreadable_literal)]
+// The values are MuJoCo's, printed to the last digit, and compared to it.
+#![allow(clippy::unwrap_used, clippy::unreadable_literal, clippy::float_cmp)]
 
 use sim_mjcf::load_model;
 
@@ -32,13 +32,27 @@ fn body(xml: &str) -> (f64, [f64; 3], [f64; 4], [f64; 3]) {
     )
 }
 
-/// The largest of `ours - mujoco`, relative to the largest of `mujoco`.
+/// The largest of `|ours - mujoco|`, relative to the largest of `|mujoco|`
+/// where that is not 0; `NaN` where any of `ours` is.
 fn relative_gap(ours: &[f64], mujoco: &[f64]) -> f64 {
     let scale = mujoco.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-    ours.iter()
-        .zip(mujoco)
-        .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()))
-        / scale
+    let gap = ours.iter().zip(mujoco).fold(0.0_f64, |m, (a, b)| {
+        let d = (a - b).abs();
+        if m.is_nan() || d.is_nan() {
+            f64::NAN
+        } else {
+            m.max(d)
+        }
+    });
+    if scale > 0.0 { gap / scale } else { gap }
+}
+
+#[test]
+fn the_comparison_fails_a_nan_and_compares_against_zero_absolutely() {
+    assert!(relative_gap(&[1.0, f64::NAN], &[1.0, 2.0]).is_nan());
+    assert!(relative_gap(&[f64::NAN, 1.0], &[1.0, 2.0]).is_nan());
+    assert_eq!(relative_gap(&[0.0, 1e-20], &[0.0, 0.0]), 1e-20);
+    assert_eq!(relative_gap(&[1.0, 3.0], &[2.0, 4.0]), 0.25);
 }
 
 /// `body`'s values against MuJoCo's, each within `tolerance` relative.
@@ -57,7 +71,7 @@ fn assert_body(xml: &str, mujoco: (f64, [f64; 3], [f64; 4], [f64; 3]), tolerance
 }
 
 // MuJoCo moves a mesh by minus `refpos`, then turns it by `refquat`'s
-// inverse, then scales it (`ApplyTransformations`, `user_mesh.cc:1440-1507`),
+// inverse, then scales it (`ApplyTransformations`, `user_mesh.cc:1440-1505`),
 // before its mass properties, so both move the body's inertial frame. The
 // mass properties themselves are not yet MuJoCo's arithmetic here, so these
 // compare within 1e-12.
@@ -217,4 +231,163 @@ fn the_faces_counted_are_those_of_the_mesh_as_written() {
     .unwrap_err()
     .to_string();
     assert!(err.contains("the vertices 1 and 2."), "{err}");
+}
+
+/// The L-shape of `mesh_inertia_modes.rs`, a bar from (0, 0, 0) to (3, 1, 1)
+/// and a column from (0, 1, 0) to (1, 3, 1), with `attrs` on its asset, on a
+/// free body.
+fn l_shape(attrs: &str) -> String {
+    format!(
+        r#"<mujoco><asset><mesh name="l" {attrs} vertex="0 0 0  3 0 0  3 1 0  1 1 0  1 3 0  0 3 0  0 0 1  3 0 1  3 1 1  1 1 1  1 3 1  0 3 1" face="0 2 1  0 3 2  0 4 3  0 5 4  6 7 8  6 8 9  6 9 10  6 10 11  0 1 7  0 7 6  1 2 8  1 8 7  2 3 9  2 9 8  3 4 10  3 10 9  4 5 11  4 11 10  5 0 6  5 6 11"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="l"/></body></worldbody></mujoco>"#
+    )
+}
+
+// MuJoCo's mass properties (`mjCMesh::Process`): the volume and centre of
+// mass from pyramids with their apex at the centre of the faces, the
+// inertia from pyramids with their apex at the centre of mass.
+
+#[test]
+fn legacy_mode_takes_each_pyramids_volume_positive_from_the_faces_centre() {
+    // Not 5000, the L-shape's volume times its density: the centre of its
+    // faces, (1.136, 1.136, 0.5), lies in its notch, so four of its twenty
+    // pyramids have a negative volume, which legacy counts positive.
+    assert_body(
+        &l_shape(r#"inertia="legacy""#),
+        (
+            5322.547508988188,
+            [1.1209553158705703, 1.1209553158705703, 0.49999999999999994],
+            [
+                0.2705980500730991,
+                0.6532814824381896,
+                -0.2705980500730991,
+                0.6532814824381896,
+            ],
+            [7454.608707160513, 5978.479712378018, 2341.7170790146465],
+        ),
+        0.0,
+    );
+}
+
+#[test]
+fn exact_mode_is_mujocos() {
+    assert_body(
+        &l_shape(r#"inertia="exact""#),
+        (
+            4999.999999999999,
+            [1.1, 1.1, 0.5],
+            [
+                0.2705980500730989,
+                0.6532814824381892,
+                -0.2705980500730989,
+                0.6532814824381892,
+            ],
+            [7233.333333333335, 5833.333333333332, 2233.3333333333344],
+        ),
+        0.0,
+    );
+}
+
+#[test]
+fn shell_mode_is_mujocos() {
+    assert_body(
+        &l_shape(r#"inertia="shell""#),
+        (
+            22000.0,
+            [1.1363636363636362, 1.1363636363636365, 0.5],
+            [
+                0.2705980500730991,
+                0.6532814824381896,
+                -0.2705980500730991,
+                0.6532814824381896,
+            ],
+            [39848.48484848484, 32333.33333333333, 14515.151515151518],
+        ),
+        0.0,
+    );
+}
+
+#[test]
+fn convex_mode_is_mujocos_to_rounding() {
+    // Over the hull's faces: this crate's hull equals MuJoCo's as a set, not
+    // in order or triangulation (book Rigid-loading L36), so not bit for bit.
+    assert_body(
+        &l_shape(r#"inertia="convex""#),
+        (
+            7000.0,
+            [1.2619047619047619, 1.2619047619047619, 0.5],
+            [
+                0.27059805007309906,
+                0.6532814824381896,
+                -0.27059805007309906,
+                0.6532814824381896,
+            ],
+            [9039.682539682539, 6666.666666666664, 3539.6825396825384],
+        ),
+        1e-14,
+    );
+}
+
+#[test]
+fn an_open_mesh_under_legacy_mode_is_mujocos() {
+    // The cube without its top: the apex at the centre of its five faces.
+    assert_body(
+        &cube_mesh(
+            "",
+            "0 2 1  0 3 2  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5",
+            r#"inertia="legacy""#,
+        ),
+        (
+            804.1666666666667,
+            [0.0, 0.0, -0.08750000000000001],
+            [
+                0.5000000000000007,
+                0.5000000000000007,
+                -0.5000000000000007,
+                0.5000000000000007,
+            ],
+            [147.0833333333333, 123.97539062499999, 123.97539062499999],
+        ),
+        0.0,
+    );
+}
+
+#[test]
+fn a_mesh_with_no_volume_is_refused() {
+    // One triangle four times over (ledger L384).
+    let xml = r#"<mujoco><asset><mesh name="m" inertia="legacy" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#;
+    let err = load_model(xml).unwrap_err().to_string();
+    assert!(
+        err.contains("mesh volume is too small. Try setting inertia to shell"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_mesh_whose_faces_have_no_area_is_refused() {
+    let xml = r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 1 0  0 0 1" face="0 1 1  0 2 2  0 3 3  1 2 2"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="m" contype="0" conaffinity="0"/></body></worldbody></mujoco>"#;
+    let err = load_model(xml).unwrap_err().to_string();
+    assert!(err.contains("mesh surface area is too small"), "{err}");
+}
+
+#[test]
+fn a_written_mass_on_a_mesh_of_tiny_volume_is_kept() {
+    // Volume 1e-12, above mjEPS: MuJoCo keeps the mass (ledger L43, RA-11).
+    let tiny = "-5e-05 -5e-05 -5e-05 5e-05 -5e-05 -5e-05 5e-05 5e-05 -5e-05 -5e-05 5e-05 -5e-05 -5e-05 -5e-05 5e-05 5e-05 -5e-05 5e-05 5e-05 5e-05 5e-05 -5e-05 5e-05 5e-05";
+    let xml = format!(
+        r#"<mujoco><asset><mesh name="m" inertia="legacy" vertex="{tiny}" face="{CUBE_FACES}"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="m" mass="1"/></body></worldbody></mujoco>"#
+    );
+    assert_body(
+        &xml,
+        (
+            1.0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [
+                1.6666665824595854e-09,
+                1.6666665824595854e-09,
+                1.6666665824595854e-09,
+            ],
+        ),
+        0.0,
+    );
 }

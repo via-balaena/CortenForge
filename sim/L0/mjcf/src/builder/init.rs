@@ -97,7 +97,7 @@ impl ModelBuilder {
             mesh_name_to_id: HashMap::new(),
             mesh_name: vec![],
             mesh_data: vec![],
-            mesh_inertia_modes: vec![],
+            mesh_props: vec![],
 
             hfield_name_to_id: HashMap::new(),
             hfield_name: vec![],

@@ -5,22 +5,20 @@
 //! data, computing mesh inertia properties, and registering mesh/hfield
 //! assets in the builder's lookup tables.
 
-use nalgebra::{Matrix3, Point3, Vector3};
+use nalgebra::{Point3, Vector3};
 use sim_core::HeightFieldData;
 use sim_core::mesh::TriangleMeshData;
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tracing::warn;
 
 use super::ModelBuilder;
 use super::asset::{AssetKind, resolve_asset_path};
+use super::eig3::eig3;
 use super::mass::MJ_MINVAL;
 use super::orientation::{mulvecmat_t, normvec, quat2mat};
 use crate::error::{ElementKind, Location, MjcfError, Result};
-use crate::types::{
-    MeshInertia, MjcfCompiler, MjcfGeom, MjcfGeomType, MjcfHfield, MjcfMesh, MjcfModel,
-};
+use crate::types::{MeshInertia, MjcfCompiler, MjcfHfield, MjcfMesh, MjcfModel};
 
 /// Gives each unnamed mesh and height field the name MuJoCo 3.5.0 gives it
 /// (`mjCMesh::CopyFromSpec`, `mjCHField::CopyFromSpec`): its `file`'s text
@@ -71,9 +69,25 @@ pub fn name_assets(mjcf: &mut MjcfModel) -> Result<()> {
     Ok(())
 }
 
-/// Cached mesh mass properties: `(volume, com, inertia_at_com_unit_density)`.
-/// Avoids recomputing `compute_mesh_inertia()` multiple times per mesh geom.
-pub type MeshProps = (f64, Vector3<f64>, Matrix3<f64>);
+/// A mesh's mass properties as MuJoCo 3.5.0's `mjCMesh::Process` leaves
+/// them (`user_mesh.cc:1605-1668`), from its vertices as transformed
+/// ([`apply_transformations`]): computed once per mesh by
+/// [`mesh_mass_properties`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeshProps {
+    /// Its volume, or under `shell` its surface's area (`GetVolumeRef`):
+    /// the total `ComputeInertia` returns, which replaces the one checked
+    /// before it (`user_mesh.cc:1634-1639`).
+    pub volume: f64,
+    /// Its centre of mass in its vertices' frame (`pos_`).
+    pub com: [f64; 3],
+    /// Its principal axes in that frame, (w, x, y, z) (`quat_`): `eig3`'s
+    /// of its inertia about `com`.
+    pub quat: [f64; 4],
+    /// The half sizes of the box with its volume and principal moments
+    /// (`boxsz_`), from which a mesh geom's inertia is computed.
+    pub boxsz: [f64; 3],
+}
 
 impl ModelBuilder {
     /// Process a single mesh asset from MJCF.
@@ -111,26 +125,15 @@ impl ModelBuilder {
         let max_hull_vert = mjcf_mesh.maxhullvert;
         mesh_data.compute_convex_hull(max_hull_vert);
 
-        // Validate exact mode: reject meshes with negative volume (misoriented triangles).
-        // MuJoCo ref: ComputeInertia() in user_mesh.cc — "mesh volume is negative".
-        let mode = mjcf_mesh.inertia.unwrap_or(MeshInertia::Convex);
-        if mode == MeshInertia::Exact {
-            let (volume, _, _) = compute_mesh_inertia(&mesh_data);
-            if volume < 0.0 {
-                return Err(MjcfError::asset(
-                    ElementKind::Mesh,
-                    &mjcf_mesh.name,
-                    "mesh volume is negative (misoriented triangles)",
-                ));
-            }
-        }
+        let props = mesh_mass_properties(&mesh_data, mjcf_mesh.inertia.unwrap_or_default())
+            .map_err(|reason| MjcfError::asset(ElementKind::Mesh, &mjcf_mesh.name, reason))?;
 
         // Register in lookup table
         let mesh_id = self.mesh_data.len();
         self.mesh_name_to_id.insert(mjcf_mesh.name.clone(), mesh_id);
         self.mesh_name.push(mjcf_mesh.name.clone());
         self.mesh_data.push(Arc::new(mesh_data));
-        self.mesh_inertia_modes.push(mode);
+        self.mesh_props.push(props);
 
         Ok(())
     }
@@ -458,16 +461,24 @@ fn check_face_orientation(
     }
 }
 
-/// A triangle's area as MuJoCo 3.5.0's `triangle` (`user_mesh.cc:155-188`)
-/// computes it, each sum and product in its order: half the length of the
-/// cross product of the edges from the first vertex, and 0 where that length
-/// is below mjMINVAL.
+/// A triangle's area, unit normal and centre, as MuJoCo 3.5.0's `triangle`
+/// (`user_mesh.cc:155-188`) computes them, each sum and product in its
+/// order: the normal is the cross product of the edges from the first
+/// vertex; where its length is below mjMINVAL the area is 0 and the normal
+/// is left as that product.
 #[derive(Debug, Clone, Copy)]
 struct Triangle {
     area: f64,
+    normal: [f64; 3],
+    center: [f64; 3],
 }
 
 fn triangle(v1: &[f64; 3], v2: &[f64; 3], v3: &[f64; 3]) -> Triangle {
+    let center = [
+        (v1[0] + v2[0] + v3[0]) / 3.0,
+        (v1[1] + v2[1] + v3[1]) / 3.0,
+        (v1[2] + v2[2] + v3[2]) / 3.0,
+    ];
     let b = [v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2]];
     let c = [v3[0] - v1[0], v3[1] - v1[1], v3[2] - v1[2]];
     let normal = [
@@ -477,9 +488,17 @@ fn triangle(v1: &[f64; 3], v2: &[f64; 3], v3: &[f64; 3]) -> Triangle {
     ];
     let len = dot3(&normal, &normal).sqrt();
     if len < MJ_MINVAL {
-        return Triangle { area: 0.0 };
+        return Triangle {
+            area: 0.0,
+            normal,
+            center,
+        };
     }
-    Triangle { area: 0.5 * len }
+    Triangle {
+        area: 0.5 * len,
+        normal: [normal[0] / len, normal[1] / len, normal[2] / len],
+        center,
+    }
 }
 
 /// `mjuu_dot3` (`user_util.cc:126-128`).
@@ -488,7 +507,7 @@ fn dot3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
 }
 
 /// MuJoCo 3.5.0's `mjCMesh::ApplyTransformations` (`user_mesh.cc:1440-
-/// 1507`) on a mesh's vertices, in its order: each moved by minus `refpos`
+/// 1505`) on a mesh's vertices, in its order: each moved by minus `refpos`
 /// where `refpos` is not 0, turned by the transpose of `refquat`'s matrix
 /// (`refquat` made unit by `mjuu_normvec`) where `refquat` is not (1, 0, 0,
 /// 0), and multiplied by `scale` where `scale` is not (1, 1, 1).
@@ -577,452 +596,185 @@ pub fn convert_embedded_mesh(mjcf_mesh: &MjcfMesh, verts: &[f64]) -> Result<RawM
     Ok((vertices, indices))
 }
 
-/// Compute exact mass properties of a triangle mesh using signed tetrahedron
-/// decomposition (Mirtich 1996).
+/// A mesh's mass properties as MuJoCo 3.5.0's `mjCMesh::Process` computes
+/// them (`user_mesh.cc:1605-1668`), from its vertices as transformed, each
+/// sum and product in MuJoCo's order:
 ///
-/// Returns `(volume, com, inertia_at_com)` where:
-/// - `volume` is the signed volume (positive for outward-facing normals)
-/// - `com` is the center of mass (assuming uniform density)
-/// - `inertia_at_com` is the full 3×3 inertia tensor about the COM
-///   (assuming unit density; multiply by actual density for physical values)
-#[allow(clippy::suspicious_operation_groupings)] // Formulas are correct: a²+b²+c²+ab+ac+bc
-pub fn compute_mesh_inertia(mesh: &TriangleMeshData) -> (f64, Vector3<f64>, Matrix3<f64>) {
+/// - the centre of its faces, weighted by area (`ComputeFaceCentroid`,
+///   `:1510-1533`): refused where their area is below mjMINVAL;
+/// - its volume and centre of mass from pyramids with their apex at that
+///   centre (`ComputeVolume`, `:1373-1407`), over its hull's faces under
+///   `convex`, each pyramid's volume taken positive under `legacy`: refused
+///   where the volume is below mjMINVAL, as negative where it is; or under
+///   `shell` its surface's area and centre (`ComputeSurfaceArea`,
+///   `:1412-1435`), refused below mjMINVAL;
+/// - its inertia about that centre of mass (`ComputeInertia`,
+///   `:1713-1775`), whose total volume (or area) replaces the one above;
+/// - its principal moments and axes by `eig3`, refused where the last is not
+///   positive or one exceeds the other two's sum beyond a relative 1e-6 and
+///   an absolute 1e-9 (`:1653-1662`), and the half sizes of the box with
+///   that volume and those moments (`:1664-1668`).
+///
+/// Its hull's faces under `convex` are this crate's hull's, equal to
+/// MuJoCo's as sets where they agree, not in order or in how a flat facet is
+/// cut into triangles (book Rigid-loading L36), so its numbers there are
+/// MuJoCo's to rounding, not to the bit.
+///
+/// # Errors
+///
+/// MuJoCo's reason for refusing the mesh, without its name.
+pub fn mesh_mass_properties(
+    mesh: &TriangleMeshData,
+    mode: MeshInertia,
+) -> std::result::Result<MeshProps, &'static str> {
+    let at = |p: &Point3<f64>| [p.x, p.y, p.z];
     let vertices = mesh.vertices();
-    let triangles = mesh.triangles();
-
-    let mut total_volume = 0.0;
-    let mut com_accum = Vector3::zeros();
-
-    // Second-moment integrals (products of vertex coordinates over volume)
-    let mut xx = 0.0;
-    let mut yy = 0.0;
-    let mut zz = 0.0;
-    let mut xy = 0.0;
-    let mut xz = 0.0;
-    let mut yz = 0.0;
-
-    for face in triangles {
-        let a = vertices[face[0] as usize].coords;
-        let b = vertices[face[1] as usize].coords;
-        let c = vertices[face[2] as usize].coords;
-
-        // Signed volume of tetrahedron formed with origin: V = (a × b) · c / 6
-        let det = a.cross(&b).dot(&c);
-        let vol = det / 6.0;
-        total_volume += vol;
-
-        // COM contribution: centroid of tet = (a + b + c) / 4, weighted by vol
-        com_accum += vol * (a + b + c) / 4.0;
-
-        // Second-moment integrals over tetrahedron (origin, a, b, c):
-        // ∫x² dV = det/60 * (a.x² + b.x² + c.x² + a.x*b.x + a.x*c.x + b.x*c.x)
-        // ∫xy dV = det/120 * (2*a.x*a.y + 2*b.x*b.y + 2*c.x*c.y
-        //          + a.x*b.y + a.y*b.x + a.x*c.y + a.y*c.x + b.x*c.y + b.y*c.x)
-        let f60 = det / 60.0;
-        let f120 = det / 120.0;
-
-        xx += f60 * (a.x * a.x + b.x * b.x + c.x * c.x + a.x * b.x + a.x * c.x + b.x * c.x);
-        yy += f60 * (a.y * a.y + b.y * b.y + c.y * c.y + a.y * b.y + a.y * c.y + b.y * c.y);
-        zz += f60 * (a.z * a.z + b.z * b.z + c.z * c.z + a.z * b.z + a.z * c.z + b.z * c.z);
-
-        xy += f120
-            * (2.0 * a.x * a.y
-                + 2.0 * b.x * b.y
-                + 2.0 * c.x * c.y
-                + a.x * b.y
-                + a.y * b.x
-                + a.x * c.y
-                + a.y * c.x
-                + b.x * c.y
-                + b.y * c.x);
-        xz += f120
-            * (2.0 * a.x * a.z
-                + 2.0 * b.x * b.z
-                + 2.0 * c.x * c.z
-                + a.x * b.z
-                + a.z * b.x
-                + a.x * c.z
-                + a.z * c.x
-                + b.x * c.z
-                + b.z * c.x);
-        yz += f120
-            * (2.0 * a.y * a.z
-                + 2.0 * b.y * b.z
-                + 2.0 * c.y * c.z
-                + a.y * b.z
-                + a.z * b.y
-                + a.y * c.z
-                + a.z * c.y
-                + b.y * c.z
-                + b.z * c.y);
-    }
-
-    // Zero-volume fallback: degenerate mesh (coplanar triangles, etc.)
-    if total_volume.abs() < 1e-10 {
-        let (aabb_min, aabb_max) = mesh.aabb();
-        let extents = aabb_max - aabb_min;
-        let volume = extents.x * extents.y * extents.z;
-        let com = nalgebra::center(&aabb_min, &aabb_max).coords;
-        // Box inertia (unit density): I_ii = V/12 * (a² + b²)
-        let c = volume / 12.0;
-        let inertia = Matrix3::from_diagonal(&Vector3::new(
-            c * (extents.y.powi(2) + extents.z.powi(2)),
-            c * (extents.x.powi(2) + extents.z.powi(2)),
-            c * (extents.x.powi(2) + extents.y.powi(2)),
-        ));
-        return (volume, com, inertia);
-    }
-
-    let com = com_accum / total_volume;
-
-    // Build inertia tensor at origin from accumulated integrals
-    // I_origin[i,i] = sum of the other two second moments (e.g., Ixx = yy + zz)
-    // I_origin[i,j] = -cross_moment (e.g., Ixy = -xy)
-    let i_origin = Matrix3::new(
-        yy + zz,
-        -xy,
-        -xz, // row 0
-        -xy,
-        xx + zz,
-        -yz, // row 1
-        -xz,
-        -yz,
-        xx + yy, // row 2
-    );
-
-    // Shift to COM using parallel axis theorem (full tensor):
-    // I_com = I_origin - V * (d·d * I₃ - d ⊗ d)
-    // where d = com and V = total_volume (unit density, so mass = volume)
-    let d = com;
-    let d_sq = d.dot(&d);
-    let parallel_shift = total_volume * (Matrix3::identity() * d_sq - d * d.transpose());
-    let i_com = i_origin - parallel_shift;
-
-    (total_volume, com, i_com)
-}
-
-/// Compute shell (surface-area-weighted) mass properties of a triangle mesh.
-///
-/// Returns `(total_area, com, inertia_at_com)` where:
-/// - `total_area` is the total surface area
-/// - `com` is the area-weighted centroid
-/// - `inertia_at_com` is the inertia tensor about COM at unit surface density
-///
-/// MuJoCo ref: `ComputeInertia()` in `user_mesh.cc`, shell path.
-// Inertia-tensor cross-product expansions intentionally mix axes within
-// each accumulator (xx/yy/zz/xy/xz/yz) — this matches the published
-// formula and any reordering would introduce bugs.
-#[allow(clippy::suspicious_operation_groupings)]
-pub fn compute_mesh_inertia_shell(mesh: &TriangleMeshData) -> MeshProps {
-    let vertices = mesh.vertices();
-    let triangles = mesh.triangles();
-
-    let mut total_area = 0.0;
-    let mut com_accum = Vector3::zeros();
-    let mut xx = 0.0;
-    let mut yy = 0.0;
-    let mut zz = 0.0;
-    let mut xy = 0.0;
-    let mut xz = 0.0;
-    let mut yz = 0.0;
-
-    for face in triangles {
-        let a = vertices[face[0] as usize].coords;
-        let b = vertices[face[1] as usize].coords;
-        let c = vertices[face[2] as usize].coords;
-
-        let cross = (b - a).cross(&(c - a));
-        let area = cross.norm() * 0.5;
-        total_area += area;
-
-        com_accum += area * (a + b + c) / 3.0;
-
-        // Surface integral: ∫xᵢ² dA = (A/6)(aᵢ² + bᵢ² + cᵢ² + aᵢbᵢ + aᵢcᵢ + bᵢcᵢ)
-        let f6 = area / 6.0;
-        let f12 = area / 12.0;
-
-        xx += f6 * (a.x * a.x + b.x * b.x + c.x * c.x + a.x * b.x + a.x * c.x + b.x * c.x);
-        yy += f6 * (a.y * a.y + b.y * b.y + c.y * c.y + a.y * b.y + a.y * c.y + b.y * c.y);
-        zz += f6 * (a.z * a.z + b.z * b.z + c.z * c.z + a.z * b.z + a.z * c.z + b.z * c.z);
-
-        xy += f12
-            * (2.0 * a.x * a.y
-                + 2.0 * b.x * b.y
-                + 2.0 * c.x * c.y
-                + a.x * b.y
-                + a.y * b.x
-                + a.x * c.y
-                + a.y * c.x
-                + b.x * c.y
-                + b.y * c.x);
-        xz += f12
-            * (2.0 * a.x * a.z
-                + 2.0 * b.x * b.z
-                + 2.0 * c.x * c.z
-                + a.x * b.z
-                + a.z * b.x
-                + a.x * c.z
-                + a.z * c.x
-                + b.x * c.z
-                + b.z * c.x);
-        yz += f12
-            * (2.0 * a.y * a.z
-                + 2.0 * b.y * b.z
-                + 2.0 * c.y * c.z
-                + a.y * b.z
-                + a.z * b.y
-                + a.y * c.z
-                + a.z * c.y
-                + b.y * c.z
-                + b.z * c.y);
-    }
-
-    if total_area < 1e-10 {
-        // Degenerate mesh — same fallback as compute_mesh_inertia()
-        let (aabb_min, aabb_max) = mesh.aabb();
-        let extents = aabb_max - aabb_min;
-        let area = 2.0 * (extents.x * extents.y + extents.x * extents.z + extents.y * extents.z);
-        let com = nalgebra::center(&aabb_min, &aabb_max).coords;
-        let c = area / 12.0;
-        let inertia = Matrix3::from_diagonal(&Vector3::new(
-            c * (extents.y.powi(2) + extents.z.powi(2)),
-            c * (extents.x.powi(2) + extents.z.powi(2)),
-            c * (extents.x.powi(2) + extents.y.powi(2)),
-        ));
-        return (area, com, inertia);
-    }
-
-    let com = com_accum / total_area;
-
-    let i_origin = Matrix3::new(yy + zz, -xy, -xz, -xy, xx + zz, -yz, -xz, -yz, xx + yy);
-
-    // Shift to COM via PAT: I_com = I_origin - SA * (d·d I₃ − d⊗d)
-    let d = com;
-    let d_sq = d.dot(&d);
-    let parallel_shift = total_area * (Matrix3::identity() * d_sq - d * d.transpose());
-    let i_com = i_origin - parallel_shift;
-
-    (total_area, com, i_com)
-}
-
-/// Compute legacy mass properties using absolute tetrahedron volumes.
-///
-/// Identical to `compute_mesh_inertia()` except all determinant-derived
-/// values use `det.abs()` instead of signed `det`. This overcounts
-/// non-convex regions where tetrahedra have negative signed volume.
-///
-/// MuJoCo ref: `ComputeInertia()` legacy path in `user_mesh.cc`.
-// Inertia-tensor expansions mix axes intentionally — see
-// `compute_mesh_inertia_shell` above for the same reasoning.
-#[allow(clippy::suspicious_operation_groupings)]
-pub fn compute_mesh_inertia_legacy(mesh: &TriangleMeshData) -> MeshProps {
-    let vertices = mesh.vertices();
-    let triangles = mesh.triangles();
-
-    let mut total_volume = 0.0;
-    let mut com_accum = Vector3::zeros();
-    let mut xx = 0.0;
-    let mut yy = 0.0;
-    let mut zz = 0.0;
-    let mut xy = 0.0;
-    let mut xz = 0.0;
-    let mut yz = 0.0;
-
-    for face in triangles {
-        let a = vertices[face[0] as usize].coords;
-        let b = vertices[face[1] as usize].coords;
-        let c = vertices[face[2] as usize].coords;
-
-        let det = a.cross(&b).dot(&c);
-        let det_abs = det.abs(); // KEY DIFFERENCE from exact mode
-        let vol = det_abs / 6.0;
-        total_volume += vol;
-
-        com_accum += vol * (a + b + c) / 4.0;
-
-        let f60 = det_abs / 60.0;
-        let f120 = det_abs / 120.0;
-
-        xx += f60 * (a.x * a.x + b.x * b.x + c.x * c.x + a.x * b.x + a.x * c.x + b.x * c.x);
-        yy += f60 * (a.y * a.y + b.y * b.y + c.y * c.y + a.y * b.y + a.y * c.y + b.y * c.y);
-        zz += f60 * (a.z * a.z + b.z * b.z + c.z * c.z + a.z * b.z + a.z * c.z + b.z * c.z);
-
-        xy += f120
-            * (2.0 * a.x * a.y
-                + 2.0 * b.x * b.y
-                + 2.0 * c.x * c.y
-                + a.x * b.y
-                + a.y * b.x
-                + a.x * c.y
-                + a.y * c.x
-                + b.x * c.y
-                + b.y * c.x);
-        xz += f120
-            * (2.0 * a.x * a.z
-                + 2.0 * b.x * b.z
-                + 2.0 * c.x * c.z
-                + a.x * b.z
-                + a.z * b.x
-                + a.x * c.z
-                + a.z * c.x
-                + b.x * c.z
-                + b.z * c.x);
-        yz += f120
-            * (2.0 * a.y * a.z
-                + 2.0 * b.y * b.z
-                + 2.0 * c.y * c.z
-                + a.y * b.z
-                + a.z * b.y
-                + a.y * c.z
-                + a.z * c.y
-                + b.y * c.z
-                + b.z * c.y);
-    }
-
-    if total_volume < 1e-10 {
-        let (aabb_min, aabb_max) = mesh.aabb();
-        let extents = aabb_max - aabb_min;
-        let volume = extents.x * extents.y * extents.z;
-        let com = nalgebra::center(&aabb_min, &aabb_max).coords;
-        let c = volume / 12.0;
-        let inertia = Matrix3::from_diagonal(&Vector3::new(
-            c * (extents.y.powi(2) + extents.z.powi(2)),
-            c * (extents.x.powi(2) + extents.z.powi(2)),
-            c * (extents.x.powi(2) + extents.y.powi(2)),
-        ));
-        return (volume, com, inertia);
-    }
-
-    let com = com_accum / total_volume;
-
-    let i_origin = Matrix3::new(yy + zz, -xy, -xz, -xy, xx + zz, -yz, -xz, -yz, xx + yy);
-
-    let d = com;
-    let d_sq = d.dot(&d);
-    let parallel_shift = total_volume * (Matrix3::identity() * d_sq - d * d.transpose());
-    let i_com = i_origin - parallel_shift;
-
-    (total_volume, com, i_com)
-}
-
-/// Compute exact (volumetric) inertia on the convex hull of a mesh.
-///
-/// Falls back to `compute_mesh_inertia()` on the original mesh if the
-/// hull is not available.
-pub fn compute_mesh_inertia_on_hull(mesh: &TriangleMeshData) -> MeshProps {
-    match mesh.convex_hull() {
-        Some(hull) => compute_inertia_from_verts_faces(&hull.vertices, &hull.faces),
-        None => compute_mesh_inertia(mesh),
-    }
-}
-
-/// Compute exact (volumetric) inertia from raw vertex/face arrays.
-///
-/// Same signed-tetrahedron algorithm as `compute_mesh_inertia()` but
-/// operates on raw arrays instead of `TriangleMeshData`.
-// Inertia-tensor expansions mix axes intentionally — see
-// `compute_mesh_inertia_shell` above for the same reasoning.
-#[allow(clippy::suspicious_operation_groupings)]
-fn compute_inertia_from_verts_faces(vertices: &[Point3<f64>], faces: &[[u32; 3]]) -> MeshProps {
-    let mut total_volume = 0.0;
-    let mut com_accum = Vector3::zeros();
-    let mut xx = 0.0;
-    let mut yy = 0.0;
-    let mut zz = 0.0;
-    let mut xy = 0.0;
-    let mut xz = 0.0;
-    let mut yz = 0.0;
-
-    for face in faces {
-        let a = vertices[face[0] as usize].coords;
-        let b = vertices[face[1] as usize].coords;
-        let c = vertices[face[2] as usize].coords;
-
-        let det = a.cross(&b).dot(&c);
-        let vol = det / 6.0;
-        total_volume += vol;
-        com_accum += vol * (a + b + c) / 4.0;
-
-        let f60 = det / 60.0;
-        let f120 = det / 120.0;
-
-        xx += f60 * (a.x * a.x + b.x * b.x + c.x * c.x + a.x * b.x + a.x * c.x + b.x * c.x);
-        yy += f60 * (a.y * a.y + b.y * b.y + c.y * c.y + a.y * b.y + a.y * c.y + b.y * c.y);
-        zz += f60 * (a.z * a.z + b.z * b.z + c.z * c.z + a.z * b.z + a.z * c.z + b.z * c.z);
-
-        xy += f120
-            * (2.0 * a.x * a.y
-                + 2.0 * b.x * b.y
-                + 2.0 * c.x * c.y
-                + a.x * b.y
-                + a.y * b.x
-                + a.x * c.y
-                + a.y * c.x
-                + b.x * c.y
-                + b.y * c.x);
-        xz += f120
-            * (2.0 * a.x * a.z
-                + 2.0 * b.x * b.z
-                + 2.0 * c.x * c.z
-                + a.x * b.z
-                + a.z * b.x
-                + a.x * c.z
-                + a.z * c.x
-                + b.x * c.z
-                + b.z * c.x);
-        yz += f120
-            * (2.0 * a.y * a.z
-                + 2.0 * b.y * b.z
-                + 2.0 * c.y * c.z
-                + a.y * b.z
-                + a.z * b.y
-                + a.y * c.z
-                + a.z * c.y
-                + b.y * c.z
-                + b.z * c.y);
-    }
-
-    if total_volume.abs() < 1e-10 {
-        return (0.0, Vector3::zeros(), Matrix3::zeros());
-    }
-
-    let com = com_accum / total_volume;
-
-    let i_origin = Matrix3::new(yy + zz, -xy, -xz, -xy, xx + zz, -yz, -xz, -yz, xx + yy);
-
-    let d = com;
-    let d_sq = d.dot(&d);
-    let parallel_shift = total_volume * (Matrix3::identity() * d_sq - d * d.transpose());
-    let i_com = i_origin - parallel_shift;
-
-    (total_volume, com, i_com)
-}
-
-/// Compute mesh inertia properties using the specified mode.
-pub fn compute_mesh_inertia_by_mode(mesh: &TriangleMeshData, mode: MeshInertia) -> MeshProps {
-    match mode {
-        MeshInertia::Convex => compute_mesh_inertia_on_hull(mesh),
-        MeshInertia::Exact => compute_mesh_inertia(mesh),
-        MeshInertia::Legacy => compute_mesh_inertia_legacy(mesh),
-        MeshInertia::Shell => compute_mesh_inertia_shell(mesh),
-    }
-}
-
-/// Resolve mesh data for a geom, if it is a mesh-type geom.
-pub fn resolve_mesh(
-    geom: &MjcfGeom,
-    mesh_lookup: &HashMap<String, usize>,
-    mesh_data: &[Arc<TriangleMeshData>],
-) -> Option<Arc<TriangleMeshData>> {
-    if geom.geom_type.unwrap_or(MjcfGeomType::Sphere) == MjcfGeomType::Mesh {
-        geom.mesh
-            .as_ref()
-            .and_then(|name| mesh_lookup.get(name))
-            .and_then(|&id| mesh_data.get(id))
-            .cloned()
+    let faces: Vec<[[f64; 3]; 3]> = mesh
+        .triangles()
+        .iter()
+        .map(|face| face.map(|v| at(&vertices[v as usize])))
+        .collect();
+    // The faces the volume and the inertia are summed over: the hull's under
+    // `convex` (MuJoCo's `GraphFaces`), the mesh's otherwise.
+    let solid: Vec<[[f64; 3]; 3]> = if mode == MeshInertia::Convex {
+        mesh.convex_hull().map_or_else(Vec::new, |hull| {
+            hull.faces
+                .iter()
+                .map(|face| face.map(|v| at(&hull.vertices[v as usize])))
+                .collect()
+        })
     } else {
-        None
+        faces.clone()
+    };
+    let shell = mode == MeshInertia::Shell;
+    let legacy = mode == MeshInertia::Legacy;
+
+    let mut facecen = [0.0; 3];
+    let mut total_area = 0.0;
+    for [v1, v2, v3] in &faces {
+        let t = triangle(v1, v2, v3);
+        for (f, c) in facecen.iter_mut().zip(t.center) {
+            *f += t.area * c;
+        }
+        total_area += t.area;
     }
+    if total_area >= MJ_MINVAL {
+        facecen = facecen.map(|c| c / total_area);
+    }
+    if total_area < MJ_MINVAL {
+        return Err("mesh surface area is too small");
+    }
+
+    // A pyramid's centre of mass, three quarters of the way from its apex to
+    // its base's centre.
+    let pyramid_com = |center: &[f64; 3], k: usize| center[k] * 3.0 / 4.0 + facecen[k] / 4.0;
+    let mut com = [0.0; 3];
+    if shell {
+        let mut surface = 0.0;
+        for [v1, v2, v3] in &faces {
+            let t = triangle(v1, v2, v3);
+            surface += t.area;
+            for (k, c) in com.iter_mut().enumerate() {
+                *c += t.area * pyramid_com(&t.center, k);
+            }
+        }
+        if surface >= MJ_MINVAL {
+            com = com.map(|c| c / surface);
+        }
+        if surface < MJ_MINVAL {
+            return Err("mesh surface area is too small");
+        }
+    } else {
+        let mut volume = 0.0;
+        for [v1, v2, v3] in &solid {
+            let t = triangle(v1, v2, v3);
+            let apex_to_face = [
+                t.center[0] - facecen[0],
+                t.center[1] - facecen[1],
+                t.center[2] - facecen[2],
+            ];
+            let mut pyramid = dot3(&apex_to_face, &t.normal) * t.area / 3.0;
+            if legacy {
+                pyramid = pyramid.abs();
+            }
+            volume += pyramid;
+            for (k, c) in com.iter_mut().enumerate() {
+                *c += pyramid * pyramid_com(&t.center, k);
+            }
+        }
+        if volume >= MJ_MINVAL {
+            com = com.map(|c| c / volume);
+        }
+        if volume < MJ_MINVAL {
+            return Err(if volume < 0.0 {
+                "mesh volume is negative (misoriented triangles)"
+            } else {
+                "mesh volume is too small. Try setting inertia to shell"
+            });
+        }
+    }
+
+    // The products of inertia about the centre of mass, over the faces the
+    // volume was summed over (the mesh's own under `shell`).
+    const PAIRS: [(usize, usize); 6] = [(0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2)];
+    let divisor = if shell { 12.0 } else { 20.0 };
+    let centered = |v: &[f64; 3]| [v[0] - com[0], v[1] - com[1], v[2] - com[2]];
+    let mut products = [0.0; 6];
+    let mut volume = 0.0;
+    for [v1, v2, v3] in if mode == MeshInertia::Convex {
+        &solid
+    } else {
+        &faces
+    } {
+        let (d, e, f) = (centered(v1), centered(v2), centered(v3));
+        let t = triangle(&d, &e, &f);
+        let mut piece = if shell {
+            t.area
+        } else {
+            dot3(&t.center, &t.normal) * t.area / 3.0
+        };
+        if legacy {
+            piece = piece.abs();
+        }
+        volume += piece;
+        for (p, &(a, b)) in products.iter_mut().zip(&PAIRS) {
+            *p += piece / divisor
+                * (2.0 * (d[a] * d[b] + e[a] * e[b] + f[a] * f[b])
+                    + d[a] * e[b]
+                    + d[b] * e[a]
+                    + d[a] * f[b]
+                    + d[b] * f[a]
+                    + e[a] * f[b]
+                    + e[b] * f[a]);
+        }
+    }
+    let [pxx, pyy, pzz, pxy, pxz, pyz] = products;
+    let (ixx, iyy, izz) = (pyy + pzz, pxx + pzz, pxx + pyy);
+    let (ixy, ixz, iyz) = (-pxy, -pxz, -pyz);
+    let (eigval, quat) = eig3(&[ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz]);
+
+    if eigval[2] <= 0.0 {
+        return Err("eigenvalue of mesh inertia must be positive");
+    }
+    const RTOL: f64 = 1e-6;
+    const ATOL: f64 = 1e-9;
+    if eigval[0] + eigval[1] < eigval[2] * (1.0 - RTOL) - ATOL
+        || eigval[0] + eigval[2] < eigval[1] * (1.0 - RTOL) - ATOL
+        || eigval[1] + eigval[2] < eigval[0] * (1.0 - RTOL) - ATOL
+    {
+        return Err("eigenvalues of mesh inertia violate A + B >= C");
+    }
+    let boxsz = [
+        0.5 * (6.0 * (eigval[1] + eigval[2] - eigval[0]) / volume).sqrt(),
+        0.5 * (6.0 * (eigval[0] + eigval[2] - eigval[1]) / volume).sqrt(),
+        0.5 * (6.0 * (eigval[0] + eigval[1] - eigval[2]) / volume).sqrt(),
+    ];
+    Ok(MeshProps {
+        volume,
+        com,
+        quat,
+        boxsz,
+    })
 }
 
 #[cfg(test)]

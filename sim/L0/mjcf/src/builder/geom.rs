@@ -227,19 +227,6 @@ fn convert_geom_type(geom_type: Option<MjcfGeomType>) -> GeomType {
     }
 }
 
-/// What a mesh geom's unit-density inertia is multiplied by: its written
-/// mass over its mesh's volume, or its density where that volume is at most
-/// 1e-10 or no mass is written (book Rigid-loading L35's).
-pub fn mesh_inertia_scale(geom: &MjcfGeom, volume: f64) -> f64 {
-    let density = geom.density.unwrap_or(1000.0);
-    let mass = geom.mass.unwrap_or_else(|| density * volume.abs());
-    if volume.abs() > 1e-10 {
-        mass / volume.abs()
-    } else {
-        density
-    }
-}
-
 /// A site's type (sphere is the MuJoCo default), held to MuJoCo's geom
 /// type words as the reader holds it, so a site built in code is too: a
 /// plane, mesh or height field refused, as MuJoCo 3.5.0 refuses one
@@ -432,9 +419,8 @@ pub fn resolve_geom_fromto(geom: &mut MjcfGeom) -> Result<()> {
 /// and 0 where it is not; with no mass written, a density of 0 gives 0 and
 /// any other the density times the volume ([`geom_volume`]).
 ///
-/// For mesh geoms, accepts pre-computed mesh properties to avoid redundant
-/// `compute_mesh_inertia()` calls (see `MeshProps`); for a height field, its
-/// asset's four sizes.
+/// A mesh geom's volume is its mesh's ([`MeshProps::volume`]); a height
+/// field's comes from its asset's four sizes.
 pub fn compute_geom_mass(
     geom: &MjcfGeom,
     mesh_props: Option<&MeshProps>,
@@ -490,7 +476,7 @@ pub(super) fn geom_volume(
         }
         MjcfGeomType::Ellipsoid => 4.0 * PI * size[0] * size[1] * size[2] / 3.0,
         MjcfGeomType::Box | MjcfGeomType::Hfield => size[0] * size[1] * size[2] * 8.0,
-        MjcfGeomType::Mesh => mesh_props.map_or(0.001, |&(volume, _, _)| volume.abs()),
+        MjcfGeomType::Mesh => mesh_props.map_or(0.001, |props| props.volume),
         // MuJoCo's is its mesh's volume, as a mesh geom's (L35's); kept.
         MjcfGeomType::Sdf => 0.001,
         MjcfGeomType::Plane => 0.0,
@@ -515,22 +501,18 @@ fn mass_sizes(geom: &MjcfGeom, hfield_size: Option<&[f64; 4]>) -> [f64; 3] {
     }
 }
 
-/// Compute inertia tensor of a single geom about its center (geom-local frame).
-///
-/// Returns a full 3×3 matrix. Primitive geoms produce diagonal tensors;
-/// mesh geoms may have off-diagonal terms.
-///
-/// For mesh geoms, accepts pre-computed mesh properties to avoid redundant
-/// `compute_mesh_inertia()` calls (see `MeshProps`); for a height field, its
-/// asset's four sizes.
+/// A geom's principal moments about its centre of mass, as a diagonal
+/// matrix along its axes: a primitive's along the geom's own, a mesh's along
+/// its mesh's principal axes ([`MeshProps::quat`]). A mesh geom's takes its
+/// mesh's [`MeshProps`]; a height field's its asset's four sizes.
 ///
 /// A primitive geom's is MuJoCo 3.5.0's (`mjCGeom::SetInertia`,
 /// `user_objects.cc:3194-3413`), each product and quotient in MuJoCo's
 /// order: a capsule's is its cylinder's plus its two hemispheres', each
 /// taking the share of the mass its volume takes; a height field's is its
-/// box's. A mesh's is its tetrahedra's (Mirtich 1996; book Rigid-loading
-/// L35's), and a primitive geom's with `shellinertia` its surface's (ledger
-/// L355's).
+/// box's; a mesh's the box of its mesh's volume and principal moments
+/// ([`MeshProps::boxsz`]). A primitive geom's with `shellinertia` is its
+/// surface's (ledger L355's).
 pub fn compute_geom_inertia(
     geom: &MjcfGeom,
     mesh_props: Option<&MeshProps>,
@@ -590,13 +572,19 @@ pub fn compute_geom_inertia(
                 mass * (s00 + s11) / 5.0,
             ))
         }
-        MjcfGeomType::Mesh => {
-            if let Some(&(volume, _, inertia_unit)) = mesh_props {
-                inertia_unit * mesh_inertia_scale(geom, volume)
-            } else {
-                Matrix3::from_diagonal(&Vector3::new(0.001, 0.001, 0.001))
+        // MuJoCo's mesh arm: the box of the mesh's volume and principal
+        // moments, along the mesh's principal axes.
+        MjcfGeomType::Mesh => match mesh_props {
+            Some(props) => {
+                let [b00, b11, b22] = props.boxsz.map(|b| b * b);
+                Matrix3::from_diagonal(&Vector3::new(
+                    mass * (b11 + b22) / 3.0,
+                    mass * (b00 + b22) / 3.0,
+                    mass * (b00 + b11) / 3.0,
+                ))
             }
-        }
+            None => Matrix3::from_diagonal(&Vector3::new(0.001, 0.001, 0.001)),
+        },
         // MuJoCo's is its mesh's, as a mesh geom's (L35's); kept.
         MjcfGeomType::Sdf => Matrix3::from_diagonal(&Vector3::new(0.001, 0.001, 0.001)),
         // MuJoCo's default arm.

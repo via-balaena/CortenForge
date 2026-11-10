@@ -283,12 +283,7 @@ impl ModelBuilder {
                         pos: self.geom_pos[geom_adr + k],
                         quat: self.geom_quat[geom_adr + k],
                     };
-                    let mesh = geom_mesh_props(
-                        geom,
-                        &self.mesh_name_to_id,
-                        &self.mesh_data,
-                        &self.mesh_inertia_modes,
-                    );
+                    let mesh = geom_mesh_props(geom, &self.mesh_name_to_id, &self.mesh_props);
                     let hfield = geom_hfield_size(geom, &self.hfield_name_to_id, &self.hfield_size);
                     InertialGeom::new(&placed, mesh.as_ref(), hfield)
                 })
@@ -419,12 +414,7 @@ impl ModelBuilder {
     /// A geom's volume as the mass rule reads it ([`geom_volume`]), from
     /// its mesh's or height field's asset.
     fn volume(&self, geom: &MjcfGeom) -> f64 {
-        let mesh = geom_mesh_props(
-            geom,
-            &self.mesh_name_to_id,
-            &self.mesh_data,
-            &self.mesh_inertia_modes,
-        );
+        let mesh = geom_mesh_props(geom, &self.mesh_name_to_id, &self.mesh_props);
         let hfield = geom_hfield_size(geom, &self.hfield_name_to_id, &self.hfield_size);
         geom_volume(geom, mesh.as_ref(), hfield)
     }
@@ -432,12 +422,7 @@ impl ModelBuilder {
     /// A geom's mass as MuJoCo 3.5.0's mass rule gives it
     /// ([`compute_geom_mass`]), from its mesh's or height field's asset.
     fn geom_mass(&self, geom: &MjcfGeom) -> f64 {
-        let mesh = geom_mesh_props(
-            geom,
-            &self.mesh_name_to_id,
-            &self.mesh_data,
-            &self.mesh_inertia_modes,
-        );
+        let mesh = geom_mesh_props(geom, &self.mesh_name_to_id, &self.mesh_props);
         let hfield = geom_hfield_size(geom, &self.hfield_name_to_id, &self.hfield_size);
         compute_geom_mass(geom, mesh.as_ref(), hfield)
     }
