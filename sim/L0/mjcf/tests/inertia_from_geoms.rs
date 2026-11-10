@@ -253,6 +253,16 @@ const FROM_GEOMS: &[(&str, &str, Expect)] = &[
         }]),
     ),
     (
+        "a_height_field_beside_a_box",
+        r#"<mujoco><asset><hfield name="h" size="1 1 1 0.5" nrow="2" ncol="2" elevation="0 0.5 1 0.25"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint name="f"/><geom type="hfield" hfield="h"/><geom type="box" size="0.1 0.2 0.3" pos="0.3 0 0.2"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 4048.0,
+            inertia: [2671.7435313353417, 1674.4326745718051, 1670.6358099031306],
+            ipos: [0.0035573122529644276, 0.0, 0.0023715415019762848],
+            iquat: [0.0, 0.7061010153060066, 0.0, 0.7081111185286042],
+        }]),
+    ),
+    (
         "a_fromto_capsule_copied",
         r#"<mujoco><worldbody><body name="p"><joint type="hinge" axis="0 1 0"/><geom type="capsule" size="0.02" fromto="0 0 0 0.3 0 0"/></body></worldbody></mujoco>"#,
         Expect::Loads(&[Body {
@@ -285,6 +295,16 @@ const FROM_GEOMS: &[(&str, &str, Expect)] = &[
             ipos: [0.1, 0.0, 0.0],
             iquat: [1.0, 0.0, 0.0, 0.0],
         }]),
+    ),
+    (
+        "true_refuses_a_kept_inertial_that_breaks_the_triangle",
+        r#"<mujoco><compiler inertiafromgeom="true"/><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="1 1 3"/></body></worldbody></mujoco>"#,
+        Expect::Refused("inertia must satisfy A + B >= C; use 'balanceinertia' to fix"),
+    ),
+    (
+        "true_refuses_a_kept_inertial_beside_a_plane_that_breaks_the_triangle",
+        r#"<mujoco><compiler inertiafromgeom="true"/><worldbody><body name="b" pos="0 0 1"><inertial pos="0 0 0" mass="1" diaginertia="1 1 3"/><geom type="plane" size="1 1 0.1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("inertia must satisfy A + B >= C; use 'balanceinertia' to fix"),
     ),
     (
         "a_moving_bodys_only_geom_at_most_mj_eps",
