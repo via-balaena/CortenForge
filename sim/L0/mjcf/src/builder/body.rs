@@ -443,9 +443,11 @@ impl ModelBuilder {
 
     /// MuJoCo 3.5.0's checks of each body, body by body in its order from the
     /// world, as `mjCBody::Compile` makes them: a `fullinertia` beside a
-    /// diagonal inertia (`user_objects.cc:2408-2409`); geom by geom, its
-    /// checks ([`Self::check_geom`]); a mass or moment negative after the
-    /// bounds (`:2457-2459`), then the moments' triangle
+    /// diagonal inertia (`user_objects.cc:2408-2409`); its `<inertial>`'s
+    /// orientation alternative (`:2420-2425`); geom by geom, its checks
+    /// ([`Self::check_geom`]); its inertia from its geoms (`InertiaFromGeom`,
+    /// `:2158-2224`); a mass or moment negative after the bounds
+    /// (`:2457-2459`), then the moments' triangle
     /// ([`Self::apply_mass_pipeline`], `:2461-2469`); then the body's joints
     /// ([`Self::check_body_joints`]). A geom `fusestatic` moved into an
     /// earlier body is checked at its own body's turn, before the first body
@@ -602,8 +604,8 @@ impl ModelBuilder {
     /// not finite ([`refuse_non_finite_inertial`]). The `<inertial>`'s frame
     /// is its quaternion or orientation alternative as a body's is resolved
     /// (`:2420-2425`); an alternative MuJoCo refuses is returned, for
-    /// [`Self::check_bodies`] to refuse in MuJoCo's order, and the identity
-    /// taken in its place.
+    /// [`Self::check_bodies`] to refuse in MuJoCo's order among the body's own
+    /// checks, and the identity taken in its place.
     fn inertia_before_geoms(
         &self,
         body: &MjcfBody,

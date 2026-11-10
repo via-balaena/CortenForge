@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="n"><geom type="cylinder" size="1e-7 1" mass="0.5"/><geom type="cylinder" size="1e-7 1" mass="0.5" pos="0 0 3"/><site name="s" zaxis="0 0 0"/></body></worldbody></mujoco>
