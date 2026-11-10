@@ -987,8 +987,7 @@ fn an_orientation_is_read_before_the_orientations_are_counted() {
     assert_count(&err, "geom", "euler", ValueCount::Exactly(3), 2);
     let err = refused(r#"<mujoco><worldbody><site euler="b" xyaxes="a"/></worldbody></mujoco>"#);
     assert_bad_number(&err, "site", "xyaxes");
-    // A body's xyaxes and zaxis, an inertial's euler: read for the count,
-    // though sim-mjcf does not otherwise read them.
+    // A body's xyaxes and zaxis, an inertial's euler.
     let err = refused(
         r#"<mujoco><worldbody><body xyaxes="abc"><geom size="0.1"/></body></worldbody></mujoco>"#,
     );

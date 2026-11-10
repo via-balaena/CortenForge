@@ -1047,8 +1047,8 @@ fn body_hierarchies_are_mujocos() {
 
 /// Scenes of bodies of several geoms, so every pair of bodies goes through
 /// the midphase, each body's inertial frame given (the hierarchies' boxes
-/// are in it). The
-/// geom pairs the contact filter is called with, in order, are MuJoCo's,
+/// are in it). The geom pairs the contact filter is called with, in order,
+/// are MuJoCo's,
 /// with the midphase on and with it off (`DISABLE_MIDPHASE`), each in
 /// MuJoCo's type order, and the contacts MuJoCo's (the same geoms in order,
 /// each distance within 1e-12). In `sparse` the midphase calls the filter

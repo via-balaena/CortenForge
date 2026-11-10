@@ -87,8 +87,7 @@ user_objects.cc:2323-2335, :396-543; user_model.cc:2700-2712): each body's
 margin, address and count, each node's box in its body's inertial frame,
 children, geom and depth, and the bodies' inertial frames. In `filter`,
 for scenes of bodies of several geoms, each with its inertial frame
-given (sim-mjcf's principal axes are not MuJoCo's on many bodies, book
-Rigid-loading L03 and ledger L195, and the boxes are in that frame), the geom pairs MuJoCo's contact
+given (the boxes are in that frame), the geom pairs MuJoCo's contact
 filter is called with, in order, and the contacts (geoms, `dist`), with
 the midphase on and off (mj_collideTree, engine_collision_driver.c:622-847):
 `sparse` holds a pair the leaves' bounding spheres drop though their boxes
@@ -2641,7 +2640,7 @@ def write(path, doc):
 # square cells (size 1 1), elevations multiples of 1/8 from 0 to 1 (MuJoCo's normalisation leaves
 # them) and rows symmetric (its row flip leaves them; book Rigid-loading L45 is the rest). Each
 # body is turned by its frame, its one geom unturned in it, so its inertial frame is the body's in
-# both (a turned geom's is not yet MuJoCo's in sim-mjcf, ledger L195).
+# both.
 BUMPY_ELEVATION = [((3 * min(r, 8 - r) + 5 * c) % 9) / 8.0 for r in range(9) for c in range(9)]
 BUMPY_ELEVATION[0], BUMPY_ELEVATION[4 * 9 + 4] = 0.0, 1.0
 BUMPY_BODIES = {"sphere": ('<geom type="sphere" size="0.1"/>', "0 0 0"),
