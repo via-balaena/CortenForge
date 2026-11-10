@@ -28,7 +28,7 @@ check fails.
 | 17 | Mesh-Mesh | Wedge above platform surface | -- |
 | 18 | Mesh-Mesh | Contact force / weight = 1.0 | 10% |
 | 19 | Edge: Separated | Two meshes far apart: ncon = 0 | exact |
-| 20 | Edge: Single tri | 1-triangle mesh (no hull) vs sphere: no crash, contact produced | -- |
+| 20 | Edge: Single tri | 1-triangle mesh refused, as MuJoCo 3.5.0 refuses a mesh of fewer than 4 vertices | -- |
 
 ## Run
 

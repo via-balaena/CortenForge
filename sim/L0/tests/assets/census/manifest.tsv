@@ -3648,3 +3648,5 @@ df010504e2e9dd67	sim/L0/mjcf/tests/refusal_order.rs:2737
 c82c7111634d8be1	sim/L0/mjcf/tests/inertia_from_geoms.rs:349
 a8939824bb73aeda	sim/L0/mjcf/tests/inertia_from_geoms.rs:555
 dd1252c1ec881f35	sim/L0/mjcf/tests/inertia_from_geoms.rs:555
+2f78cb55f07f0e91	sim/L0/mjcf/tests/mesh_mass_properties.rs:357
+86f04c827b472b7d	sim/L0/mjcf/tests/mesh_mass_properties.rs:367
