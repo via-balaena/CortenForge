@@ -551,6 +551,16 @@ const NO_INERTIAL_FRAME: &[(&str, &str, Expect)] = &[
         }]),
     ),
     (
+        "a_massless_body_in_a_frame_under_a_fused_body_takes_its_pose_in_the_frame",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1" euler="0 0 90"><geom type="sphere" size="0.1"/><frame pos="0 0.5 0" euler="20 0 0"><body name="m" pos="1 0 0" euler="0 30 0"/></frame></body></worldbody><sensor><framepos objtype="body" objname="m"/></sensor></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 0.0,
+            inertia: [0.0, 0.0, 0.0],
+            ipos: [1.0, 0.0, 0.0],
+            iquat: [0.9659258262890683, 0.0, 0.25881904510252074, 0.0],
+        }]),
+    ),
+    (
         "a_massless_body_two_below_a_fused_body_takes_its_pose_as_written",
         r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="r" pos="0 0 2"><joint type="hinge"/><geom type="sphere" size="0.1"/><body name="a" pos="0 0 1" euler="0 0 90"><geom type="sphere" size="0.1"/><body name="m" pos="1 0 0" euler="0 30 0"/></body></body></worldbody><sensor><framepos objtype="body" objname="m"/></sensor></mujoco>"#,
         Expect::Loads(&[
