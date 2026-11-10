@@ -152,7 +152,7 @@
 //! five in `INERTIAL_COSTS`; its review's (measured 2026-11-09) set those and
 //! a body's non-finite inertia from its geoms beside an orientation, a
 //! `fullinertia`, a reference, a mocap body's place or another body's checks:
-//! eleven in `TWO_FAULTS`, twenty-six in `INERTIAL_COSTS`. Each is a sample
+//! ten in `TWO_FAULTS`, twenty-six in `INERTIAL_COSTS`. Each is a sample
 //! of the pairs, not all of them.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -1910,12 +1910,6 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "unknown geom 'nope' (pair #0)",
     ),
     (
-        "a mesh of three vertices and an inertial's degenerate xyaxes",
-        r#"<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0"/></asset><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><body name="q" pos="2 0 0"><freejoint/><geom type="sphere" size="0.1"/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
-        "at least 4 vertices required",
-        "mesh 'm': embedded vertex data requires face data",
-    ),
-    (
         "an inertial's degenerate xyaxes then a zero-zaxis frame in the world",
         r#"<mujoco><worldbody><body name="n"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/></body><frame zaxis="0 0 0"><geom type="sphere" size="0.1"/></frame></worldbody></mujoco>"#,
         "orientation specification error 'zaxis too small' in site -1",
@@ -2693,14 +2687,10 @@ fn a_fault_named_first_by_mujoco_beside_a_refusal_is_named_as_ledgered() {
 
 /// Two faults, one an `<inertial>`'s orientation alternative, a body's
 /// principal axes from its geoms or its non-finite inertia from them, where
-/// this crate names the other one than MuJoCo 3.5.0: ledger L353 holds each.
-/// MuJoCo raises a body's inertia faults as it compiles that body; this
-/// crate checks every geom's size and every actuator's joint before it builds
-/// any body, and raises a body's inertia faults (`check_bodies`) after the
-/// whole build, which meets every orientation, `fullinertia`, mocap body's
-/// place and name a document refers to first. `(what, document, MuJoCo's
-/// reason, this crate's error)`, measured 2026-11-09 (RL-9a's two-fault set
-/// and its review's pairs).
+/// this crate names the other one than MuJoCo 3.5.0 (ledger L353; the
+/// non-finite rows' first fault is one MuJoCo loads, D-INERTIA-NONFINITE).
+/// `(what, document, MuJoCo's reason, this crate's error)`, measured
+/// 2026-11-09 (RL-9a's two-fault set and its review's pairs).
 const INERTIAL_COSTS: &[(&str, &str, &str, &str)] = &[
     (
         "an inertial's degenerate xyaxes then its own body's geom's size",

@@ -11,8 +11,7 @@
 //! to differ between platforms), and MuJoCo's `body_inertia` bit for bit,
 //! a body of one geom taking that geom's as MuJoCo copies it (book
 //! Rigid-loading L33) — but a `shellinertia` box's, cylinder's or capsule's,
-//! within a relative 1e-12 (their moments are not yet MuJoCo's, ledger
-//! L355).
+//! within a relative 1e-12 (ledger L355).
 
 // The values are MuJoCo's, printed to the last digit.
 #![allow(clippy::unreadable_literal)]

@@ -422,7 +422,7 @@ fn a_body_whose_one_geoms_inertia_overflows_is_refused_where_mujoco_loads_it() {
 /// `(name, document, expected)`, generated as [`FROM_GEOMS`]: a body that
 /// neither an `<inertial>` nor a selected geom gives an inertial frame takes
 /// its own pose as one, as written in the `<frame>` or body holding it, a
-/// body `fusestatic` fuses included (`user_objects.cc:2442-2446`,
+/// body under one `fusestatic` fuses included (`user_objects.cc:2442-2446`,
 /// `user_model.cc:4932-4937`); an `<inertial>` kept under
 /// `inertiafromgeom="true"` keeps its own.
 const NO_INERTIAL_FRAME: &[(&str, &str, Expect)] = &[
@@ -543,6 +543,16 @@ const NO_INERTIAL_FRAME: &[(&str, &str, Expect)] = &[
     (
         "a_massless_body_under_a_fused_body_takes_its_pose_as_written",
         r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1" euler="0 0 90"><geom type="sphere" size="0.1"/><body name="m" pos="1 0 0" euler="0 30 0"/></body></worldbody><sensor><framepos objtype="body" objname="m"/></sensor></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 0.0,
+            inertia: [0.0, 0.0, 0.0],
+            ipos: [1.0, 0.0, 0.0],
+            iquat: [0.9659258262890683, 0.0, 0.25881904510252074, 0.0],
+        }]),
+    ),
+    (
+        "a_massless_body_under_an_unturned_fused_body_takes_its_pose_as_written",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><geom type="sphere" size="0.1"/><body name="m" pos="1 0 0" euler="0 30 0"/></body></worldbody><sensor><framepos objtype="body" objname="m"/></sensor></mujoco>"#,
         Expect::Loads(&[Body {
             mass: 0.0,
             inertia: [0.0, 0.0, 0.0],

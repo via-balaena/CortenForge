@@ -3647,3 +3647,4 @@ df010504e2e9dd67	sim/L0/mjcf/tests/refusal_order.rs:2737
 70d28be2573756e5	sim/L0/mjcf/tests/inertia_from_geoms.rs:401
 c82c7111634d8be1	sim/L0/mjcf/tests/inertia_from_geoms.rs:349
 a8939824bb73aeda	sim/L0/mjcf/tests/inertia_from_geoms.rs:555
+dd1252c1ec881f35	sim/L0/mjcf/tests/inertia_from_geoms.rs:555
