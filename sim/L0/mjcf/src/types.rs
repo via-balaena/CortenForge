@@ -400,9 +400,9 @@ pub enum MeshInertia {
     /// Compute exact (volumetric) inertia on the original mesh.
     /// Requires watertight, outward-oriented mesh.
     Exact,
-    /// Legacy algorithm: each pyramid's volume taken positive (overcounts
-    /// where the centre of the faces sees a face from behind). MuJoCo 3.5.0's
-    /// default (`mjs_defaultMesh`, `user_init.c:242`).
+    /// Legacy algorithm: each pyramid's volume taken positive, so a
+    /// non-convex mesh's volume is overcounted. MuJoCo 3.5.0's default
+    /// (`mjs_defaultMesh`, `user_init.c:242`).
     Legacy,
     /// Surface-area-weighted shell inertia. mass = density × total_area.
     Shell,
@@ -955,7 +955,7 @@ pub struct MjcfMesh {
     /// The mesh's reference position (`refpos`), (0, 0, 0) unwritten: its
     /// vertices are moved by minus it, before `refquat` turns them and
     /// `scale` scales them, as MuJoCo 3.5.0 transforms a mesh
-    /// (`mjCMesh::ApplyTransformations`, `user_mesh.cc:1440-1507`).
+    /// (`mjCMesh::ApplyTransformations`, `user_mesh.cc:1440-1505`).
     pub refpos: Vector3<f64>,
     /// The mesh's reference orientation (`refquat`, w x y z), (1, 0, 0, 0)
     /// unwritten: its vertices are turned by its inverse, made unit as MuJoCo

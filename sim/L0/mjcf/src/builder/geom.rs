@@ -445,8 +445,8 @@ pub fn compute_geom_mass(
 /// A geom's volume, as MuJoCo 3.5.0 computes it (`mjCGeom::GetVolume`,
 /// `user_objects.cc:3115-3189`), each product in MuJoCo's order: a height
 /// field's is the box of the sizes MuJoCo gives it from its asset
-/// ([`hfield_geom_size`]), a plane's 0. A mesh's is its own volume (book
-/// Rigid-loading L35's), and a primitive geom's with `shellinertia` its
+/// ([`hfield_geom_size`]), a plane's 0. A mesh or SDF geom's is its mesh's
+/// ([`MeshProps::volume`]), and a primitive geom's with `shellinertia` its
 /// surface's area ([`shell_area`]).
 pub(super) fn geom_volume(
     geom: &MjcfGeom,

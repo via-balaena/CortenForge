@@ -1,8 +1,8 @@
 //! Rung 3 of the geometry-fidelity ladder — one part as PHYSICS.
 //!
 //! The L4 vertebra stops being pure geometry and enters the rigid engine:
-//! its mass properties are computed from the mesh (exact Mirtich
-//! signed-tetrahedron inertia on the true concave mesh, `inertia="exact"`), it
+//! its mass properties are computed from the mesh (MuJoCo 3.5.0's `exact`
+//! mode on the true concave mesh, `inertia="exact"`), it
 //! becomes a free rigid body, and it is dropped onto a plane under gravity to
 //! confirm it behaves physically (settles, rests on the plane, force-balanced).
 //!

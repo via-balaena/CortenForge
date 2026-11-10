@@ -249,9 +249,10 @@ fn l_shape(attrs: &str) -> String {
     )
 }
 
-// MuJoCo's mass properties (`mjCMesh::Process`): the volume and centre of
-// mass from pyramids with their apex at the centre of the faces, the
-// inertia from pyramids with their apex at the centre of mass.
+// MuJoCo's mass properties (`mjCMesh::Process`): the centre of mass, and a
+// volume checked against mjMINVAL, from pyramids with their apex at the
+// centre of the faces; the inertia, and the volume that sets the mass, from
+// pyramids with their apex at the centre of mass.
 
 #[test]
 fn legacy_mode_takes_each_pyramids_volume_positive() {

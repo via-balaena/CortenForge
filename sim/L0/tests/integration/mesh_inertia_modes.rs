@@ -234,7 +234,8 @@ fn t9_convex_mode_non_convex_mesh() {
     assert_relative_eq!(model.body_mass[1], 7000.0, epsilon = 1.0);
     // MuJoCo 3.5.0's principal moments, in its order (`eig3`, decreasing),
     // printed by the census's unfused oracle; this crate's within a relative
-    // 1e-14 (its hull's inertia, book Rigid-loading L35's).
+    // 1e-14 (its hull's faces are MuJoCo's as a set, not in order:
+    // `D-MESH-CONVEX-MASS`).
     let mujoco = [9039.682539682539, 6666.666666666664, 3539.6825396825384];
     for (ours, mujoco) in model.body_inertia[1].iter().zip(mujoco) {
         assert_relative_eq!(*ours, mujoco, max_relative = 1e-14);
