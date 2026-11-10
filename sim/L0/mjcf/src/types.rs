@@ -952,6 +952,15 @@ pub struct MjcfMesh {
     pub file: Option<String>,
     /// Scale factor for the mesh vertices.
     pub scale: Option<Vector3<f64>>,
+    /// The mesh's reference position (`refpos`), (0, 0, 0) unwritten: its
+    /// vertices are moved by minus it, before `refquat` turns them and
+    /// `scale` scales them, as MuJoCo 3.5.0 transforms a mesh
+    /// (`mjCMesh::ApplyTransformations`, `user_mesh.cc:1440-1507`).
+    pub refpos: Vector3<f64>,
+    /// The mesh's reference orientation (`refquat`, w x y z), (1, 0, 0, 0)
+    /// unwritten: its vertices are turned by its inverse, made unit as MuJoCo
+    /// makes it, after `refpos` and before `scale`.
+    pub refquat: [f64; 4],
     /// Embedded vertex data (if not loading from file).
     /// Format: flat array of xyz coordinates.
     pub vertex: Option<Vec<f64>>,
@@ -974,6 +983,8 @@ impl Default for MjcfMesh {
             class: None,
             file: None,
             scale: None,
+            refpos: Vector3::zeros(),
+            refquat: [1.0, 0.0, 0.0, 0.0],
             vertex: None,
             face: None,
             maxhullvert: None,

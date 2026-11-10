@@ -15,6 +15,7 @@ use tracing::warn;
 
 use super::ModelBuilder;
 use super::asset::{AssetKind, resolve_asset_path};
+use super::orientation::{mulvecmat_t, normvec, quat2mat};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
     MeshInertia, MjcfCompiler, MjcfGeom, MjcfGeomType, MjcfHfield, MjcfMesh, MjcfModel,
@@ -174,18 +175,21 @@ impl ModelBuilder {
     }
 }
 
-/// Load mesh data from a file and convert to `TriangleMeshData`.
+/// A mesh's vertices and its faces' vertex indices (three per face), as its
+/// file or its `vertex` and `face` attributes hold them, before MuJoCo's
+/// transformations ([`apply_transformations`]).
+pub type RawMesh = (Vec<Point3<f64>>, Vec<usize>);
+
+/// Load a mesh file's vertices and faces as the file holds them.
 ///
 /// Supports STL, OBJ, and PLY formats out of the box (auto-detected from
 /// extension). Enable the `threemf` feature to add 3MF; otherwise `.3mf`
 /// paths return an `UnknownFormat` error from mesh-io.
-/// Scale is applied to all vertices during conversion.
 ///
 /// # Arguments
 ///
 /// * `file_path` - Path string from MJCF `<mesh file="..."/>` attribute
 /// * `base_path` - Base directory for resolving relative paths
-/// * `scale` - Scale factors [x, y, z] to apply to vertices
 /// * `mesh_name` - Mesh name for error messages
 ///
 /// # Errors
@@ -198,9 +202,8 @@ pub fn load_mesh_file(
     file_path: &str,
     base_path: Option<&Path>,
     compiler: &MjcfCompiler,
-    scale: Vector3<f64>,
     mesh_name: &str,
-) -> Result<TriangleMeshData> {
+) -> Result<RawMesh> {
     // 1. Resolve path using compiler path settings
     let refuse = |reason: String| MjcfError::asset(ElementKind::Mesh, mesh_name, reason);
     let resolved_path =
@@ -218,23 +221,14 @@ pub fn load_mesh_file(
         return Err(refuse(format!("file '{file_path}' contains no faces")));
     }
 
-    // 4. Convert vertices with scale applied
-    let vertices: Vec<Point3<f64>> = indexed_mesh
-        .vertices
-        .iter()
-        .map(|v| Point3::new(v.x * scale.x, v.y * scale.y, v.z * scale.z))
-        .collect();
-
-    // 5. Convert faces to flat indices
-    //    mesh_io uses [u32; 3] per face, we need Vec<usize>
+    // 4. Faces to flat indices: mesh-io holds [u32; 3] per face.
     let indices: Vec<usize> = indexed_mesh
         .faces
         .iter()
         .flat_map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
         .collect();
 
-    // 6. Build TriangleMeshData (BVH constructed automatically)
-    Ok(TriangleMeshData::new(vertices, indices))
+    Ok((indexed_mesh.vertices, indices))
 }
 
 /// Convert an MJCF hfield asset to `HeightFieldData`.
@@ -397,38 +391,70 @@ fn load_hfield_png(
 /// 2. **File-based**: `file` attribute pointing to STL/OBJ/PLY (also
 ///    3MF when the `threemf` feature is enabled)
 ///
-/// Scale is applied to all vertices. BVH is built automatically.
+/// Its vertices are moved, turned and scaled as MuJoCo 3.5.0 does
+/// ([`apply_transformations`]); the BVH is built over them.
 pub fn convert_mjcf_mesh(
     mjcf_mesh: &MjcfMesh,
     base_path: Option<&Path>,
     compiler: &MjcfCompiler,
 ) -> Result<TriangleMeshData> {
     // Dispatch based on data source
-    match (&mjcf_mesh.vertex, &mjcf_mesh.file) {
+    let (mut vertices, indices) = match (&mjcf_mesh.vertex, &mjcf_mesh.file) {
         // Embedded vertex data takes precedence (MuJoCo semantics)
-        (Some(verts), _) => convert_embedded_mesh(mjcf_mesh, verts),
+        (Some(verts), _) => convert_embedded_mesh(mjcf_mesh, verts)?,
         // File-based loading
-        (None, Some(file_path)) => load_mesh_file(
-            file_path,
-            base_path,
-            compiler,
-            mjcf_mesh.scale.unwrap_or(Vector3::new(1.0, 1.0, 1.0)),
-            &mjcf_mesh.name,
-        ),
+        (None, Some(file_path)) => load_mesh_file(file_path, base_path, compiler, &mjcf_mesh.name)?,
         // Neither specified
-        (None, None) => Err(MjcfError::asset(
-            ElementKind::Mesh,
-            &mjcf_mesh.name,
-            "no vertex data and no file specified",
-        )),
+        (None, None) => {
+            return Err(MjcfError::asset(
+                ElementKind::Mesh,
+                &mjcf_mesh.name,
+                "no vertex data and no file specified",
+            ));
+        }
+    };
+    apply_transformations(&mut vertices, mjcf_mesh);
+    Ok(TriangleMeshData::new(vertices, indices))
+}
+
+/// MuJoCo 3.5.0's `mjCMesh::ApplyTransformations` (`user_mesh.cc:1440-
+/// 1507`) on a mesh's vertices, in its order: each moved by minus `refpos`
+/// where `refpos` is not 0, turned by the transpose of `refquat`'s matrix
+/// (`refquat` made unit by `mjuu_normvec`) where `refquat` is not (1, 0, 0,
+/// 0), and multiplied by `scale` where `scale` is not (1, 1, 1).
+// MuJoCo's tests are exact (`refpos[0] != 0 || …`).
+#[allow(clippy::float_cmp)]
+fn apply_transformations(vertices: &mut [Point3<f64>], mjcf_mesh: &MjcfMesh) {
+    let refpos = mjcf_mesh.refpos;
+    if refpos.x != 0.0 || refpos.y != 0.0 || refpos.z != 0.0 {
+        for v in vertices.iter_mut() {
+            v.x -= refpos.x;
+            v.y -= refpos.y;
+            v.z -= refpos.z;
+        }
+    }
+    if mjcf_mesh.refquat != [1.0, 0.0, 0.0, 0.0] {
+        let mut quat = mjcf_mesh.refquat;
+        normvec(&mut quat);
+        let mat = quat2mat(&quat);
+        for v in vertices.iter_mut() {
+            let [x, y, z] = mulvecmat_t(&[v.x, v.y, v.z], &mat);
+            *v = Point3::new(x, y, z);
+        }
+    }
+    let scale = mjcf_mesh.scale.unwrap_or(Vector3::new(1.0, 1.0, 1.0));
+    if scale.x != 1.0 || scale.y != 1.0 || scale.z != 1.0 {
+        for v in vertices.iter_mut() {
+            v.x *= scale.x;
+            v.y *= scale.y;
+            v.z *= scale.z;
+        }
     }
 }
 
-/// Convert embedded mesh data from MJCF to `TriangleMeshData`.
-///
-/// This handles the case where vertex and face data are embedded directly
-/// in the MJCF XML via `vertex="..."` and `face="..."` attributes.
-pub fn convert_embedded_mesh(mjcf_mesh: &MjcfMesh, verts: &[f64]) -> Result<TriangleMeshData> {
+/// An embedded mesh's vertices and faces, from its `vertex` and `face`
+/// attributes, checked and as written.
+pub fn convert_embedded_mesh(mjcf_mesh: &MjcfMesh, verts: &[f64]) -> Result<RawMesh> {
     let refuse = |reason: String| MjcfError::asset(ElementKind::Mesh, &mjcf_mesh.name, reason);
     // Validate vertex data
     if !verts.len().is_multiple_of(3) {
@@ -438,11 +464,9 @@ pub fn convert_embedded_mesh(mjcf_mesh: &MjcfMesh, verts: &[f64]) -> Result<Tria
         )));
     }
 
-    // Apply scale while converting to Point3
-    let scale = mjcf_mesh.scale.unwrap_or(Vector3::new(1.0, 1.0, 1.0));
     let vertices: Vec<Point3<f64>> = verts
         .chunks_exact(3)
-        .map(|chunk| Point3::new(chunk[0] * scale.x, chunk[1] * scale.y, chunk[2] * scale.z))
+        .map(|chunk| Point3::new(chunk[0], chunk[1], chunk[2]))
         .collect();
 
     // Extract and validate faces (convert u32 -> usize)
@@ -480,8 +504,7 @@ pub fn convert_embedded_mesh(mjcf_mesh: &MjcfMesh, verts: &[f64]) -> Result<Tria
         }
     }
 
-    // TriangleMeshData::new() builds the BVH automatically
-    Ok(TriangleMeshData::new(vertices, indices))
+    Ok((vertices, indices))
 }
 
 /// Compute exact mass properties of a triangle mesh using signed tetrahedron
@@ -938,6 +961,7 @@ mod tests {
     use super::{convert_mjcf_mesh, load_mesh_file};
     use crate::types::{MjcfCompiler, MjcfMesh};
     use nalgebra::Vector3;
+    use sim_core::mesh::TriangleMeshData;
 
     /// Helper to create a simple STL file for testing.
     fn create_test_stl(path: &std::path::Path) {
@@ -968,48 +992,35 @@ mod tests {
             &mesh_path.to_string_lossy(),
             None,
             &MjcfCompiler::default(),
-            Vector3::new(1.0, 1.0, 1.0),
             "test_mesh",
         );
 
         assert!(result.is_ok(), "Should load STL file");
-        let mesh_data = result.unwrap();
-        assert!(
-            mesh_data.vertices().len() >= 4,
-            "Should have at least 4 vertices"
-        );
-        assert!(
-            mesh_data.triangles().len() >= 4,
-            "Should have at least 4 triangles"
-        );
+        let (vertices, indices) = result.unwrap();
+        assert!(vertices.len() >= 4, "Should have at least 4 vertices");
+        assert!(indices.len() >= 12, "Should have at least 4 triangles");
     }
 
-    /// Test load_mesh_file applies scale correctly.
+    /// The file's mesh, loaded by `convert_mjcf_mesh` with `scale`.
+    fn file_mesh(path: &std::path::Path, scale: Vector3<f64>) -> TriangleMeshData {
+        let mjcf_mesh = MjcfMesh {
+            name: "scaled".to_string(),
+            file: Some(path.to_string_lossy().to_string()),
+            scale: Some(scale),
+            ..MjcfMesh::default()
+        };
+        convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default()).unwrap()
+    }
+
+    /// A file mesh's `scale` multiplies its vertices.
     #[test]
     fn test_load_mesh_file_with_scale() {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let mesh_path = temp_dir.path().join("scaled.stl");
         create_test_stl(&mesh_path);
 
-        // Load without scale
-        let unscaled = load_mesh_file(
-            &mesh_path.to_string_lossy(),
-            None,
-            &MjcfCompiler::default(),
-            Vector3::new(1.0, 1.0, 1.0),
-            "unscaled",
-        )
-        .unwrap();
-
-        // Load with 2x scale
-        let scaled = load_mesh_file(
-            &mesh_path.to_string_lossy(),
-            None,
-            &MjcfCompiler::default(),
-            Vector3::new(2.0, 2.0, 2.0),
-            "scaled",
-        )
-        .unwrap();
+        let unscaled = file_mesh(&mesh_path, Vector3::new(1.0, 1.0, 1.0));
+        let scaled = file_mesh(&mesh_path, Vector3::new(2.0, 2.0, 2.0));
 
         // Verify scale was applied: scaled vertices should be 2x unscaled
         // Find corresponding vertices and compare
@@ -1036,32 +1047,15 @@ mod tests {
         }
     }
 
-    /// Test load_mesh_file with non-uniform scale.
+    /// A file mesh's non-uniform `scale` multiplies each axis by its own.
     #[test]
     fn test_load_mesh_file_nonuniform_scale() {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let mesh_path = temp_dir.path().join("nonuniform.stl");
         create_test_stl(&mesh_path);
 
-        // Load with non-uniform scale: 1x, 2x, 3x
-        let scaled = load_mesh_file(
-            &mesh_path.to_string_lossy(),
-            None,
-            &MjcfCompiler::default(),
-            Vector3::new(1.0, 2.0, 3.0),
-            "nonuniform",
-        )
-        .unwrap();
-
-        // Load unscaled for comparison
-        let unscaled = load_mesh_file(
-            &mesh_path.to_string_lossy(),
-            None,
-            &MjcfCompiler::default(),
-            Vector3::new(1.0, 1.0, 1.0),
-            "unscaled",
-        )
-        .unwrap();
+        let scaled = file_mesh(&mesh_path, Vector3::new(1.0, 2.0, 3.0));
+        let unscaled = file_mesh(&mesh_path, Vector3::new(1.0, 1.0, 1.0));
 
         // Verify non-uniform scale: x unchanged, y doubled, z tripled
         for (s, u) in scaled.vertices().iter().zip(unscaled.vertices().iter()) {
@@ -1082,7 +1076,6 @@ mod tests {
             &mesh_path.to_string_lossy(),
             None,
             &MjcfCompiler::default(),
-            Vector3::new(1.0, 1.0, 1.0),
             "unsupported",
         );
 
@@ -1106,7 +1099,6 @@ mod tests {
             &mesh_path.to_string_lossy(),
             None,
             &MjcfCompiler::default(),
-            Vector3::new(1.0, 1.0, 1.0),
             "corrupt_mesh",
         );
 
@@ -1131,9 +1123,7 @@ mod tests {
             vertex: None,
             face: None,
             scale: Some(Vector3::new(1.0, 1.0, 1.0)),
-            maxhullvert: None,
-            inertia: None,
-            class: None,
+            ..MjcfMesh::default()
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
@@ -1158,9 +1148,7 @@ mod tests {
             vertex: None,
             face: None,
             scale: Some(Vector3::new(1.0, 1.0, 1.0)),
-            maxhullvert: None,
-            inertia: None,
-            class: None,
+            ..MjcfMesh::default()
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, Some(temp_dir.path()), &MjcfCompiler::default());
@@ -1186,9 +1174,7 @@ mod tests {
                 2, 0, 3, // f3
             ]),
             scale: Some(Vector3::new(1.0, 1.0, 1.0)),
-            maxhullvert: None,
-            inertia: None,
-            class: None,
+            ..MjcfMesh::default()
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
@@ -1207,9 +1193,7 @@ mod tests {
             vertex: None,
             face: None,
             scale: Some(Vector3::new(1.0, 1.0, 1.0)),
-            maxhullvert: None,
-            inertia: None,
-            class: None,
+            ..MjcfMesh::default()
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
