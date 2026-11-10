@@ -2847,14 +2847,15 @@ pub struct MjcfBody {
     pub xyaxes: Option<[f64; 6]>,
     /// Alternative orientation as the z axis.
     pub zaxis: Option<Vector3<f64>>,
-    /// Where a `<frame>` held this body, its pose in that frame (its position
-    /// as written, its orientation resolved and made unit, w x y z), kept
-    /// when frame expansion composes the frame into `pos` and `quat`. MuJoCo
-    /// 3.5.0 copies this pose into the inertial frame of a body that neither
-    /// an `<inertial>` nor a selected geom gives one
-    /// (`user_objects.cc:2442-2446`, before the frame at `:2474`). `None` as
-    /// read.
-    pub pose_in_frame: Option<(Vector3<f64>, Vector4<f64>)>,
+    /// This body's pose as written in the `<frame>` or body holding it (its
+    /// position, its orientation resolved and made unit, w x y z), kept where
+    /// frame expansion or `fusestatic` composes another pose into `pos` and
+    /// `quat`. MuJoCo 3.5.0 copies this pose into the inertial frame of a
+    /// body that neither an `<inertial>` nor a selected geom gives one
+    /// (`user_objects.cc:2442-2446`), before the frame composes into the
+    /// body's pose (`:2474`) and before it fuses static bodies
+    /// (`user_model.cc:4932-4937`). `None` as read.
+    pub pose_as_written: Option<(Vector3<f64>, Vector4<f64>)>,
     /// Explicit inertial properties.
     pub inertial: Option<MjcfInertial>,
     /// Joints attached to this body.
@@ -2911,7 +2912,7 @@ impl Default for MjcfBody {
             euler: None,
             xyaxes: None,
             zaxis: None,
-            pose_in_frame: None,
+            pose_as_written: None,
             inertial: None,
             joints: Vec::new(),
             geoms: Vec::new(),

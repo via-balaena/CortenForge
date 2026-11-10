@@ -373,8 +373,9 @@ fn a_body_whose_one_geoms_inertia_overflows_is_refused_where_mujoco_loads_it() {
 
 /// `(name, document, expected)`, generated as [`FROM_GEOMS`]: a body that
 /// neither an `<inertial>` nor a selected geom gives an inertial frame takes
-/// its own pose as one, its pose in the `<frame>` holding it where one does
-/// (`user_objects.cc:2442-2446`); an `<inertial>` kept under
+/// its own pose as one, as written in the `<frame>` or body holding it, a
+/// body `fusestatic` fuses included (`user_objects.cc:2442-2446`,
+/// `user_model.cc:4932-4937`); an `<inertial>` kept under
 /// `inertiafromgeom="true"` keeps its own.
 const NO_INERTIAL_FRAME: &[(&str, &str, Expect)] = &[
     (
@@ -489,6 +490,44 @@ const NO_INERTIAL_FRAME: &[(&str, &str, Expect)] = &[
             inertia: [0.1, 0.2, 0.3],
             ipos: [0.1, 0.2, 0.3],
             iquat: [1.0, 0.0, 0.0, 0.0],
+        }]),
+    ),
+    (
+        "a_massless_body_under_a_fused_body_takes_its_pose_as_written",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1" euler="0 0 90"><geom type="sphere" size="0.1"/><body name="m" pos="1 0 0" euler="0 30 0"/></body></worldbody><sensor><framepos objtype="body" objname="m"/></sensor></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 0.0,
+            inertia: [0.0, 0.0, 0.0],
+            ipos: [1.0, 0.0, 0.0],
+            iquat: [0.9659258262890683, 0.0, 0.25881904510252074, 0.0],
+        }]),
+    ),
+    (
+        "a_massless_body_two_below_a_fused_body_takes_its_pose_as_written",
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="r" pos="0 0 2"><joint type="hinge"/><geom type="sphere" size="0.1"/><body name="a" pos="0 0 1" euler="0 0 90"><geom type="sphere" size="0.1"/><body name="m" pos="1 0 0" euler="0 30 0"/></body></body></worldbody><sensor><framepos objtype="body" objname="m"/></sensor></mujoco>"#,
+        Expect::Loads(&[
+            Body {
+                mass: 8.377580409572783,
+                inertia: [2.127905424031487, 2.127905424031487, 0.03351032163829114],
+                ipos: [0.0, 0.0, 0.5],
+                iquat: [1.0, 0.0, 0.0, 0.0],
+            },
+            Body {
+                mass: 0.0,
+                inertia: [0.0, 0.0, 0.0],
+                ipos: [1.0, 0.0, 0.0],
+                iquat: [0.9659258262890683, 0.0, 0.25881904510252074, 0.0],
+            },
+        ]),
+    ),
+    (
+        "a_jointed_body_under_a_fused_body_with_boundmass_takes_its_pose_as_written",
+        r#"<mujoco><compiler fusestatic="true" boundmass="0.1" boundinertia="0.01"/><worldbody><body name="a" pos="0 0 1" euler="0 0 90"><geom type="sphere" size="0.1"/><body name="m" pos="1 0 0" euler="0 30 0"><joint type="hinge"/></body></body></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 0.1,
+            inertia: [0.01, 0.01, 0.01],
+            ipos: [1.0, 0.0, 0.0],
+            iquat: [0.9659258262890683, 0.0, 0.25881904510252074, 0.0],
         }]),
     ),
 ];

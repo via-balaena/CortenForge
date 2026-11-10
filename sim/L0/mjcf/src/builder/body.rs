@@ -313,12 +313,13 @@ impl ModelBuilder {
             }
         }
         // A body that neither an `<inertial>` nor a selected geom gives an
-        // inertial frame takes its own pose as one, its pose in the
-        // `<frame>` holding it where one does (`user_objects.cc:2442-2446`,
-        // before the frame composes into the body's pose at `:2474`).
+        // inertial frame takes its own pose as one, as written in the
+        // `<frame>` or body holding it (`user_objects.cc:2442-2446`, before
+        // the frame composes into the body's pose at `:2474` and before
+        // `fusestatic`, `user_model.cc:4932-4937`).
         if body.inertial.is_none() && !replaced {
             let (pos, quat) = body
-                .pose_in_frame
+                .pose_as_written
                 .map_or((body_pos, body_quat), |(pos, q)| {
                     (
                         pos,

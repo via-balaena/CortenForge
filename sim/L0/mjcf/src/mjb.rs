@@ -65,7 +65,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// Current MJB format version.
 ///
 /// 19 since Rigid-loading PR RL-9a: `MjcfCompiler` took `inertiagrouprange`,
-/// `MjcfBody` `pose_in_frame`, and `MjcfInertial` `euler`, `axisangle`,
+/// `MjcfBody` `pose_as_written`, and `MjcfInertial` `euler`, `axisangle`,
 /// `xyaxes` and `zaxis`.
 /// 18 since Rigid-loading PR RL-8c: `MjcfFlex` lost `mass`, `density`,
 /// `inertiabox`, `flexcomp_scale`, `flexcomp_quat`, `flexcomp_file`, `pinned`
