@@ -447,7 +447,9 @@ impl ModelBuilder {
     /// diagonal inertia (`user_objects.cc:2408-2409`); its `<inertial>`'s
     /// orientation alternative (`:2420-2425`); geom by geom, its checks
     /// ([`Self::check_geom`]); its inertia from its geoms (`InertiaFromGeom`,
-    /// `:2158-2224`); a mass or moment negative after the bounds
+    /// `:2158-2224`, and this crate's refusal of one not finite, where MuJoCo
+    /// loads it: registry row D-INERTIA-NONFINITE); a mass or moment negative
+    /// after the bounds
     /// (`:2457-2459`), then the moments' triangle
     /// ([`Self::apply_mass_pipeline`], `:2461-2469`); then the body's joints
     /// ([`Self::check_body_joints`]). A geom `fusestatic` moved into an

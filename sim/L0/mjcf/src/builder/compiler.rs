@@ -317,8 +317,7 @@ fn fuse_static_body(
             // Transform child body frames into parent frame. MuJoCo copies a
             // body's pose into its inertial frame before it fuses
             // (`user_model.cc:4932-4937`), so the pose as written is kept for
-            // that copy, unless a `<frame>` already kept it; an orientation
-            // that does not resolve is refused by the builder, as before.
+            // that copy, unless a `<frame>` already kept it.
             for c in &mut removed.children {
                 if c.pose_as_written.is_none()
                     && let Ok(q) = resolve_orientation(

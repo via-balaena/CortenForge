@@ -1045,28 +1045,26 @@ fn body_hierarchies_are_mujocos() {
     }
 }
 
-/// Scenes of bodies of several geoms, so every pair of bodies goes through
-/// the midphase, each body's inertial frame given (the hierarchies' boxes
-/// are in it). The geom pairs the contact filter is called with, in order,
-/// are MuJoCo's,
-/// with the midphase on and with it off (`DISABLE_MIDPHASE`), each in
+/// Scenes of bodies of several geoms, so every pair of bodies goes through the
+/// midphase, each body's inertial frame given (the hierarchies' boxes are in
+/// it). The geom pairs the contact filter is called with, in order, are
+/// MuJoCo's, with the midphase on and with it off (`DISABLE_MIDPHASE`), each in
 /// MuJoCo's type order, and the contacts MuJoCo's (the same geoms in order,
-/// each distance within 1e-12). In `sparse` the midphase calls the filter
-/// once, without it 33 times: a pair whose boxes overlap but whose bounding
-/// spheres do not is dropped at the leaves, and the one contact, 0.05 apart
-/// within a margin of 0.1, is kept by the bodies' margins. In `rafts` it
-/// reaches six leaf pairs, in its order. In `far_frames` the two bodies'
-/// inertial frames are 10 either side of their overlapping geoms. In
-/// `singles` two single-geom bodies whose bounding spheres are apart are
-/// collided without the midphase, as MuJoCo's, so the filter is called for
-/// them. In `pile` (turned bodies of up to seven geoms, a child and a
-/// grandchild, a static body, a single-geom body, an `<exclude>` and a
-/// `<pair>`) the midphase calls the filter 13 times, without it 168; its
-/// geom with contype and conaffinity 0 is in no hierarchy, so the filter,
-/// which keeps every pair, is called for it only without the midphase, and
-/// its contact is listed only then. `twins` holds two pairs of equal bodies,
-/// and `twins_spheres` two equal bodies whose roots' boxes have the same
-/// surface, where MuJoCo descends the second.
+/// each distance within 1e-12). In `sparse` the midphase calls the filter once,
+/// without it 33 times: a pair whose boxes overlap but whose bounding spheres
+/// do not is dropped at the leaves, and the one contact, 0.05 apart within a
+/// margin of 0.1, is kept by the bodies' margins. In `rafts` it reaches six
+/// leaf pairs, in its order. In `far_frames` the two bodies' inertial frames
+/// are 10 either side of their overlapping geoms. In `singles` two single-geom
+/// bodies whose bounding spheres are apart are collided without the midphase,
+/// as MuJoCo's, so the filter is called for them. In `pile` (turned bodies of
+/// up to seven geoms, a child and a grandchild, a static body, a single-geom
+/// body, an `<exclude>` and a `<pair>`) the midphase calls the filter 13 times,
+/// without it 168; its geom with contype and conaffinity 0 is in no hierarchy,
+/// so the filter, which keeps every pair, is called for it only without the
+/// midphase, and its contact is listed only then. `twins` holds two pairs of
+/// equal bodies, and `twins_spheres` two equal bodies whose roots' boxes have
+/// the same surface, where MuJoCo descends the second.
 #[test]
 fn contact_filter_calls_are_mujocos_with_and_without_the_midphase() {
     use std::sync::{Arc, Mutex};
