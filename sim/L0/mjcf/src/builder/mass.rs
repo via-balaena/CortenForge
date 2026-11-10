@@ -133,14 +133,14 @@ pub fn refuse_non_finite_inertial(values: &InertialValues) -> Result<()> {
     }
 }
 
-/// A mesh geom's mesh's mass properties, as `process_mesh` computed them;
-/// `None` for any other geom.
+/// A mesh or SDF geom's mesh's mass properties, as `process_mesh` computed
+/// them; `None` for any other geom, and for an SDF that names no mesh.
 pub fn geom_mesh_props(
     geom: &MjcfGeom,
     mesh_lookup: &HashMap<String, usize>,
     mesh_props: &[MeshProps],
 ) -> Option<MeshProps> {
-    if geom.geom_type? != MjcfGeomType::Mesh {
+    if !matches!(geom.geom_type?, MjcfGeomType::Mesh | MjcfGeomType::Sdf) {
         return None;
     }
     let id = mesh_lookup.get(geom.mesh.as_ref()?)?;
@@ -205,7 +205,9 @@ impl InertialGeom {
         let quat = [placed.quat.w, placed.quat.i, placed.quat.j, placed.quat.k];
         let inertia = compute_geom_inertia(geom, mesh_props, hfield_size);
         let inertia = [inertia[(0, 0)], inertia[(1, 1)], inertia[(2, 2)]];
-        if let (Some(MjcfGeomType::Mesh), Some(props)) = (geom.geom_type, mesh_props) {
+        if let (Some(MjcfGeomType::Mesh | MjcfGeomType::Sdf), Some(props)) =
+            (geom.geom_type, mesh_props)
+        {
             let turned = mulvecmat(&props.com, &quat2mat(&quat));
             return Self {
                 pos: [pos[0] + turned[0], pos[1] + turned[1], pos[2] + turned[2]],

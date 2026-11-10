@@ -409,3 +409,97 @@ fn a_mesh_with_no_inertia_attribute_is_legacy() {
         0.0,
     );
 }
+
+/// The unit cube's eight vertices about the origin.
+const UNIT_CUBE: &str = "-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5";
+
+/// A mesh of `vertices` and the cube's faces, `attrs` on its asset, as the
+/// mesh of an SDF geom with `geom_attrs` on a free body at `body_pos`.
+fn sdf_geom(vertices: &str, attrs: &str, body_pos: &str, geom_attrs: &str) -> String {
+    format!(
+        r#"<mujoco><asset><mesh name="m" {attrs} vertex="{vertices}" face="{CUBE_FACES}"/></asset><worldbody><body pos="{body_pos}"><freejoint/><geom type="sdf" mesh="m" {geom_attrs}/></body></worldbody></mujoco>"#
+    )
+}
+
+/// 0 on macOS arm64, where MuJoCo's values were printed, and 1e-12
+/// elsewhere: for a value that passes through `sin` or `cos` (an `euler`),
+/// whose last bit is the platform's libm's.
+const LIBM_TOLERANCE: f64 = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+    0.0
+} else {
+    1e-12
+};
+
+// MuJoCo gives an SDF geom its mesh's volume, mass, inertia and inertial
+// frame, as a mesh geom's (`GetVolume`, `SetInertia`, `user_objects.cc:3115`,
+// `:3194`; ledger L370), and refuses `shellinertia` on one (`:3744-3746`).
+
+#[test]
+fn an_sdf_geom_has_its_meshs_mass_and_inertia() {
+    assert_body(
+        &sdf_geom(UNIT_CUBE, "", "0 0 0", ""),
+        (
+            1000.0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [166.66666666666666; 3],
+        ),
+        0.0,
+    );
+}
+
+#[test]
+fn an_sdf_geom_is_placed_at_its_meshs_centre_of_mass_and_axes() {
+    // The cube with its second vertex moved, so the mesh's principal axes
+    // are not the cube's.
+    let vertices = "-0.5 -0.5 -0.5  0.7 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5";
+    assert_body(
+        &sdf_geom(
+            vertices,
+            "",
+            "0.1 0.2 0.3",
+            r#"pos="1 0 0" euler="10 20 30" mass="3""#,
+        ),
+        (
+            3.0,
+            [
+                1.0289729354560273,
+                0.013538208465971365,
+                -0.016762956230511668,
+            ],
+            [
+                0.3660858455349312,
+                0.2809679986687032,
+                0.8287708957459184,
+                0.31650740874044175,
+            ],
+            [0.5405888645281887, 0.5392350862636288, 0.4888537789630522],
+        ),
+        LIBM_TOLERANCE,
+    );
+}
+
+#[test]
+fn an_sdf_geom_of_a_shell_mesh_has_its_surfaces_mass() {
+    assert_body(
+        &sdf_geom(UNIT_CUBE, r#"inertia="shell""#, "0 0 0", ""),
+        (
+            6000.0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [1666.6666666666658, 1666.6666666666663, 1666.6666666666667],
+        ),
+        0.0,
+    );
+}
+
+#[test]
+fn shellinertia_on_an_sdf_geom_is_refused() {
+    let err = load_model(&sdf_geom(UNIT_CUBE, "", "0 0 0", r#"shellinertia="true""#))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("for mesh geoms, inertia should be specified in the mesh asset"),
+        "{err}"
+    );
+}
