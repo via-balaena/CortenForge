@@ -256,10 +256,10 @@ fn t10_legacy_mode() {
 </mujoco>"#
     );
     let model = load_model(&mjcf).unwrap();
-    // MuJoCo 3.5.0's, printed by the census's unfused oracle. Its legacy
-    // pyramids have their apex at the centre of the faces, (1.136, 1.136,
-    // 0.5), in the L-shape's notch: four of the twenty have a negative
-    // volume, which legacy counts positive, so the mass exceeds 5000.
+    // MuJoCo 3.5.0's, printed by the census's unfused oracle. Its mass is the
+    // density times the volume of pyramids apexed at the L-shape's centre of
+    // mass, (1.121, 1.121, 0.5): four of the twenty have a negative volume,
+    // which legacy counts positive, so the mass exceeds 5000.
     assert_eq!(model.body_mass[1], 5322.547508988188);
     // The principal moments in MuJoCo's order (`eig3`, decreasing).
     assert_eq!(

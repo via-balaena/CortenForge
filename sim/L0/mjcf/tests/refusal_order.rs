@@ -111,7 +111,12 @@
 //! with RL-6d's checks of a geom, after its condim and plane checks and
 //! before its negative mass, as MuJoCo orders it; a geom's `user` data and
 //! orientation, which this crate meets as it reads the geom, come first, as
-//! in MuJoCo.
+//! in MuJoCo. Its refusals of a mesh (its area, its volume, an exact mesh's
+//! orientation, its principal moments) are made as the meshes are built,
+//! after the checks this crate makes before building the model, where
+//! MuJoCo makes them before its bodies; a geom's size, `fromto` or a
+//! primitive fitted to a mesh, which this crate checks first, is named
+//! first here: `MESH_COSTS` (ledger L353).
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, with the reason its row gives as MuJoCo's (RL-6a's measured
@@ -161,7 +166,9 @@
 //! of the pairs, not all of them. RL-9b's review's (measured 2026-11-10,
 //! RB's documents) set `shellinertia` on an SDF or mesh geom beside a condim,
 //! a plane in a moving body, a `zaxis`, a `user` count or an earlier geom's
-//! negative mass: nine in `TWO_FAULTS`.
+//! negative mass: nine in `TWO_FAULTS`; and a mesh refused for its volume
+//! or an exact mesh's orientation beside a geom's size, `fromto` or fit: ten
+//! in `MESH_COSTS`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -2946,6 +2953,88 @@ const INERTIAL_COSTS: &[(&str, &str, &str, &str)] = &[
 fn an_inertia_fault_beside_another_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in INERTIAL_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, one a mesh MuJoCo 3.5.0 refuses as it builds the meshes, before
+/// the bodies (its volume, an exact mesh's orientation), one a geom's this
+/// crate checks before it builds the meshes (a size, a `fromto`, a primitive
+/// fitted to a mesh), where this crate names the geom's, as it did before
+/// RL-9b: ledger L353 holds each. `(what, document, MuJoCo 3.5.0's reason,
+/// this crate's error)`, measured 2026-11-10 (RL-9b's review, RB's documents).
+const MESH_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "a mesh too small in volume, then a sphere of size 0",
+        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="flat" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="sphere" size="0"/></body></worldbody></mujoco>"#,
+        "mesh volume is too small: flat . Try setting inertia to shell",
+        "invalid size on <geom>: size 0 must be positive (geom #2 in body 'c')",
+    ),
+    (
+        "an exact mesh's faces turned, then a sphere of size 0",
+        r#"<mujoco><asset><mesh name="turn" inertia="exact" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 1 2  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="turn" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="sphere" size="0"/></body></worldbody></mujoco>"#,
+        "faces of mesh 'turn' have inconsistent orientation. Please check the faces containing the vertices 1 and 2.",
+        "invalid size on <geom>: size 0 must be positive (geom #2 in body 'c')",
+    ),
+    (
+        "a mesh too small in volume, then a sphere fitted to a mesh (D-MESH-FIT)",
+        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="flat" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="sphere" mesh="m"/></body></worldbody></mujoco>"#,
+        "mesh volume is too small: flat . Try setting inertia to shell",
+        "not supported by sim-mjcf (valid in MuJoCo 3.5.0): a sphere, capsule, cylinder, ellipsoid or box fitted to the mesh it names (geom #2 in body 'c')",
+    ),
+    (
+        "an exact mesh's faces turned, then a sphere fitted to a mesh (D-MESH-FIT)",
+        r#"<mujoco><asset><mesh name="turn" inertia="exact" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 1 2  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="turn" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="sphere" mesh="m"/></body></worldbody></mujoco>"#,
+        "faces of mesh 'turn' have inconsistent orientation. Please check the faces containing the vertices 1 and 2.",
+        "not supported by sim-mjcf (valid in MuJoCo 3.5.0): a sphere, capsule, cylinder, ellipsoid or box fitted to the mesh it names (geom #2 in body 'c')",
+    ),
+    (
+        "a mesh too small in volume, then a mesh geom's fromto",
+        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="flat" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="mesh" mesh="m" fromto="0 0 0 1 0 0"/></body></worldbody></mujoco>"#,
+        "mesh volume is too small: flat . Try setting inertia to shell",
+        "invalid fromto on <geom>: fromto requires a capsule, cylinder, ellipsoid or box (geom in body 'c')",
+    ),
+    (
+        "an exact mesh's faces turned, then a mesh geom's fromto",
+        r#"<mujoco><asset><mesh name="turn" inertia="exact" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 1 2  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="turn" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="mesh" mesh="m" fromto="0 0 0 1 0 0"/></body></worldbody></mujoco>"#,
+        "faces of mesh 'turn' have inconsistent orientation. Please check the faces containing the vertices 1 and 2.",
+        "invalid fromto on <geom>: fromto requires a capsule, cylinder, ellipsoid or box (geom in body 'c')",
+    ),
+    (
+        "a mesh too small in volume, then a box of size 0, the mesh unused",
+        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/></asset><worldbody><body name="c"><freejoint/><geom type="box" size="0 1 1"/></body></worldbody></mujoco>"#,
+        "mesh volume is too small: flat . Try setting inertia to shell",
+        "invalid size on <geom>: size 0 must be positive (geom #0 in body 'c')",
+    ),
+    (
+        "an exact mesh's faces turned, then a box of size 0, the mesh unused",
+        r#"<mujoco><asset><mesh name="turn" inertia="exact" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 1 2  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="c"><freejoint/><geom type="box" size="0 1 1"/></body></worldbody></mujoco>"#,
+        "faces of mesh 'turn' have inconsistent orientation. Please check the faces containing the vertices 1 and 2.",
+        "invalid size on <geom>: size 0 must be positive (geom #0 in body 'c')",
+    ),
+    (
+        "a mesh too small in volume, then a capsule's fromto points coinciding",
+        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="flat" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="capsule" size=".1" fromto="0 0 0 0 0 0"/></body></worldbody></mujoco>"#,
+        "mesh volume is too small: flat . Try setting inertia to shell",
+        "invalid fromto on <geom>: fromto points too close (geom in body 'c')",
+    ),
+    (
+        "an exact mesh's faces turned, then a capsule's fromto points coinciding",
+        r#"<mujoco><asset><mesh name="turn" inertia="exact" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 1 2  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="turn" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="capsule" size=".1" fromto="0 0 0 0 0 0"/></body></worldbody></mujoco>"#,
+        "faces of mesh 'turn' have inconsistent orientation. Please check the faces containing the vertices 1 and 2.",
+        "invalid fromto on <geom>: fromto points too close (geom in body 'c')",
+    ),
+];
+
+#[test]
+fn a_mesh_refusal_beside_a_geoms_fault_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in MESH_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),

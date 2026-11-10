@@ -182,11 +182,15 @@ fn an_exact_mesh_with_a_face_turned_inward_is_refused() {
 
 #[test]
 fn a_mesh_of_another_mode_with_a_face_turned_inward_loads() {
+    // A guard: it loaded before the check too, and fails if the check
+    // reaches a mode other than `exact`.
     load_model(&cube_mesh("", ONE_FACE_TURNED, "")).unwrap();
 }
 
 #[test]
 fn a_face_of_no_area_on_an_exact_meshs_edge_is_not_counted() {
+    // A guard: it loaded before the check too, and fails if the check counts
+    // a face of no area.
     load_model(&cube_mesh(
         "",
         &format!("{CUBE_FACES}  0 1 1"),
@@ -250,10 +254,11 @@ fn l_shape(attrs: &str) -> String {
 // inertia from pyramids with their apex at the centre of mass.
 
 #[test]
-fn legacy_mode_takes_each_pyramids_volume_positive_from_the_faces_centre() {
-    // Not 5000, the L-shape's volume times its density: the centre of its
-    // faces, (1.136, 1.136, 0.5), lies in its notch, so four of its twenty
-    // pyramids have a negative volume, which legacy counts positive.
+fn legacy_mode_takes_each_pyramids_volume_positive() {
+    // Not 5000, the L-shape's volume times its density: its mass is the
+    // density times the volume `ComputeInertia` sums, over pyramids apexed at
+    // its centre of mass, (1.121, 1.121, 0.5); four of the twenty have a
+    // negative volume there, which legacy counts positive (5.3225 for 5).
     assert_body(
         &l_shape(r#"inertia="legacy""#),
         (
@@ -311,8 +316,10 @@ fn shell_mode_is_mujocos() {
 
 #[test]
 fn convex_mode_is_mujocos_to_rounding() {
-    // Over the hull's faces: this crate's hull equals MuJoCo's as a set, not
-    // in order or triangulation (book Rigid-loading L36), so not bit for bit.
+    // Over the hull's faces: on this L-shape this crate's hull is MuJoCo's as
+    // a set, not in order or triangulation (`D-MESH-CONVEX-MASS`), so not bit
+    // for bit. A guard: this crate's arithmetic before MuJoCo's was within it
+    // too.
     assert_body(
         &l_shape(r#"inertia="convex""#),
         (
@@ -655,5 +662,31 @@ fn a_convex_mesh_too_thin_for_this_crates_hull_is_summed_over_its_faces() {
             ],
         ),
         0.0,
+    );
+}
+
+// MuJoCo refuses a mesh whose principal moments cannot be a body's
+// (`user_mesh.cc:1653-1662`): an exact unit cube beside a 0.2 cube turned
+// inside out, far off or nearer.
+
+#[test]
+fn a_mesh_whose_last_principal_moment_is_not_positive_is_refused() {
+    let err = load_model(r#"<mujoco><asset><mesh name="m" inertia="exact" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5  9.9 -0.1 -0.1  10.1 -0.1 -0.1  10.1 0.1 -0.1  9.9 0.1 -0.1  9.9 -0.1 0.1  10.1 -0.1 0.1  10.1 0.1 0.1  9.9 0.1 0.1" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5  8 9 10 8 10 11 12 14 13 12 15 14 8 13 9 8 12 13 10 15 11 10 14 15 8 15 12 8 11 15 9 14 10 9 13 14"/></asset><worldbody><body name="b" pos="0 0 0"><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("eigenvalue of mesh inertia must be positive"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_mesh_whose_principal_moments_break_the_triangle_inequality_is_refused() {
+    let err = load_model(r#"<mujoco><asset><mesh name="m" inertia="exact" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5  3.3 -0.1 -0.1  3.5 -0.1 -0.1  3.5 0.1 -0.1  3.3 0.1 -0.1  3.3 -0.1 0.1  3.5 -0.1 0.1  3.5 0.1 0.1  3.3 0.1 0.1" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5  8 9 10 8 10 11 12 14 13 12 15 14 8 13 9 8 12 13 10 15 11 10 14 15 8 15 12 8 11 15 9 14 10 9 13 14"/></asset><worldbody><body name="b" pos="0 0 0"><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("eigenvalues of mesh inertia violate A + B >= C"),
+        "{err}"
     );
 }
