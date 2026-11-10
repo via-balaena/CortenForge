@@ -1,0 +1,1 @@
+<mujoco><compiler inertiafromgeom="true"/><worldbody><body><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/><geom size="6e99"/><geom size="0.1" pos="1 0 0"/></body></worldbody></mujoco>

@@ -345,6 +345,40 @@ const FROM_GEOMS: &[(&str, &str, Expect)] = &[
         }]),
     ),
     (
+        "a_geom_of_mass_exactly_mj_eps_is_not_selected",
+        r#"<mujoco><worldbody><body name="b"><freejoint/><geom type="box" size="0.1 0.2 0.3" mass="1e-14" euler="0 0 30"/><geom type="sphere" size="0.1" pos="0.2 0 0" euler="0 0 45"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 4.188790204786391,
+            inertia: [
+                0.01675516081914557,
+                0.01675516081914557,
+                0.01675516081914557,
+            ],
+            ipos: [0.2, 0.0, 0.0],
+            iquat: [0.9238795325112867, 0.0, 0.0, 0.3826834323650898],
+        }]),
+    ),
+    (
+        "a_nan_summed_inertia_keeps_a_kept_inertials_moments_and_frame",
+        r#"<mujoco><compiler inertiafromgeom="true"/><worldbody><body name="b"><inertial pos="0 0 0" mass="1" diaginertia="0.3 0.2 0.1" euler="0 0 30"/><geom type="sphere" size="6e99"/><geom type="sphere" size="0.1" pos="1 0 0"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 9.047786842338604e+302,
+            inertia: [0.3, 0.2, 0.1],
+            ipos: [4.62962962962963e-303, 0.0, 0.0],
+            iquat: [0.9659258262890683, 0.0, 0.0, 0.25881904510252074],
+        }]),
+    ),
+    (
+        "a_moving_body_keeps_its_kept_inertial_where_the_summed_inertia_is_nan",
+        r#"<mujoco><compiler inertiafromgeom="true"/><worldbody><body><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/><geom size="6e99"/><geom size="0.1" pos="1 0 0"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&[Body {
+            mass: 9.047786842338604e+302,
+            inertia: [1.0, 1.0, 1.0],
+            ipos: [4.62962962962963e-303, 0.0, 0.0],
+            iquat: [1.0, 0.0, 0.0, 0.0],
+        }]),
+    ),
+    (
         "summed_moments_below_mj_eps_refused",
         r#"<mujoco><worldbody><body name="n"><geom type="cylinder" size="1e-7 1" mass="0.5"/><geom type="cylinder" size="1e-7 1" mass="0.5" pos="0 0 3"/></body></worldbody></mujoco>"#,
         Expect::Refused(
@@ -356,6 +390,20 @@ const FROM_GEOMS: &[(&str, &str, Expect)] = &[
 #[test]
 fn a_bodys_inertia_from_its_geoms_is_mujocos() {
     check(FROM_GEOMS);
+}
+
+#[test]
+fn a_kept_inertial_that_is_not_finite_is_refused_where_mujoco_loads_it() {
+    // Under `inertiafromgeom="true"` with no geom selected, MuJoCo 3.5.0 keeps
+    // the `<inertial>` and loads it, its moments and frame NaN (registry row
+    // D-INERTIA-NONFINITE).
+    let error = load_model(
+        r#"<mujoco><compiler inertiafromgeom="true"/><worldbody><body name="b"><inertial pos="0 0 0" mass="1" fullinertia="1e308 1e308 1e308 1e308 1e308 1e308"/></body></worldbody></mujoco>"#,
+    )
+    .err()
+    .map(|e| e.to_string())
+    .unwrap_or_default();
+    assert!(error.contains("not finite"), "{error}");
 }
 
 #[test]

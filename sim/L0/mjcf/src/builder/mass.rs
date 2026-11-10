@@ -315,6 +315,10 @@ pub fn inertia_from_geoms(
                 com[1] += geom.mass * geom.pos[1];
                 com[2] += geom.mass * geom.pos[2];
             }
+            // Unreachable from a document: each geom here has a mass above
+            // mjEPS and there are two or more. MuJoCo's own check
+            // (`user_objects.cc:2194-2196`) is unreachable for the same
+            // reason; it is kept as MuJoCo keeps it.
             if mass < MJ_EPS {
                 return Err(GeomInertiaFault::MassTooSmall);
             }

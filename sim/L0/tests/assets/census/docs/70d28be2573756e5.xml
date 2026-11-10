@@ -1,0 +1,1 @@
+<mujoco><compiler inertiafromgeom="true"/><worldbody><body name="b"><inertial pos="0 0 0" mass="1" fullinertia="1e308 1e308 1e308 1e308 1e308 1e308"/></body></worldbody></mujoco>

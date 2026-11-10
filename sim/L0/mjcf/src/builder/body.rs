@@ -269,8 +269,9 @@ impl ModelBuilder {
         let mut geom_fault = None;
         let mut replaced = false;
         if from_geoms {
-            // The geoms `Self::selects` selects, each mesh's properties
-            // computed once.
+            // The geoms in `inertiagrouprange` whose mass is above mjEPS, the
+            // predicate of [`Self::selects`] on the mass `InertialGeom`
+            // computes, each mesh's properties computed once.
             let geoms: Vec<InertialGeom> = body
                 .geoms
                 .iter()
