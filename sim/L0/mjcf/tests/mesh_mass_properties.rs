@@ -72,9 +72,7 @@ fn assert_body(xml: &str, mujoco: (f64, [f64; 3], [f64; 4], [f64; 3]), tolerance
 
 // MuJoCo moves a mesh by minus `refpos`, then turns it by `refquat`'s
 // inverse, then scales it (`ApplyTransformations`, `user_mesh.cc:1440-1505`),
-// before its mass properties, so both move the body's inertial frame. The
-// mass properties themselves are not yet MuJoCo's arithmetic here, so these
-// compare within 1e-12.
+// before its mass properties, so both move the body's inertial frame.
 
 #[test]
 fn a_meshs_refpos_moves_its_bodys_centre_of_mass() {
@@ -90,7 +88,7 @@ fn a_meshs_refpos_moves_its_bodys_centre_of_mass() {
             [0.0, 0.7071067811865489, 0.0, 0.7071067811865489],
             [0.13333334326744115, 0.113333341777325, 0.033333335816860286],
         ),
-        1e-12,
+        0.0,
     );
 }
 
@@ -117,7 +115,7 @@ fn a_meshs_refquat_turns_its_bodys_inertial_frame() {
                 0.033333335816860356,
             ],
         ),
-        1e-12,
+        0.0,
     );
 }
 
@@ -141,7 +139,7 @@ fn a_mesh_is_moved_then_turned_then_scaled() {
             ],
             [2.7987409360325235, 2.5204054101737654, 0.5708840095326626],
         ),
-        1e-12,
+        0.0,
     );
 }
 
@@ -354,7 +352,7 @@ fn an_open_mesh_under_legacy_mode_is_mujocos() {
 #[test]
 fn a_mesh_with_no_volume_is_refused() {
     // One triangle four times over (ledger L384).
-    let xml = r#"<mujoco><asset><mesh name="m" inertia="legacy" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#;
+    let xml = r#"<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#;
     let err = load_model(xml).unwrap_err().to_string();
     assert!(
         err.contains("mesh volume is too small. Try setting inertia to shell"),
@@ -374,7 +372,7 @@ fn a_written_mass_on_a_mesh_of_tiny_volume_is_kept() {
     // Volume 1e-12, above mjEPS: MuJoCo keeps the mass (ledger L43, RA-11).
     let tiny = "-5e-05 -5e-05 -5e-05 5e-05 -5e-05 -5e-05 5e-05 5e-05 -5e-05 -5e-05 5e-05 -5e-05 -5e-05 -5e-05 5e-05 5e-05 -5e-05 5e-05 5e-05 5e-05 5e-05 -5e-05 5e-05 5e-05";
     let xml = format!(
-        r#"<mujoco><asset><mesh name="m" inertia="legacy" vertex="{tiny}" face="{CUBE_FACES}"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="m" mass="1"/></body></worldbody></mujoco>"#
+        r#"<mujoco><asset><mesh name="m" vertex="{tiny}" face="{CUBE_FACES}"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="m" mass="1"/></body></worldbody></mujoco>"#
     );
     assert_body(
         &xml,
@@ -387,6 +385,26 @@ fn a_written_mass_on_a_mesh_of_tiny_volume_is_kept() {
                 1.6666665824595854e-09,
                 1.6666665824595854e-09,
             ],
+        ),
+        0.0,
+    );
+}
+
+#[test]
+fn a_mesh_with_no_inertia_attribute_is_legacy() {
+    // MuJoCo 3.5.0's default mode (`user_init.c:242`), not convex (7000).
+    assert_body(
+        &l_shape(""),
+        (
+            5322.547508988188,
+            [1.1209553158705703, 1.1209553158705703, 0.49999999999999994],
+            [
+                0.2705980500730991,
+                0.6532814824381896,
+                -0.2705980500730991,
+                0.6532814824381896,
+            ],
+            [7454.608707160513, 5978.479712378018, 2341.7170790146465],
         ),
         0.0,
     );

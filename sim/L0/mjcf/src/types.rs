@@ -396,13 +396,13 @@ pub enum AngleUnit {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum MeshInertia {
     /// Compute exact (volumetric) inertia on the convex hull.
-    /// Default mode (MuJoCo enum value 0).
     Convex,
     /// Compute exact (volumetric) inertia on the original mesh.
     /// Requires watertight, outward-oriented mesh.
     Exact,
-    /// Legacy algorithm: absolute tetrahedron volumes (overcounts
-    /// non-convex regions). Pre-MuJoCo 3.0 behavior.
+    /// Legacy algorithm: each pyramid's volume taken positive (overcounts
+    /// where the centre of the faces sees a face from behind). MuJoCo 3.5.0's
+    /// default (`mjs_defaultMesh`, `user_init.c:242`).
     Legacy,
     /// Surface-area-weighted shell inertia. mass = density × total_area.
     Shell,
@@ -410,7 +410,7 @@ pub enum MeshInertia {
 
 impl Default for MeshInertia {
     fn default() -> Self {
-        Self::Convex // MuJoCo default: enum value 0
+        Self::Legacy
     }
 }
 
@@ -972,7 +972,7 @@ pub struct MjcfMesh {
     /// MuJoCo: `maxhullvert` attribute, default -1 (no limit), min 4.
     pub maxhullvert: Option<usize>,
     /// Mesh inertia computation mode. `None` = not specified in XML
-    /// (defaults to `Convex` at build time).
+    /// (MuJoCo's default, `Legacy`, at build time).
     pub inertia: Option<MeshInertia>,
 }
 

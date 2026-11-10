@@ -1,7 +1,7 @@
 //! Acceptance tests for §43 Mesh Inertia Modes (Spec B).
 //!
 //! Tests T1–T19 from the spec, covering:
-//! - Default mode is Convex (T1)
+//! - Default mode is legacy, MuJoCo 3.5.0's (T1)
 //! - Shell mesh inertia: unit cube (T2), explicit mass override (T3)
 //! - Primitive shell formulas: sphere (T4), box (T5), cylinder (T6),
 //!   capsule (T7), ellipsoid (T8)
@@ -45,25 +45,29 @@ const REVERSED_CUBE_FACES: &str =
     "0 1 2  0 2 3  4 6 5  4 7 6  0 5 1  0 4 5  2 7 3  2 6 7  0 7 4  0 3 7  1 6 2  1 5 6";
 
 // ============================================================================
-// T1: Default mode is Convex → AC1
+// T1: Default mode is legacy, MuJoCo 3.5.0's → AC1
 // ============================================================================
 
 #[test]
-fn t1_default_mode_is_convex() {
+fn t1_default_mode_is_legacy() {
+    // The L-shape with no `inertia` attribute: a cube cannot tell the modes
+    // apart (every one but shell gives it 1000), the L-shape can (convex
+    // 7000, exact 5000, legacy 5322.547508988188).
     let mjcf = format!(
         r#"<mujoco>
-  <asset><mesh name="cube" vertex="{CUBE_VERTICES}" face="{CUBE_FACES}"/></asset>
+  <asset><mesh name="lshape" vertex="{L_SHAPE_VERTICES}" face="{L_SHAPE_FACES}"/></asset>
   <worldbody><body>
-    <geom type="mesh" mesh="cube" density="1000"/>
+    <geom type="mesh" mesh="lshape" density="1000"/>
   </body></worldbody>
 </mujoco>"#
     );
     let model = load_model(&mjcf).unwrap();
-    // Convex == Exact for convex meshes: mass = density × volume = 1000 × 1.0
-    assert_relative_eq!(model.body_mass[1], 1000.0, epsilon = 1e-6);
-    assert_relative_eq!(model.body_inertia[1].x, 166.667, epsilon = 0.01);
-    assert_relative_eq!(model.body_inertia[1].y, 166.667, epsilon = 0.01);
-    assert_relative_eq!(model.body_inertia[1].z, 166.667, epsilon = 0.01);
+    // MuJoCo 3.5.0's, printed by the census's unfused oracle: t10's.
+    assert_eq!(model.body_mass[1], 5322.547508988188);
+    assert_eq!(
+        <[f64; 3]>::from(model.body_inertia[1]),
+        [7454.608707160513, 5978.479712378018, 2341.7170790146465]
+    );
 }
 
 // ============================================================================
