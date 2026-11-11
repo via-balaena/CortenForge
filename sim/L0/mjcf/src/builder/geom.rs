@@ -190,8 +190,8 @@ impl ModelBuilder {
         geom: &MjcfGeom,
         geom_type: GeomType,
     ) -> Result<(Option<usize>, Option<usize>)> {
-        let geom_mesh_ref = if geom_type == GeomType::Mesh {
-            match &geom.mesh {
+        let geom_mesh_ref = match geom_type {
+            GeomType::Mesh => match &geom.mesh {
                 Some(mesh_name) => {
                     let mesh_id = self
                         .mesh_name_to_id
@@ -202,9 +202,12 @@ impl ModelBuilder {
                 None => {
                     return Err(MjcfError::missing_attribute("geom", "mesh"));
                 }
-            }
-        } else {
-            None
+            },
+            // An SDF geom's mesh, as MuJoCo's `geom_dataid` holds it: its
+            // bounds are its mesh's. One that names none has none (ledger
+            // L357).
+            GeomType::Sdf => geom_mesh_id(geom, &self.mesh_name_to_id),
+            _ => None,
         };
 
         let geom_hfield_ref = if geom_type == GeomType::Hfield {

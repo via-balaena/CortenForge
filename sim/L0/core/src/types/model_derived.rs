@@ -147,7 +147,8 @@ impl Model {
     pub fn compute_geom_bounding_radii(&mut self) {
         for geom_id in 0..self.ngeom {
             let (rbound, aabb) = if let Some(mesh_id) = self.geom_mesh[geom_id] {
-                // Mesh geom: bounds from actual vertex positions.
+                // A mesh geom, or an SDF geom with a mesh: bounds from the
+                // mesh's box.
                 let (aabb_min, aabb_max) = self.mesh_data[mesh_id].aabb();
                 let center = (aabb_min.coords + aabb_max.coords) * 0.5;
                 let half = (aabb_max.coords - aabb_min.coords) * 0.5;

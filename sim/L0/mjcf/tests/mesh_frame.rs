@@ -233,3 +233,35 @@ fn embedded_mesh_vertices_are_f32() {
         ],
     );
 }
+
+/// The turned box as an SDF geom: its frame and size as a mesh geom's, and
+/// its box and radius its mesh's (`mjCGeom::ComputeAABB` and `GetRBound`
+/// take an SDF's from its mesh, `user_objects.cc:3443-3449`, `:3602-3605`).
+#[test]
+fn an_sdf_geoms_bounds_are_its_meshs() {
+    let xml = format!(
+        r#"<mujoco><asset>{TURNED_BOX}</asset><worldbody><body pos="0 0 1"><freejoint/><geom type="sdf" mesh="m" pos="0.1 0.2 0.3" quat="0.9 0.1 -0.2 0.3"/></body></worldbody></mujoco>"#
+    );
+    assert_geom(
+        &geom(&xml, 0),
+        &Geom {
+            pos: [0.4084210623594906, 0.16842104735321844, 0.5094736791192604],
+            quat: [
+                -0.4117395192948302,
+                0.4154224734035923,
+                0.3466951528915816,
+                0.7332783972023116,
+            ],
+            size: [0.2500000000000011, 0.5000004236599732, 0.9999999635411352],
+            aabb: [
+                0.0,
+                -7.960015757646488e-09,
+                -8.071468160508743e-09,
+                0.2500000000000011,
+                0.5000004156999575,
+                0.999999955469667,
+            ],
+            rbound: 1.1456440768154936,
+        },
+    );
+}
