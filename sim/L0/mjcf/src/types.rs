@@ -396,13 +396,12 @@ pub enum AngleUnit {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum MeshInertia {
     /// Compute exact (volumetric) inertia on the convex hull.
-    /// Default mode (MuJoCo enum value 0).
     Convex,
     /// Compute exact (volumetric) inertia on the original mesh.
     /// Requires watertight, outward-oriented mesh.
     Exact,
-    /// Legacy algorithm: absolute tetrahedron volumes (overcounts
-    /// non-convex regions). Pre-MuJoCo 3.0 behavior.
+    /// Legacy algorithm: each pyramid's volume taken positive. MuJoCo 3.5.0's
+    /// default (`mjs_defaultMesh`, `user_init.c:242`).
     Legacy,
     /// Surface-area-weighted shell inertia. mass = density × total_area.
     Shell,
@@ -410,7 +409,7 @@ pub enum MeshInertia {
 
 impl Default for MeshInertia {
     fn default() -> Self {
-        Self::Convex // MuJoCo default: enum value 0
+        Self::Legacy
     }
 }
 
@@ -952,6 +951,15 @@ pub struct MjcfMesh {
     pub file: Option<String>,
     /// Scale factor for the mesh vertices.
     pub scale: Option<Vector3<f64>>,
+    /// The mesh's reference position (`refpos`), (0, 0, 0) unwritten: its
+    /// vertices are moved by minus it, before `refquat` turns them and
+    /// `scale` scales them, as MuJoCo 3.5.0 transforms a mesh
+    /// (`mjCMesh::ApplyTransformations`, `user_mesh.cc:1440-1505`).
+    pub refpos: Vector3<f64>,
+    /// The mesh's reference orientation (`refquat`, w x y z), (1, 0, 0, 0)
+    /// unwritten: its vertices are turned by its inverse, made unit as MuJoCo
+    /// makes it, after `refpos` and before `scale`.
+    pub refquat: [f64; 4],
     /// Embedded vertex data (if not loading from file).
     /// Format: flat array of xyz coordinates.
     pub vertex: Option<Vec<f64>>,
@@ -963,7 +971,7 @@ pub struct MjcfMesh {
     /// MuJoCo: `maxhullvert` attribute, default -1 (no limit), min 4.
     pub maxhullvert: Option<usize>,
     /// Mesh inertia computation mode. `None` = not specified in XML
-    /// (defaults to `Convex` at build time).
+    /// (MuJoCo's default, `Legacy`, at build time).
     pub inertia: Option<MeshInertia>,
 }
 
@@ -974,6 +982,8 @@ impl Default for MjcfMesh {
             class: None,
             file: None,
             scale: None,
+            refpos: Vector3::zeros(),
+            refquat: [1.0, 0.0, 0.0, 0.0],
             vertex: None,
             face: None,
             maxhullvert: None,

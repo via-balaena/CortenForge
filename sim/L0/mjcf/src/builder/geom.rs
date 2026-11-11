@@ -26,16 +26,6 @@ impl ModelBuilder {
             )
         };
 
-        // Reject shellinertia on mesh geoms (MuJoCo 3.5.0 behavior)
-        if geom.shellinertia == Some(true) && geom_type == GeomType::Mesh {
-            return Err(MjcfError::invalid_value(
-                "geom",
-                "shellinertia",
-                "for mesh geoms, inertia should be specified in the mesh asset",
-            )
-            .at(at()));
-        }
-
         let (geom_mesh_ref, geom_hfield_ref) = self
             .resolve_geom_asset_links(geom, geom_type)
             .map_err(|e| e.with_location_if_unknown(at()))?;
@@ -77,6 +67,13 @@ impl ModelBuilder {
         // As resolved; a value other than 1, 3, 4 or 6 is refused once every
         // geom is built (`check_bodies`), as MuJoCo 3.5.0 refuses it.
         self.geom_condim.push(geom.condim.unwrap_or(3));
+        // A mesh or SDF geom's inertia is its mesh's: `shellinertia` on one
+        // is refused once every geom is built (`check_bodies`), where MuJoCo
+        // 3.5.0 refuses it (and an SDF that names no mesh, which MuJoCo
+        // refuses for that, ledger L357).
+        self.geom_shellinertia_on_mesh.push(
+            geom.shellinertia == Some(true) && matches!(geom_type, GeomType::Mesh | GeomType::Sdf),
+        );
         // `contype`/`conaffinity` are MuJoCo bitmask attributes accepted as
         // i32 from XML but always non-negative by spec.
         #[allow(clippy::cast_sign_loss)]
@@ -224,19 +221,6 @@ fn convert_geom_type(geom_type: Option<MjcfGeomType>) -> GeomType {
         MjcfGeomType::Mesh => GeomType::Mesh,
         MjcfGeomType::Hfield => GeomType::Hfield,
         MjcfGeomType::Sdf => GeomType::Sdf,
-    }
-}
-
-/// What a mesh geom's unit-density inertia is multiplied by: its written
-/// mass over its mesh's volume, or its density where that volume is at most
-/// 1e-10 or no mass is written (book Rigid-loading L35's).
-pub fn mesh_inertia_scale(geom: &MjcfGeom, volume: f64) -> f64 {
-    let density = geom.density.unwrap_or(1000.0);
-    let mass = geom.mass.unwrap_or_else(|| density * volume.abs());
-    if volume.abs() > 1e-10 {
-        mass / volume.abs()
-    } else {
-        density
     }
 }
 
@@ -432,9 +416,8 @@ pub fn resolve_geom_fromto(geom: &mut MjcfGeom) -> Result<()> {
 /// and 0 where it is not; with no mass written, a density of 0 gives 0 and
 /// any other the density times the volume ([`geom_volume`]).
 ///
-/// For mesh geoms, accepts pre-computed mesh properties to avoid redundant
-/// `compute_mesh_inertia()` calls (see `MeshProps`); for a height field, its
-/// asset's four sizes.
+/// A mesh geom's volume is its mesh's ([`MeshProps::volume`]); a height
+/// field's comes from its asset's four sizes.
 pub fn compute_geom_mass(
     geom: &MjcfGeom,
     mesh_props: Option<&MeshProps>,
@@ -461,8 +444,8 @@ pub fn compute_geom_mass(
 /// A geom's volume, as MuJoCo 3.5.0 computes it (`mjCGeom::GetVolume`,
 /// `user_objects.cc:3115-3189`), each product in MuJoCo's order: a height
 /// field's is the box of the sizes MuJoCo gives it from its asset
-/// ([`hfield_geom_size`]), a plane's 0. A mesh's is its own volume (book
-/// Rigid-loading L35's), and a primitive geom's with `shellinertia` its
+/// ([`hfield_geom_size`]), a plane's 0. A mesh or SDF geom's is its mesh's
+/// ([`MeshProps::volume`]), and a primitive geom's with `shellinertia` its
 /// surface's area ([`shell_area`]).
 pub(super) fn geom_volume(
     geom: &MjcfGeom,
@@ -471,7 +454,9 @@ pub(super) fn geom_volume(
 ) -> f64 {
     use std::f64::consts::PI;
     let geom_type = geom.geom_type.unwrap_or(MjcfGeomType::Sphere);
-    if geom.shellinertia == Some(true) && geom_type != MjcfGeomType::Mesh {
+    if geom.shellinertia == Some(true)
+        && !matches!(geom_type, MjcfGeomType::Mesh | MjcfGeomType::Sdf)
+    {
         return shell_area(geom, hfield_size);
     }
     let size = mass_sizes(geom, hfield_size);
@@ -490,9 +475,10 @@ pub(super) fn geom_volume(
         }
         MjcfGeomType::Ellipsoid => 4.0 * PI * size[0] * size[1] * size[2] / 3.0,
         MjcfGeomType::Box | MjcfGeomType::Hfield => size[0] * size[1] * size[2] * 8.0,
-        MjcfGeomType::Mesh => mesh_props.map_or(0.001, |&(volume, _, _)| volume.abs()),
-        // MuJoCo's is its mesh's volume, as a mesh geom's (L35's); kept.
-        MjcfGeomType::Sdf => 0.001,
+        MjcfGeomType::Mesh => mesh_props.map_or(0.001, |props| props.volume),
+        // Its mesh's, as a mesh geom's (`GetVolume`'s first arm); an SDF
+        // with no mesh keeps 0.001 (ledger L357).
+        MjcfGeomType::Sdf => mesh_props.map_or(0.001, |props| props.volume),
         MjcfGeomType::Plane => 0.0,
     }
 }
@@ -515,22 +501,18 @@ fn mass_sizes(geom: &MjcfGeom, hfield_size: Option<&[f64; 4]>) -> [f64; 3] {
     }
 }
 
-/// Compute inertia tensor of a single geom about its center (geom-local frame).
-///
-/// Returns a full 3×3 matrix. Primitive geoms produce diagonal tensors;
-/// mesh geoms may have off-diagonal terms.
-///
-/// For mesh geoms, accepts pre-computed mesh properties to avoid redundant
-/// `compute_mesh_inertia()` calls (see `MeshProps`); for a height field, its
-/// asset's four sizes.
+/// A geom's principal moments about its centre of mass, as a diagonal
+/// matrix along its axes: a primitive's along the geom's own, a mesh's along
+/// its mesh's principal axes ([`MeshProps::quat`]). A mesh geom's takes its
+/// mesh's [`MeshProps`]; a height field's its asset's four sizes.
 ///
 /// A primitive geom's is MuJoCo 3.5.0's (`mjCGeom::SetInertia`,
 /// `user_objects.cc:3194-3413`), each product and quotient in MuJoCo's
 /// order: a capsule's is its cylinder's plus its two hemispheres', each
 /// taking the share of the mass its volume takes; a height field's is its
-/// box's. A mesh's is its tetrahedra's (Mirtich 1996; book Rigid-loading
-/// L35's), and a primitive geom's with `shellinertia` its surface's (ledger
-/// L355's).
+/// box's; a mesh's the box of its mesh's volume and principal moments
+/// ([`MeshProps::boxsz`]). A primitive geom's with `shellinertia` is its
+/// surface's (ledger L355's).
 pub fn compute_geom_inertia(
     geom: &MjcfGeom,
     mesh_props: Option<&MeshProps>,
@@ -545,7 +527,10 @@ pub fn compute_geom_inertia(
     let size = mass_sizes(geom, hfield_size);
     // Shell inertia for primitive geoms
     if geom.shellinertia == Some(true)
-        && geom.geom_type.unwrap_or(MjcfGeomType::Sphere) != MjcfGeomType::Mesh
+        && !matches!(
+            geom.geom_type.unwrap_or(MjcfGeomType::Sphere),
+            MjcfGeomType::Mesh | MjcfGeomType::Sdf
+        )
     {
         return compute_geom_shell_inertia(geom, hfield_size);
     }
@@ -590,15 +575,20 @@ pub fn compute_geom_inertia(
                 mass * (s00 + s11) / 5.0,
             ))
         }
-        MjcfGeomType::Mesh => {
-            if let Some(&(volume, _, inertia_unit)) = mesh_props {
-                inertia_unit * mesh_inertia_scale(geom, volume)
-            } else {
-                Matrix3::from_diagonal(&Vector3::new(0.001, 0.001, 0.001))
+        // MuJoCo's mesh arm, an SDF's too: the box of the mesh's volume and
+        // principal moments, along the mesh's principal axes. An SDF with no
+        // mesh keeps 0.001 (ledger L357).
+        MjcfGeomType::Mesh | MjcfGeomType::Sdf => match mesh_props {
+            Some(props) => {
+                let [b00, b11, b22] = props.boxsz.map(|b| b * b);
+                Matrix3::from_diagonal(&Vector3::new(
+                    mass * (b11 + b22) / 3.0,
+                    mass * (b00 + b22) / 3.0,
+                    mass * (b00 + b11) / 3.0,
+                ))
             }
-        }
-        // MuJoCo's is its mesh's, as a mesh geom's (L35's); kept.
-        MjcfGeomType::Sdf => Matrix3::from_diagonal(&Vector3::new(0.001, 0.001, 0.001)),
+            None => Matrix3::from_diagonal(&Vector3::new(0.001, 0.001, 0.001)),
+        },
         // MuJoCo's default arm.
         MjcfGeomType::Plane => Matrix3::zeros(),
     }
@@ -616,8 +606,8 @@ fn compute_geom_shell_mass(geom: &MjcfGeom, hfield_size: Option<&[f64; 4]>) -> f
 /// `user_objects.cc:3115-3189`), each product in MuJoCo's order: an
 /// ellipsoid's by Thomsen's approximation, a height field's its box's on
 /// the sizes MuJoCo gives it from its asset ([`hfield_geom_size`]), a
-/// plane's 0. An SDF's is kept at 0.001, as its volume is (MuJoCo's is its
-/// mesh's).
+/// plane's 0. A mesh or SDF geom does not reach it: its volume and inertia
+/// are its mesh's ([`geom_volume`], [`compute_geom_inertia`]).
 fn shell_area(geom: &MjcfGeom, hfield_size: Option<&[f64; 4]>) -> f64 {
     use std::f64::consts::PI;
     let size = mass_sizes(geom, hfield_size);

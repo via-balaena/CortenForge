@@ -58,6 +58,12 @@ pub(super) fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
     mesh.file = a.string("file");
 
     mesh.scale = a.vec3("scale")?;
+    if let Some(refpos) = a.vec3("refpos")? {
+        mesh.refpos = refpos;
+    }
+    if let Some(refquat) = a.array::<4>("refquat")? {
+        mesh.refquat = refquat;
+    }
 
     // Parse embedded vertex data
     mesh.vertex = a.vector("vertex")?;

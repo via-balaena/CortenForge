@@ -139,6 +139,16 @@ pub fn mulvecmat(vec: &[f64; 3], mat: &[f64; 9]) -> [f64; 3] {
     ]
 }
 
+/// `mjuu_mulvecmatT` (`user_util.cc:270-279`): the transpose of the
+/// row-major matrix `mat` times `vec`, each row's sum from its first product.
+pub fn mulvecmat_t(vec: &[f64; 3], mat: &[f64; 9]) -> [f64; 3] {
+    [
+        mat[0] * vec[0] + mat[3] * vec[1] + mat[6] * vec[2],
+        mat[1] * vec[0] + mat[4] * vec[1] + mat[7] * vec[2],
+        mat[2] * vec[0] + mat[5] * vec[1] + mat[8] * vec[2],
+    ]
+}
+
 /// `mjuu_frame2quat` (`user_util.cc:412-448`): the quaternion of the frame
 /// whose columns are `x`, `y` and `z`, taken from its largest component, made
 /// unit by `normvec`.

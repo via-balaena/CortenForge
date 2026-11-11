@@ -7,17 +7,15 @@
 //! after every check of the masses, settotalmass.
 
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
-use sim_core::mesh::TriangleMeshData;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use super::ModelBuilder;
-use super::eig3::{eig3, full_inertia};
-use super::geom::{compute_geom_inertia, compute_geom_mass, mesh_inertia_scale};
-use super::mesh::{MeshProps, compute_mesh_inertia_by_mode, resolve_mesh};
+use super::eig3::full_inertia;
+use super::geom::{compute_geom_inertia, compute_geom_mass};
+use super::mesh::MeshProps;
 use super::orientation::{MJ_EPS, mulquat, mulvecmat, quat2mat};
 use crate::error::{MjcfError, Result};
-use crate::types::{MeshInertia, MjcfGeom, MjcfGeomType, MjcfInertial};
+use crate::types::{MjcfGeom, MjcfGeomType, MjcfInertial};
 
 /// MuJoCo's `mjMINVAL` (`mjtnum.h:26`).
 pub const MJ_MINVAL: f64 = 1e-15;
@@ -135,27 +133,18 @@ pub fn refuse_non_finite_inertial(values: &InertialValues) -> Result<()> {
     }
 }
 
-/// A mesh geom's mesh properties, by its mesh's inertia mode; `None` for
-/// any other geom.
+/// A mesh or SDF geom's mesh's mass properties, as `process_mesh` computed
+/// them; `None` for any other geom, and for an SDF that names no mesh.
 pub fn geom_mesh_props(
     geom: &MjcfGeom,
     mesh_lookup: &HashMap<String, usize>,
-    mesh_data: &[Arc<TriangleMeshData>],
-    mesh_inertia_modes: &[MeshInertia],
+    mesh_props: &[MeshProps],
 ) -> Option<MeshProps> {
-    resolve_mesh(geom, mesh_lookup, mesh_data).map(|mesh| {
-        let mesh_id = geom
-            .mesh
-            .as_ref()
-            .and_then(|name| mesh_lookup.get(name))
-            .copied()
-            .unwrap_or(0);
-        let mode = mesh_inertia_modes
-            .get(mesh_id)
-            .copied()
-            .unwrap_or(MeshInertia::Convex);
-        compute_mesh_inertia_by_mode(&mesh, mode)
-    })
+    if !matches!(geom.geom_type?, MjcfGeomType::Mesh | MjcfGeomType::Sdf) {
+        return None;
+    }
+    let id = mesh_lookup.get(geom.mesh.as_ref()?)?;
+    mesh_props.get(*id).copied()
 }
 
 /// A height-field geom's asset's four sizes; `None` for any other geom.
@@ -201,12 +190,10 @@ pub struct InertialGeom {
 impl InertialGeom {
     /// `placed` as MuJoCo holds it once compiled. A primitive's moments are
     /// its inertia's diagonal ([`compute_geom_inertia`]) in its own frame. A
-    /// mesh's frame is moved to the mesh's centre of mass and turned to the
-    /// principal axes of the mesh's inertia, `eig3`'s (`user_mesh.cc:1640-
-    /// 1686`), accumulated into the geom's as `mjuu_frameaccum` does
-    /// (`user_objects.cc:3748-3754`), and its moments are those axes' at the
-    /// geom's density; the mesh's own numbers are this crate's (book
-    /// Rigid-loading L35's).
+    /// mesh's frame is moved to its mesh's centre of mass and turned to its
+    /// mesh's principal axes ([`MeshProps`]), accumulated into the geom's as
+    /// `mjuu_frameaccum` does (`user_objects.cc:3748-3754`), and its moments
+    /// are the geom's along those axes.
     pub fn new(
         placed: &PlacedGeom<'_>,
         mesh_props: Option<&MeshProps>,
@@ -216,39 +203,24 @@ impl InertialGeom {
         let mass = compute_geom_mass(geom, mesh_props, hfield_size);
         let pos = [placed.pos.x, placed.pos.y, placed.pos.z];
         let quat = [placed.quat.w, placed.quat.i, placed.quat.j, placed.quat.k];
-        if let (Some(MjcfGeomType::Mesh), Some(&(volume, com, unit))) = (geom.geom_type, mesh_props)
+        let inertia = compute_geom_inertia(geom, mesh_props, hfield_size);
+        let inertia = [inertia[(0, 0)], inertia[(1, 1)], inertia[(2, 2)]];
+        if let (Some(MjcfGeomType::Mesh | MjcfGeomType::Sdf), Some(props)) =
+            (geom.geom_type, mesh_props)
         {
-            let (eigval, mesh_quat) = eig3(&[
-                unit[(0, 0)],
-                unit[(0, 1)],
-                unit[(0, 2)],
-                unit[(0, 1)],
-                unit[(1, 1)],
-                unit[(1, 2)],
-                unit[(0, 2)],
-                unit[(1, 2)],
-                unit[(2, 2)],
-            ]);
-            let turned = mulvecmat(&[com.x, com.y, com.z], &quat2mat(&quat));
-            let scale = mesh_inertia_scale(geom, volume);
+            let turned = mulvecmat(&props.com, &quat2mat(&quat));
             return Self {
                 pos: [pos[0] + turned[0], pos[1] + turned[1], pos[2] + turned[2]],
-                quat: mulquat(&quat, &mesh_quat),
+                quat: mulquat(&quat, &props.quat),
                 mass,
-                // MuJoCo leaves a geom of mass 0 with an inertia of 0.
-                inertia: if mass == 0.0 {
-                    [0.0; 3]
-                } else {
-                    eigval.map(|moment| moment * scale)
-                },
+                inertia,
             };
         }
-        let inertia = compute_geom_inertia(geom, mesh_props, hfield_size);
         Self {
             pos,
             quat,
             mass,
-            inertia: [inertia[(0, 0)], inertia[(1, 1)], inertia[(2, 2)]],
+            inertia,
         }
     }
 }

@@ -51,8 +51,8 @@ use crate::actuator_spec::ActuatorSpec;
 use crate::defaults::DefaultResolver;
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
-    MeshInertia, MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfJacobianType, MjcfKeyframe,
-    MjcfModel, MjcfOption, MjcfSolverType, Prefix,
+    MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfJacobianType, MjcfKeyframe, MjcfModel,
+    MjcfOption, MjcfSolverType, Prefix,
 };
 
 use self::compiler::{apply_discardvisual, apply_fusestatic};
@@ -629,6 +629,9 @@ pub struct ModelBuilder {
     pub(crate) geom_size: Vec<Vector3<f64>>,
     pub(crate) geom_friction: Vec<Vector3<f64>>,
     pub(crate) geom_condim: Vec<i32>,
+    /// Whether each geom is a mesh or SDF geom with `shellinertia`, which
+    /// `check_bodies` refuses in MuJoCo's order.
+    pub(crate) geom_shellinertia_on_mesh: Vec<bool>,
     pub(crate) geom_contype: Vec<u32>,
     pub(crate) geom_conaffinity: Vec<u32>,
     pub(crate) geom_name: Vec<Option<String>>,
@@ -662,8 +665,9 @@ pub struct ModelBuilder {
     pub(crate) mesh_name: Vec<String>,
     /// Triangle mesh data with prebuilt BVH (Arc for cheap cloning).
     pub(crate) mesh_data: Vec<Arc<sim_core::mesh::TriangleMeshData>>,
-    /// Per-mesh inertia computation mode (from `<mesh inertia="..."/>`).
-    pub(crate) mesh_inertia_modes: Vec<MeshInertia>,
+    /// Each mesh's mass properties, computed once as it is built
+    /// ([`mesh::mesh_mass_properties`]).
+    pub(crate) mesh_props: Vec<mesh::MeshProps>,
 
     // Height field arrays (built from MJCF <asset><hfield> elements)
     /// Name-to-index lookup for hfield assets.

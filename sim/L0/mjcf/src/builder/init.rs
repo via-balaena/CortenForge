@@ -80,6 +80,7 @@ impl ModelBuilder {
             geom_size: vec![],
             geom_friction: vec![],
             geom_condim: vec![],
+            geom_shellinertia_on_mesh: vec![],
             geom_contype: vec![],
             geom_conaffinity: vec![],
             geom_name: vec![],
@@ -97,7 +98,7 @@ impl ModelBuilder {
             mesh_name_to_id: HashMap::new(),
             mesh_name: vec![],
             mesh_data: vec![],
-            mesh_inertia_modes: vec![],
+            mesh_props: vec![],
 
             hfield_name_to_id: HashMap::new(),
             hfield_name: vec![],

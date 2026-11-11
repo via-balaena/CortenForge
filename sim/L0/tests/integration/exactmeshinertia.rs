@@ -6,7 +6,7 @@
 //! - Asymmetric mesh: off-diagonal terms, non-identity iquat (AC4)
 //! - Explicit `<inertial>` overrides mesh computation (AC5)
 //! - COM offset: parallel axis theorem correctness (AC6)
-//! - Zero-volume degenerate mesh fallback (AC7)
+//! - A zero-volume degenerate mesh refused (AC7)
 //! - `exactmeshinertia=true` == `exactmeshinertia=false` (AC8)
 //! - Multi-geom body: mixed mesh + primitive aggregation (AC9)
 //!
@@ -346,12 +346,15 @@ fn ac6_com_offset_parallel_axis() {
 }
 
 // ============================================================================
-// AC7 — Zero-Volume Degenerate Mesh Fallback
+// AC7 — Zero-Volume Degenerate Mesh Refused
 // ============================================================================
 
-/// AC7: A degenerate mesh (all coplanar triangles) should not panic or produce NaN.
+/// AC7: A flat mesh is refused. MuJoCo 3.5.0 refuses this document: its
+/// schema has no `exactmeshinertia`, without that the flat mesh's hull fails
+/// in qhull, and with no collision its volume is too small. This crate
+/// refuses it for its volume (`mjCMesh::Process`, book Rigid-loading L35).
 #[test]
-fn ac7_zero_volume_degenerate_mesh() {
+fn ac7_zero_volume_degenerate_mesh_is_refused() {
     let mjcf = r#"
         <mujoco>
           <compiler exactmeshinertia="true"/>
@@ -367,27 +370,10 @@ fn ac7_zero_volume_degenerate_mesh() {
         </mujoco>
     "#;
 
-    let model = load_model(mjcf).expect("degenerate mesh should not panic");
-
-    let mass = model.body_mass[1];
-    let inertia = model.body_inertia[1];
-
-    // Should not be NaN or Inf
-    assert!(mass.is_finite(), "mass should be finite, got {mass}");
+    let err = load_model(mjcf).unwrap_err().to_string();
     assert!(
-        inertia.x.is_finite(),
-        "Ixx should be finite, got {}",
-        inertia.x
-    );
-    assert!(
-        inertia.y.is_finite(),
-        "Iyy should be finite, got {}",
-        inertia.y
-    );
-    assert!(
-        inertia.z.is_finite(),
-        "Izz should be finite, got {}",
-        inertia.z
+        err.contains("mesh volume is too small. Try setting inertia to shell"),
+        "{err}"
     );
 }
 

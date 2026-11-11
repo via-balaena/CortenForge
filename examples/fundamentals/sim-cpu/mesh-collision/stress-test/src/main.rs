@@ -604,10 +604,12 @@ fn check_edge_cases() -> (u32, u32) {
         }
     }
 
-    // Check 20: Single-triangle mesh vs sphere (no hull)
+    // Check 20: a single-triangle mesh is refused
     {
-        // 3 vertices, 1 face — below the 4-point hull minimum, so the convex
-        // collision searches the three vertices: the flat triangle collides
+        // 3 vertices, 1 face: MuJoCo 3.5.0 refuses a mesh of fewer than 4
+        // vertices ("at least 4 vertices required"); this crate refuses it
+        // for its volume, which is none (book Rigid-loading L35; ledger L405
+        // holds the vertex count).
         let tri_v = "-0.5 -0.5 0.0  0.5 -0.5 0.0  0.0 0.5 0.0";
         let tri_f = "0 1 2";
 
@@ -627,19 +629,15 @@ fn check_edge_cases() -> (u32, u32) {
 </mujoco>"#
         );
 
-        let model = load_model(&mjcf).expect("model should load");
-        let mut data = model.make_data();
-        // Run a few steps to get contact
-        for _ in 0..500 {
-            data.step(&model).expect("step failed");
-        }
-        let ncon = data.contacts.len();
-
+        let detail = match load_model(&mjcf) {
+            Ok(_) => "loaded".to_string(),
+            Err(err) => format!("refused: {err}"),
+        };
         total += 1;
         if check(
-            "20. Single-tri mesh vs sphere",
-            ncon >= 1,
-            &format!("ncon={ncon} (no hull: searched vertex by vertex)"),
+            "20. Single-tri mesh refused",
+            detail.starts_with("refused"),
+            &detail,
         ) {
             pass += 1;
         }

@@ -107,6 +107,18 @@
 //! before them is named first here: `SCHEMA_COSTS` (ledger L353); and
 //! `REFUSAL_FIRST_COSTS` pins each kind measured where MuJoCo names the other
 //! fault and this crate the refusal (ledgers L315, L353).
+//! RL-9b's refusal of `shellinertia` on a mesh or SDF geom runs with RL-6d's
+//! checks of a geom, after its condim and plane checks and before its
+//! negative mass, as MuJoCo orders it; a fault this crate meets as it reads
+//! the model comes before it: the geom's own `user` data or orientation, as
+//! in MuJoCo, and a later element's, where MuJoCo names the earlier geom's
+//! `shellinertia`: `SHELLINERTIA_COSTS` (ledger L353). Its refusals of a mesh
+//! (its area, its volume, an exact mesh's orientation, its principal
+//! moments) are made as the meshes are built, after the checks this crate
+//! makes before building the model, where MuJoCo makes them before its
+//! bodies; a fault this crate checks first (a geom's size, `fromto` or fit,
+//! a tendon's or an actuator's reference among them) is named first here:
+//! `MESH_COSTS` (ledger L353).
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, with the reason its row gives as MuJoCo's (RL-6a's measured
@@ -153,7 +165,15 @@
 //! a body's non-finite inertia from its geoms beside an orientation, a
 //! `fullinertia`, a reference, a mocap body's place or another body's checks:
 //! ten in `TWO_FAULTS`, twenty-six in `INERTIAL_COSTS`. Each is a sample
-//! of the pairs, not all of them.
+//! of the pairs, not all of them. RL-9b's review's (measured 2026-11-10,
+//! RB's documents) set `shellinertia` on an SDF or mesh geom beside a condim,
+//! a plane in a moving body, a `zaxis`, a `user` count or an earlier geom's
+//! negative mass: nine in `TWO_FAULTS`; and a mesh refused for its volume
+//! or an exact mesh's orientation beside a geom's size, `fromto` or fit: ten
+//! in `MESH_COSTS`. Its fix-diff pass's (FD's documents) set `shellinertia`
+//! beside a later element's fault this crate meets as it reads (seven in
+//! `SHELLINERTIA_COSTS`) and a mesh refused beside a tendon's or an
+//! actuator's reference (three more in `MESH_COSTS`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1927,6 +1947,60 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "inertia must satisfy A + B >= C; use 'balanceinertia' to fix",
         "inertia must satisfy A + B >= C; use 'balanceinertia' to fix (body 'p')",
     ),
+    (
+        "an SDF geom's shellinertia and its condim",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom type="sdf" mesh="m" shellinertia="true" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom #0 in body #1)",
+    ),
+    (
+        "a mesh geom's shellinertia and its condim",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="m" shellinertia="true" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom #0 in body #1)",
+    ),
+    (
+        "a plane in a moving body, then an SDF geom's shellinertia",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom type="plane" size="1 1 1"/><geom type="sdf" mesh="m" shellinertia="true"/></body></worldbody></mujoco>"#,
+        "plane only allowed in static bodies",
+        "plane only allowed in static bodies (geom #0 in body #1)",
+    ),
+    (
+        "a plane in a moving body, then a mesh geom's shellinertia",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom type="plane" size="1 1 1"/><geom type="mesh" mesh="m" shellinertia="true"/></body></worldbody></mujoco>"#,
+        "plane only allowed in static bodies",
+        "plane only allowed in static bodies (geom #0 in body #1)",
+    ),
+    (
+        "an SDF geom's shellinertia and its zaxis too small",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom type="sdf" mesh="m" shellinertia="true" zaxis="0 0 0"/></body></worldbody></mujoco>"#,
+        "orientation specification error 'zaxis too small' in geom 0",
+        "invalid zaxis on <geom>: zaxis too small (geom #0 in body #1)",
+    ),
+    (
+        "an earlier geom's condim, then an SDF geom's shellinertia",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom size=".1" condim="2"/><geom type="sdf" mesh="m" shellinertia="true"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom #0 in body #1)",
+    ),
+    (
+        "an earlier body's plane, then an SDF geom's shellinertia",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="a"><freejoint/><geom type="plane" size="1 1 1"/></body><body><freejoint/><geom type="sdf" mesh="m" shellinertia="true"/></body></worldbody></mujoco>"#,
+        "plane only allowed in static bodies",
+        "plane only allowed in static bodies (geom #0 in body 'a')",
+    ),
+    (
+        "an SDF geom's shellinertia and its user over nuser_geom",
+        r#"<mujoco><size nuser_geom="1"/><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom type="sdf" mesh="m" shellinertia="true" user="1 2"/></body></worldbody></mujoco>"#,
+        "user has more values than nuser_geom in geom '' (id = 0)",
+        "invalid user on <geom>: user data exceeds nuser_geom=1",
+    ),
+    (
+        "an earlier geom's negative mass, then an SDF geom's shellinertia",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom size=".1" mass="-1"/><geom type="sdf" mesh="m" shellinertia="true"/></body></worldbody></mujoco>"#,
+        "mass, inertia or density are negative in geom",
+        "mass, inertia or density are negative in geom (geom #0 in body #1)",
+    ),
 ];
 
 #[test]
@@ -2884,6 +2958,172 @@ const INERTIAL_COSTS: &[(&str, &str, &str, &str)] = &[
 fn an_inertia_fault_beside_another_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in INERTIAL_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, one a mesh MuJoCo 3.5.0 refuses as it builds the meshes, before
+/// the bodies (its volume, an exact mesh's orientation), one a geom's this
+/// crate checks before it builds the meshes (a size, a `fromto`, a primitive
+/// fitted to a mesh), where this crate names the geom's, as it did before
+/// RL-9b: ledger L353 holds each. `(what, document, MuJoCo 3.5.0's reason,
+/// this crate's error)`, measured 2026-11-10 (RL-9b's review, RB's documents).
+const MESH_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "a mesh too small in volume, then a sphere of size 0",
+        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="flat" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="sphere" size="0"/></body></worldbody></mujoco>"#,
+        "mesh volume is too small: flat . Try setting inertia to shell",
+        "invalid size on <geom>: size 0 must be positive (geom #2 in body 'c')",
+    ),
+    (
+        "an exact mesh's faces turned, then a sphere of size 0",
+        r#"<mujoco><asset><mesh name="turn" inertia="exact" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 1 2  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="turn" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="sphere" size="0"/></body></worldbody></mujoco>"#,
+        "faces of mesh 'turn' have inconsistent orientation. Please check the faces containing the vertices 1 and 2.",
+        "invalid size on <geom>: size 0 must be positive (geom #2 in body 'c')",
+    ),
+    (
+        "a mesh too small in volume, then a sphere fitted to a mesh (D-MESH-FIT)",
+        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="flat" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="sphere" mesh="m"/></body></worldbody></mujoco>"#,
+        "mesh volume is too small: flat . Try setting inertia to shell",
+        "not supported by sim-mjcf (valid in MuJoCo 3.5.0): a sphere, capsule, cylinder, ellipsoid or box fitted to the mesh it names (geom #2 in body 'c')",
+    ),
+    (
+        "an exact mesh's faces turned, then a sphere fitted to a mesh (D-MESH-FIT)",
+        r#"<mujoco><asset><mesh name="turn" inertia="exact" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 1 2  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="turn" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="sphere" mesh="m"/></body></worldbody></mujoco>"#,
+        "faces of mesh 'turn' have inconsistent orientation. Please check the faces containing the vertices 1 and 2.",
+        "not supported by sim-mjcf (valid in MuJoCo 3.5.0): a sphere, capsule, cylinder, ellipsoid or box fitted to the mesh it names (geom #2 in body 'c')",
+    ),
+    (
+        "a mesh too small in volume, then a mesh geom's fromto",
+        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="flat" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="mesh" mesh="m" fromto="0 0 0 1 0 0"/></body></worldbody></mujoco>"#,
+        "mesh volume is too small: flat . Try setting inertia to shell",
+        "invalid fromto on <geom>: fromto requires a capsule, cylinder, ellipsoid or box (geom in body 'c')",
+    ),
+    (
+        "an exact mesh's faces turned, then a mesh geom's fromto",
+        r#"<mujoco><asset><mesh name="turn" inertia="exact" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 1 2  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="turn" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="mesh" mesh="m" fromto="0 0 0 1 0 0"/></body></worldbody></mujoco>"#,
+        "faces of mesh 'turn' have inconsistent orientation. Please check the faces containing the vertices 1 and 2.",
+        "invalid fromto on <geom>: fromto requires a capsule, cylinder, ellipsoid or box (geom in body 'c')",
+    ),
+    (
+        "a mesh too small in volume, then a box of size 0, the mesh unused",
+        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/></asset><worldbody><body name="c"><freejoint/><geom type="box" size="0 1 1"/></body></worldbody></mujoco>"#,
+        "mesh volume is too small: flat . Try setting inertia to shell",
+        "invalid size on <geom>: size 0 must be positive (geom #0 in body 'c')",
+    ),
+    (
+        "an exact mesh's faces turned, then a box of size 0, the mesh unused",
+        r#"<mujoco><asset><mesh name="turn" inertia="exact" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 1 2  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="c"><freejoint/><geom type="box" size="0 1 1"/></body></worldbody></mujoco>"#,
+        "faces of mesh 'turn' have inconsistent orientation. Please check the faces containing the vertices 1 and 2.",
+        "invalid size on <geom>: size 0 must be positive (geom #0 in body 'c')",
+    ),
+    (
+        "a mesh too small in volume, then a capsule's fromto points coinciding",
+        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="flat" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="capsule" size=".1" fromto="0 0 0 0 0 0"/></body></worldbody></mujoco>"#,
+        "mesh volume is too small: flat . Try setting inertia to shell",
+        "invalid fromto on <geom>: fromto points too close (geom in body 'c')",
+    ),
+    (
+        "an exact mesh's faces turned, then a capsule's fromto points coinciding",
+        r#"<mujoco><asset><mesh name="turn" inertia="exact" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 1 2  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="turn" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="capsule" size=".1" fromto="0 0 0 0 0 0"/></body></worldbody></mujoco>"#,
+        "faces of mesh 'turn' have inconsistent orientation. Please check the faces containing the vertices 1 and 2.",
+        "invalid fromto on <geom>: fromto points too close (geom in body 'c')",
+    ),
+    (
+        "a mesh too small in volume, then a tendon's unknown joint",
+        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="flat"/><geom size=".1"/></body></worldbody><tendon><fixed name="t"><joint joint="nope" coef="1"/></fixed></tendon></mujoco>"#,
+        "mesh volume is too small: flat . Try setting inertia to shell",
+        "unknown joint 'nope' (tendon 't')",
+    ),
+    (
+        "a mesh too small in volume, then a spatial tendon with one site",
+        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="flat"/><geom size=".1"/><site name="s1"/></body></worldbody><tendon><spatial name="t"><site site="s1"/></spatial></tendon></mujoco>"#,
+        "mesh volume is too small: flat . Try setting inertia to shell",
+        "spatial tendon needs at least 2 sites, has 1 (tendon 't')",
+    ),
+    (
+        "a mesh too small in volume, then an actuator's unknown joint",
+        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="flat"/><geom size=".1"/></body></worldbody><actuator><motor joint="nope"/></actuator></mujoco>"#,
+        "mesh volume is too small: flat . Try setting inertia to shell",
+        "unknown joint 'nope' (actuator #0)",
+    ),
+];
+
+#[test]
+fn a_mesh_refusal_beside_a_geoms_fault_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in MESH_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, `shellinertia` on an earlier mesh geom and one this crate meets
+/// as it reads the model (a later geom's, body's or site's orientation or
+/// `user` data, a sensor's, equality's or exclude's reference), where MuJoCo
+/// 3.5.0 names the `shellinertia`, compiling each geom whole before the next,
+/// and this crate the other, which it meets before it checks the geoms:
+/// ledger L353 holds each. `(what, document, MuJoCo 3.5.0's reason, this
+/// crate's error)`, measured 2026-11-10 (RL-9b's fix-diff pass, FD's
+/// documents).
+const SHELLINERTIA_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "a mesh geom's shellinertia, then a later geom's zaxis",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="a"><freejoint/><geom name="s" type="mesh" mesh="m" shellinertia="true"/><geom size=".1" zaxis="0 0 0"/></body></worldbody></mujoco>"#,
+        "for mesh geoms, inertia should be specified in the mesh asset",
+        "invalid zaxis on <geom>: zaxis too small (geom #1 in body 'a')",
+    ),
+    (
+        "a mesh geom's shellinertia, then a later geom's user over nuser_geom",
+        r#"<mujoco><size nuser_geom="1"/><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="a"><freejoint/><geom name="s" type="mesh" mesh="m" shellinertia="true"/><geom size=".1" user="1 2"/></body></worldbody></mujoco>"#,
+        "for mesh geoms, inertia should be specified in the mesh asset",
+        "invalid user on <geom>: user data exceeds nuser_geom=1",
+    ),
+    (
+        "a mesh geom's shellinertia, then a later body's zaxis",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="a"><freejoint/><geom name="s" type="mesh" mesh="m" shellinertia="true"/></body><body name="c" zaxis="0 0 0"><freejoint/><geom size=".1"/></body></worldbody></mujoco>"#,
+        "for mesh geoms, inertia should be specified in the mesh asset",
+        "invalid zaxis on <body>: zaxis too small (body 'c')",
+    ),
+    (
+        "a mesh geom's shellinertia, then a sensor's unknown joint",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="a"><freejoint/><geom name="s" type="mesh" mesh="m" shellinertia="true"/></body></worldbody><sensor><jointpos joint="nope"/></sensor></mujoco>"#,
+        "for mesh geoms, inertia should be specified in the mesh asset",
+        "unknown joint 'nope' (sensor #0)",
+    ),
+    (
+        "a mesh geom's shellinertia, then an equality's unknown body",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="a"><freejoint/><geom name="s" type="mesh" mesh="m" shellinertia="true"/></body></worldbody><equality><weld body1="nope"/></equality></mujoco>"#,
+        "for mesh geoms, inertia should be specified in the mesh asset",
+        "unknown body 'nope' (equality #0)",
+    ),
+    (
+        "a mesh geom's shellinertia, then an exclude's unknown body",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="a"><freejoint/><geom name="s" type="mesh" mesh="m" shellinertia="true"/></body></worldbody><contact><exclude body1="a" body2="nope"/></contact></mujoco>"#,
+        "for mesh geoms, inertia should be specified in the mesh asset",
+        "unknown body 'nope' (exclude #0)",
+    ),
+    (
+        "a mesh geom's shellinertia, then a later site's zaxis",
+        r#"<mujoco><asset><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="a"><freejoint/><geom name="s" type="mesh" mesh="m" shellinertia="true"/></body><body name="c"><freejoint/><geom size=".1"/><site zaxis="0 0 0"/></body></worldbody></mujoco>"#,
+        "for mesh geoms, inertia should be specified in the mesh asset",
+        "invalid zaxis on <site>: zaxis too small (site in body 'c')",
+    ),
+];
+
+#[test]
+fn shellinertia_beside_a_later_fault_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in SHELLINERTIA_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),

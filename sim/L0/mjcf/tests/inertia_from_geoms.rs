@@ -50,27 +50,40 @@ fn geom_euler_rotates_body_inertia() {
 /// about z.
 const TURNED_BOX_MESH: &str = r#"<mujoco><asset><mesh name="bx" vertex="0 0 0  0.4 0 0  0.4 0.2 0  0 0.2 0  0 0 0.1  0.4 0 0.1  0.4 0.2 0.1  0 0.2 0.1" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  1 2 6  1 6 5  2 3 7  2 7 6  3 0 4  3 4 7"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="bx" euler="0 0 30"/></body></worldbody></mujoco>"#;
 
-/// The largest of `ours - mujoco`, relative to the largest of `mujoco`.
+/// The largest of `|ours - mujoco|`, relative to the largest of `|mujoco|`;
+/// `NaN` where any of `ours` is.
 fn relative_gap(ours: &[f64], mujoco: &[f64]) -> f64 {
     let scale = mujoco.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-    ours.iter()
-        .zip(mujoco)
-        .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()))
-        / scale
+    let gap = ours.iter().zip(mujoco).fold(0.0_f64, |m, (a, b)| {
+        let d = (a - b).abs();
+        if m.is_nan() || d.is_nan() {
+            f64::NAN
+        } else {
+            m.max(d)
+        }
+    });
+    gap / scale
 }
+
+/// 0 on macOS arm64, where MuJoCo's values were printed, and 1e-12
+/// elsewhere: the geom's `euler` passes through `sin` and `cos`, whose last
+/// bit is the platform's libm's.
+const TURNED_TOLERANCE: f64 = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+    0.0
+} else {
+    1e-12
+};
 
 #[test]
 fn a_turned_mesh_geom_turns_its_bodys_centre_of_mass() {
     // MuJoCo's centre of mass is the mesh's, turned.
     let model = load_model(TURNED_BOX_MESH).unwrap();
-    let mujoco = Vector3::new(0.12320508259278645, 0.1866025431590383, 0.05000000074505804);
-    // MuJoCo holds a mesh's vertices in single precision (ledger L281, book
-    // L35), so the centre of mass is compared within single precision.
-    let gap = (model.body_ipos[1] - mujoco).abs().max() / mujoco.abs().max();
+    let ipos: [f64; 3] = model.body_ipos[1].into();
+    let mujoco = [0.12320508259278645, 0.1866025431590383, 0.05000000074505804];
+    let gap = relative_gap(&ipos, &mujoco);
     assert!(
-        gap <= 1e-7,
-        "{} against MuJoCo's {mujoco}: {gap:e}",
-        model.body_ipos[1]
+        gap <= TURNED_TOLERANCE,
+        "{ipos:?} against MuJoCo's {mujoco:?}: {gap:e}"
     );
 }
 
@@ -78,7 +91,7 @@ fn a_turned_mesh_geom_turns_its_bodys_centre_of_mass() {
 fn a_turned_mesh_geom_gives_its_body_the_meshs_principal_frame_turned() {
     // MuJoCo's frame is the geom's turn composed with the mesh's principal
     // frame (`user_mesh.cc:1640-1686`), whose moments `eig3` orders largest
-    // first. Compared within single precision, as the centre of mass is.
+    // first.
     let model = load_model(TURNED_BOX_MESH).unwrap();
     let q = model.body_iquat[1];
     let iquat = [q.w, q.i, q.j, q.k];
@@ -90,14 +103,14 @@ fn a_turned_mesh_geom_gives_its_body_the_meshs_principal_frame_turned() {
     ];
     let gap = relative_gap(&iquat, &mujoco_iquat);
     assert!(
-        gap <= 1e-7,
+        gap <= TURNED_TOLERANCE,
         "{iquat:?} against MuJoCo's {mujoco_iquat:?}: {gap:e}"
     );
     let inertia: [f64; 3] = model.body_inertia[1].into();
     let mujoco_inertia = [0.1333333432674411, 0.11333334177732492, 0.03333333581686027];
     let gap = relative_gap(&inertia, &mujoco_inertia);
     assert!(
-        gap <= 1e-7,
+        gap <= TURNED_TOLERANCE,
         "{inertia:?} against MuJoCo's {mujoco_inertia:?}: {gap:e}"
     );
 }
