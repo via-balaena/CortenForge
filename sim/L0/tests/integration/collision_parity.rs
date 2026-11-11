@@ -682,34 +682,33 @@ fn a_mesh_apex_on_a_plane_is_listed_as_mujoco() {
     }
 }
 
-/// A box mesh authored with its origin at a corner, its base 0.001 into a
-/// plane, the plane in the world body and in a static body after the mesh's
-/// (so each of the narrow phase's two argument orders is reached): the
-/// plane–mesh contacts are spaced as MuJoCo's, whose `addplanemesh` skips a
-/// vertex nearer the first contact than 0.3 of `geom_rbound`
-/// (`engine_collision_convex.c:1018`). The spacing takes the half-diagonal
-/// of the mesh's box (ledger L176), which here is MuJoCo's radius (2.077)
-/// within 1e-12: three of the base's four corners, the same count and geoms
+/// Meshes whose base is 0.001 into a plane (the collision golden's
+/// `plane_mesh`): a box authored with its origin at a corner, the plane in the
+/// world body and in a static body after the mesh's (so each of the narrow
+/// phase's two argument orders is reached); a pyramid whose radius (7.63) is
+/// not the half-diagonal of its box (5.20); a box turned 45° in its vertex
+/// data. The plane–mesh contacts are spaced as MuJoCo's, whose
+/// `addplanemesh` skips a vertex nearer the first contact than 0.3 of
+/// `geom_rbound` (`engine_collision_convex.c:1018`; ledger L176): each
+/// mesh's radius MuJoCo's bit for bit, its contacts the same count and geoms
 /// as MuJoCo's, each distance within 1e-13 and each height within 1e-15,
-/// midway between its corner and the plane (`mjc_PlaneConvex`; measured
-/// 5.3e-16). Which three is not
-/// compared: the corners tie for the deepest, and the first corner's
-/// neighbours are taken in the hull graph's order, ours and MuJoCo's
-/// (registry D-HULL-ORDER; here the third differs). Before, the spacing took
-/// our `geom_rbound`, about the authored origin (4.153), and listed two.
+/// midway between its corner and the plane (`mjc_PlaneConvex`). Which
+/// corners is not compared: the corners tie for the deepest, and the first
+/// corner's neighbours are taken in the hull graph's order, ours and
+/// MuJoCo's (registry D-HULL-ORDER).
 #[test]
 fn plane_mesh_contacts_are_spaced_as_mujoco() {
     let cases = golden()["plane_mesh"].clone();
+    let mut compared = Vec::new();
     for (name, case) in cases.as_object().expect("cases") {
         let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
         let mesh = usize::try_from(case["mesh_geom"].as_u64().expect("mesh_geom")).expect("geom");
         let rbound = case["rbound"].as_f64().expect("rbound");
-        // `geom_aabb` is the box's centre offset, then its half-extents.
-        let aabb = model.geom_aabb[mesh];
-        let half = nalgebra::Vector3::new(aabb[3], aabb[4], aabb[5]).norm();
-        assert!(
-            (half - rbound).abs() <= 1e-12,
-            "{name}: half-diagonal {half}, MuJoCo's radius {rbound}"
+        assert_eq!(
+            model.geom_rbound[mesh].to_bits(),
+            rbound.to_bits(),
+            "{name}: radius {}, MuJoCo's {rbound}",
+            model.geom_rbound[mesh]
         );
         let mut data = model.make_data();
         data.forward(&model).expect("forward");
@@ -737,7 +736,13 @@ fn plane_mesh_contacts_are_spaced_as_mujoco() {
                 c.pos.z
             );
         }
+        compared.push(name.as_str());
     }
+    assert_eq!(
+        compared,
+        ["later_body", "pyramid", "turned_box", "world"],
+        "the scenes compared"
+    );
 }
 
 /// One of each primitive (sphere, capsule, cylinder, ellipsoid, box): each

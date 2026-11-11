@@ -365,8 +365,8 @@ const SQRT_3_OVER_2: f64 = 0.866_025_403_784_438_6;
 
 /// A plane and an ellipsoid or a mesh, through MuJoCo's `mjc_PlaneConvex`
 /// ([`mjc_plane_convex`]), the plane first. A mesh's further contacts are
-/// spaced by the half-diagonal of its box, where MuJoCo's take its
-/// `geom_rbound` (`GetRBound`, `user_objects.cc:3443-3449`; ledger L176).
+/// spaced by its `geom_rbound`, as MuJoCo's (`engine_collision_convex.c:1103`,
+/// `:1129`; ledger L176).
 // MuJoCo's pair context, as the other collision functions take it.
 #[allow(clippy::too_many_arguments)]
 fn collide_plane_convex(
@@ -382,10 +382,7 @@ fn collide_plane_convex(
     let Some(mut obj) = CcdObj::of_geom(model, other_geom, other_pos, other_mat, 0.0) else {
         return vec![];
     };
-    let rbound = model.geom_mesh[other_geom].map_or(model.geom_rbound[other_geom], |id| {
-        let (lo, hi) = model.mesh_data[id].aabb();
-        (hi - lo).norm() / 2.0
-    });
+    let rbound = model.geom_rbound[other_geom];
     let mat: Mat9 = std::array::from_fn(|i| plane_mat[(i / 3, i % 3)]);
     mjc_plane_convex(
         &[plane_pos.x, plane_pos.y, plane_pos.z],
