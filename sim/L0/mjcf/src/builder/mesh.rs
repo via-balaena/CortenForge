@@ -636,10 +636,8 @@ pub fn convert_embedded_mesh(mjcf_mesh: &MjcfMesh, verts: &[f64]) -> Result<RawM
 ///   an absolute 1e-9 (`:1653-1662`), and the half sizes of the box with
 ///   that volume and those moments (`:1664-1668`).
 ///
-/// Its hull's faces under `convex` are this crate's hull's, equal to
-/// MuJoCo's as sets where they agree, not in order or in how a flat facet is
-/// cut into triangles (book Rigid-loading L36), so its numbers there are
-/// MuJoCo's to rounding, not to the bit.
+/// Under `convex` its faces are this crate's hull's (`D-MESH-CONVEX-MASS`):
+/// MuJoCo's to rounding where the two hulls are one set, not where they part.
 ///
 /// # Errors
 ///
@@ -657,9 +655,9 @@ pub fn mesh_mass_properties(
         .collect();
     // The faces the volume and the inertia are summed over: the hull's under
     // `convex` (MuJoCo's `GraphFaces`), the mesh's otherwise, and the mesh's
-    // too where this crate's hull builder makes no hull, which it does for a
-    // solid thinner than qhull's tolerance (measured: a 1e-10-thick plate,
-    // whose hull is its own faces).
+    // too where this crate's hull builder makes no hull (it finds a mesh flat
+    // within 1e-10 of its bounding diagonal), which are MuJoCo's hull's where
+    // the mesh is closed and convex (`D-MESH-CONVEX-MASS`).
     let solid: Vec<[[f64; 3]; 3]> = match (mode, mesh.convex_hull()) {
         (MeshInertia::Convex, Some(hull)) => hull
             .faces

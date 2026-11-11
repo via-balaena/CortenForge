@@ -68,12 +68,11 @@ impl ModelBuilder {
         // geom is built (`check_bodies`), as MuJoCo 3.5.0 refuses it.
         self.geom_condim.push(geom.condim.unwrap_or(3));
         // A mesh or SDF geom's inertia is its mesh's: `shellinertia` on one
-        // with a mesh is refused once every geom is built (`check_bodies`),
-        // where MuJoCo 3.5.0 refuses it.
+        // is refused once every geom is built (`check_bodies`), where MuJoCo
+        // 3.5.0 refuses it (and an SDF that names no mesh, which MuJoCo
+        // refuses for that, ledger L357).
         self.geom_shellinertia_on_mesh.push(
-            geom.shellinertia == Some(true)
-                && matches!(geom_type, GeomType::Mesh | GeomType::Sdf)
-                && geom.mesh.is_some(),
+            geom.shellinertia == Some(true) && matches!(geom_type, GeomType::Mesh | GeomType::Sdf),
         );
         // `contype`/`conaffinity` are MuJoCo bitmask attributes accepted as
         // i32 from XML but always non-negative by spec.
@@ -607,8 +606,8 @@ fn compute_geom_shell_mass(geom: &MjcfGeom, hfield_size: Option<&[f64; 4]>) -> f
 /// `user_objects.cc:3115-3189`), each product in MuJoCo's order: an
 /// ellipsoid's by Thomsen's approximation, a height field's its box's on
 /// the sizes MuJoCo gives it from its asset ([`hfield_geom_size`]), a
-/// plane's 0. A mesh's or an SDF's is 0.001: MuJoCo refuses `shellinertia`
-/// on either (`user_objects.cc:3744-3746`), as this crate does.
+/// plane's 0. A mesh or SDF geom does not reach it: its volume and inertia
+/// are its mesh's ([`geom_volume`], [`compute_geom_inertia`]).
 fn shell_area(geom: &MjcfGeom, hfield_size: Option<&[f64; 4]>) -> f64 {
     use std::f64::consts::PI;
     let size = mass_sizes(geom, hfield_size);

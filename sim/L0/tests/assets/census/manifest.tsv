@@ -3673,3 +3673,14 @@ c88432579fd890ca	sim/L0/mjcf/tests/refusal_order.rs:2986
 d4c96bdb9df21bc2	sim/L0/mjcf/tests/refusal_order.rs:3028
 f4f402365191106a	sim/L0/mjcf/tests/refusal_order.rs:3004
 fe2c9e734a242136	sim/L0/mjcf/tests/refusal_order.rs:3016
+0571e096512cd624	sim/L0/mjcf/tests/refusal_order.rs:3117
+08b6ef273eba6a35	sim/L0/mjcf/tests/refusal_order.rs:3039
+734a97f03ba4afff	sim/L0/mjcf/tests/refusal_order.rs:3111
+877810fb074cd64a	sim/L0/mjcf/tests/mesh_mass_properties.rs:700
+8afa1067e94817d3	sim/L0/mjcf/tests/refusal_order.rs:3099
+923b8da85ccaf136	sim/L0/mjcf/tests/refusal_order.rs:3045
+971f3034f3f5f5ba	sim/L0/mjcf/tests/refusal_order.rs:3105
+9ce01ba6253aa038	sim/L0/mjcf/tests/refusal_order.rs:3093
+c02f52c2a4beaa25	sim/L0/mjcf/tests/refusal_order.rs:3051
+c69c6fb734dba5c2	sim/L0/mjcf/tests/refusal_order.rs:3087
+c8b3d9d8b9033a7b	sim/L0/mjcf/tests/refusal_order.rs:3081

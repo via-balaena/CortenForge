@@ -1,0 +1,1 @@
+<mujoco><worldbody><body><freejoint/><geom type="sdf" shellinertia="true"/><geom size=".1"/></body></worldbody></mujoco>

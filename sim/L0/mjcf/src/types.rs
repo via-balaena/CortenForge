@@ -400,9 +400,8 @@ pub enum MeshInertia {
     /// Compute exact (volumetric) inertia on the original mesh.
     /// Requires watertight, outward-oriented mesh.
     Exact,
-    /// Legacy algorithm: each pyramid's volume taken positive, so a
-    /// non-convex mesh's volume is overcounted. MuJoCo 3.5.0's default
-    /// (`mjs_defaultMesh`, `user_init.c:242`).
+    /// Legacy algorithm: each pyramid's volume taken positive. MuJoCo 3.5.0's
+    /// default (`mjs_defaultMesh`, `user_init.c:242`).
     Legacy,
     /// Surface-area-weighted shell inertia. mass = density × total_area.
     Shell,

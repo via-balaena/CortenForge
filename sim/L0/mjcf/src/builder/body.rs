@@ -533,8 +533,8 @@ impl ModelBuilder {
     /// condim other than 1, 3, 4 or 6 (`user_objects.cc:3651-3654`), a plane
     /// only in a static body, one with no joint on it or a body above it
     /// (`:3666-3668`; fusion moves a geom only into a body that moves as its
-    /// own does), `shellinertia` on a mesh or SDF geom with a mesh
-    /// (`:3744-3746`), then a negative mass or density
+    /// own does), `shellinertia` on a mesh or SDF geom (`:3744-3746`), then a
+    /// negative mass or density
     /// ([`Self::negative_mass`], `:3805-3807`). The world's geoms can fail
     /// only their condim and `shellinertia`.
     fn check_geom(&self, geom: usize, moving: bool, at: impl Fn() -> Location) -> Result<()> {

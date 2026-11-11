@@ -629,8 +629,8 @@ pub struct ModelBuilder {
     pub(crate) geom_size: Vec<Vector3<f64>>,
     pub(crate) geom_friction: Vec<Vector3<f64>>,
     pub(crate) geom_condim: Vec<i32>,
-    /// Whether each geom is a mesh or SDF geom with a mesh and
-    /// `shellinertia`, which `check_bodies` refuses in MuJoCo's order.
+    /// Whether each geom is a mesh or SDF geom with `shellinertia`, which
+    /// `check_bodies` refuses in MuJoCo's order.
     pub(crate) geom_shellinertia_on_mesh: Vec<bool>,
     pub(crate) geom_contype: Vec<u32>,
     pub(crate) geom_conaffinity: Vec<u32>,

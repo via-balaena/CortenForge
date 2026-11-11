@@ -98,6 +98,7 @@
 054600e688bc1a42	agree
 05655ddc84ea971a	both-refuse
 056c452cd19e14e6	agree
+0571e096512cd624	both-refuse
 05732efc8fedd337	both-refuse
 057ff37072813640	agree
 05879ff081030785	mj-refuses
@@ -131,6 +132,7 @@
 08831202fd91471b	agree
 089520333bf2646a	agree
 0899e0a9d40dd42e	both-refuse
+08b6ef273eba6a35	both-refuse
 08c152bc51cf2b6a	mj-refuses
 08d8952840bdfbbf	agree
 08e69b3c1ff737b0	both-refuse
@@ -1651,6 +1653,7 @@
 73376ee5cdc33edb	agree
 7342afd89bc662ac	agree
 734414ebf517f405	agree
+734a97f03ba4afff	both-refuse
 734c3ba49403b2a5	both-refuse
 734f3d415939c0c5	agree
 739b2abd562b6ebe	agree
@@ -1913,6 +1916,7 @@
 8715b1f63ae1339b	agree
 8775cd363c47205b	agree
 8778072ab02467e0	agree
+877810fb074cd64a	both-refuse
 878a4e11cd364c21	agree
 8793775bc4b4b075	agree
 87a1d5aec622f0d4	both-refuse
@@ -1960,6 +1964,7 @@
 8acfa2c1e1928df2	agree
 8aee765a33e5f9a9	both-refuse
 8af53a643ada5d6f	agree
+8afa1067e94817d3	both-refuse
 8aff10705a609ec9	both-refuse
 8b1d741ee222c1cc	agree
 8b43156eea691599	agree
@@ -2055,6 +2060,7 @@
 92349b4d911c39d0	agree
 9235d4b50419ec68	agree
 923b30a3293f7952	both-refuse
+923b8da85ccaf136	both-refuse
 924ccd8af8ae71c4	agree
 9260eabcbff2454e	agree
 929ca8a7ccbe1ac6	both-refuse
@@ -2109,6 +2115,7 @@
 96a3895afdc93114	agree
 970e0e96b132105f	agree
 970f007b1601dc14	agree
+971f3034f3f5f5ba	both-refuse
 972727b8fa74dc26	agree
 97281ed3a1ad70a0	agree
 972b46b9c5113469	both-refuse
@@ -2185,6 +2192,7 @@
 9c45599da6c444a9	agree
 9c9e3e902122ffb6	agree
 9cba491ea2895efc	agree
+9ce01ba6253aa038	both-refuse
 9cf0dca61eb2e039	both-refuse
 9cfbbe630bd872e2	both-refuse
 9d03c6df92deae9e	mj-refuses
@@ -2674,6 +2682,7 @@ bfbd9f5325e13bce	agree
 bfc20bb7de87c6f8	both-refuse
 bfc82bd7a13e1dff	agree
 bff78a79fbc32c5c	agree
+c02f52c2a4beaa25	both-refuse
 c03a28f89bfd3f58	both-refuse
 c04207deca98a860	agree
 c053f03974b8a60a	both-refuse
@@ -2767,6 +2776,7 @@ c659c50c4db98c51	agree
 c67208012877fdd5	agree
 c67b4ed37b3c28de	both-refuse
 c69c63a664c2ac77	agree
+c69c6fb734dba5c2	both-refuse
 c6ad95f6b3454f67	agree
 c6b1f6888c9f5d21	mj-refuses
 c6b888a0b0e37a49	agree
@@ -2807,6 +2817,7 @@ c88432579fd890ca	both-refuse
 c8902cf8aa6803d8	agree
 c89e53a74bfe9a74	agree
 c8a1b1c24b2833fe	agree
+c8b3d9d8b9033a7b	both-refuse
 c8c2d20d083f6cae	agree
 c8c92b02796d00cf	both-refuse
 c8cf5b1fdaef0834	agree
