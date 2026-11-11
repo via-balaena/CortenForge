@@ -308,11 +308,12 @@ fn ray_slab(aabb: &[f64; 6], src: &[f64; 3], dir: &[f64; 3]) -> bool {
 /// (`mju_raySlab`), the child pushed last taken first, each leaf's face
 /// through [`ray_triangle`]; the nearest.
 ///
-/// The mesh is as sim-core holds it: its vertices in double precision, where
-/// MuJoCo's ray reads them in single precision (`mesh_vert`; the same for
-/// vertices a float holds; ledger L281). Its hierarchy's split can differ
-/// where a face has no area (registry D-MESH-SPLIT): a ray through a vertex
-/// or across an edge can then go otherwise. A mesh with no hierarchy (no face, or a model whose
+/// The mesh is as sim-core holds it: a loaded mesh's vertices in single
+/// precision, its box and its hierarchy's over them before they were
+/// rounded, as MuJoCo's (`TriangleMeshData::replace_vertices`). Its
+/// hierarchy's split can differ where a face has no area (registry
+/// D-MESH-SPLIT): a ray through a vertex or across an edge can then go
+/// otherwise. A mesh with no hierarchy (no face, or a model whose
 /// hierarchies were not built, [`Model::compute_body_bvhs`]) reads −1. A
 /// model whose mesh was replaced after its hierarchy was built reads
 /// through the old hierarchy, a leaf naming a face the mesh no longer has

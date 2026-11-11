@@ -161,52 +161,75 @@ fn a_fused_meshs_geom_frame_as_mujoco() {
     );
 }
 
-/// The turned box's vertices as MuJoCo moves them, within the single
-/// precision MuJoCo rounds them to (Q121's storing half is not this
-/// test's).
-#[test]
-fn a_meshs_vertices_move_to_its_principal_frame() {
-    let xml = format!(
-        r#"<mujoco><asset>{TURNED_BOX}</asset><worldbody><body><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#
-    );
-    let model = load_model(&xml).unwrap();
-    let ours: Vec<f64> = model.mesh_data[0]
+/// `mesh`'s vertices as `xml`'s model holds them against MuJoCo's
+/// `mesh_vert`, bit for bit.
+fn assert_vertices(xml: &str, mesh: usize, mujoco: &[f64]) {
+    let model = load_model(xml).unwrap();
+    let ours: Vec<u64> = model.mesh_data[mesh]
         .vertices()
         .iter()
         .flat_map(|v| [v.x, v.y, v.z])
+        .map(f64::to_bits)
         .collect();
-    let mujoco = [
-        -0.25,
-        0.5000001192092896,
-        -0.9999999403953552,
-        -0.25,
-        0.5000004172325134,
-        0.9999993443489075,
-        -0.25,
-        -0.5000001192092896,
-        0.9999999403953552,
-        -0.25,
-        -0.5000004172325134,
-        -0.9999993443489075,
-        0.25,
-        0.5000001192092896,
-        -0.9999999403953552,
-        0.25,
-        0.5000004172325134,
-        0.9999993443489075,
-        0.25,
-        -0.5000001192092896,
-        0.9999999403953552,
-        0.25,
-        -0.5000004172325134,
-        -0.9999993443489075,
-    ];
-    assert_eq!(ours.len(), mujoco.len());
-    for (a, b) in ours.iter().zip(mujoco) {
-        // Half a unit in the last place of a single, at most.
-        assert!(
-            (a - b).abs() <= b.abs() * f64::from(f32::EPSILON) / 2.0,
-            "{ours:?}"
-        );
-    }
+    let mujoco: Vec<u64> = mujoco.iter().map(|x| x.to_bits()).collect();
+    assert_eq!(ours, mujoco);
+}
+
+/// A mesh's vertices are moved in double precision and kept in single, as
+/// MuJoCo keeps them (`mesh_vert`, `CopyVert`, `user_mesh.cc:892-896`):
+/// the turned box's, and the tetrahedron of the census's `9b0854df`.
+#[test]
+fn embedded_mesh_vertices_are_f32() {
+    let xml = format!(
+        r#"<mujoco><asset>{TURNED_BOX}</asset><worldbody><body><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#
+    );
+    assert_vertices(
+        &xml,
+        0,
+        &[
+            -0.25,
+            0.5000001192092896,
+            -0.9999999403953552,
+            -0.25,
+            0.5000004172325134,
+            0.9999993443489075,
+            -0.25,
+            -0.5000001192092896,
+            0.9999999403953552,
+            -0.25,
+            -0.5000004172325134,
+            -0.9999993443489075,
+            0.25,
+            0.5000001192092896,
+            -0.9999999403953552,
+            0.25,
+            0.5000004172325134,
+            0.9999993443489075,
+            0.25,
+            -0.5000001192092896,
+            0.9999999403953552,
+            0.25,
+            -0.5000004172325134,
+            -0.9999993443489075,
+        ],
+    );
+    let tetra = r#"<mujoco><asset><mesh name="tetra" vertex="-0.5 -0.28868 -0.20412  0.5 -0.28868 -0.20412  0.0 0.57735 -0.20412  0.0 0.0 0.61237" face="0 2 1  0 1 3  1 2 3  0 3 2"/></asset><worldbody><body pos="0 0 0.5"><freejoint/><geom type="mesh" mesh="tetra" density="1000"/></body></worldbody></mujoco>"#;
+    assert_vertices(
+        tetra,
+        0,
+        &[
+            -0.15945158898830414,
+            0.5,
+            0.31555646657943726,
+            -0.15945158898830414,
+            -0.5,
+            0.31555646657943726,
+            -0.2868064045906067,
+            0.0,
+            -0.5410582423210144,
+            0.6057096123695374,
+            0.0,
+            -0.0900547206401825,
+        ],
+    );
 }
