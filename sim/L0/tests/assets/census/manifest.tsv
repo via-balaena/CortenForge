@@ -3685,3 +3685,4 @@ c02f52c2a4beaa25	sim/L0/mjcf/tests/refusal_order.rs:3051
 c69c6fb734dba5c2	sim/L0/mjcf/tests/refusal_order.rs:3087
 c8b3d9d8b9033a7b	sim/L0/mjcf/tests/refusal_order.rs:3081
 f2cf38585d483eb4	sim/L0/mjcf/tests/mesh_frame.rs:90
+905e9f1691a59878	sim/L0/mjcf/tests/mesh_frame.rs:216

@@ -112,11 +112,14 @@ pub struct TriangleMeshData {
     unrounded: Vec<Point3<f64>>,
 }
 
+/// Two meshes are equal where their vertices, the vertices those were
+/// rounded from ([`TriangleMeshData::unrounded_vertices`]) and their faces
+/// are.
 impl PartialEq for TriangleMeshData {
     fn eq(&self, other: &Self) -> bool {
         self.mesh.vertices == other.mesh.vertices
             && self.mesh.faces == other.mesh.faces
-            && self.unrounded == other.unrounded
+            && self.unrounded_vertices() == other.unrounded_vertices()
     }
 }
 
@@ -1254,6 +1257,28 @@ mod tests {
                 "{n:?} vs {unit:?}"
             );
         }
+    }
+
+    /// Two meshes are equal by their vertices and those they were rounded
+    /// from: a mesh equals itself with its vertices replaced by the same
+    /// singles, and two meshes whose vertices round to the same singles
+    /// from different doubles differ.
+    #[test]
+    fn meshes_are_equal_by_their_vertices_and_those_they_were_rounded_from() {
+        let cube = create_cube();
+        let mut same = cube.clone();
+        same.replace_vertices(cube.vertices().to_vec());
+        assert_eq!(same, cube, "replaced by its own singles");
+        let nudged = |by: f64| {
+            let mut mesh = cube.clone();
+            let vertices = cube.vertices().iter().map(|v| v.map(|c| c + by));
+            mesh.replace_vertices(vertices.collect());
+            mesh
+        };
+        let (up, down) = (nudged(1e-12), nudged(-1e-12));
+        assert_eq!(up.vertices(), down.vertices(), "the nudges round alike");
+        assert_ne!(up.unrounded_vertices(), down.unrounded_vertices());
+        assert_ne!(up, down);
     }
 
     /// MuJoCo's box keeps the bound it holds on a tie, as `std::min` and
