@@ -60,6 +60,26 @@ use serde::{Deserialize, Serialize};
 /// Small epsilon for numerical comparisons.
 const EPSILON: f64 = 1e-10;
 
+/// The box over `vertices` as MuJoCo's compiler takes a mesh's (`aamm_`,
+/// `mjCMesh::Rotate`, `user_mesh.cc:1786-1793`): along each axis
+/// `std::min` and `std::max` of each vertex in turn, which keep the value
+/// already held on a tie (a zero's sign included).
+fn compiled_box(vertices: &[Point3<f64>]) -> Aabb {
+    let mut min = Point3::from([f64::INFINITY; 3]);
+    let mut max = Point3::from([f64::NEG_INFINITY; 3]);
+    for v in vertices {
+        for axis in 0..3 {
+            if v[axis] < min[axis] {
+                min[axis] = v[axis];
+            }
+            if max[axis] < v[axis] {
+                max[axis] = v[axis];
+            }
+        }
+    }
+    Aabb { min, max }
+}
+
 /// Triangle mesh collision data.
 ///
 /// Stores an [`IndexedMesh`] (from cf-geometry) with vertices and `[u32; 3]` face
@@ -212,6 +232,20 @@ impl TriangleMeshData {
         self.aabb.center()
     }
 
+    /// The half sizes of the smallest box about its origin that holds its
+    /// box: along each axis, the larger magnitude of its bounds there. MuJoCo
+    /// gives a mesh or SDF geom this size (`mjCGeom::Compile`,
+    /// `user_objects.cc:3765-3769`).
+    #[must_use]
+    pub fn origin_box(&self) -> [f64; 3] {
+        let (lo, hi) = (self.aabb.min, self.aabb.max);
+        // `std::max(std::abs(a), std::abs(b))`.
+        std::array::from_fn(|i| {
+            let (a, b) = (lo[i].abs(), hi[i].abs());
+            if a < b { b } else { a }
+        })
+    }
+
     /// Compute and store the convex hull of this mesh's vertices.
     /// If the mesh has fewer than 4 vertices or all points are degenerate,
     /// `convex_hull` remains `None`. With it, each hull vertex's index among
@@ -244,6 +278,45 @@ impl TriangleMeshData {
                 .collect(),
         };
         self.polygons = make_polygons(&self.mesh.vertices, &faces);
+    }
+
+    /// Replace its vertices, one for one, by `vertices`, as a model's
+    /// compiler moves a mesh into the frame it keeps it in (MuJoCo's
+    /// `mjCMesh::Process`, `user_mesh.cc:1676-1686`). Its faces, its hull's
+    /// faces and adjacency and its polygons' paths are kept; its box, its
+    /// hierarchy, its hull's vertices and normals and its polygons' normals
+    /// (`MakePolygonNormals`, `:2722-2731`) are made again from `vertices`,
+    /// its box as MuJoCo's compiler takes it.
+    /// For vertices moved together by a rotation and a translation, which
+    /// keeps the hull convex and its faces' winding outward.
+    ///
+    /// # Panics
+    ///
+    /// If `vertices` does not hold one vertex for each of its own.
+    pub fn replace_vertices(&mut self, vertices: Vec<Point3<f64>>) {
+        assert_eq!(
+            vertices.len(),
+            self.mesh.vertices.len(),
+            "a mesh's vertices are replaced one for one"
+        );
+        self.mesh.vertices = vertices;
+        self.aabb = compiled_box(&self.mesh.vertices);
+        self.bvh = Some(bvh_from_mesh(&self.mesh));
+        // A hull is kept where each of its vertices was found among the
+        // mesh's (`hull_vertex`), as `compute_convex_hull` finds them.
+        self.convex_hull = self
+            .convex_hull
+            .take()
+            .filter(|hull| self.hull_vertex.len() == hull.vertices.len())
+            .map(|hull| {
+                let moved = self
+                    .hull_vertex
+                    .iter()
+                    .map(|&v| self.mesh.vertices[v])
+                    .collect();
+                hull.with_vertices(moved)
+            });
+        self.polygons.remake_normals(&self.mesh.vertices);
     }
 
     /// Returns the convex hull if computed.
@@ -1108,6 +1181,73 @@ mod tests {
             1, 6, 2, 1, 5, 6,
         ];
         TriangleMeshData::new(vertices, indices)
+    }
+
+    /// Its vertices replaced by themselves turned and shifted: the mesh's
+    /// faces, its hull's faces and adjacency and its polygons' paths kept;
+    /// its box, its hull's vertices and its polygons' normals moved with
+    /// them.
+    #[test]
+    fn replacing_a_meshs_vertices_moves_its_box_hull_and_polygons() {
+        let mut mesh = create_cube();
+        mesh.compute_convex_hull(None);
+        let before = mesh.clone();
+        let turn = nalgebra::UnitQuaternion::from_euler_angles(0.4, -0.2, 0.9);
+        let shift = Vector3::new(1.0, -2.0, 0.5);
+        let moved: Vec<Point3<f64>> = mesh.vertices().iter().map(|v| turn * v + shift).collect();
+        mesh.replace_vertices(moved.clone());
+
+        assert_eq!(mesh.vertices(), moved.as_slice());
+        assert_eq!(mesh.triangles(), before.triangles());
+        let (lo, hi) = mesh.aabb();
+        for axis in 0..3 {
+            let along = moved.iter().map(|v| v[axis]);
+            assert_eq!(lo[axis], along.clone().fold(f64::INFINITY, f64::min));
+            assert_eq!(hi[axis], along.fold(f64::NEG_INFINITY, f64::max));
+        }
+        let (hull, old) = (mesh.convex_hull().unwrap(), before.convex_hull().unwrap());
+        let found: Vec<Point3<f64>> = mesh.hull_vertex().iter().map(|&v| moved[v]).collect();
+        assert_eq!(hull.vertices, found);
+        assert_eq!((&hull.faces, &hull.adjacency), (&old.faces, &old.adjacency));
+        let (polygons, was) = (mesh.polygons(), before.polygons());
+        assert_eq!(polygons.paths, was.paths);
+        for (n, o) in polygons.normals.iter().zip(&was.normals) {
+            let turned = turn * Vector3::from(*o);
+            assert!(
+                (Vector3::from(*n) - turned).norm() < 1e-12,
+                "{n:?} vs {turned:?}"
+            );
+        }
+    }
+
+    /// MuJoCo's box keeps the bound it holds on a tie, as `std::min` and
+    /// `std::max` do: a zero's sign is the first vertex's.
+    #[test]
+    fn a_compiled_box_keeps_the_first_of_two_zeros() {
+        let zeros = |first: f64, second: f64| {
+            compiled_box(&[
+                Point3::new(first, first, 1.0),
+                Point3::new(second, second, -1.0),
+            ])
+        };
+        let b = zeros(-0.0, 0.0);
+        assert_eq!(
+            (b.min.x.to_bits(), b.max.y.to_bits()),
+            ((-0.0f64).to_bits(), (-0.0f64).to_bits())
+        );
+        let b = zeros(0.0, -0.0);
+        assert_eq!(
+            (b.min.x.to_bits(), b.max.y.to_bits()),
+            (0.0f64.to_bits(), 0.0f64.to_bits())
+        );
+        assert_eq!((b.min.z, b.max.z), (-1.0, 1.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "one for one")]
+    fn a_meshs_vertices_are_replaced_one_for_one() {
+        let mut mesh = create_cube();
+        mesh.replace_vertices(vec![Point3::origin(); 7]);
     }
 
     #[test]

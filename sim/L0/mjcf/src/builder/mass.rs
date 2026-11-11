@@ -13,7 +13,7 @@ use super::ModelBuilder;
 use super::eig3::full_inertia;
 use super::geom::{compute_geom_inertia, compute_geom_mass};
 use super::mesh::MeshProps;
-use super::orientation::{MJ_EPS, mulquat, mulvecmat, quat2mat};
+use super::orientation::{MJ_EPS, quat2mat};
 use crate::error::{MjcfError, Result};
 use crate::types::{MjcfGeom, MjcfGeomType, MjcfInertial};
 
@@ -133,18 +133,23 @@ pub fn refuse_non_finite_inertial(values: &InertialValues) -> Result<()> {
     }
 }
 
+/// A mesh or SDF geom's mesh, by its index among the meshes; `None` for any
+/// other geom, and for one that names no mesh or an undefined one.
+pub fn geom_mesh_id(geom: &MjcfGeom, mesh_lookup: &HashMap<String, usize>) -> Option<usize> {
+    if !matches!(geom.geom_type?, MjcfGeomType::Mesh | MjcfGeomType::Sdf) {
+        return None;
+    }
+    mesh_lookup.get(geom.mesh.as_ref()?).copied()
+}
+
 /// A mesh or SDF geom's mesh's mass properties, as `process_mesh` computed
-/// them; `None` for any other geom, and for an SDF that names no mesh.
+/// them; `None` where [`geom_mesh_id`] finds no mesh.
 pub fn geom_mesh_props(
     geom: &MjcfGeom,
     mesh_lookup: &HashMap<String, usize>,
     mesh_props: &[MeshProps],
 ) -> Option<MeshProps> {
-    if !matches!(geom.geom_type?, MjcfGeomType::Mesh | MjcfGeomType::Sdf) {
-        return None;
-    }
-    let id = mesh_lookup.get(geom.mesh.as_ref()?)?;
-    mesh_props.get(*id).copied()
+    mesh_props.get(geom_mesh_id(geom, mesh_lookup)?).copied()
 }
 
 /// A height-field geom's asset's four sizes; `None` for any other geom.
@@ -161,8 +166,8 @@ pub fn geom_hfield_size<'a>(
 }
 
 /// A geom as its body's inertia reads it: the geom and its frame in its
-/// body (`pos`, `quat`), as `process_geom` resolved them from its `pos` and
-/// its quaternion or orientation alternative.
+/// body (`pos`, `quat`), as `process_geom` compiled them: its `pos` and its
+/// quaternion or orientation alternative, a mesh's frame accumulated in.
 pub struct PlacedGeom<'a> {
     /// The geom, its classes applied.
     pub geom: &'a MjcfGeom,
@@ -189,38 +194,21 @@ pub struct InertialGeom {
 
 impl InertialGeom {
     /// `placed` as MuJoCo holds it once compiled. A primitive's moments are
-    /// its inertia's diagonal ([`compute_geom_inertia`]) in its own frame. A
-    /// mesh's frame is moved to its mesh's centre of mass and turned to its
-    /// mesh's principal axes ([`MeshProps`]), accumulated into the geom's as
-    /// `mjuu_frameaccum` does (`user_objects.cc:3748-3754`), and its moments
-    /// are the geom's along those axes.
+    /// its inertia's diagonal ([`compute_geom_inertia`]) in its own frame; a
+    /// mesh or SDF geom's frame is its mesh's principal frame already
+    /// (`process_geom`), and its moments are along those axes.
     pub fn new(
         placed: &PlacedGeom<'_>,
         mesh_props: Option<&MeshProps>,
         hfield_size: Option<&[f64; 4]>,
     ) -> Self {
         let geom = placed.geom;
-        let mass = compute_geom_mass(geom, mesh_props, hfield_size);
-        let pos = [placed.pos.x, placed.pos.y, placed.pos.z];
-        let quat = [placed.quat.w, placed.quat.i, placed.quat.j, placed.quat.k];
         let inertia = compute_geom_inertia(geom, mesh_props, hfield_size);
-        let inertia = [inertia[(0, 0)], inertia[(1, 1)], inertia[(2, 2)]];
-        if let (Some(MjcfGeomType::Mesh | MjcfGeomType::Sdf), Some(props)) =
-            (geom.geom_type, mesh_props)
-        {
-            let turned = mulvecmat(&props.com, &quat2mat(&quat));
-            return Self {
-                pos: [pos[0] + turned[0], pos[1] + turned[1], pos[2] + turned[2]],
-                quat: mulquat(&quat, &props.quat),
-                mass,
-                inertia,
-            };
-        }
         Self {
-            pos,
-            quat,
-            mass,
-            inertia,
+            pos: [placed.pos.x, placed.pos.y, placed.pos.z],
+            quat: [placed.quat.w, placed.quat.i, placed.quat.j, placed.quat.k],
+            mass: compute_geom_mass(geom, mesh_props, hfield_size),
+            inertia: [inertia[(0, 0)], inertia[(1, 1)], inertia[(2, 2)]],
         }
     }
 }

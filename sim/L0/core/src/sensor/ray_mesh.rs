@@ -9,7 +9,6 @@ use nalgebra::{Matrix3, Vector3};
 use super::ray_geom::{ray_box, ray_map};
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::heightfield::HeightFieldData;
-use crate::mesh::TriangleMeshData;
 use crate::quat::normalize3;
 use crate::types::Model;
 
@@ -300,18 +299,6 @@ fn ray_slab(aabb: &[f64; 6], src: &[f64; 3], dir: &[f64; 3]) -> bool {
     tmin < tmax
 }
 
-/// The half-sizes of the box MuJoCo gives a mesh's geom (its `geom_size`,
-/// `user_objects.cc:3765-3769`): along each axis, the larger magnitude of
-/// the mesh's bounds.
-fn mesh_box(mesh: &TriangleMeshData) -> [f64; 3] {
-    let (lo, hi) = mesh.aabb();
-    // `std::max(std::abs(a), std::abs(b))`.
-    std::array::from_fn(|i| {
-        let (a, b) = (lo[i].abs(), hi[i].abs());
-        if a < b { b } else { a }
-    })
-}
-
 /// `mj_rayMesh`: along a ray from `pnt` in the direction `vec`, the distance
 /// in lengths of `vec` to mesh `mesh` of a geom centred at `xpos` and turned
 /// by `xmat`, or −1. None where the ray misses the box MuJoCo gives the geom
@@ -323,13 +310,9 @@ fn mesh_box(mesh: &TriangleMeshData) -> [f64; 3] {
 ///
 /// The mesh is as sim-core holds it: its vertices in double precision, where
 /// MuJoCo's ray reads them in single precision (`mesh_vert`; the same for
-/// vertices a float holds; ledger L281), and in its written frame, where
-/// MuJoCo turns a mesh to its principal frame (book Rigid-loading L35). Its
-/// box and its hierarchy's are over those vertices, where MuJoCo's are over
-/// its double-precision ones before it rounds them (ledger L281), and its
-/// hierarchy's split can differ where a face has no area (registry
-/// D-MESH-SPLIT): a ray through a vertex or across an edge can then go
-/// otherwise. A mesh with no hierarchy (no face, or a model whose
+/// vertices a float holds; ledger L281). Its hierarchy's split can differ
+/// where a face has no area (registry D-MESH-SPLIT): a ray through a vertex
+/// or across an edge can then go otherwise. A mesh with no hierarchy (no face, or a model whose
 /// hierarchies were not built, [`Model::compute_body_bvhs`]) reads −1. A
 /// model whose mesh was replaced after its hierarchy was built reads
 /// through the old hierarchy, a leaf naming a face the mesh no longer has
@@ -343,7 +326,7 @@ pub(super) fn mj_ray_mesh(
     vec: &Vector3<f64>,
 ) -> f64 {
     let data = &model.mesh_data[mesh];
-    if ray_box(xpos, xmat, &mesh_box(data), pnt, vec).0 < 0.0 {
+    if ray_box(xpos, xmat, &data.origin_box(), pnt, vec).0 < 0.0 {
         return -1.0;
     }
     let Some(adr) = model.mesh_bvhadr.get(mesh).copied().flatten() else {
@@ -552,7 +535,7 @@ mod tests {
                 .map(|i| usize::try_from(i.as_u64().expect("a vertex")).expect("a vertex"))
                 .collect();
             let model = Model::one_mesh(&numbers(&mesh["vert"]), &face);
-            let ours = super::mesh_box(&model.mesh_data[0]);
+            let ours = model.mesh_data[0].origin_box();
             let theirs = numbers(&mesh["size"]);
             assert!(
                 ours.iter()

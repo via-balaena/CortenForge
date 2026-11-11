@@ -613,19 +613,19 @@ fn bodies_on_a_bumpy_height_field_as_mujoco() {
 }
 
 /// Two height fields, one reaching farther above its origin than below and
-/// one farther below: each bounding radius is MuJoCo's, from its size,
-/// sqrt(x² + y² + max(top², base²)) (`mjCGeom::GetRBound`). Measured: equal.
-/// The scene's plane and pyramid mesh are not compared: a plane's radius is
-/// infinite here, MuJoCo's 0 (ledger L173), and the mesh's is about its
-/// authored frame, where MuJoCo's is about the mesh's centre of mass (book
-/// Rigid-loading L35 adopts MuJoCo's mesh frame).
+/// one farther below, and a pyramid mesh: each bounding radius is MuJoCo's
+/// (`mjCGeom::GetRBound`), a height field's from its size, sqrt(x² + y² +
+/// max(top², base²)), the mesh's from its box in MuJoCo's mesh frame, about
+/// its centre of mass (book Rigid-loading L35). The scene's plane is not
+/// compared: a plane's radius is infinite here, MuJoCo's 0 (ledger L173).
 #[test]
-fn height_field_bounds_are_mujocos() {
+fn bounding_radii_are_mujocos() {
     let case = &golden()["bounds"];
     let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
     let want = floats(&case["rbound"]);
-    for g in [1, 2] {
-        assert_eq!(model.geom_type[g], sim_core::GeomType::Hfield);
+    let (hfield, mesh) = (sim_core::GeomType::Hfield, sim_core::GeomType::Mesh);
+    assert_eq!(model.geom_type[1..4], [hfield, hfield, mesh]);
+    for g in [1, 2, 3] {
         assert_eq!(
             model.geom_rbound[g].to_bits(),
             want[g].to_bits(),
@@ -636,12 +636,11 @@ fn height_field_bounds_are_mujocos() {
     }
 }
 
-/// A pyramid mesh, its apex 0.01 into a plane. The geom's origin is 4.49
-/// above the plane in MuJoCo's mesh frame (the centroid) and 5.99 in
-/// sim-mjcf's (the authored frame; book Rigid-loading L35): farther than the
-/// half-diagonal of the pyramid's box (3.20), within its bounding radius
-/// about the origin (MuJoCo's 4.64, ours 6.10), so the bounding-sphere filter
-/// passes the pair, as MuJoCo's. Our contacts after `forward` against
+/// A pyramid mesh, its apex 0.01 into a plane. The geom's origin, its
+/// mesh's centre of mass (book Rigid-loading L35), is 4.49 above the plane:
+/// farther than the half-diagonal of the pyramid's box (3.20), within its
+/// bounding radius (4.64), so the bounding-sphere filter passes the pair, as
+/// MuJoCo's. Our contacts after `forward` against
 /// MuJoCo's: the same geoms in order, each distance within 1e-13 (measured
 /// 6.2e-15) and position within 1e-14, midway between the apex and the
 /// plane (`mjc_PlaneConvex`; measured 3.1e-15 in height, the rest bit for
@@ -688,13 +687,12 @@ fn a_mesh_apex_on_a_plane_is_listed_as_mujoco() {
 /// (so each of the narrow phase's two argument orders is reached): the
 /// plane–mesh contacts are spaced as MuJoCo's, whose `addplanemesh` skips a
 /// vertex nearer the first contact than 0.3 of `geom_rbound`
-/// (`engine_collision_convex.c:1018`) in its mesh frame, at the centre of
-/// mass along the principal axes. sim-mjcf keeps the authored frame (book
-/// Rigid-loading L35), so the spacing takes the half-diagonal of the mesh's
-/// box, which here is MuJoCo's radius (2.077) within 1e-12: three of the
-/// base's four corners, the same count and geoms as MuJoCo's, each distance
-/// within 1e-13 and each height within 1e-15, midway between its corner and
-/// the plane (`mjc_PlaneConvex`; measured 5.3e-16). Which three is not
+/// (`engine_collision_convex.c:1018`). The spacing takes the half-diagonal
+/// of the mesh's box (ledger L176), which here is MuJoCo's radius (2.077)
+/// within 1e-12: three of the base's four corners, the same count and geoms
+/// as MuJoCo's, each distance within 1e-13 and each height within 1e-15,
+/// midway between its corner and the plane (`mjc_PlaneConvex`; measured
+/// 5.3e-16). Which three is not
 /// compared: the corners tie for the deepest, and the first corner's
 /// neighbours are taken in the hull graph's order, ours and MuJoCo's
 /// (registry D-HULL-ORDER; here the third differs). Before, the spacing took

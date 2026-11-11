@@ -332,6 +332,16 @@ impl PolygonSet {
     }
 }
 
+impl MeshPolygons {
+    /// `MakePolygonNormals` (`user_mesh.cc:2722-2731`): each polygon's
+    /// normal made again from its first three vertices in `verts`.
+    pub(crate) fn remake_normals(&mut self, verts: &[Point3<f64>]) {
+        for (normal, path) in self.normals.iter_mut().zip(&self.paths) {
+            *normal = make_normal(&verts[path[0]], &verts[path[1]], &verts[path[2]]);
+        }
+    }
+}
+
 /// `MakePolygons` over `faces`, outward triangles of mesh vertex indices,
 /// with `MakePolygonNormals`' normals: each polygon's from its first three
 /// vertices. Paths of fewer than three vertices are dropped.

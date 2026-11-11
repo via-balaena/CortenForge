@@ -16,7 +16,7 @@ use super::ModelBuilder;
 use super::asset::{AssetKind, resolve_asset_path};
 use super::eig3::eig3;
 use super::mass::MJ_MINVAL;
-use super::orientation::{mulvecmat_t, normvec, quat2mat};
+use super::orientation::{mulvecmat, mulvecmat_t, normvec, quat2mat};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{MeshInertia, MjcfCompiler, MjcfHfield, MjcfMesh, MjcfModel};
 
@@ -92,8 +92,10 @@ pub struct MeshProps {
 impl ModelBuilder {
     /// Process a single mesh asset from MJCF.
     ///
-    /// Converts `MjcfMesh` to `TriangleMeshData` with BVH and registers it
-    /// in the mesh lookup table. The mesh can then be referenced by geoms.
+    /// Converts `MjcfMesh` to `TriangleMeshData` with BVH, computes its mass
+    /// properties, moves it to its centre of mass and principal axes, as
+    /// MuJoCo 3.5.0 keeps a mesh, and registers it in the mesh lookup table.
+    /// The mesh can then be referenced by geoms.
     ///
     /// # Arguments
     ///
@@ -127,6 +129,7 @@ impl ModelBuilder {
 
         let props = mesh_mass_properties(&mesh_data, mjcf_mesh.inertia.unwrap_or_default())
             .map_err(|reason| MjcfError::asset(ElementKind::Mesh, &mjcf_mesh.name, reason))?;
+        mesh_data.replace_vertices(to_principal_frame(mesh_data.vertices(), &props));
 
         // Register in lookup table
         let mesh_id = self.mesh_data.len();
@@ -560,6 +563,23 @@ fn apply_transformations(vertices: &mut [Point3<f64>], mjcf_mesh: &MjcfMesh) {
             v.z *= scale.z;
         }
     }
+}
+
+/// A mesh's vertices moved to its centre of mass and turned to its principal
+/// axes, as MuJoCo 3.5.0's `mjCMesh::Process` moves them (`user_mesh.cc:1676-
+/// 1686`): each less the centre, then times the matrix of the axes'
+/// conjugate (`Rotate`, `:1779-1785`).
+fn to_principal_frame(vertices: &[Point3<f64>], props: &MeshProps) -> Vec<Point3<f64>> {
+    let [qw, qx, qy, qz] = props.quat;
+    let mat = quat2mat(&[qw, -qx, -qy, -qz]);
+    let [cx, cy, cz] = props.com;
+    vertices
+        .iter()
+        .map(|v| {
+            let [x, y, z] = mulvecmat(&[v.x - cx, v.y - cy, v.z - cz], &mat);
+            Point3::new(x, y, z)
+        })
+        .collect()
 }
 
 /// An embedded mesh's vertices and faces, from its `vertex` and `face`

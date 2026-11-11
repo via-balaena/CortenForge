@@ -960,3 +960,27 @@ fn a_point_on_a_face_is_not_a_vertex() {
     let hull = convex_hull(&points, None).expect("hull");
     assert_eq!(hull.vertices.len(), 8, "{:?}", hull.vertices);
 }
+
+/// A hull over its vertices turned and shifted together keeps its faces and
+/// adjacency, and its normals are its old ones turned.
+#[test]
+fn a_hull_over_moved_vertices_keeps_its_faces_and_turns_its_normals() {
+    let hull = convex_hull(&icosphere_vertices(1), None).expect("hull");
+    let turn = nalgebra::UnitQuaternion::from_euler_angles(0.3, -0.7, 1.1);
+    let shift = Vector3::new(0.25, -1.5, 2.0);
+    let moved: Vec<Point3<f64>> = hull.vertices.iter().map(|v| turn * v + shift).collect();
+    let over = hull.with_vertices(moved.clone());
+    assert_eq!(over.vertices, moved);
+    assert_eq!(over.faces, hull.faces);
+    assert_eq!(over.adjacency, hull.adjacency);
+    for (n, old) in over.normals.iter().zip(&hull.normals) {
+        assert!((n - turn * old).norm() < 1e-12, "{n:?} vs {:?}", turn * old);
+    }
+}
+
+#[test]
+#[should_panic(expected = "one for one")]
+fn a_hull_refuses_other_than_one_vertex_for_each() {
+    let hull = convex_hull(&cube_vertices(), None).expect("hull");
+    let _seven = hull.with_vertices(cube_vertices()[..7].to_vec());
+}

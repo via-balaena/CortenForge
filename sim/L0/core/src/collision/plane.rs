@@ -366,11 +366,7 @@ const SQRT_3_OVER_2: f64 = 0.866_025_403_784_438_6;
 /// A plane and an ellipsoid or a mesh, through MuJoCo's `mjc_PlaneConvex`
 /// ([`mjc_plane_convex`]), the plane first. A mesh's further contacts are
 /// spaced by the half-diagonal of its box, where MuJoCo's take its
-/// `geom_rbound`: sim-mjcf keeps a mesh in its authored frame (book
-/// Rigid-loading L35), where `geom_rbound` is about the authored origin, and
-/// the half-diagonal is MuJoCo's radius where the mesh's box is centred on its
-/// centre of mass along its principal axes (`GetRBound`,
-/// `user_objects.cc:3443-3449`; ledger L176).
+/// `geom_rbound` (`GetRBound`, `user_objects.cc:3443-3449`; ledger L176).
 // MuJoCo's pair context, as the other collision functions take it.
 #[allow(clippy::too_many_arguments)]
 fn collide_plane_convex(
