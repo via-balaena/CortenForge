@@ -197,8 +197,8 @@ an ellipsoid, a cylinder and a box, each turned by its body's frame,
 dropped from rest at two spots of a 9 x 9 bumpy height field whose data
 sim-mjcf loads as MuJoCo compiles it (elevations multiples of 1/8 from 0 to
 1, rows symmetric): the free joint's height after every 50th of 1000 steps.
-`mesh_frame` holds the turned box of sim-mjcf's mesh_frame.rs, a 0.5 x 1 x 2
-box turned in its vertex data, which MuJoCo moves to its centre of mass and
+`mesh_frame` holds the turned box of sim-mjcf's mesh_frame.rs, a box turned
+in its vertex data, which MuJoCo moves to its centre of mass and
 principal axes, its vertices then not singles, and keeps rounded to singles
 (`mesh_vert`, `CopyVert`, user_mesh.cc:892-896): in `body`, posed on a free body beside a
 sphere, the geoms' boxes, the hierarchies (the body's nodes and then the
@@ -1074,7 +1074,7 @@ def midphase_cases():
     return {"bodies": bodies, "filter": filters}
 
 
-# mesh_frame.rs's turned box: a 0.5 x 1 x 2 box turned in its vertex data.
+# mesh_frame.rs's box, turned in its vertex data.
 TURNED_BOX_ASSET = (
     '<asset><mesh name="m" vertex="-0.316025 -1.133013 -0.15  1.416025 -0.133013 -0.15  '
     '0.916025 0.733013 -0.15  -0.816025 -0.266987 -0.15  -0.316025 -1.133013 0.35  '

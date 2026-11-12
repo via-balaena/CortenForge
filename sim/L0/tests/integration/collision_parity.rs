@@ -638,10 +638,9 @@ fn bounding_radii_are_mujocos() {
 /// farther than the half-diagonal of the pyramid's box (3.20), within its
 /// bounding radius (4.64), so the bounding-sphere filter passes the pair, as
 /// MuJoCo's. Our contacts after `forward` against
-/// MuJoCo's: the same geoms in order, each distance within 1e-13 (measured
-/// 6.2e-15) and position within 1e-14, midway between the apex and the
-/// plane (`mjc_PlaneConvex`; measured 3.1e-15 in height, the rest bit for
-/// bit).
+/// MuJoCo's: the same geoms in order, each distance within 1e-13 and
+/// position within 1e-14, midway between the apex and the plane
+/// (`mjc_PlaneConvex`).
 #[test]
 fn a_mesh_apex_on_a_plane_is_listed_as_mujoco() {
     let case = &golden()["bounds"];
@@ -1119,11 +1118,10 @@ fn a_mesh_bodys_hierarchies_are_mujocos() {
 /// the first (the collision golden's `mesh_frame.pair`): MuJoCo moves the
 /// mesh to its centre of mass and principal axes and keeps its vertices
 /// rounded to singles (`mjCMesh::Process`, `user_mesh.cc:1674-1686`;
-/// `CopyVert`, `:892-896`), as sim-mjcf loads it, and starts GJK from each
-/// geom's place (ledger L195 (c)), so the pair's one contact is MuJoCo's
-/// bit for bit: its geoms, distance, position and normal. Its values are of
-/// square roots and arithmetic alone, so their bits are the same on every
-/// platform.
+/// `CopyVert`, `:892-896`), as sim-mjcf loads it, so the pair's one contact
+/// is MuJoCo's bit for bit: its geoms, distance, position and normal. Its
+/// values are of square roots and arithmetic alone, so their bits are the
+/// same on every platform.
 #[test]
 fn a_mesh_pair_collides_as_mujoco_in_the_meshs_frame() {
     let case = &golden()["mesh_frame"]["pair"];
