@@ -1048,6 +1048,118 @@ fn body_hierarchies_are_mujocos() {
     }
 }
 
+/// The turned box of sim-mjcf's `mesh_frame.rs`, posed on a free body
+/// beside a sphere (the collision golden's `mesh_frame.body`): the geoms'
+/// boxes, the body's inertial frame and the hierarchies, the body's
+/// nodes over its geoms' boxes and the mesh's over its faces after them,
+/// are MuJoCo's bit for bit (`mjCBody::ComputeBVH`,
+/// `user_objects.cc:2323-2335`; `mjCMesh::SetBoundingVolume`,
+/// `user_mesh.cc:847-870`, `:1699-1707`). The mesh's boxes are over its
+/// vertices moved to its centre of mass and principal axes, before MuJoCo
+/// rounds them to singles (`CopyVert`, `user_mesh.cc:892-896`; ledger L195
+/// (b)). The geoms are turned by written `quat`s and the values are of
+/// square roots and arithmetic alone, so their bits are the same on every
+/// platform.
+#[test]
+fn a_mesh_bodys_hierarchies_are_mujocos() {
+    let case = &golden()["mesh_frame"]["body"];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let rows = |key: &str| -> Vec<Vec<u64>> {
+        case[key]
+            .as_array()
+            .expect(key)
+            .iter()
+            .map(|r| bits(&floats(r)))
+            .collect()
+    };
+    let geoms: Vec<Vec<u64>> = model.geom_aabb.iter().map(|a| bits(a)).collect();
+    assert_eq!(geoms, rows("geom_aabb"), "geom_aabb {:?}", model.geom_aabb);
+    let ipos: Vec<Vec<u64>> = model.body_ipos.iter().map(|p| bits(p.as_slice())).collect();
+    assert_eq!(ipos, rows("body_ipos"), "body_ipos {:?}", model.body_ipos);
+    let iquat: Vec<Vec<u64>> = model
+        .body_iquat
+        .iter()
+        .map(|q| bits(&[q.w, q.i, q.j, q.k]))
+        .collect();
+    assert_eq!(
+        iquat,
+        rows("body_iquat"),
+        "body_iquat {:?}",
+        model.body_iquat
+    );
+    let counts = |key: &str| -> Vec<usize> { indices(&case[key]).into_iter().flatten().collect() };
+    assert_eq!(
+        model.body_bvhadr,
+        indices(&case["body_bvhadr"]),
+        "body_bvhadr"
+    );
+    assert_eq!(model.body_bvhnum, counts("body_bvhnum"), "body_bvhnum");
+    assert_eq!(
+        model.mesh_bvhadr,
+        indices(&case["mesh_bvhadr"]),
+        "mesh_bvhadr"
+    );
+    assert_eq!(model.mesh_bvhnum, counts("mesh_bvhnum"), "mesh_bvhnum");
+    assert_eq!(model.nbvhstatic, count(&case["nbvhstatic"]), "nbvhstatic");
+    let children: Vec<[Option<usize>; 2]> = case["bvh_child"]
+        .as_array()
+        .expect("bvh_child")
+        .iter()
+        .map(|c| {
+            let c = indices(c);
+            [c[0], c[1]]
+        })
+        .collect();
+    assert_eq!(model.bvh_child, children, "bvh_child");
+    assert_eq!(model.bvh_nodeid, indices(&case["bvh_nodeid"]), "bvh_nodeid");
+    assert_eq!(model.bvh_depth, counts("bvh_depth"), "bvh_depth");
+    let nodes: Vec<Vec<u64>> = model.bvh_aabb.iter().map(|a| bits(a)).collect();
+    assert_eq!(nodes, rows("bvh_aabb"), "bvh_aabb {:?}", model.bvh_aabb);
+}
+
+/// The turned box twice on free bodies, the second turned and overlapping
+/// the first (the collision golden's `mesh_frame.pair`): MuJoCo moves the
+/// mesh to its centre of mass and principal axes and keeps its vertices
+/// rounded to singles (`mjCMesh::Process`, `user_mesh.cc:1674-1686`;
+/// `CopyVert`, `:892-896`), as sim-mjcf loads it, and starts GJK from each
+/// geom's place (ledger L195 (c)), so the pair's one contact is MuJoCo's
+/// bit for bit: its geoms, distance, position and normal. Its values are of
+/// square roots and arithmetic alone, so their bits are the same on every
+/// platform.
+#[test]
+fn a_mesh_pair_collides_as_mujoco_in_the_meshs_frame() {
+    let case = &golden()["mesh_frame"]["pair"];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.qpos
+        .as_mut_slice()
+        .copy_from_slice(&floats(&case["qpos"]));
+    data.forward(&model).expect("forward");
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let ours: Vec<(Vec<Option<usize>>, Vec<u64>)> = data
+        .contacts
+        .iter()
+        .map(|c| {
+            let (p, n) = (c.pos, c.normal);
+            let values = [-c.depth, p[0], p[1], p[2], n[0], n[1], n[2]];
+            (c.geom.to_vec(), bits(&values))
+        })
+        .collect();
+    let theirs: Vec<(Vec<Option<usize>>, Vec<u64>)> = case["contacts"]
+        .as_array()
+        .expect("contacts")
+        .iter()
+        .map(|w| {
+            let mut values = vec![w["dist"].as_f64().expect("dist")];
+            values.extend(floats(&w["pos"]));
+            values.extend(floats(&w["normal"]));
+            (indices(&w["geom"]), bits(&values))
+        })
+        .collect();
+    assert_eq!(ours, theirs, "contacts {:?}", data.contacts);
+}
+
 /// Scenes of bodies of several geoms, so every pair of bodies goes through the
 /// midphase, each body's inertial frame given (the hierarchies' boxes are in
 /// it). The geom pairs the contact filter is called with, in order, are
