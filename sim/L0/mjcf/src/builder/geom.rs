@@ -50,7 +50,7 @@ impl ModelBuilder {
         // moved the mesh, into its own, and its size along each axis is the
         // larger magnitude of the mesh's bounds there (MuJoCo 3.5.0's
         // `mjCGeom::Compile`, `user_objects.cc:3748-3754`, `:3765-3769`).
-        let (pos, quat, size) = match geom_mesh_id(geom, &self.mesh_name_to_id) {
+        let (pos, quat, size) = match geom_mesh_ref {
             Some(mesh) => {
                 let props = &self.mesh_props[mesh];
                 let mut mesh_pos = Vector3::from(props.com);
