@@ -123,8 +123,7 @@ impl SupportMap for PosedShape<'_> {
         support(self.shape, self.pose, direction, &self.warm_start)
     }
 
-    /// The shape's position, as MuJoCo's `mjc_center` takes a geom's (a mesh
-    /// geom's at its mesh's centre of mass, book Rigid-loading L35).
+    /// The shape's position, as MuJoCo's `mjc_center` takes a geom's.
     fn center(&self) -> Point3<f64> {
         self.pose.position
     }

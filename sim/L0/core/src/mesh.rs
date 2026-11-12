@@ -91,7 +91,8 @@ fn compiled_box(vertices: &[Point3<f64>]) -> Aabb {
 pub struct TriangleMeshData {
     /// The underlying indexed mesh (vertices + face indices).
     mesh: IndexedMesh,
-    /// Cached AABB for the entire mesh (local coordinates).
+    /// Cached AABB (local coordinates), over [`Self::unrounded_vertices`]:
+    /// a rounded vertex can lie outside it by its rounding.
     aabb: Aabb,
     /// BVH for efficient collision queries.
     /// Skipped during serialization, rebuilt on demand.
@@ -244,7 +245,9 @@ impl TriangleMeshData {
         self.mesh.vertex_count()
     }
 
-    /// Get the local-space AABB as `(min, max)`.
+    /// Get the local-space AABB as `(min, max)`, over
+    /// [`Self::unrounded_vertices`]: a rounded vertex can lie outside it by
+    /// its rounding.
     #[must_use]
     pub fn aabb(&self) -> (Point3<f64>, Point3<f64>) {
         (self.aabb.min, self.aabb.max)
