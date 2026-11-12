@@ -346,7 +346,7 @@ pub fn model_diff(ours: &Value, mj: &Value) -> Vec<String> {
     d.close_rows("geom_size", ngeom, |g| match str_at(&mj["geom_type"], g) {
         "Capsule" | "Cylinder" => 2,
         "Sphere" | "Plane" => 3,
-        "Mesh" | "Hfield" | "Sdf" => 0,
+        "Hfield" => 0,
         _ => 3,
     });
     let colliding = d.where_mj(ngeom, |m, g| {
