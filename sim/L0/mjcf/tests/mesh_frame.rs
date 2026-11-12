@@ -117,8 +117,8 @@ fn a_static_meshs_geom_frame_as_mujoco() {
 /// body's frame is accumulated into the geom's with the mesh's in it, where
 /// sim-mjcf fuses first and with nalgebra's products (ledger L373, L255).
 /// Its position, size, box and radius are MuJoCo's bit for bit; its
-/// orientation is within 1e-15 (measured: one unit in the last place in three
-/// components; which of the two rows parts it has not been isolated).
+/// orientation is within 1e-15 (which of the two rows parts it has not been
+/// isolated).
 #[test]
 fn a_fused_meshs_geom_frame_as_mujoco() {
     let xml = format!(
