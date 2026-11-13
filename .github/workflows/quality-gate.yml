@@ -81,17 +81,16 @@
 #   `cargo xtask grade-all` is the single source of truth. The job
 #   was warning-only anyway.
 #
-# Linux runners: `ubuntu-24.04`, pinned here and in every other workflow,
-# not `ubuntu-latest`. When `ubuntu-latest` became ubuntu-26.04 (image
-# 20261111.196), main at `8d545c0c`, green on 24.04, failed `tests-debug`
-# shard 3 there: sim-soft-explicit's `partial_slip` test
+# Linux runners: `ubuntu-24.04`, not `ubuntu-latest`, here and in every other
+# workflow, so every Linux job runs on the same Ubuntu release. Main at
+# `8d545c0c` passed `tests-debug` shard 3 on ubuntu-24.04 (2026-11-11) and
+# failed it when that job was re-run under `ubuntu-latest`, which had become
+# ubuntu-26.04 (2026-11-13): sim-soft-explicit's `partial_slip` test
 # `the_baked_cylinder_is_exact_at_the_contact_and_outside_everywhere_else`
-# read 1.03e-19 at a node where the exact distance is 0. On the same image,
-# sim-gpu's lib tests died with SIGSEGV under lavapipe (mesa 26.0.8) in
-# #1074's run, which changes nothing in sim-gpu; main's own sim-gpu tests did
-# not run there, as cargo stopped at `partial_slip`. The compiler was the
-# pinned 1.96.0 in each run. What in the image causes either failure has not
-# been isolated. Moving to 26.04 means fixing both first.
+# read 1.03e-19 at a node where the exact distance is 0. What differs between
+# the two runs to cause it has not been isolated. The label does not freeze
+# the image: GitHub still updates it, and each job's packages come from apt
+# when it runs. Moving to 26.04 waits on that test passing there.
 
 name: Quality Gate
 
