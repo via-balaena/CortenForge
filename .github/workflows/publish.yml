@@ -25,6 +25,9 @@
 # ⚠ After a failed upload, re-run ALL jobs, not only the failed one: the list
 # of what is missing comes from the first job, and a stale one names crates
 # that are already published.
+#
+# Linux runners are `ubuntu-24.04`, pinned: see the note at the top of
+# quality-gate.yml.
 name: Publish
 
 on:
@@ -41,7 +44,7 @@ env:
 jobs:
   pending:
     name: What crates.io lacks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     outputs:
       missing: ${{ steps.list.outputs.missing }}
@@ -79,7 +82,7 @@ jobs:
     name: Publish to crates.io
     needs: pending
     if: needs.pending.outputs.missing != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: crates-io
     # Uploads only, and the token lasts 30 minutes.
     timeout-minutes: 30

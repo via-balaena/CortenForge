@@ -2,7 +2,7 @@
 # https://github.com/nektos/act
 
 # Use medium-sized Ubuntu image (good balance of size vs compatibility)
--P ubuntu-latest=catthehacker/ubuntu:act-latest
+-P ubuntu-24.04=catthehacker/ubuntu:act-24.04
 
 # Use ARM64 images on Apple Silicon
 --container-architecture linux/amd64

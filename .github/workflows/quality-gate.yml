@@ -80,6 +80,18 @@
 # - `wasm` job (plan §6.4): the WASM Compatibility criterion in
 #   `cargo xtask grade-all` is the single source of truth. The job
 #   was warning-only anyway.
+#
+# Linux runners: `ubuntu-24.04`, pinned here and in every other workflow,
+# not `ubuntu-latest`. When `ubuntu-latest` became ubuntu-26.04 (image
+# 20261111.196), main at `8d545c0c`, green on 24.04, failed `tests-debug`
+# shard 3 there: sim-soft-explicit's `partial_slip` test
+# `the_baked_cylinder_is_exact_at_the_contact_and_outside_everywhere_else`
+# read 1.03e-19 at a node where the exact distance is 0. On the same image,
+# sim-gpu's lib tests died with SIGSEGV under lavapipe (mesa 26.0.8) in
+# #1074's run, which changes nothing in sim-gpu; main's own sim-gpu tests did
+# not run there, as cargo stopped at `partial_slip`. The compiler was the
+# pinned 1.96.0 in each run. What in the image causes either failure has not
+# been isolated. Moving to 26.04 means fixing both first.
 
 name: Quality Gate
 
@@ -137,7 +149,7 @@ jobs:
   # ============================================================================
   format:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -179,7 +191,7 @@ jobs:
   # So the job always runs and the STEP decides what it can compare.
   doc-theft:
     name: Doc-comment theft
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -232,7 +244,7 @@ jobs:
   # agree; the rule and its four exceptions live in the script.
   census-append-only:
     name: Census snapshot append-only
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
@@ -296,7 +308,7 @@ jobs:
   # timeout, the empty-input guard, the retry, or the 124 detection all fail it.
   ci-scripts:
     name: CI script guards
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -323,7 +335,7 @@ jobs:
         run: bash .github/actions/msrv-toolchain/test.sh
   affected:
     name: Affected crates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       needs_full: ${{ steps.compute.outputs.needs_full }}
@@ -393,7 +405,7 @@ jobs:
   # set (which would be a silent coverage hole).
   grade:
     name: xtask Grade (shard ${{ matrix.shard }}/3)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     needs: [affected]
     if: ${{ !cancelled() }}
@@ -574,7 +586,7 @@ jobs:
   # every crate. Each shard keeps its own rust-cache (matrix value keys it).
   tests-debug:
     name: Tests (debug — shard ${{ matrix.id }}/3)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Raised 30 -> 45 alongside the 2026-08-22 regrouping. 30 was not a
     # considered bound, it was a cliff: shard 2 ran 28-29 min for weeks (94-97%
     # of cap), was KILLED at 30:10 on #799, and cleared the re-run by 32 s.
@@ -746,7 +758,7 @@ jobs:
   # 10 GB repo ceiling.
   tests-release:
     name: Tests (release, heavy — shard ${{ matrix.id }}/3)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Heavy stochastic validators. ✅ Re-measured: 5m46s / 13m21s / 19m32s, so
     # 45 is 2.3× the slowest leg — it guards a hung test without masking a real
     # one. The "~9-10 min post-nextest" this note predicted never arrived.
@@ -1128,7 +1140,7 @@ jobs:
   # unrelated crate the affected-set never names.
   feature-combos:
     name: Feature Combos
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Raised from 20 when the union step landed. Measured inputs: this job ran
     # 6m38s / 9m11s / 7m26s on PRs #793 / #794 / #796, and the identical union
     # command took 6m41s COLD on a Linux runner (the weekly Clippy drift job,
@@ -1260,7 +1272,7 @@ jobs:
   # licence + source audit (different concern; both layers run).
   dependencies:
     name: Dependencies
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -1301,7 +1313,7 @@ jobs:
   # not exactly `success`.
   publish-dry-run:
     name: Publish dry-run
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -1331,7 +1343,7 @@ jobs:
   # ============================================================================
   semver:
     name: Semver
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # Only run on PRs
     if: github.event_name == 'pull_request'
@@ -1353,7 +1365,7 @@ jobs:
   # ============================================================================
   sbom:
     name: SBOM
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -1423,7 +1435,7 @@ jobs:
   # across all shards.
   validate-examples:
     name: Validate Examples (shard ${{ matrix.shard }}/3)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [affected]
     if: ${{ !cancelled() }}
@@ -1515,7 +1527,7 @@ jobs:
   # is the same shape `tests-debug` uses for its affected set.
   soft-contact-heavy:
     name: sim-soft heavy contact (#676)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Generous: measured 24.2 min locally against a 1.0-2.2x CI factor. Sized so
     # a slow runner cannot turn a passing gate into a timeout failure, which
     # would read as a real defect and teach people to ignore it.
@@ -1605,7 +1617,7 @@ jobs:
   # is a source scan with no build, so it is cheap.
   licensed-gates:
     name: Licensed gate inventory
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -1646,7 +1658,7 @@ jobs:
     name: Quality Gate
     needs: [format, ci-scripts, doc-theft, census-append-only, grade, tests-debug, tests-release, cross-os, conformance-macos, feature-combos, dependencies, validate-examples, soft-contact-heavy, licensed-gates, publish-dry-run]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Verify all required jobs succeeded
