@@ -83,14 +83,12 @@
 #
 # Linux runners: `ubuntu-24.04`, not `ubuntu-latest`, here and in every other
 # workflow, so every Linux job runs on the same Ubuntu release. Main at
-# `8d545c0c` passed `tests-debug` shard 3 on ubuntu-24.04 (2026-11-11) and
-# failed it when that job was re-run under `ubuntu-latest`, which had become
-# ubuntu-26.04 (2026-11-13): sim-soft-explicit's `partial_slip` test
-# `the_baked_cylinder_is_exact_at_the_contact_and_outside_everywhere_else`
+# `8d545c0c` passed `tests-debug` shard 3 under `ubuntu-latest` on 2026-11-11,
+# on ubuntu-24.04, and failed it when that job was re-run on 2026-11-13, by
+# when `ubuntu-latest` was ubuntu-26.04: sim-soft-explicit's `partial_slip`
+# test `the_baked_cylinder_is_exact_at_the_contact_and_outside_everywhere_else`
 # read 1.03e-19 at a node where the exact distance is 0. What differs between
-# the two runs to cause it has not been isolated. The label does not freeze
-# the image: GitHub still updates it, and each job's packages come from apt
-# when it runs. Moving to 26.04 waits on that test passing there.
+# the two runs to cause it has not been isolated.
 
 name: Quality Gate
 
