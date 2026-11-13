@@ -8,6 +8,9 @@
 #
 # See docs/INFRASTRUCTURE.md for the full constraint specification.
 
+# Linux runners are `ubuntu-24.04`, pinned: see the note at the top of
+# quality-gate.yml.
+
 name: Scheduled Maintenance
 
 on:
@@ -25,7 +28,7 @@ jobs:
   # ============================================================================
   security-audit:
     name: Security Audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # `rustsec/audit-check` branches on the trigger (see its main.ts): a
     # `schedule` event files an ISSUE, anything else posts a CHECK run. This
     # workflow has both triggers, so it needs both scopes — with neither, the
@@ -183,7 +186,7 @@ jobs:
   # was true of the unskipped pass and is superseded, not merely rounded down.
   coverage:
     name: Coverage (grade shard ${{ matrix.shard }}/3)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 240
     # Scoped to THIS job rather than the workflow, so the other ten jobs keep
     # their current behaviour. It is the longest job in the repo and the
@@ -322,7 +325,7 @@ jobs:
   # ============================================================================
   mutation-testing:
     name: Mutation Testing
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Mutation testing is slow, run on a subset of critical crates
     strategy:
       fail-fast: false
@@ -369,7 +372,7 @@ jobs:
   # ============================================================================
   benchmark-baseline:
     name: Benchmark Baseline
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Bounded against a MEASURED run, not a guess: run 32477481085 (2026-08-21)
     # took 46m37s wall. That is the ONLY success this job has ever had — 34
     # weekly attempts failed ahead of it, back to 2026-01-25 — so n=1, and the
@@ -466,7 +469,7 @@ jobs:
   # ============================================================================
   supply-chain:
     name: Supply Chain Verification
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -521,7 +524,7 @@ jobs:
   # for a job to measure something other than what it says.
   msrv:
     name: MSRV Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -589,7 +592,7 @@ jobs:
   # That is a sweep to be PRICED, not a line slipped into an unrelated PR.
   clippy-stable-drift:
     name: Clippy (latest stable drift check)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -629,7 +632,7 @@ jobs:
   summary:
     name: Weekly Summary
     needs: [security-audit, coverage, mutation-testing, benchmark-baseline, supply-chain, msrv, clippy-stable-drift, soft-contact-heavy]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: always()
     steps:
       - name: Generate summary
@@ -666,7 +669,7 @@ jobs:
   # runner time on every merge.
   soft-contact-heavy:
     name: Soft contact heavy (#676)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Measured 24.2 min locally against a 1.0-2.2x CI factor; sized so a slow
     # runner cannot turn a passing gate into a timeout failure.
     timeout-minutes: 90
