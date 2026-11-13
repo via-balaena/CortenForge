@@ -12,6 +12,9 @@
 #
 # See docs/INFRASTRUCTURE.md for the full constraint specification.
 
+# Linux runners are `ubuntu-24.04`, pinned: see the note at the top of
+# quality-gate.yml.
+
 name: Release
 
 on:
@@ -60,7 +63,7 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -94,7 +97,7 @@ jobs:
   # ============================================================================
   sbom:
     name: Generate SBOM
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     # ⚠ The SBOM is this release's only asset now, and this job still tolerates
     # failure — so a failure publishes an empty release. Tracked in #866.
@@ -133,7 +136,7 @@ jobs:
   # ============================================================================
   changelog:
     name: Generate Changelog
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
       changelog: ${{ steps.changelog.outputs.changelog }}
@@ -212,7 +215,7 @@ jobs:
     # so dispatching on v0.3.2 would pass it and action-gh-release would rewrite
     # that live release's name, body and assets.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
