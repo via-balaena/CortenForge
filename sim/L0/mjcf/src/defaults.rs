@@ -348,6 +348,9 @@ impl DefaultResolver {
             if result.hfield.is_none() {
                 result.hfield.clone_from(&defaults.hfield);
             }
+            if result.fitscale.is_none() {
+                result.fitscale = defaults.fitscale;
+            }
 
             // Rendering
             if result.material.is_none() {
@@ -684,6 +687,7 @@ impl DefaultResolver {
                     fromto: c.fromto.or(p.fromto),
                     mesh: c.mesh.clone().or_else(|| p.mesh.clone()),
                     hfield: c.hfield.clone().or_else(|| p.hfield.clone()),
+                    fitscale: c.fitscale.or(p.fitscale),
                     material: c.material.clone().or_else(|| p.material.clone()),
                     fluidshape: c.fluidshape.or(p.fluidshape),
                     fluidcoef: over(c.fluidcoef, p.fluidcoef),

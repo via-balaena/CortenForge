@@ -314,6 +314,7 @@ pub(super) fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
 
     // Parse shellinertia (boolean attribute)
     geom.shellinertia = a.boolean("shellinertia")?;
+    geom.fitscale = a.real("fitscale")?;
 
     Ok(geom)
 }

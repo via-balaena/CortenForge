@@ -6,18 +6,34 @@
 
 use nalgebra::{Matrix3, Quaternion, UnitQuaternion, Vector3, Vector4};
 use sim_core::GeomType;
+use std::borrow::Cow;
 
 use super::fluid::compute_geom_fluid;
 use super::frame::frame_accum_child;
 use super::mass::geom_mesh_id;
 use super::mesh::MeshProps;
-use super::orientation::{MJ_EPS, normvec, resolve_orientation, site_orientation, z2quat};
+use super::orientation::{
+    MJ_EPS, normvec, resolve_orientation, rot_vec_quat, site_orientation, z2quat,
+};
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{FluidShape, MjcfGeom, MjcfGeomType, MjcfSite, Prefix};
 
 impl ModelBuilder {
-    pub(crate) fn process_geom(&mut self, geom: &MjcfGeom, body_id: usize) -> Result<usize> {
+    /// Build one of body `body_id`'s geoms into the model, as MuJoCo 3.5.0's
+    /// `mjCGeom::Compile` compiles it. A sphere, capsule, cylinder, ellipsoid
+    /// or box that names a mesh is first fitted to it ([`Self::fit`]);
+    /// returns the geom as built, fitted or not, which the body's mass reads.
+    pub(crate) fn process_geom<'g>(
+        &mut self,
+        geom: &'g MjcfGeom,
+        body_id: usize,
+    ) -> Result<Cow<'g, MjcfGeom>> {
+        let fit = self.fit(geom);
+        let geom = match &fit {
+            Some(fit) => Cow::Owned(fit.applied_to(geom)),
+            None => Cow::Borrowed(geom),
+        };
         let geom_id = self.geom_type.len();
         let geom_type = convert_geom_type(geom.geom_type);
         let at = || {
@@ -29,7 +45,7 @@ impl ModelBuilder {
         };
 
         let (geom_mesh_ref, geom_hfield_ref) = self
-            .resolve_geom_asset_links(geom, geom_type)
+            .resolve_geom_asset_links(&geom, geom_type)
             .map_err(|e| e.with_location_if_unknown(at()))?;
 
         // A geom's `fromto` is already its `pos`, `quat` and `size`
@@ -46,22 +62,40 @@ impl ModelBuilder {
         let pos = geom.pos.unwrap_or_else(Vector3::zeros);
         let size = geom_size_to_vec3(written_over(geom.size, [0.0; 3]), geom_type);
 
-        // A mesh or SDF geom takes its mesh's frame, to which `process_mesh`
-        // moved the mesh, into its own, and its size along each axis is the
-        // larger magnitude of the mesh's bounds there (MuJoCo 3.5.0's
-        // `mjCGeom::Compile`, `user_objects.cc:3748-3754`, `:3765-3769`).
-        let (pos, quat, size) = match geom_mesh_ref {
-            Some(mesh) => {
+        // A mesh or SDF geom, and a primitive fitted to its mesh, take the
+        // mesh's frame, to which `process_mesh` moved the mesh, into their
+        // own: the fitted shape's centre (a mesh or SDF geom's is the
+        // origin) turned by the mesh's turn and added to its centre, then
+        // composed with the geom's frame (MuJoCo 3.5.0's `mjCGeom::Compile`,
+        // `user_objects.cc:3748-3754`). A mesh or SDF geom's size along each
+        // axis is the larger magnitude of the mesh's bounds there
+        // (`:3765-3769`); a fitted geom's is its fit's, which MuJoCo then
+        // checks as any written size (`checksize`, `:3757`).
+        let mesh_frame = match (geom_mesh_ref, &fit) {
+            (Some(mesh), _) => Some((mesh, [0.0; 3])),
+            (None, Some(fit)) => Some((fit.mesh, fit.center)),
+            (None, None) => None,
+        };
+        let (pos, quat) = match mesh_frame {
+            Some((mesh, center)) => {
                 let props = &self.mesh_props[mesh];
-                let mut mesh_pos = Vector3::from(props.com);
+                let mut mesh_pos =
+                    Vector3::from(rot_vec_quat(center, props.quat)) + Vector3::from(props.com);
                 let [w, x, y, z] = props.quat;
                 let mut mesh_quat = UnitQuaternion::new_unchecked(Quaternion::new(w, x, y, z));
                 frame_accum_child(&pos, &quat, &mut mesh_pos, &mut mesh_quat);
-                let size = Vector3::from(self.mesh_data[mesh].origin_box());
-                (mesh_pos, mesh_quat, size)
+                (mesh_pos, mesh_quat)
             }
-            None => (pos, quat, size),
+            None => (pos, quat),
         };
+        let size = match geom_mesh_ref {
+            Some(mesh) => Vector3::from(self.mesh_data[mesh].origin_box()),
+            None => size,
+        };
+        if let Some(fit) = &fit {
+            crate::validation::checksize(geom.geom_type.unwrap_or(MjcfGeomType::Sphere), fit.size)
+                .map_err(|e| e.at(at()))?;
+        }
 
         // Override geom_size for hfield geoms with asset dimensions.
         // geom_size_to_vec3() has no access to hfield asset data (only gets the MJCF
@@ -138,7 +172,7 @@ impl ModelBuilder {
         self.geom_fluid.push(fluid);
         self.geom_user_raw.push(geom.user.clone());
 
-        Ok(geom_id)
+        Ok(geom)
     }
 
     pub(crate) fn process_site(&mut self, site: &MjcfSite, body_id: usize) -> Result<usize> {
@@ -994,6 +1028,7 @@ mod tests {
             condim: Some(3),
             mesh: None,
             hfield: None,
+            fitscale: None,
             solref: None,
             solimp: None,
             priority: Some(0),
