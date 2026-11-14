@@ -641,8 +641,9 @@ fn bounding_radii_are_mujocos() {
 /// farther than the half-diagonal of the pyramid's box (3.20), within its
 /// bounding radius (4.64), so the bounding-sphere filter passes the pair, as
 /// MuJoCo's. Our contacts after `forward` against
-/// MuJoCo's: the same geoms in order, each distance within 1e-13 and
-/// position within 1e-14, midway between the apex and the plane
+/// MuJoCo's: the same geoms in order, each distance and position equal to
+/// MuJoCo's on macOS arm64, where they are measured, and elsewhere within
+/// 1e-13 and 1e-14 (ledger L417), midway between the apex and the plane
 /// (`mjc_PlaneConvex`).
 #[test]
 fn a_mesh_apex_on_a_plane_is_listed_as_mujoco() {
@@ -665,16 +666,18 @@ fn a_mesh_apex_on_a_plane_is_listed_as_mujoco() {
         })
         .collect();
     assert_eq!(ours, theirs, "contact geoms in order");
+    let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let (dist_bound, pos_bound) = if exact { (0.0, 0.0) } else { (1e-13, 1e-14) };
     for (k, (c, w)) in data.contacts.iter().zip(want).enumerate() {
         let dist = w["dist"].as_f64().expect("dist");
         assert!(
-            (-c.depth - dist).abs() <= 1e-13,
+            (-c.depth - dist).abs() <= dist_bound,
             "contact {k}: depth {}, MuJoCo's dist {dist}",
             c.depth
         );
         let pos = floats(&w["pos"]);
         assert!(
-            (0..3).all(|i| (c.pos[i] - pos[i]).abs() <= 1e-14),
+            (0..3).all(|i| (c.pos[i] - pos[i]).abs() <= pos_bound),
             "contact {k}: position {:?}, MuJoCo's {pos:?}",
             c.pos
         );
