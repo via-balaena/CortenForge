@@ -16,7 +16,7 @@
 use nalgebra::{Matrix3, Vector3};
 
 use super::assign_margin;
-use super::broadphase::{filter_sphere, rbound};
+use super::broadphase::filter_sphere;
 use super::flex_rigid::filter_bitmask;
 use crate::types::validation::MAX_VAL;
 use crate::types::{Data, GeomType, Model};
@@ -132,7 +132,7 @@ pub(super) fn collide_tree_flex(
             if !filter_bitmask(model, g, flex)
                 && !filter_sphere_box(
                     &data.geom_xpos[g],
-                    rbound(model, g) + margin,
+                    model.geom_rbound[g] + margin,
                     &tree2.aabb[node2],
                 )
                 && collide_obb(

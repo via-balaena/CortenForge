@@ -613,16 +613,19 @@ fn bodies_on_a_bumpy_height_field_as_mujoco() {
 /// one farther below, and a pyramid mesh: each bounding radius is MuJoCo's
 /// (`mjCGeom::GetRBound`), a height field's from its size, sqrt(x² + y² +
 /// max(top², base²)), the mesh's from its box in MuJoCo's mesh frame, about
-/// its centre of mass (book Rigid-loading L35). The scene's plane is not
-/// compared: a plane's radius is infinite here, MuJoCo's 0 (ledger L173).
+/// its centre of mass (book Rigid-loading L35); the scene's plane, MuJoCo's 0
+/// (ledger L173).
 #[test]
 fn bounding_radii_are_mujocos() {
     let case = &golden()["bounds"];
     let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
     let want = floats(&case["rbound"]);
     let (hfield, mesh) = (sim_core::GeomType::Hfield, sim_core::GeomType::Mesh);
-    assert_eq!(model.geom_type[1..4], [hfield, hfield, mesh]);
-    for g in [1, 2, 3] {
+    assert_eq!(
+        model.geom_type[..4],
+        [sim_core::GeomType::Plane, hfield, hfield, mesh]
+    );
+    for g in [0, 1, 2, 3] {
         assert_eq!(
             model.geom_rbound[g].to_bits(),
             want[g].to_bits(),

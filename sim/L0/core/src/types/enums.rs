@@ -139,9 +139,9 @@ impl GeomType {
 
     /// Compute the bounding sphere radius for a geometry from its type and size.
     ///
-    /// This is the canonical implementation used by both:
-    /// - Model compilation (pre-computing `geom_rbound`)
-    /// - `Shape::bounding_radius()` for runtime shapes
+    /// Model compilation pre-computes `geom_rbound` with it for a geom with
+    /// no mesh, height field or SDF data
+    /// ([`Model::compute_geom_bounding_radii`](crate::Model::compute_geom_bounding_radii)).
     ///
     /// # Arguments
     /// * `size` - Type-specific size parameters from `geom_size`:
@@ -150,7 +150,8 @@ impl GeomType {
     ///   - Capsule: `[radius, half_length, _]`
     ///   - Cylinder: `[radius, half_length, _]`
     ///   - Ellipsoid: `[radius_x, radius_y, radius_z]`
-    ///   - Plane: ignored (returns infinity)
+    ///   - Plane: ignored (returns 0, MuJoCo's `GetRBound` for a plane,
+    ///     `user_objects.cc:3451-3452`)
     ///   - Mesh: `[scale_x, scale_y, scale_z]` (conservative estimate)
     // `imprecise_flops`: the cylinder's naive `sqrt(r² + h²)` (not `hypot`)
     // to match MuJoCo's `GetRBound` bit for bit.
@@ -164,7 +165,7 @@ impl GeomType {
             // sqrt(r² + h²), as MuJoCo's `GetRBound` (`user_objects.cc:3435`).
             Self::Cylinder => (size.x * size.x + size.y * size.y).sqrt(),
             Self::Ellipsoid => size.x.max(size.y).max(size.z), // Max semi-axis
-            Self::Plane => f64::INFINITY,                      // Planes are infinite
+            Self::Plane => 0.0,
             Self::Mesh => {
                 // Conservative estimate from scale factors.
                 // Full implementation would use mesh AABB at load time.

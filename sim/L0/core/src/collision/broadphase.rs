@@ -203,16 +203,6 @@ fn has_plane(model: &Model, geoms: &[usize]) -> bool {
     geoms.iter().any(|&g| model.geom_type[g] == GeomType::Plane)
 }
 
-/// A geom's bounding radius as MuJoCo's: 0 for a plane (sim-core's is
-/// infinite; ledger L173).
-pub(super) fn rbound(model: &Model, geom: usize) -> f64 {
-    if model.geom_type[geom] == GeomType::Plane {
-        0.0
-    } else {
-        model.geom_rbound[geom]
-    }
-}
-
 /// `updateCov` (`engine_collision_driver.c:1118-1135`).
 fn update_cov(cov: &mut [f64; 9], p: &[f64; 3], center: &[f64; 3]) {
     let d = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];
@@ -238,7 +228,7 @@ fn body_aamm(model: &Model, data: &Data, geoms: &[usize], frame: &[f64; 9]) -> [
             model.geom_margin[geom]
         };
         let p = data.geom_xpos[geom];
-        let r = rbound(model, geom);
+        let r = model.geom_rbound[geom];
         let mut geom_aamm = [0.0; 6];
         for j in 0..3 {
             let center = p.x * frame[3 * j] + p.y * frame[3 * j + 1] + p.z * frame[3 * j + 2];
@@ -448,7 +438,7 @@ pub(super) fn filter_sphere(
     geom2: usize,
     margin: f64,
 ) -> bool {
-    let (r1, r2) = (rbound(model, geom1), rbound(model, geom2));
+    let (r1, r2) = (model.geom_rbound[geom1], model.geom_rbound[geom2]);
     if r1 > 0.0 && r2 > 0.0 {
         let d = data.geom_xpos[geom1] - data.geom_xpos[geom2];
         let bound = r1 + r2 + margin;
