@@ -93,6 +93,8 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 /// - No name repeated within a kind (`names::check_names`)
 /// - Each pair's condim one of 1, 3, 4 or 6, then the geoms it names, after
 ///   the assets (a geom named "" only where the model has no unnamed geom)
+/// - Each geom's height field (a height-field geom names one, no other geom
+///   does), then its size, and each site's type and size, after the pairs
 /// - Actuators reference valid joints
 /// - An inertial's mass and diagonal inertia finite (if present)
 /// - Valid simulation options
@@ -482,13 +484,15 @@ fn check_pairs(model: &MjcfModel) -> Result<()> {
     Ok(())
 }
 
-/// Each geom's size, then each site's type and size, body by body from the
-/// world down, as MuJoCo 3.5.0 compiles a body's geoms, then its sites, then
-/// its children.
+/// Each geom's height field and size, then each site's type and size, body
+/// by body from the world down, as MuJoCo 3.5.0 compiles a body's geoms,
+/// then its sites, then its children.
 fn check_sizes(model: &MjcfModel) -> Result<()> {
     for (body_id, first_geom, body) in bodies_in_order(&model.worldbody) {
         for (k, geom) in body.geoms.iter().enumerate() {
-            check_geom_size(geom, || geom_at(geom, first_geom + k, body, body_id))?;
+            let at = || geom_at(geom, first_geom + k, body, body_id);
+            check_geom_hfield(geom, at)?;
+            check_geom_size(geom, at)?;
         }
         for site in &body.sites {
             crate::builder::geom::check_site(site).map_err(|e| {
@@ -501,6 +505,24 @@ fn check_sizes(model: &MjcfModel) -> Result<()> {
                 )
             })?;
         }
+    }
+    Ok(())
+}
+
+/// A geom's height field as MuJoCo 3.5.0 checks it, before the geom's
+/// size: a height-field geom names one and no other geom does
+/// (`mjCGeom::Compile`, `user_objects.cc:3661-3664`; an empty name names
+/// none). MuJoCo checks a geom's condim and a mesh geom's mesh first
+/// (`:3651-3659`); sim-mjcf checks them later (`builder::body::check_bodies`,
+/// the builder's `resolve_geom_asset_links`), so a geom with one of those
+/// faults and this one is refused for this one, where MuJoCo names the
+/// other; and the parser refuses a size that is not finite, which MuJoCo
+/// checks after this (ledger L353).
+fn check_geom_hfield(geom: &MjcfGeom, at: impl Fn() -> Location) -> Result<()> {
+    let is_one = geom.geom_type == Some(MjcfGeomType::Hfield);
+    let names_one = geom.hfield.as_deref().is_some_and(|h| !h.is_empty());
+    if is_one != names_one {
+        return Err(MjcfError::invalid_model("hfield geom must have valid hfieldid").at(at()));
     }
     Ok(())
 }
