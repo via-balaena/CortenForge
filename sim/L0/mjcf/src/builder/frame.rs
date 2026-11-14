@@ -24,7 +24,7 @@ use crate::types::{MjcfBody, MjcfCompiler, MjcfFrame};
 /// `mjuu_frameaccum`, `:469-479`): the child's position turned by the frame's
 /// rotation matrix (`quat2mat`, `mulvecmat`) and added to the frame's, and
 /// its quaternion the frame's times its own, made unit (`mulquat`).
-fn frame_accum_child(
+pub fn frame_accum_child(
     frame_pos: &Vector3<f64>,
     frame_quat: &UnitQuaternion<f64>,
     child_pos: &mut Vector3<f64>,

@@ -60,6 +60,26 @@ use serde::{Deserialize, Serialize};
 /// Small epsilon for numerical comparisons.
 const EPSILON: f64 = 1e-10;
 
+/// The box over `vertices` as MuJoCo's compiler takes a mesh's (`aamm_`,
+/// `mjCMesh::Rotate`, `user_mesh.cc:1786-1793`): along each axis
+/// `std::min` and `std::max` of each vertex in turn, which keep the value
+/// already held on a tie (a zero's sign included).
+fn compiled_box(vertices: &[Point3<f64>]) -> Aabb {
+    let mut min = Point3::from([f64::INFINITY; 3]);
+    let mut max = Point3::from([f64::NEG_INFINITY; 3]);
+    for v in vertices {
+        for axis in 0..3 {
+            if v[axis] < min[axis] {
+                min[axis] = v[axis];
+            }
+            if max[axis] < v[axis] {
+                max[axis] = v[axis];
+            }
+        }
+    }
+    Aabb { min, max }
+}
+
 /// Triangle mesh collision data.
 ///
 /// Stores an [`IndexedMesh`] (from cf-geometry) with vertices and `[u32; 3]` face
@@ -71,7 +91,8 @@ const EPSILON: f64 = 1e-10;
 pub struct TriangleMeshData {
     /// The underlying indexed mesh (vertices + face indices).
     mesh: IndexedMesh,
-    /// Cached AABB for the entire mesh (local coordinates).
+    /// Cached AABB (local coordinates), over [`Self::unrounded_vertices`]:
+    /// a rounded vertex can lie outside it by its rounding.
     aabb: Aabb,
     /// BVH for efficient collision queries.
     /// Skipped during serialization, rebuilt on demand.
@@ -86,11 +107,20 @@ pub struct TriangleMeshData {
     /// The polygons MuJoCo merges from the hull's faces, or from the mesh's
     /// own without a hull (`mjCMesh::MakePolygons`), with the hull.
     polygons: MeshPolygons,
+    /// Its vertices before they were rounded to single precision
+    /// ([`Self::replace_vertices`]); empty where its vertices were never
+    /// rounded.
+    unrounded: Vec<Point3<f64>>,
 }
 
+/// Two meshes are equal where their vertices, the vertices those were
+/// rounded from ([`TriangleMeshData::unrounded_vertices`]) and their faces
+/// are.
 impl PartialEq for TriangleMeshData {
     fn eq(&self, other: &Self) -> bool {
-        self.mesh.vertices == other.mesh.vertices && self.mesh.faces == other.mesh.faces
+        self.mesh.vertices == other.mesh.vertices
+            && self.mesh.faces == other.mesh.faces
+            && self.unrounded_vertices() == other.unrounded_vertices()
     }
 }
 
@@ -140,6 +170,7 @@ impl TriangleMeshData {
             convex_hull: None,
             hull_vertex: Vec::new(),
             polygons: MeshPolygons::default(),
+            unrounded: Vec::new(),
         }
     }
 
@@ -173,6 +204,7 @@ impl TriangleMeshData {
             convex_hull: None,
             hull_vertex: Vec::new(),
             polygons: MeshPolygons::default(),
+            unrounded: Vec::new(),
         }
     }
 
@@ -180,6 +212,19 @@ impl TriangleMeshData {
     #[must_use]
     pub fn vertices(&self) -> &[Point3<f64>] {
         &self.mesh.vertices
+    }
+
+    /// Its vertices before they were rounded to single precision: those
+    /// [`Self::replace_vertices`] was given, or [`Self::vertices`] where
+    /// they were never rounded. Its box and its faces' boxes in a model's
+    /// hierarchy are over these.
+    #[must_use]
+    pub fn unrounded_vertices(&self) -> &[Point3<f64>] {
+        if self.unrounded.is_empty() {
+            &self.mesh.vertices
+        } else {
+            &self.unrounded
+        }
     }
 
     /// Get the face index arrays (`[u32; 3]` per triangle).
@@ -200,7 +245,9 @@ impl TriangleMeshData {
         self.mesh.vertex_count()
     }
 
-    /// Get the local-space AABB as `(min, max)`.
+    /// Get the local-space AABB as `(min, max)`, over
+    /// [`Self::unrounded_vertices`]: a rounded vertex can lie outside it by
+    /// its rounding.
     #[must_use]
     pub fn aabb(&self) -> (Point3<f64>, Point3<f64>) {
         (self.aabb.min, self.aabb.max)
@@ -210,6 +257,20 @@ impl TriangleMeshData {
     #[must_use]
     pub fn center(&self) -> Point3<f64> {
         self.aabb.center()
+    }
+
+    /// The half sizes of the smallest box about its origin that holds its
+    /// box: along each axis, the larger magnitude of its bounds there. MuJoCo
+    /// gives a mesh or SDF geom this size (`mjCGeom::Compile`,
+    /// `user_objects.cc:3765-3769`).
+    #[must_use]
+    pub fn origin_box(&self) -> [f64; 3] {
+        let (lo, hi) = (self.aabb.min, self.aabb.max);
+        // `std::max(std::abs(a), std::abs(b))`.
+        std::array::from_fn(|i| {
+            let (a, b) = (lo[i].abs(), hi[i].abs());
+            if a < b { b } else { a }
+        })
     }
 
     /// Compute and store the convex hull of this mesh's vertices.
@@ -244,6 +305,51 @@ impl TriangleMeshData {
                 .collect(),
         };
         self.polygons = make_polygons(&self.mesh.vertices, &faces);
+    }
+
+    /// Replace its vertices, one for one, by `vertices`, as a model's
+    /// compiler moves a mesh into the frame it keeps it in (MuJoCo's
+    /// `mjCMesh::Process`, `user_mesh.cc:1676-1686`), and hold each rounded
+    /// to single precision, as MuJoCo keeps them (`mesh_vert`, `CopyVert`,
+    /// `:892-896`). Its faces, its hull's faces and adjacency and its
+    /// polygons' paths are kept. Its box (as MuJoCo's compiler takes it) and
+    /// its polygons' normals (`MakePolygonNormals`, `:2722-2731`) are made
+    /// from `vertices` as given, which [`Self::unrounded_vertices`] keeps, as
+    /// MuJoCo's compiler makes them before it rounds; its own hierarchy and
+    /// its hull's vertices and normals from the rounded ones. For vertices
+    /// moved together by a rotation and a translation, which keeps the hull
+    /// convex and its faces' winding outward.
+    ///
+    /// # Panics
+    ///
+    /// If `vertices` does not hold one vertex for each of its own.
+    pub fn replace_vertices(&mut self, vertices: Vec<Point3<f64>>) {
+        assert_eq!(
+            vertices.len(),
+            self.mesh.vertices.len(),
+            "a mesh's vertices are replaced one for one"
+        );
+        #[allow(clippy::cast_possible_truncation)] // the rounding is MuJoCo's
+        let rounded = vertices.iter().map(|v| v.map(|c| f64::from(c as f32)));
+        self.mesh.vertices = rounded.collect();
+        self.aabb = compiled_box(&vertices);
+        self.bvh = Some(bvh_from_mesh(&self.mesh));
+        // A hull is kept where each of its vertices was found among the
+        // mesh's (`hull_vertex`), as `compute_convex_hull` finds them.
+        self.convex_hull = self
+            .convex_hull
+            .take()
+            .filter(|hull| self.hull_vertex.len() == hull.vertices.len())
+            .map(|hull| {
+                let moved = self
+                    .hull_vertex
+                    .iter()
+                    .map(|&v| self.mesh.vertices[v])
+                    .collect();
+                hull.with_vertices(moved)
+            });
+        self.polygons.remake_normals(&vertices);
+        self.unrounded = vertices;
     }
 
     /// Returns the convex hull if computed.
@@ -1108,6 +1214,104 @@ mod tests {
             1, 6, 2, 1, 5, 6,
         ];
         TriangleMeshData::new(vertices, indices)
+    }
+
+    /// Its vertices replaced by themselves turned and shifted: held in single
+    /// precision, kept unrounded; the mesh's faces, its hull's faces and
+    /// adjacency and its polygons' paths kept; its box and its polygons'
+    /// normals made from the unrounded vertices, its hull's vertices the
+    /// rounded ones.
+    #[test]
+    fn replacing_a_meshs_vertices_rounds_them_and_moves_its_box_hull_and_polygons() {
+        let mut mesh = create_cube();
+        mesh.compute_convex_hull(None);
+        let before = mesh.clone();
+        let turn = nalgebra::UnitQuaternion::from_euler_angles(0.4, -0.2, 0.9);
+        let shift = Vector3::new(1.0, -2.0, 0.5);
+        let moved: Vec<Point3<f64>> = mesh.vertices().iter().map(|v| turn * v + shift).collect();
+        #[allow(clippy::cast_possible_truncation)]
+        let rounded: Vec<Point3<f64>> = moved
+            .iter()
+            .map(|v| v.map(|c| f64::from(c as f32)))
+            .collect();
+        assert_ne!(rounded, moved, "the fixture's vertices are not all singles");
+        mesh.replace_vertices(moved.clone());
+
+        assert_eq!(mesh.vertices(), rounded.as_slice());
+        assert_eq!(mesh.unrounded_vertices(), moved.as_slice());
+        assert_eq!(mesh.triangles(), before.triangles());
+        let (lo, hi) = mesh.aabb();
+        for axis in 0..3 {
+            let along = moved.iter().map(|v| v[axis]);
+            assert_eq!(lo[axis], along.clone().fold(f64::INFINITY, f64::min));
+            assert_eq!(hi[axis], along.fold(f64::NEG_INFINITY, f64::max));
+        }
+        let (hull, old) = (mesh.convex_hull().unwrap(), before.convex_hull().unwrap());
+        let found: Vec<Point3<f64>> = mesh.hull_vertex().iter().map(|&v| rounded[v]).collect();
+        assert_eq!(hull.vertices, found);
+        assert_eq!((&hull.faces, &hull.adjacency), (&old.faces, &old.adjacency));
+        let polygons = mesh.polygons();
+        assert_eq!(polygons.paths, before.polygons().paths);
+        for (n, path) in polygons.normals.iter().zip(&polygons.paths) {
+            let [a, b, c] = [path[0], path[1], path[2]].map(|v| moved[v]);
+            let unit = (b - a).cross(&(c - a)).normalize();
+            assert!(
+                (Vector3::from(*n) - unit).norm() < 1e-15,
+                "{n:?} vs {unit:?}"
+            );
+        }
+    }
+
+    /// Two meshes are equal by their vertices and those they were rounded
+    /// from: a mesh equals itself with its vertices replaced by the same
+    /// singles, and two meshes whose vertices round to the same singles
+    /// from different doubles differ.
+    #[test]
+    fn meshes_are_equal_by_their_vertices_and_those_they_were_rounded_from() {
+        let cube = create_cube();
+        let mut same = cube.clone();
+        same.replace_vertices(cube.vertices().to_vec());
+        assert_eq!(same, cube, "replaced by its own singles");
+        let nudged = |by: f64| {
+            let mut mesh = cube.clone();
+            let vertices = cube.vertices().iter().map(|v| v.map(|c| c + by));
+            mesh.replace_vertices(vertices.collect());
+            mesh
+        };
+        let (up, down) = (nudged(1e-12), nudged(-1e-12));
+        assert_eq!(up.vertices(), down.vertices(), "the nudges round alike");
+        assert_ne!(up.unrounded_vertices(), down.unrounded_vertices());
+        assert_ne!(up, down);
+    }
+
+    /// MuJoCo's box keeps the bound it holds on a tie, as `std::min` and
+    /// `std::max` do: a zero's sign is the first vertex's.
+    #[test]
+    fn a_compiled_box_keeps_the_first_of_two_zeros() {
+        let zeros = |first: f64, second: f64| {
+            compiled_box(&[
+                Point3::new(first, first, 1.0),
+                Point3::new(second, second, -1.0),
+            ])
+        };
+        let b = zeros(-0.0, 0.0);
+        assert_eq!(
+            (b.min.x.to_bits(), b.max.y.to_bits()),
+            ((-0.0f64).to_bits(), (-0.0f64).to_bits())
+        );
+        let b = zeros(0.0, -0.0);
+        assert_eq!(
+            (b.min.x.to_bits(), b.max.y.to_bits()),
+            (0.0f64.to_bits(), 0.0f64.to_bits())
+        );
+        assert_eq!((b.min.z, b.max.z), (-1.0, 1.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "one for one")]
+    fn a_meshs_vertices_are_replaced_one_for_one() {
+        let mut mesh = create_cube();
+        mesh.replace_vertices(vec![Point3::origin(); 7]);
     }
 
     #[test]

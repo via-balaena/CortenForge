@@ -7,9 +7,8 @@
 //! a bumpy height field. Each body's inertial is written out as MuJoCo
 //! compiles it (sim-mjcf compiles each the same without it:
 //! `each_written_inertial_is_the_loaders_own`) and the mesh in the frame
-//! MuJoCo moves it to (Rigid-loading's L35 holds where the loader's
-//! differs). These runs close the forward side of ledgers L154, L206 and
-//! L214.
+//! MuJoCo moves it to. These runs close the forward side of ledgers L154,
+//! L206 and L214.
 
 use serde_json::Value;
 

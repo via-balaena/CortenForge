@@ -146,6 +146,38 @@ impl ConvexHull {
         }
         best
     }
+
+    /// The same hull over `vertices`, one for each of its own in order: its
+    /// faces and adjacency kept, its normals made from the new vertices. For
+    /// a hull whose vertices are moved together by a rotation and a
+    /// translation (or rounded after one), which keeps its faces' winding
+    /// outward and its adjacency true.
+    ///
+    /// # Panics
+    ///
+    /// If `vertices` does not hold one vertex for each of the hull's.
+    #[must_use]
+    pub fn with_vertices(&self, vertices: Vec<Point3<f64>>) -> Self {
+        assert_eq!(
+            vertices.len(),
+            self.vertices.len(),
+            "a hull's vertices are replaced one for one"
+        );
+        let normals = self
+            .faces
+            .iter()
+            .map(|f| {
+                let [a, b, c] = f.map(|i| &vertices[i as usize]);
+                compute_face_normal(a, b, c)
+            })
+            .collect();
+        Self {
+            vertices,
+            faces: self.faces.clone(),
+            normals,
+            adjacency: self.adjacency.clone(),
+        }
+    }
 }
 
 impl Bounded for ConvexHull {
@@ -196,15 +228,7 @@ pub fn convex_hull(points: &[Point3<f64>], max_vertices: Option<usize>) -> Optio
     let normals = alive_faces
         .iter()
         .map(|&[a, b, c]| {
-            let e1 = hull_vertices[b] - hull_vertices[a];
-            let e2 = hull_vertices[c] - hull_vertices[a];
-            let cross = e1.cross(&e2);
-            let len = cross.norm();
-            if len < 1e-30 {
-                Vector3::z_axis().into_inner()
-            } else {
-                cross / len
-            }
+            compute_face_normal(&hull_vertices[a], &hull_vertices[b], &hull_vertices[c])
         })
         .collect();
 

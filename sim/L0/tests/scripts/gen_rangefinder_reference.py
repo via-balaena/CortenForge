@@ -116,9 +116,8 @@ TRANSLUCENT = """<mujoco><option gravity="0 0 0"/><worldbody>
 
 REST = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
 
-# A mesh slab below a turning eye. MuJoCo turns the slab to its principal frame, which
-# sim-mjcf does not (book Rigid-loading L35), and rounds the turned vertices to single
-# precision (ledger L281).
+# A mesh slab below a turning eye, which MuJoCo turns to its principal frame (book
+# Rigid-loading L35).
 MESH = """<mujoco><option gravity="0 0 0"/>
   <asset>
     <mesh name="slab" vertex="-0.5 -0.4 -0.1  0.5 -0.4 -0.1  0.5 0.4 -0.1  -0.5 0.4 -0.1
@@ -159,8 +158,7 @@ HFIELD = f"""<mujoco><option gravity="0 0 0"/>
 
 # A box below a turning eye and an octahedron above it, two meshes MuJoCo keeps in their
 # written frame (their principal axes along x, y, z, the largest moment about x, centred, in
-# numbers a float holds), so sim-mjcf loads them as MuJoCo compiles them, which it does not
-# do for a mesh MuJoCo turns until book Rigid-loading L35.
+# numbers a float holds).
 MESH_BOX = """<mujoco><option gravity="0 0 0"/>
   <asset>
     <mesh name="box" vertex="-0.25 -0.75 -1  0.25 -0.75 -1  0.25 0.75 -1  -0.25 0.75 -1

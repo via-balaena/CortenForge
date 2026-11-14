@@ -635,7 +635,8 @@ pub struct ModelBuilder {
     pub(crate) geom_contype: Vec<u32>,
     pub(crate) geom_conaffinity: Vec<u32>,
     pub(crate) geom_name: Vec<Option<String>>,
-    /// Mesh index for each geom (`None` for non-mesh geoms).
+    /// Mesh index for each geom: a mesh geom's mesh, and an SDF geom's where
+    /// it names one; `None` for any other geom.
     pub(crate) geom_mesh: Vec<Option<usize>>,
     /// Solver reference parameters for each geom [timeconst, dampratio].
     pub(crate) geom_solref: Vec<[f64; 2]>,

@@ -114,15 +114,16 @@ impl Model {
     /// vertex is repeated) has no circumcentre (it is NaN, in MuJoCo's too), and MuJoCo's
     /// split, comparing such a face's place with another's, is no longer an
     /// order: its tree is then its C++ library's `nth_element`'s, which
-    /// [`merge_sort`] is not (registry `D-MESH-SPLIT`). Its boxes are over
-    /// the vertices sim-core holds, MuJoCo's over its double-precision ones,
-    /// before it rounds them to the single precision it keeps (ledger L281).
+    /// [`merge_sort`] is not (registry `D-MESH-SPLIT`). Its boxes and its
+    /// faces' places are over the mesh's vertices before they were rounded
+    /// to single precision (`TriangleMeshData::unrounded_vertices`), as
+    /// MuJoCo's compiler builds them before it rounds its vertices.
     fn compute_mesh_bvhs(&mut self) {
         let trees: Vec<Tree> = self
             .mesh_data
             .iter()
             .map(|mesh| {
-                let vertices = mesh.vertices();
+                let vertices = mesh.unrounded_vertices();
                 let elements: Vec<Element> = mesh
                     .triangles()
                     .iter()

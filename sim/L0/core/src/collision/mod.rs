@@ -1930,7 +1930,9 @@ mod spec_d_tests {
     /// between its corner and the plane (`mjc_PlaneConvex`'s position,
     /// `engine_collision_convex.c:1062-1063`, `:1030-1031`), at the corner's
     /// depth; three of the base's four corners (`maxplanemesh`). Before, each
-    /// was at its corner, in the argument order.
+    /// was at its corner, in the argument order. The mesh geom's radius, which
+    /// spaces the contacts (`engine_collision_convex.c:1018`), is the one the
+    /// model derives for it (`Model::compute_geom_bounding_radii`), 0.1875.
     #[test]
     fn mesh_plane_contacts_at_midpoint() {
         for plane in [0, 1] {
@@ -1944,6 +1946,15 @@ mod spec_d_tests {
             model.geom_type.swap(0, plane);
             model.geom_mesh[mesh] = Some(0);
             model.mesh_data = vec![box_mesh(0.125, 0.125, 0.0625)];
+            model.geom_hfield = vec![None; 2];
+            model.geom_shape = vec![None; 2];
+            model.geom_aabb = vec![[0.0; 6]; 2];
+            model.compute_geom_bounding_radii();
+            assert_eq!(
+                model.geom_rbound[mesh].to_bits(),
+                0.1875_f64.to_bits(),
+                "plane geom {plane}: the mesh's radius"
+            );
             let mut pos = [Vector3::zeros(), Vector3::zeros()];
             pos[mesh] = Vector3::new(0.25, -0.5, 0.0625 - 0.015_625);
             let eye = Matrix3::identity();

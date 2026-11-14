@@ -4,10 +4,12 @@
 //! Includes helpers for computing mass, inertia, fromto poses, and
 //! size vector conversion for each geom type.
 
-use nalgebra::{Matrix3, Vector3, Vector4};
+use nalgebra::{Matrix3, Quaternion, UnitQuaternion, Vector3, Vector4};
 use sim_core::GeomType;
 
 use super::fluid::compute_geom_fluid;
+use super::frame::frame_accum_child;
+use super::mass::geom_mesh_id;
 use super::mesh::MeshProps;
 use super::orientation::{MJ_EPS, normvec, resolve_orientation, site_orientation, z2quat};
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
@@ -43,6 +45,23 @@ impl ModelBuilder {
         .map_err(|e| e.on("geom").at(at()))?;
         let pos = geom.pos.unwrap_or_else(Vector3::zeros);
         let size = geom_size_to_vec3(written_over(geom.size, [0.0; 3]), geom_type);
+
+        // A mesh or SDF geom takes its mesh's frame, to which `process_mesh`
+        // moved the mesh, into its own, and its size along each axis is the
+        // larger magnitude of the mesh's bounds there (MuJoCo 3.5.0's
+        // `mjCGeom::Compile`, `user_objects.cc:3748-3754`, `:3765-3769`).
+        let (pos, quat, size) = match geom_mesh_ref {
+            Some(mesh) => {
+                let props = &self.mesh_props[mesh];
+                let mut mesh_pos = Vector3::from(props.com);
+                let [w, x, y, z] = props.quat;
+                let mut mesh_quat = UnitQuaternion::new_unchecked(Quaternion::new(w, x, y, z));
+                frame_accum_child(&pos, &quat, &mut mesh_pos, &mut mesh_quat);
+                let size = Vector3::from(self.mesh_data[mesh].origin_box());
+                (mesh_pos, mesh_quat, size)
+            }
+            None => (pos, quat, size),
+        };
 
         // Override geom_size for hfield geoms with asset dimensions.
         // geom_size_to_vec3() has no access to hfield asset data (only gets the MJCF
@@ -171,8 +190,8 @@ impl ModelBuilder {
         geom: &MjcfGeom,
         geom_type: GeomType,
     ) -> Result<(Option<usize>, Option<usize>)> {
-        let geom_mesh_ref = if geom_type == GeomType::Mesh {
-            match &geom.mesh {
+        let geom_mesh_ref = match geom_type {
+            GeomType::Mesh => match &geom.mesh {
                 Some(mesh_name) => {
                     let mesh_id = self
                         .mesh_name_to_id
@@ -183,9 +202,12 @@ impl ModelBuilder {
                 None => {
                     return Err(MjcfError::missing_attribute("geom", "mesh"));
                 }
-            }
-        } else {
-            None
+            },
+            // An SDF geom's mesh, as MuJoCo's `geom_dataid` holds it: its
+            // bounds are its mesh's. One that names none has none (ledger
+            // L357).
+            GeomType::Sdf => geom_mesh_id(geom, &self.mesh_name_to_id),
+            _ => None,
         };
 
         let geom_hfield_ref = if geom_type == GeomType::Hfield {

@@ -64,15 +64,17 @@ radii, each about its geom's origin (mjCGeom::GetRBound,
 user_objects.cc:3418-3454), and its contacts after mj_forward (geoms,
 `dist`, `pos`). The apex is past the half-diagonal of the pyramid's box
 from its centroid, within the bounding radius; it refuses a scene that is
-not. `plane_mesh` holds a box mesh authored with its origin at a corner,
-its base 0.001 into a plane, the plane in the world body and in a static
-body after the mesh's (so in the second the mesh is the pair's first geom
-as it is tested): MuJoCo's bounding radius, in its mesh frame (the centre
-of mass, the principal axes), and its contacts (geoms, `dist`, `pos`).
-`addplanemesh` skips a vertex nearer the first contact than 0.3 of the
-bounding radius (engine_collision_convex.c:1018), which leaves three of the
-base's four corners; it refuses a scene where the half-diagonal of the
-mesh's box is not MuJoCo's radius.
+not. `plane_mesh` holds meshes whose base is 0.001 into a plane: a box
+authored with its origin at a corner, the plane in the world body and in a
+static body after the mesh's (so in the second the mesh is the pair's first
+geom as it is tested); a pyramid whose centre of mass is its origin, its
+apex far from its base, so its bounding radius is not the half-diagonal of
+its box; and a 4 x 0.7 x 0.5 box turned 45 degrees in its vertex data.
+Each: MuJoCo's bounding radius, in its mesh frame (the centre of mass, the
+principal axes), the half-diagonal of its box, and its contacts (geoms,
+`dist`, `pos`). `addplanemesh` skips a vertex nearer the first contact than
+0.3 of the bounding radius (engine_collision_convex.c:1018); it refuses a
+scene whose contact count is not the one named for it.
 `geom_aabb` holds a plane, two height fields and one of each primitive:
 MuJoCo's boxes, each its centre in the geom's frame and its half-sizes
 (mjCGeom::ComputeAABB, user_objects.cc:3573-3626): a plane's is the
@@ -195,6 +197,17 @@ an ellipsoid, a cylinder and a box, each turned by its body's frame,
 dropped from rest at two spots of a 9 x 9 bumpy height field whose data
 sim-mjcf loads as MuJoCo compiles it (elevations multiples of 1/8 from 0 to
 1, rows symmetric): the free joint's height after every 50th of 1000 steps.
+`mesh_frame` holds the turned box of sim-mjcf's mesh_frame.rs, a box turned
+in its vertex data, which MuJoCo moves to its centre of mass and
+principal axes, its vertices then not singles, and keeps rounded to singles
+(`mesh_vert`, `CopyVert`, user_mesh.cc:892-896): in `body`, posed on a free body beside a
+sphere, the geoms' boxes, the hierarchies (the body's nodes and then the
+mesh's: each body's and mesh's address and count, `nbvhstatic`, each node's
+box, children, geom and depth) and the body's inertial frame; in `pair`,
+two of it on free bodies, the second turned and overlapping the first,
+`qpos` and the contacts after mj_forward (geoms, `dist`, `pos`, the
+normal). It refuses a `body` whose hierarchy holds no mesh node and a
+`pair` of other than one contact.
 """
 
 import itertools
@@ -765,7 +778,17 @@ PLANE_MESH_XML = {
 <body name="p" pos="0 0 -0.001"><freejoint/><geom name="box" type="mesh" mesh="offbox"/></body>
 <body name="ground"><geom name="floor" type="plane" size="20 20 0.1"/></body>
 </worldbody></mujoco>""",
+    # Its radius 7.63, the half-diagonal of its box 5.20 (ledger L176 (c)).
+    "pyramid": """<mujoco><asset><mesh name="pyr" vertex="-1 -1 -2.5  1 -1 -2.5  1 1 -2.5  -1 1 -2.5  0 0 7.5"
+      face="0 2 1  0 3 2  0 1 4  1 2 4  2 3 4  3 0 4"/></asset><worldbody><geom name="floor" type="plane" size="20 20 0.1"/>
+<body name="p" pos="0 0 2.499"><freejoint/><geom name="box" type="mesh" mesh="pyr"/></body>
+</worldbody></mujoco>""",
+    "turned_box": """<mujoco><asset><mesh name="turned" vertex="-1.166726 -1.661701 -0.25  1.661701 1.166726 -0.25  1.166726 1.661701 -0.25  -1.661701 -1.166726 -0.25  -1.166726 -1.661701 0.25  1.661701 1.166726 0.25  1.166726 1.661701 0.25  -1.661701 -1.166726 0.25"
+      face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  1 2 6  1 6 5  2 3 7  2 7 6  3 0 4  3 4 7"/></asset><worldbody><geom name="floor" type="plane" size="20 20 0.1"/>
+<body name="p" pos="0 0 0.249"><freejoint/><geom name="box" type="mesh" mesh="turned"/></body>
+</worldbody></mujoco>""",
 }
+PLANE_MESH_CONTACTS = {"world": 3, "later_body": 3, "pyramid": 2, "turned_box": 3}
 
 
 def plane_mesh():
@@ -776,11 +799,9 @@ def plane_mesh():
         mujoco.mj_forward(m, d)
         g = m.geom("box").id
         half = float(np.linalg.norm(m.geom_aabb[g][3:]))
-        if abs(half - m.geom_rbound[g]) > 1e-12:
-            sys.exit(f"plane_mesh {name}: the half-diagonal {half} is not MuJoCo's radius {m.geom_rbound[g]}")
         contacts = [{"geom": [int(c.geom[0]), int(c.geom[1])], "dist": float(c.dist),
                      "pos": floats(c.pos)} for c in d.contact[:d.ncon]]
-        if len(contacts) != 3:
+        if len(contacts) != PLANE_MESH_CONTACTS[name]:
             sys.exit(f"plane_mesh {name}: {len(contacts)} contacts")
         out[name] = {"xml": xml, "mesh_geom": g, "rbound": float(m.geom_rbound[g]),
                      "half_diagonal": half, "contacts": contacts}
@@ -1051,6 +1072,45 @@ def midphase_cases():
                      f"times against {len(off['calls'])}, or changes other contacts")
         filters[name] = {"xml": xml, "midphase": on, "no_midphase": off}
     return {"bodies": bodies, "filter": filters}
+
+
+# mesh_frame.rs's box, turned in its vertex data.
+TURNED_BOX_ASSET = (
+    '<asset><mesh name="m" vertex="-0.316025 -1.133013 -0.15  1.416025 -0.133013 -0.15  '
+    '0.916025 0.733013 -0.15  -0.816025 -0.266987 -0.15  -0.316025 -1.133013 0.35  '
+    '1.416025 -0.133013 0.35  0.916025 0.733013 0.35  -0.816025 -0.266987 0.35" '
+    'face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/>'
+    '</asset>')
+MESH_FRAME_XML = {
+    "body": f"""<mujoco>{TURNED_BOX_ASSET}<worldbody><body pos="0 0 1"><freejoint/>
+<geom type="mesh" mesh="m" pos="0.1 0.2 0.3" quat="0.9 0.1 -0.2 0.3"/><geom type="sphere" size="0.2" pos="-0.5 0.4 0.1"/></body>
+</worldbody></mujoco>""",
+    "pair": f"""<mujoco>{TURNED_BOX_ASSET}<worldbody><body pos="0 0 0"><freejoint/><geom type="mesh" mesh="m"/></body>
+<body pos="0.2 0.1 0.67" quat="0.99 0.05 0.08 -0.3"><freejoint/><geom type="mesh" mesh="m"/></body>
+</worldbody></mujoco>""",
+}
+
+
+def mesh_frame_cases():
+    m = mujoco.MjModel.from_xml_string(MESH_FRAME_XML["body"])
+    if m.nbvh != m.nbvhstatic or m.nbvh <= int(np.sum(m.body_bvhnum)):
+        sys.exit("mesh_frame body: no mesh node after the bodies'")
+    body = {"xml": MESH_FRAME_XML["body"], "geom_aabb": [floats(a) for a in m.geom_aabb],
+            "body_bvhadr": ints(m.body_bvhadr), "body_bvhnum": ints(m.body_bvhnum),
+            "mesh_bvhadr": ints(m.mesh_bvhadr), "mesh_bvhnum": ints(m.mesh_bvhnum),
+            "nbvhstatic": int(m.nbvhstatic), "bvh_aabb": [floats(a) for a in m.bvh_aabb],
+            "bvh_child": [ints(c) for c in m.bvh_child], "bvh_nodeid": ints(m.bvh_nodeid),
+            "bvh_depth": ints(m.bvh_depth), "body_ipos": [floats(p) for p in m.body_ipos],
+            "body_iquat": [floats(q) for q in m.body_iquat]}
+    m = mujoco.MjModel.from_xml_string(MESH_FRAME_XML["pair"])
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    contacts = [{"geom": [int(c.geom[0]), int(c.geom[1])], "dist": float(c.dist),
+                 "pos": floats(c.pos), "normal": floats(c.frame[:3])} for c in d.contact[:d.ncon]]
+    if len(contacts) != 1:
+        sys.exit(f"mesh_frame pair: {len(contacts)} contacts")
+    pair = {"xml": MESH_FRAME_XML["pair"], "qpos": floats(d.qpos), "contacts": contacts}
+    return {"body": body, "pair": pair}
 
 
 # Two touching spheres whose contype and conaffinity reject each other, on
@@ -2743,6 +2803,7 @@ def main():
            "primitive_rbound": finite_or_string(primitive_rbound()),
            "geom_aabb": finite_or_string(geom_aabb_case()),
            "midphase": finite_or_string(midphase_cases()),
+           "mesh_frame": finite_or_string(mesh_frame_cases()),
            "contact_filter": finite_or_string(contact_filter_cases()),
            "sphere_pairs": finite_or_string(sphere_pair_cases()),
            "capsule_pairs": finite_or_string(capsule_pair_cases()),

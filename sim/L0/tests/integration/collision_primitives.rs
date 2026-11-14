@@ -1977,6 +1977,61 @@ fn a_plane_meets_a_signed_distance_field() {
     }
 }
 
+/// Registry D-SDF-SHAPE and D-SDF-RAY: an SDF geom loaded from MJCF holds the
+/// mesh it names (its size and box the mesh's: `mjcf/tests/mesh_frame.rs`
+/// `an_sdf_geoms_bounds_are_its_meshs`) but no shape, so it meets nothing: a
+/// cube field 0.01 into a plane lists no contact, a sphere 0.01 into it none,
+/// and a rangefinder 0.4 above it reads -1. The same cube as a mesh geom
+/// lists 3 contacts and 1 and reads 0.4: each scene has a geom to meet.
+#[test]
+fn a_loaded_signed_distance_field_meets_nothing() {
+    let forward = |worldbody: &str, sensor: &str| {
+        let model = load_model(&format!(
+            r#"<mujoco><asset><mesh name="cube" vertex="-0.1 -0.1 -0.1  0.1 -0.1 -0.1
+                0.1 0.1 -0.1  -0.1 0.1 -0.1  -0.1 -0.1 0.1  0.1 -0.1 0.1  0.1 0.1 0.1
+                -0.1 0.1 0.1" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7
+                2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset>
+                <worldbody>{worldbody}</worldbody>{sensor}</mujoco>"#
+        ))
+        .expect("load");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        (model, data)
+    };
+    for (geom_type, ncon, reading) in [("sdf", [0, 0], -1.0), ("mesh", [3, 1], 0.4)] {
+        let cube = format!(r#"<geom type="{geom_type}" mesh="cube"/>"#);
+        let (model, data) = forward(
+            &format!(
+                r#"<geom type="plane" size="5 5 0.1"/>
+                <body pos="0 0 0.09"><freejoint/>{cube}</body>"#
+            ),
+            "",
+        );
+        assert_eq!(
+            (model.geom_mesh[1], model.geom_shape[1]),
+            (Some(0), None),
+            "{geom_type}"
+        );
+        assert_eq!(data.ncon, ncon[0], "the {geom_type} on a plane");
+        let (_, data) = forward(
+            &format!(
+                r#"{cube}<body pos="0 0 0.14"><freejoint/><geom type="sphere" size="0.05"/></body>"#
+            ),
+            "",
+        );
+        assert_eq!(data.ncon, ncon[1], "a sphere on the {geom_type}");
+        let (_, data) = forward(
+            &format!(r#"{cube}<body pos="0.02 0.03 0.5"><site name="eye" zaxis="0 0 -1"/></body>"#),
+            r#"<sensor><rangefinder site="eye"/></sensor>"#,
+        );
+        let got = data.sensordata[0];
+        assert!(
+            (got - reading).abs() < 1e-8,
+            "the {geom_type}'s rangefinder: {got}"
+        );
+    }
+}
+
 /// `Model::add_ground_plane` on a model whose world already holds a geom
 /// appends the plane after the other bodies' geoms, so the world's geoms are
 /// not numbered together; collision takes each body's geoms from `geom_body`,

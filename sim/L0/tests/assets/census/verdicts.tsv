@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1944
+# agree_floor 1956
 001bc4149d608b24	agree
 002cac6fc120ff66	both-refuse
 00308b83da9d8bab	agree
@@ -145,7 +145,7 @@
 092b6d0dd982b7be	both-refuse
 09352da9b0ac726e	mj-refuses	divergence=D-CABLE-TWO-BODY
 0967e92dce4068f8	agree
-096caab2a0c593fc	model:geom_pos;dyn:agree
+096caab2a0c593fc	agree
 097a47126e774264	agree
 097d8a7f4f219675	agree
 09b648bb81cb5c7f	agree
@@ -713,7 +713,7 @@
 31b78812f1dcfff5	agree
 31bace11e35e2d03	agree
 31d4f56e91d15c49	agree
-31dece6797510ed8	model:geom_quat;dyn:agree
+31dece6797510ed8	agree
 31ef3436971651f5	agree
 31fe9796893b55d5	both-refuse
 320274394e0aa6e9	agree
@@ -1190,7 +1190,7 @@
 52b64ec3d54305b5	agree
 52b6bd3f9b118553	both-refuse
 52bd97e783b0cd61	both-refuse
-52c3e409ff6db41e	model:geom_pos;dyn:agree
+52c3e409ff6db41e	agree
 52ed66b9a15e31df	agree
 52f8569850ee9ce8	agree
 5312a1ccb4f38c18	agree
@@ -1756,7 +1756,7 @@
 7b53469f81b43d81	agree
 7b5928434fff25b7	agree
 7b64e1017e70e9ab	both-refuse
-7b6eff02bd08507c	model:geom_pos;dyn:agree
+7b6eff02bd08507c	agree
 7b7d47ee14924bf7	ours-refused	divergence=D-NONFINITE
 7b82401d8f567b92	agree
 7b9dc9dda9e13473	agree
@@ -2026,6 +2026,7 @@
 901a8ad78c37be30	both-refuse
 901ffffa67631a39	both-refuse
 903625b2f3646d1f	both-refuse
+905e9f1691a59878	agree
 905f84a1dd8f013b	agree
 906fb22dad360ddd	model:actuator_lengthrange;dyn:agree
 907b816f9cca3e6d	both-refuse
@@ -2174,7 +2175,7 @@
 9ad01568e29f27a5	agree
 9b034f2b6bc665a3	agree
 9b04442ae0d16e2e	both-refuse
-9b0854df950162da	model:geom_pos;dyn:agree
+9b0854df950162da	agree
 9b1918e6780b87d5	both-refuse
 9b33406e322b4890	agree
 9b5189ae92332b61	agree
@@ -2743,7 +2744,7 @@ c45c485d72f16dbf	both-refuse
 c471b6791d20e78e	agree
 c481249b616bb25b	both-refuse
 c481c5e0bd03c204	both-refuse
-c48b69cf6e9c8aa4	model:geom_pos;dyn:agree
+c48b69cf6e9c8aa4	agree
 c49173690d77ccb2	agree
 c4b170dc047c07d0	both-refuse
 c4b42afbf28987e4	agree
@@ -2852,7 +2853,7 @@ cb01b9cc06f2e65e	agree
 cb11abd2594a94a2	agree
 cb204d19626939a0	agree
 cb2a349c6ab803e7	agree
-cb2e58ac6142fc53	model:geom_pos;dyn:agree
+cb2e58ac6142fc53	agree
 cb3ce0c4edef5f8f	both-refuse
 cb73c487737612f6	agree
 cb8794bb6cf9702a	mj-refuses	divergence=D-CABLE-TWO-BODY
@@ -3009,7 +3010,7 @@ d664ca10a65e6f36	agree
 d69021dc30ab8b49	mj-refuses	divergence=D-FLEX-BENDING-MODEL
 d6ba5fbfb97dac44	agree
 d6c45b072765e48f	mj-refuses
-d6ce5586c3a5bd13	model:geom_pos;dyn:agree
+d6ce5586c3a5bd13	agree
 d6ce8144027a1358	agree
 d6d7031332a2c358	agree
 d70998fb4ff09add	agree
@@ -3141,7 +3142,7 @@ e083343e604651a8	ours-refused	divergence=D-NONFINITE
 e084c87e27c2430b	agree
 e0a6a88f715ffc55	agree
 e0b185d18cf2ff26	agree
-e10e05739babb371	model:geom_pos;dyn:agree
+e10e05739babb371	agree
 e114363972a0c66b	both-refuse
 e12b0ed5dc386282	agree
 e13045105fd69b2d	agree
@@ -3320,7 +3321,7 @@ ed2ac1fee980ce8c	model:meaninertia;dyn:e1:t0:qM
 ed4fa97aa1931207	agree
 ed5b53a8d605bbe7	both-refuse
 ed65d8197d4282ec	agree
-ed764489d8e4a87b	model:geom_pos;dyn:agree
+ed764489d8e4a87b	agree
 ed81a3e98e945a56	model:actuator_lengthrange;dyn:agree
 ed8bc290b90a801f	mj-refuses	divergence=D-FLEX-BEND-PINS
 ed8d322a842a1358	both-refuse
@@ -3392,6 +3393,7 @@ f27c583a1a376b80	both-refuse
 f28e0cb5ec143e85	agree
 f28fc2391fc24e7c	both-refuse
 f2cd010472fc9f84	mj-refuses
+f2cf38585d483eb4	agree
 f2e469e7eb3842d5	agree
 f325adf830e03381	ours-refused	divergence=D-MUSCLE-SENTINEL
 f332231e6e8e7a81	agree

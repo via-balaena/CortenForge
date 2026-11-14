@@ -395,8 +395,10 @@ pub struct Model {
     pub nbvhstatic: usize,
     /// The flexes' nodes, which follow the meshes' (MuJoCo's `nbvhdynamic`).
     pub nbvhdynamic: usize,
-    /// Mesh index for each geom (`None` if not a mesh geom).
-    /// Length: ngeom. Only geoms with `geom_type == GeomType::Mesh` have `Some(mesh_id)`.
+    /// Mesh index for each geom: a mesh geom's mesh, and an SDF geom's where
+    /// it names one (MuJoCo's `geom_dataid`), whose box bounds it
+    /// ([`Model::compute_geom_bounding_radii`]); `None` for any other geom.
+    /// Length: ngeom.
     pub geom_mesh: Vec<Option<usize>>,
     /// Hfield index for each geom (`None` if not an hfield geom).
     /// Length: ngeom. Only geoms with `geom_type == GeomType::Hfield` have `Some(hfield_id)`.

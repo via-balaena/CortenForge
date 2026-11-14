@@ -101,26 +101,27 @@ fn capsule_rests_on_box_as_mujoco() {
     rests_as_mujoco("box_capsule", 0.0, 0.0);
 }
 
-// The pairs below collide through `mjc_Convex` (sim-core's port): at the
-// turned pose each contact is MuJoCo's, bit for bit on the box slab, and
-// within 1.5e-9 on the mesh slab, the size of 0.1's rounding to a float
-// (MuJoCo stores mesh vertices as floats, book Rigid-loading L35). Each
-// bound is 0 where the run was MuJoCo's bit for bit, else 2.6 to 12 times
-// what was measured on macOS arm64, which each test's doc gives; the box
-// slab's cylinder's height is held to 0 on macOS arm64 alone (its test says
-// why).
+// The pairs below collide through `mjc_Convex` (sim-core's port). On macOS
+// arm64, where the golden was made, every height and every contact is
+// MuJoCo's bit for bit. A contact is of square roots and arithmetic alone,
+// so it is held to 0 on every platform; a body turns as it rests, so its
+// steps take `sin` and `cos`, which another platform's libm may round
+// otherwise: there each height is held to the bound its test gives (not
+// measured).
 
-/// A sphere-shaped ellipsoid on a box slab. Measured: height 8.3e-17,
-/// contact 0.
+/// A sphere-shaped ellipsoid on a box slab: elsewhere its height is held to
+/// 1e-15.
 #[test]
 fn ellipsoid_rests_on_box_as_mujoco() {
-    rests_as_mujoco("box_ellipsoid", 1e-15, 0.0);
+    let z_tol = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        0.0
+    } else {
+        1e-15
+    };
+    rests_as_mujoco("box_ellipsoid", z_tol, 0.0);
 }
 
-/// A cylinder on a box slab. Measured on macOS arm64: height and contact 0,
-/// every sample of the run MuJoCo's bit for bit. It turns, so the steps take
-/// `sin` and `cos`, which another platform's libm may round otherwise: there
-/// its height is held to 1e-3.
+/// A cylinder on a box slab: elsewhere its height is held to 1e-3.
 #[test]
 fn cylinder_rests_on_box_as_mujoco() {
     let z_tol = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
@@ -132,23 +133,19 @@ fn cylinder_rests_on_box_as_mujoco() {
 }
 
 /// A box, a cylinder and a three-axis ellipsoid on a convex mesh slab, the
-/// mesh through its hull. Measured on macOS arm64, where the golden was
-/// made: height 4.3e-16, 2.7e-4 and 4.0e-16; contact 8.3e-14, 8.3e-14 and
-/// 5.6e-14; held there to 1e-15 and 1e-13, on other platforms (not
-/// measured) to 1e-8. The cylinder's height is a diverged system's, held to
-/// 7e-4: MuJoCo turns the slab to its principal frame, which sim-mjcf does
-/// not (book Rigid-loading L35); with the slab in MuJoCo's frame the
-/// cylinder's run is MuJoCo's (`trajectory_parity.rs`, ledger L214).
+/// mesh through its hull, which MuJoCo turns to its principal frame, as
+/// sim-mjcf loads it (book Rigid-loading L35): elsewhere the heights are
+/// held to 1e-8, the cylinder's to 7e-4.
 #[test]
 fn box_cylinder_ellipsoid_rest_on_convex_mesh_slab_as_mujoco() {
-    let (z_tol, contact_tol) = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        (1e-15, 1e-13)
+    let (z_tol, cylinder_z_tol) = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        (0.0, 0.0)
     } else {
-        (1e-8, 1e-8)
+        (1e-8, 7e-4)
     };
-    rests_as_mujoco("mesh_box", z_tol, contact_tol);
-    rests_as_mujoco("mesh_cylinder", 7e-4, contact_tol);
-    rests_as_mujoco("mesh_ellipsoid3", z_tol, contact_tol);
+    rests_as_mujoco("mesh_box", z_tol, 0.0);
+    rests_as_mujoco("mesh_cylinder", cylinder_z_tol, 0.0);
+    rests_as_mujoco("mesh_ellipsoid3", z_tol, 0.0);
 }
 
 /// Our contacts after `forward` against MuJoCo's list: the same geoms in the
@@ -613,19 +610,19 @@ fn bodies_on_a_bumpy_height_field_as_mujoco() {
 }
 
 /// Two height fields, one reaching farther above its origin than below and
-/// one farther below: each bounding radius is MuJoCo's, from its size,
-/// sqrt(x² + y² + max(top², base²)) (`mjCGeom::GetRBound`). Measured: equal.
-/// The scene's plane and pyramid mesh are not compared: a plane's radius is
-/// infinite here, MuJoCo's 0 (ledger L173), and the mesh's is about its
-/// authored frame, where MuJoCo's is about the mesh's centre of mass (book
-/// Rigid-loading L35 adopts MuJoCo's mesh frame).
+/// one farther below, and a pyramid mesh: each bounding radius is MuJoCo's
+/// (`mjCGeom::GetRBound`), a height field's from its size, sqrt(x² + y² +
+/// max(top², base²)), the mesh's from its box in MuJoCo's mesh frame, about
+/// its centre of mass (book Rigid-loading L35). The scene's plane is not
+/// compared: a plane's radius is infinite here, MuJoCo's 0 (ledger L173).
 #[test]
-fn height_field_bounds_are_mujocos() {
+fn bounding_radii_are_mujocos() {
     let case = &golden()["bounds"];
     let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
     let want = floats(&case["rbound"]);
-    for g in [1, 2] {
-        assert_eq!(model.geom_type[g], sim_core::GeomType::Hfield);
+    let (hfield, mesh) = (sim_core::GeomType::Hfield, sim_core::GeomType::Mesh);
+    assert_eq!(model.geom_type[1..4], [hfield, hfield, mesh]);
+    for g in [1, 2, 3] {
         assert_eq!(
             model.geom_rbound[g].to_bits(),
             want[g].to_bits(),
@@ -636,16 +633,14 @@ fn height_field_bounds_are_mujocos() {
     }
 }
 
-/// A pyramid mesh, its apex 0.01 into a plane. The geom's origin is 4.49
-/// above the plane in MuJoCo's mesh frame (the centroid) and 5.99 in
-/// sim-mjcf's (the authored frame; book Rigid-loading L35): farther than the
-/// half-diagonal of the pyramid's box (3.20), within its bounding radius
-/// about the origin (MuJoCo's 4.64, ours 6.10), so the bounding-sphere filter
-/// passes the pair, as MuJoCo's. Our contacts after `forward` against
-/// MuJoCo's: the same geoms in order, each distance within 1e-13 (measured
-/// 6.2e-15) and position within 1e-14, midway between the apex and the
-/// plane (`mjc_PlaneConvex`; measured 3.1e-15 in height, the rest bit for
-/// bit).
+/// A pyramid mesh, its apex 0.01 into a plane. The geom's origin, its
+/// mesh's centre of mass (book Rigid-loading L35), is 4.49 above the plane:
+/// farther than the half-diagonal of the pyramid's box (3.20), within its
+/// bounding radius (4.64), so the bounding-sphere filter passes the pair, as
+/// MuJoCo's. Our contacts after `forward` against
+/// MuJoCo's: the same geoms in order, each distance within 1e-13 and
+/// position within 1e-14, midway between the apex and the plane
+/// (`mjc_PlaneConvex`).
 #[test]
 fn a_mesh_apex_on_a_plane_is_listed_as_mujoco() {
     let case = &golden()["bounds"];
@@ -683,35 +678,33 @@ fn a_mesh_apex_on_a_plane_is_listed_as_mujoco() {
     }
 }
 
-/// A box mesh authored with its origin at a corner, its base 0.001 into a
-/// plane, the plane in the world body and in a static body after the mesh's
-/// (so each of the narrow phase's two argument orders is reached): the
-/// plane–mesh contacts are spaced as MuJoCo's, whose `addplanemesh` skips a
-/// vertex nearer the first contact than 0.3 of `geom_rbound`
-/// (`engine_collision_convex.c:1018`) in its mesh frame, at the centre of
-/// mass along the principal axes. sim-mjcf keeps the authored frame (book
-/// Rigid-loading L35), so the spacing takes the half-diagonal of the mesh's
-/// box, which here is MuJoCo's radius (2.077) within 1e-12: three of the
-/// base's four corners, the same count and geoms as MuJoCo's, each distance
-/// within 1e-13 and each height within 1e-15, midway between its corner and
-/// the plane (`mjc_PlaneConvex`; measured 5.3e-16). Which three is not
-/// compared: the corners tie for the deepest, and the first corner's
-/// neighbours are taken in the hull graph's order, ours and MuJoCo's
-/// (registry D-HULL-ORDER; here the third differs). Before, the spacing took
-/// our `geom_rbound`, about the authored origin (4.153), and listed two.
+/// Meshes whose base is 0.001 into a plane (the collision golden's
+/// `plane_mesh`): a box authored with its origin at a corner, the plane in the
+/// world body and in a static body after the mesh's (so each of the narrow
+/// phase's two argument orders is reached); a pyramid whose radius (7.63) is
+/// not the half-diagonal of its box (5.20); a box turned 45° in its vertex
+/// data. The plane–mesh contacts are spaced as MuJoCo's, whose
+/// `addplanemesh` skips a vertex nearer the first contact than 0.3 of
+/// `geom_rbound` (`engine_collision_convex.c:1018`; ledger L176): each
+/// mesh's radius MuJoCo's bit for bit, its contacts the same count and geoms
+/// as MuJoCo's, each distance within 1e-13 and each height within 1e-15,
+/// midway between its corner and the plane (`mjc_PlaneConvex`). Which
+/// corners is not compared: the corners tie for the deepest, and the first
+/// corner's neighbours are taken in the hull graph's order, ours and
+/// MuJoCo's (registry D-HULL-ORDER).
 #[test]
 fn plane_mesh_contacts_are_spaced_as_mujoco() {
     let cases = golden()["plane_mesh"].clone();
+    let mut compared = Vec::new();
     for (name, case) in cases.as_object().expect("cases") {
         let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
         let mesh = usize::try_from(case["mesh_geom"].as_u64().expect("mesh_geom")).expect("geom");
         let rbound = case["rbound"].as_f64().expect("rbound");
-        // `geom_aabb` is the box's centre offset, then its half-extents.
-        let aabb = model.geom_aabb[mesh];
-        let half = nalgebra::Vector3::new(aabb[3], aabb[4], aabb[5]).norm();
-        assert!(
-            (half - rbound).abs() <= 1e-12,
-            "{name}: half-diagonal {half}, MuJoCo's radius {rbound}"
+        assert_eq!(
+            model.geom_rbound[mesh].to_bits(),
+            rbound.to_bits(),
+            "{name}: radius {}, MuJoCo's {rbound}",
+            model.geom_rbound[mesh]
         );
         let mut data = model.make_data();
         data.forward(&model).expect("forward");
@@ -739,7 +732,13 @@ fn plane_mesh_contacts_are_spaced_as_mujoco() {
                 c.pos.z
             );
         }
+        compared.push(name.as_str());
     }
+    assert_eq!(
+        compared,
+        ["later_body", "pyramid", "turned_box", "world"],
+        "the scenes compared"
+    );
 }
 
 /// One of each primitive (sphere, capsule, cylinder, ellipsoid, box): each
@@ -1043,6 +1042,117 @@ fn body_hierarchies_are_mujocos() {
             );
         }
     }
+}
+
+/// The turned box of sim-mjcf's `mesh_frame.rs`, posed on a free body
+/// beside a sphere (the collision golden's `mesh_frame.body`): the geoms'
+/// boxes, the body's inertial frame and the hierarchies, the body's
+/// nodes over its geoms' boxes and the mesh's over its faces after them,
+/// are MuJoCo's bit for bit (`mjCBody::ComputeBVH`,
+/// `user_objects.cc:2323-2335`; `mjCMesh::SetBoundingVolume`,
+/// `user_mesh.cc:847-870`, `:1699-1707`). The mesh's boxes are over its
+/// vertices moved to its centre of mass and principal axes, before MuJoCo
+/// rounds them to singles (`CopyVert`, `user_mesh.cc:892-896`; ledger L195
+/// (b)). The geoms are turned by written `quat`s and the values are of
+/// square roots and arithmetic alone, so their bits are the same on every
+/// platform.
+#[test]
+fn a_mesh_bodys_hierarchies_are_mujocos() {
+    let case = &golden()["mesh_frame"]["body"];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let rows = |key: &str| -> Vec<Vec<u64>> {
+        case[key]
+            .as_array()
+            .expect(key)
+            .iter()
+            .map(|r| bits(&floats(r)))
+            .collect()
+    };
+    let geoms: Vec<Vec<u64>> = model.geom_aabb.iter().map(|a| bits(a)).collect();
+    assert_eq!(geoms, rows("geom_aabb"), "geom_aabb {:?}", model.geom_aabb);
+    let ipos: Vec<Vec<u64>> = model.body_ipos.iter().map(|p| bits(p.as_slice())).collect();
+    assert_eq!(ipos, rows("body_ipos"), "body_ipos {:?}", model.body_ipos);
+    let iquat: Vec<Vec<u64>> = model
+        .body_iquat
+        .iter()
+        .map(|q| bits(&[q.w, q.i, q.j, q.k]))
+        .collect();
+    assert_eq!(
+        iquat,
+        rows("body_iquat"),
+        "body_iquat {:?}",
+        model.body_iquat
+    );
+    let counts = |key: &str| -> Vec<usize> { indices(&case[key]).into_iter().flatten().collect() };
+    assert_eq!(
+        model.body_bvhadr,
+        indices(&case["body_bvhadr"]),
+        "body_bvhadr"
+    );
+    assert_eq!(model.body_bvhnum, counts("body_bvhnum"), "body_bvhnum");
+    assert_eq!(
+        model.mesh_bvhadr,
+        indices(&case["mesh_bvhadr"]),
+        "mesh_bvhadr"
+    );
+    assert_eq!(model.mesh_bvhnum, counts("mesh_bvhnum"), "mesh_bvhnum");
+    assert_eq!(model.nbvhstatic, count(&case["nbvhstatic"]), "nbvhstatic");
+    let children: Vec<[Option<usize>; 2]> = case["bvh_child"]
+        .as_array()
+        .expect("bvh_child")
+        .iter()
+        .map(|c| {
+            let c = indices(c);
+            [c[0], c[1]]
+        })
+        .collect();
+    assert_eq!(model.bvh_child, children, "bvh_child");
+    assert_eq!(model.bvh_nodeid, indices(&case["bvh_nodeid"]), "bvh_nodeid");
+    assert_eq!(model.bvh_depth, counts("bvh_depth"), "bvh_depth");
+    let nodes: Vec<Vec<u64>> = model.bvh_aabb.iter().map(|a| bits(a)).collect();
+    assert_eq!(nodes, rows("bvh_aabb"), "bvh_aabb {:?}", model.bvh_aabb);
+}
+
+/// The turned box twice on free bodies, the second turned and overlapping
+/// the first (the collision golden's `mesh_frame.pair`): MuJoCo moves the
+/// mesh to its centre of mass and principal axes and keeps its vertices
+/// rounded to singles (`mjCMesh::Process`, `user_mesh.cc:1674-1686`;
+/// `CopyVert`, `:892-896`), as sim-mjcf loads it, so the pair's one contact
+/// is MuJoCo's bit for bit: its geoms, distance, position and normal. Its
+/// values are of square roots and arithmetic alone, so their bits are the
+/// same on every platform.
+#[test]
+fn a_mesh_pair_collides_as_mujoco_in_the_meshs_frame() {
+    let case = &golden()["mesh_frame"]["pair"];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.qpos
+        .as_mut_slice()
+        .copy_from_slice(&floats(&case["qpos"]));
+    data.forward(&model).expect("forward");
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let ours: Vec<(Vec<Option<usize>>, Vec<u64>)> = data
+        .contacts
+        .iter()
+        .map(|c| {
+            let (p, n) = (c.pos, c.normal);
+            let values = [-c.depth, p[0], p[1], p[2], n[0], n[1], n[2]];
+            (c.geom.to_vec(), bits(&values))
+        })
+        .collect();
+    let theirs: Vec<(Vec<Option<usize>>, Vec<u64>)> = case["contacts"]
+        .as_array()
+        .expect("contacts")
+        .iter()
+        .map(|w| {
+            let mut values = vec![w["dist"].as_f64().expect("dist")];
+            values.extend(floats(&w["pos"]));
+            values.extend(floats(&w["normal"]));
+            (indices(&w["geom"]), bits(&values))
+        })
+        .collect();
+    assert_eq!(ours, theirs, "contacts {:?}", data.contacts);
 }
 
 /// Scenes of bodies of several geoms, so every pair of bodies goes through the
