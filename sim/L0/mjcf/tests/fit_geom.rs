@@ -1222,12 +1222,16 @@ fn a_box_fitted_to_a_convex_mesh_is_fitted_from_its_hull() {
     assert!(wrong.is_empty(), "{}: {}", CONVEX.what, wrong.join("; "));
 }
 
-/// A convex mesh only a fitted geom names: MuJoCo 3.5.0 crashes on it (ledger
-/// L409); sim-mjcf fits the geom from the mesh's convex hull, as MuJoCo fits
-/// it where a mesh geom names the mesh too.
+/// A convex mesh only a fitted geom names: [`CONVEX`]'s document without its
+/// mesh geom. MuJoCo 3.5.0 crashes loading it (ledger L409), so it can have
+/// no parity-census golden; it is made here at run time rather than written
+/// out, which keeps it out of the census. sim-mjcf fits the geom from the
+/// mesh's convex hull, as MuJoCo fits it where a mesh geom names the mesh too.
 #[test]
 fn a_convex_mesh_only_a_fitted_geom_names_fits_as_beside_a_mesh_geom() {
-    let model = load_model(r#"<mujoco><compiler /><asset><mesh name="m" inertia="convex" vertex="0 0 0  2 0 0  2 1 0  1 1 0  1 2 0  0 2 0  0 0 1  2 0 1  2 1 1  1 1 1  1 2 1  0 2 1" face="0 2 1  0 3 2  0 4 3  0 5 4  6 7 8  6 8 9  6 9 10  6 10 11  0 1 7  0 7 6  1 2 8  1 8 7  2 3 9  2 9 8  3 4 10  3 10 9  4 5 11  4 11 10  5 0 6  5 6 11"/></asset><worldbody><body pos="0 0 1"><freejoint/><geom type="box" mesh="m" pos="0.1 0.2 0.3" quat="0.9 0.1 -0.2 0.3"/></body></worldbody></mujoco>"#).unwrap();
+    let mesh_geom = r#"<geom type="mesh" mesh="m"/>"#;
+    assert_eq!(CONVEX.xml.matches(mesh_geom).count(), 1, "one mesh geom");
+    let model = load_model(&CONVEX.xml.replace(mesh_geom, "")).unwrap();
     // The fitted geom only: the body's mass is that geom's alone here.
     let wrong = geom_distances(&model, &CONVEX.geoms[..1]);
     assert!(wrong.is_empty(), "{}", wrong.join("; "));

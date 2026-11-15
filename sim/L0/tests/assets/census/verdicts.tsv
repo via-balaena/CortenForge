@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1956
+# agree_floor 1978
 001bc4149d608b24	agree
 002cac6fc120ff66	both-refuse
 00308b83da9d8bab	agree
@@ -9,6 +9,7 @@
 004befaf5cbd019e	agree
 004c75ce4a269b7d	both-refuse
 00717818db27eb59	agree
+00748cba11157b79	agree
 009cbd7c49c0d8ea	both-refuse
 00a14f6697237365	agree
 00b4a65d39260900	both-refuse
@@ -28,6 +29,7 @@
 01a127b85811261b	agree
 01acb803c047ad69	agree
 01b111c3b5fde4e5	agree
+01c83c45176b508f	both-refuse
 01c8e6f213fe086a	agree
 01c95f378fcaff8a	agree
 01f3e04de8030e0e	both-refuse
@@ -200,6 +202,7 @@
 0d6639de8c4d3c57	agree
 0d694cf193cb6ac6	agree
 0d86ec1420cfe2ac	both-refuse
+0d8bb1fd9de4b33e	agree
 0d93f635d2b0cfba	agree
 0d9a47b254132e2d	agree
 0dae986a6b2fc252	agree
@@ -263,6 +266,7 @@
 11c09d44bd2ef843	both-refuse
 11ce1fd51d2db2e8	mj-refuses
 11d15f269f210f88	both-refuse
+11f9bf3806782bba	both-refuse
 127d76572880c247	agree
 128fccf8b94496a2	agree
 129c3d623b9f4777	both-refuse
@@ -565,11 +569,13 @@
 280671eca694f13b	agree
 284dc51e979ce392	agree
 28531644cef9c059	both-refuse
+2864284a5e66572f	agree
 28695e44d434cd12	agree
 286a922da50ffdff	both-refuse
 286b5b47ad2618b3	agree
 287f29a683d013af	both-refuse
 288247e3107ef7b3	agree
+2885b48de101302a	agree
 288ca8b38d7df547	agree
 28b0030aa993c0e7	both-refuse
 28b510f132b72421	agree
@@ -647,6 +653,7 @@
 2e65ca21a113f307	agree
 2e6922c86dfcec79	agree
 2e6b9435afa024ad	both-refuse
+2e7362a83e7650e2	agree
 2e814103158efb0e	agree
 2e81eb736f87ed1e	both-refuse
 2e8456331417d35e	ours-refused	divergence=D-PAIR-NO-GEOM
@@ -939,6 +946,7 @@
 4096253fce88265b	mj-refuses
 40a1be20e0e63216	both-refuse
 40b62acce7a6ef70	agree
+40ce9929294d8a35	agree
 40defbc5e1859ad6	both-refuse
 41138d35535a797d	both-refuse
 4114a4db80768455	agree
@@ -1053,6 +1061,7 @@
 4946ef64d499a482	agree
 495d970f26e576f4	ours-refused	divergence=D-AUTO-RANGE
 496f218664f79116	model:eq_data;dyn:e1:t0:qfrc_constraint
+497cc645b7886ab1	agree
 49803276715a9956	agree
 4984d5606f8039a7	both-refuse
 49876f34be2305c4	agree
@@ -1377,6 +1386,7 @@
 5fa75b4af3167da8	agree
 5facc585cc0fc3f6	agree
 5fb384b981ad45e4	both-refuse
+5fb8988d1a55f730	agree
 5fddbc7f8533ead9	both-refuse
 5fe11cf81bf72aa8	agree
 5fe75956ac349da7	both-refuse
@@ -1406,6 +1416,7 @@
 617d07a73d2867c6	agree
 617feadaa55ecbb9	both-refuse
 61883fea4f6bc7bf	both-refuse
+61ab5d7061486648	agree
 61bcc5b7e03bc00b	both-refuse
 61c303dc2aa0dacc	agree
 61c96eace9e9a774	agree
@@ -1418,6 +1429,7 @@
 6206dbc55a616295	both-refuse
 6220a39646c07ebf	agree
 62243c1caa859851	both-refuse
+62294fbd6e6491e5	agree
 623f53dd49497ef3	agree
 62882178ff21d928	agree
 628bf5d758b9029d	both-refuse
@@ -1473,6 +1485,7 @@
 661d190a6dd41673	agree
 6621b540b38fc3da	agree
 6632f74549b52b4b	agree
+664ce0fbb3a99f3d	agree
 6657b29beda3ae17	both-refuse
 6699b432ef411f31	agree
 66b5ca2c48912e6f	model:actuator_lengthrange;dyn:agree
@@ -1739,9 +1752,11 @@
 79a60c54083aba77	both-refuse
 79ca1b151ea116fd	both-refuse
 79cbf6b06b4c598a	both-refuse
+79dfe4a4e1600aa8	agree
 79e7ab6845bce0f3	agree
 79f02feec9d77a69	both-refuse
 79f1fc77f4fb8fc7	agree
+7a2fbb84262d7d32	model:meaninertia;dyn:e1:t0:qM
 7a507d5829d3f4a3	both-refuse
 7a5723063accb0ec	agree
 7a6282d73df048f8	agree
@@ -1782,6 +1797,7 @@
 7d10a1c8c12244e9	agree
 7d1db7cb4a240466	agree
 7d2802377683057d	both-refuse
+7d2b989a009f38e2	both-refuse
 7d34184c5e7fc697	mj-refuses
 7d45e1679577e6fc	agree
 7d4b71cb3bc9b4a2	both-refuse
@@ -1790,6 +1806,7 @@
 7dacdd0453660dca	agree
 7dc520b04e1680c8	both-refuse
 7de1c0e574aa1af1	agree
+7e0cb1d4bae00a92	agree
 7e14ae04107d2516	both-refuse
 7e1a2b2b2f274120	agree
 7e21e570fe088ee0	both-refuse
@@ -1940,6 +1957,7 @@
 88b2e00f01eff273	both-refuse
 88ce1c843f6a213d	both-refuse
 88df115039e3d8fd	agree
+88e7bc3ee3429d53	agree
 890dee7740613285	agree
 8911fdab9393973e	both-refuse
 8935ec214f9aa345	both-refuse
@@ -2578,6 +2596,7 @@ b71be52f3d580539	both-refuse
 b72fbd2207eefae7	both-refuse
 b73c71c2c7851f39	both-refuse
 b7406ed70a17382d	both-refuse
+b740856b5c2cfc1b	agree
 b74e8abfa13f6391	agree
 b7988ede9c4a5ad3	agree
 b79ab18fe4595f3b	both-refuse
@@ -2717,6 +2736,7 @@ c229b22b887addbf	mj-refuses
 c23923e14e0890cf	agree
 c25861608fdb711e	agree
 c279f89418b659bd	agree
+c284607ef251761a	both-refuse
 c286526a9c5e4976	both-refuse
 c29ddae1de6cd2b0	agree
 c2bb87cb6de8a8d2	ours-refused	divergence=D-MUSCLE-NEGATIVE
@@ -2741,6 +2761,7 @@ c43a7096df2c49fc	agree
 c43cae2c09fd3c87	agree
 c45b624894b8fdcb	both-refuse
 c45c485d72f16dbf	both-refuse
+c46b5e340ec569e6	agree
 c471b6791d20e78e	agree
 c481249b616bb25b	both-refuse
 c481c5e0bd03c204	both-refuse
@@ -2827,6 +2848,7 @@ c8ee25bd6fa259b7	agree
 c91a9f0cf5e95765	agree
 c9294ff1c7ba3ccd	agree
 c9584c4416eb95f8	agree
+c9643d500f394767	agree
 c990b8efd41a3f09	agree
 c9930e1f04bb9aff	model:actuator_lengthrange;dyn:agree
 c997d5a10393dcff	both-refuse
@@ -2987,6 +3009,7 @@ d497c31e8fc541c8	agree
 d4ac308432e38b40	agree
 d4c96bdb9df21bc2	both-refuse
 d4cfa13627d8d35e	both-refuse
+d4dcd045f7dbe075	agree
 d4ef2aa311a049f8	agree
 d4f39de4a8d85efc	agree
 d4f5cf758c82747b	agree
@@ -3021,6 +3044,7 @@ d7437218ee6824a7	agree
 d743cf4702e34daf	agree
 d74d6ff145adf3ff	both-refuse
 d74fc97074519fd4	agree
+d75f977c93753bcc	agree
 d7687002cbdc2625	mj-refuses
 d7701557afdbe155	agree
 d78b2b1753a5a817	agree
@@ -3180,6 +3204,7 @@ e37ed170307f7722	model:actuator_lengthrange;dyn:agree
 e3917949bb024769	both-refuse
 e3a4756f9bee0b9e	both-refuse
 e3b168b0508f75de	both-refuse
+e40518b33dd48acd	agree
 e43367e1bdad3dd7	agree
 e43b2c6e955bb0f4	both-refuse
 e4449d643899354a	agree
@@ -3353,6 +3378,7 @@ efd8bab297bd7922	both-refuse
 efdbfce25c79d47d	both-refuse
 efed67461e1078d6	agree
 f0100b3541730ef7	agree
+f016a53cec7b2b1e	agree
 f01e5e2d1650cab3	agree
 f064d197b7771828	both-refuse
 f08003347ea2f707	both-refuse
@@ -3455,6 +3481,7 @@ f61a86172b2801cc	both-refuse
 f628a395aa454aca	agree
 f6381d51f75b2ee1	both-refuse
 f6619ff4933c7768	both-refuse
+f6803cd63fb258d2	agree
 f6881ce2578560ae	mj-refuses	divergence=D-CABLE-TWO-BODY
 f6882954f2a1ffda	both-refuse
 f6ae26d89413f653	both-refuse
@@ -3530,6 +3557,7 @@ fb8f17ffe831871a	agree
 fbed1c9d09f2a314	both-refuse
 fbed86a620d8ae1b	model:actuator_lengthrange;dyn:agree
 fc20ac3b75b19a48	agree
+fc3ee7b4d91300ae	both-refuse
 fc974f045921927a	both-refuse
 fc99ebfb217ade84	both-refuse
 fca3ab7011051780	both-refuse
