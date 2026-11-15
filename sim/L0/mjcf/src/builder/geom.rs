@@ -93,8 +93,8 @@ impl ModelBuilder {
             None => size,
         };
         if let Some(fit) = &fit {
-            // A check of the model as written, so named as the checks after
-            // the build name a geom `fusestatic` moved (`check_bodies`).
+            // A check of the model as written, so named by the geom's index
+            // and body before `fusestatic` (MuJoCo's index).
             let written = || {
                 self.written_geom_location(geom_id, geom.name.as_deref())
                     .unwrap_or_else(at)
@@ -182,8 +182,9 @@ impl ModelBuilder {
     }
 
     /// Where the builder's geom `geom` was written: its index and its body
-    /// before `fusestatic` moved it, as `check_bodies` names a geom; `None`
-    /// without fusion, or for a geom the fusion record does not hold.
+    /// before `fusestatic` moved it, as `check_bodies` names a geom fusion
+    /// moved; `None` without fusion, or for a geom the fusion record does not
+    /// hold.
     fn written_geom_location(&self, geom: usize, name: Option<&str>) -> Option<Location> {
         let turns = self.compile_turns.as_ref()?;
         let index = *turns.geom_index.get(geom)?;

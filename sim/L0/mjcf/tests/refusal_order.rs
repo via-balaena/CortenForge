@@ -124,10 +124,10 @@
 //! geom as it compiles it; a size those checks refuse in a later body or a
 //! site is named before a fitted size MuJoCo refuses: `FIT_COSTS` (ledger
 //! L353). A fitted size is named before a fault this crate checks after
-//! the build that MuJoCo meets first (a condim, a plane in a moving body, a
-//! negative mass, an inertial's `fullinertia`): `FIT_FIRST_COSTS`. A geom's
-//! height field is checked as the model is validated, before its condim and
-//! a mesh geom's mesh, which MuJoCo checks first: `HFIELD_COSTS`.
+//! the build (`check_bodies`) that MuJoCo meets first: `FIT_FIRST_COSTS`. A
+//! geom's height field is checked as the model is validated, before its
+//! condim and a mesh or SDF geom's mesh, which MuJoCo checks first:
+//! `HFIELD_COSTS`.
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, with the reason its row gives as MuJoCo's (RL-6a's measured
@@ -3185,13 +3185,13 @@ fn a_fitted_size_beside_a_size_checked_before_the_build_is_named_as_ledgered() {
 }
 
 /// Two faults, a fitted size MuJoCo 3.5.0 refuses and a fault this crate
-/// checks after it builds the model (`check_bodies`): a geom's condim, a
-/// plane in a moving body, a negative mass, or an inertial's `fullinertia`
-/// beside a diagonal one, in the fitted geom or before it. MuJoCo meets the
-/// other first, as it compiles each body and geom in turn; this crate checks
-/// the fitted size as it builds the body, before those checks, and names it:
-/// ledger L353 holds each. `(what, document, MuJoCo 3.5.0's reason, this
-/// crate's error)`, measured 2026-11-14 (review round 1, RA-2).
+/// checks after it builds the model (`check_bodies`), in the fitted geom or
+/// before it. MuJoCo meets the other first, as it compiles each body and
+/// geom in turn; this crate checks the fitted size as it builds the body,
+/// before those checks, and names it: ledger L353 holds the class. The rows
+/// are the documents review round 1 measured (RA-2), not one for each fault
+/// `check_bodies` makes. `(what, document, MuJoCo 3.5.0's reason, this
+/// crate's error)`, measured 2026-11-14.
 const FIT_FIRST_COSTS: &[(&str, &str, &str, &str)] = &[
     (
         "a capsule fitted to a flat mesh's box, its half length not above 0, with a condim of 2",
@@ -3251,12 +3251,11 @@ fn a_fitted_size_beside_a_fault_checked_after_the_build_is_named_as_ledgered() {
 }
 
 /// Two faults in one geom, a height field it names but is not, and a fault
-/// MuJoCo 3.5.0 checks before that: its condim, or a mesh geom's missing
-/// mesh (`user_objects.cc:3651-3664`). This crate checks the height field as
-/// it validates, before both (the condim as it builds the model, the mesh
-/// as it resolves the geom's assets), and names the height field: ledger
+/// MuJoCo 3.5.0 checks before that: its condim, or a mesh or SDF geom's
+/// missing mesh (`user_objects.cc:3651-3664`). This crate checks the height
+/// field as it validates, before both, and names the height field: ledger
 /// L353 holds each. `(what, document, MuJoCo 3.5.0's reason, this crate's
-/// error)`, measured 2026-11-14 (review round 1, RW-4 and RB-2).
+/// error)`, measured 2026-11-14 (review round 1, RW-4, RB-2; F1-5).
 const HFIELD_COSTS: &[(&str, &str, &str, &str)] = &[
     (
         "a sphere with a condim of 2 that names a height field",
@@ -3267,6 +3266,12 @@ const HFIELD_COSTS: &[(&str, &str, &str, &str)] = &[
     (
         "a mesh geom that names no mesh but a height field",
         r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><hfield name="h" nrow="2" ncol="2" elevation="0 0 0 0" size="1 1 0.1 0.1"/></asset><worldbody><geom type="mesh" hfield="h"/></worldbody></mujoco>"#,
+        "mesh geom '' (id = 0) must have valid meshid",
+        "hfield geom must have valid hfieldid (geom #0 in body 'world')",
+    ),
+    (
+        "an SDF geom that names no mesh but a height field",
+        r#"<mujoco><asset><hfield name="h" nrow="2" ncol="2" elevation="0 0 0 0" size="1 1 0.1 0.1"/></asset><worldbody><geom type="sdf" hfield="h"/></worldbody></mujoco>"#,
         "mesh geom '' (id = 0) must have valid meshid",
         "hfield geom must have valid hfieldid (geom #0 in body 'world')",
     ),

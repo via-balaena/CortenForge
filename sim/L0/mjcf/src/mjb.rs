@@ -1230,11 +1230,12 @@ mod tests {
 
     /// `tests/assets/mjb/pinned.mjb` holds `pinned.xml` saved at this
     /// [`MJB_VERSION`] (`MJB_PIN_WRITE=1` writes it again). It decodes to the
-    /// document's model only while what an [`MjcfModel`] holds and the
-    /// version both stay as they were when it was written: a field added,
-    /// removed or reordered with the version unchanged decodes it to another
-    /// model or not at all, and a new version refuses it. So the layout, the
-    /// version and its doc change together, and the file is written again.
+    /// document's model only while the version and the fields the document
+    /// sets keep their places and types: a change to those with the version
+    /// unchanged decodes it to another model or not at all, and a new version
+    /// refuses it. It cannot see a type the document does not use, nor a field
+    /// dropped after the last one it sets (the decoder leaves trailing bytes
+    /// unread).
     #[test]
     fn the_pinned_file_decodes_to_its_document() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/assets/mjb");
