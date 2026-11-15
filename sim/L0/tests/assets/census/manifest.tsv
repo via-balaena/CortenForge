@@ -3717,3 +3717,12 @@ fc3ee7b4d91300ae	sim/L0/mjcf/tests/refusal_order.rs:3154
 301c14c5476792c0	sim/L0/mjcf/tests/fit_geom.rs:1217
 a5ad3977670cfd06	sim/L0/mjcf/tests/fit_geom.rs:1241
 bb356da7ed54571b	sim/L0/mjcf/tests/fit_geom.rs:1245
+22915da748650f69	sim/L0/mjcf/tests/refusal_order.rs:3228
+3033e7e048bc087b	sim/L0/mjcf/tests/refusal_order.rs:3222
+33d1bd8a4c94bc24	sim/L0/mjcf/tests/refusal_order.rs:3210
+38d9b43acd8dee97	sim/L0/mjcf/tests/refusal_order.rs:3234
+5e6ba39988e24afd	sim/L0/mjcf/tests/refusal_order.rs:3198
+6dcb83729a75855f	sim/L0/mjcf/tests/refusal_order.rs:3263
+b9c5adf926d3a0ab	sim/L0/mjcf/tests/refusal_order.rs:3269
+c505ad83f0604e99	sim/L0/mjcf/tests/refusal_order.rs:3216
+e6d37da9eb757338	sim/L0/mjcf/tests/refusal_order.rs:3204
