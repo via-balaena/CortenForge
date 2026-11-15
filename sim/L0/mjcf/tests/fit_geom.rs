@@ -1232,6 +1232,45 @@ fn a_fused_childs_fitted_geom_is_refused_where_it_was_written() {
     }
 }
 
+/// A plane and an ellipsoid fitted to a cube mesh only it names, 0.01 into
+/// the plane on a vertical slide; then the same ellipsoid written out, with
+/// MuJoCo's fitted size, position and orientation (review round 1, RA-1).
+const PLANE_ELLIPSOID: [(&str, &str); 2] = [
+    (
+        "fitted",
+        r#"<mujoco><asset><mesh name="c" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><geom type="plane" size="0 0 1"/><body pos="0 0 0.49"><joint type="slide" axis="0 0 1"/><geom type="ellipsoid" mesh="c"/></body></worldbody></mujoco>"#,
+    ),
+    (
+        "written",
+        r#"<mujoco><worldbody><geom type="plane" size="0 0 1"/><body pos="0 0 0.49"><joint type="slide" axis="0 0 1"/><geom type="ellipsoid" size="0.5 0.5 0.5"/></body></worldbody></mujoco>"#,
+    ),
+];
+
+/// MuJoCo's one contact for the written ellipsoid: its distance and position.
+const PLANE_ELLIPSOID_CONTACT: (f64, [f64; 3]) =
+    (-0.010000000000000009, [0.0, 0.0, -0.0050000000000000044]);
+
+/// A fitted ellipsoid meets a plane as the ellipsoid it was fitted to: one
+/// contact, MuJoCo's for the written one bit for bit (registry
+/// `D-FIT-ELLIPSOID-PLANE`, wrong-value). MuJoCo 3.5.0 lists two more for the
+/// fitted one, at the cube's corners below the plane: its plane–convex
+/// collision takes a geom that holds a mesh's index for a mesh
+/// (`engine_collision_convex.c:1074-1104`), and a fitted geom keeps its mesh's.
+#[test]
+fn a_fitted_ellipsoid_meets_a_plane_as_the_ellipsoid_it_was_fitted_to() {
+    let (dist, pos) = PLANE_ELLIPSOID_CONTACT;
+    for (what, xml) in PLANE_ELLIPSOID {
+        let model = load_model(xml).unwrap();
+        let mut data = model.make_data();
+        data.forward(&model).unwrap();
+        let got: Vec<_> = data.contacts[..data.ncon]
+            .iter()
+            .map(|c| ((-c.depth).to_bits(), bits([c.pos.x, c.pos.y, c.pos.z])))
+            .collect();
+        assert_eq!(got, [(dist.to_bits(), bits(pos))], "{what}");
+    }
+}
+
 /// A box fitted to a convex mesh, from the mesh's hull: MuJoCo's geoms and
 /// body to the hulls' rounding.
 #[test]

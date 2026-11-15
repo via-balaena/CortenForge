@@ -399,7 +399,8 @@ pub struct Model {
     /// it names one (MuJoCo's `geom_dataid`), whose box bounds it
     /// ([`Model::compute_geom_bounding_radii`]); `None` for any other geom,
     /// a primitive fitted to the mesh it names too, where MuJoCo 3.5.0's
-    /// `geom_dataid` keeps the mesh's index. Length: ngeom.
+    /// `geom_dataid` keeps the mesh's index (its plane–ellipsoid collision
+    /// reads it: registry `D-FIT-ELLIPSOID-PLANE`). Length: ngeom.
     pub geom_mesh: Vec<Option<usize>>,
     /// Hfield index for each geom (`None` if not an hfield geom).
     /// Length: ngeom. Only geoms with `geom_type == GeomType::Hfield` have `Some(hfield_id)`.
