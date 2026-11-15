@@ -1209,6 +1209,29 @@ fn a_fitted_geom_of_negative_mass_is_refused() {
     }
 }
 
+/// A capsule fitted to a flat mesh's box, its half length not above 0, in a
+/// static child `fusestatic` fuses into its parent, after a sibling body's
+/// two geoms: MuJoCo's document and reason (review round 1, RA-4).
+const FUSED: (&str, &str, &str) = (
+    "a fitted capsule in a fused static child, after a sibling's geoms",
+    r#"<mujoco><compiler fitaabb="true" fusestatic="true"/><asset><mesh name="f" vertex="-1 -1 -0.1  1 -1 -0.1  1 1 -0.1  -1 1 -0.1  -1 -1 0.1  1 -1 0.1  1 1 0.1  -1 1 0.1" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="a" pos="0 0 1"><freejoint/><geom size="0.1"/><body name="c" pos="1 0 0"><joint type="hinge"/><geom size="0.1"/><geom size="0.1"/></body><body name="b" pos="0.1 0 0"><geom type="capsule" mesh="f"/></body></body></worldbody></mujoco>"#,
+    "size 1 must be positive",
+);
+
+/// A fused static child's fitted geom refused with MuJoCo's reason where it
+/// was written, as this crate names a geom `fusestatic` moved: MuJoCo's
+/// geom 3, in body `b`.
+#[test]
+fn a_fused_childs_fitted_geom_is_refused_where_it_was_written() {
+    let (what, xml, reason) = FUSED;
+    match load_model(xml) {
+        Err(e)
+            if e.to_string()
+                == format!("invalid size on <geom>: {reason} (geom #3 in body 'b')") => {}
+        other => panic!("{what}: {other:?}"),
+    }
+}
+
 /// A box fitted to a convex mesh, from the mesh's hull: MuJoCo's geoms and
 /// body to the hulls' rounding.
 #[test]

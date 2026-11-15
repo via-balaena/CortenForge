@@ -3714,3 +3714,4 @@ e40518b33dd48acd	sim/L0/mjcf/tests/fit_geom.rs:655
 f016a53cec7b2b1e	sim/L0/mjcf/tests/fit_geom.rs:813
 f6803cd63fb258d2	sim/L0/mjcf/tests/fit_geom.rs:856
 fc3ee7b4d91300ae	sim/L0/mjcf/tests/refusal_order.rs:3154
+301c14c5476792c0	sim/L0/mjcf/tests/fit_geom.rs:1217
