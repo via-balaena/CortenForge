@@ -563,8 +563,9 @@ fn hfield_geom_size(asset: &[f64; 4]) -> [f64; 3] {
 }
 
 /// The sizes MuJoCo 3.5.0 computes a geom's volume and inertia from: its size
-/// as resolved (`check_geom_size` has validated every place its type reads),
-/// or a height field's from its asset ([`hfield_geom_size`]).
+/// as resolved (`check_geom_size` has validated every place its type reads,
+/// or `process_geom` a fitted geom's), or a height field's from its asset
+/// ([`hfield_geom_size`]).
 fn mass_sizes(geom: &MjcfGeom, hfield_size: Option<&[f64; 4]>) -> [f64; 3] {
     if geom.geom_type == Some(MjcfGeomType::Hfield) {
         hfield_size.map_or([0.0; 3], hfield_geom_size)

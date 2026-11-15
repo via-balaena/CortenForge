@@ -1360,7 +1360,8 @@ pub struct MjcfGeom {
     pub conaffinity: Option<i32>,
     /// Contact dimensionality (condim).
     pub condim: Option<i32>,
-    /// Mesh asset name (for type="mesh").
+    /// Mesh asset name: a mesh or SDF geom's mesh, or the mesh a sphere,
+    /// capsule, cylinder, ellipsoid or box is fitted to.
     pub mesh: Option<String>,
     /// Height field asset name (for type="hfield").
     pub hfield: Option<String>,

@@ -94,7 +94,9 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 /// - Each pair's condim one of 1, 3, 4 or 6, then the geoms it names, after
 ///   the assets (a geom named "" only where the model has no unnamed geom)
 /// - Each geom's height field (a height-field geom names one, no other geom
-///   does), then its size, and each site's type and size, after the pairs
+///   does), then its size (a primitive's that names a mesh once it is
+///   fitted, as the model is built), and each site's type and size, after
+///   the pairs
 /// - Actuators reference valid joints
 /// - An inertial's mass and diagonal inertia finite (if present)
 /// - Valid simulation options
@@ -516,8 +518,9 @@ fn check_sizes(model: &MjcfModel) -> Result<()> {
 /// (`:3651-3659`); sim-mjcf checks them later (`builder::body::check_bodies`,
 /// the builder's `resolve_geom_asset_links`), so a geom with one of those
 /// faults and this one is refused for this one, where MuJoCo names the
-/// other; and the parser refuses a size that is not finite, which MuJoCo
-/// checks after this (ledger L353).
+/// other (`refusal_order.rs` `HFIELD_COSTS`); the resolve pass refuses a
+/// `fromto` before this, and the parser a size that is not finite, both of
+/// which MuJoCo checks after this (ledger L353).
 fn check_geom_hfield(geom: &MjcfGeom, at: impl Fn() -> Location) -> Result<()> {
     let is_one = geom.geom_type == Some(MjcfGeomType::Hfield);
     let names_one = geom.hfield.as_deref().is_some_and(|h| !h.is_empty());
@@ -540,7 +543,8 @@ fn check_geom_hfield(geom: &MjcfGeom, at: impl Fn() -> Location) -> Result<()> {
 /// (`builder::fit`, `process_geom`), so its written size is not checked
 /// here. MuJoCo refuses a plane or height field that names a mesh, in the
 /// words of its `fitaabb` mode (`user_mesh.cc:1008-1009`, `:1047`), and so
-/// does this.
+/// does this; a plane in a moving body it refuses first, as not static,
+/// where this names the mesh (ledger L353).
 /// Other numeric fields
 /// (orientation, friction, density, solver params) are out of scope here;
 /// mass/inertia have separate validation

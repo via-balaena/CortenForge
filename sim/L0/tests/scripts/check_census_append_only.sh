@@ -3,7 +3,9 @@
 # (assets/census/docs/) and MuJoCo's golden data for it (assets/census/golden/).
 # Both only gain files: a doc's golden is never regenerated or edited to make it
 # agree, and a doc is never edited or removed, so the census can only see more.
-# The manifest only gains lines, and names each doc and only docs. The four
+# bounds.json (MuJoCo's geom bounds for the goldens written before they held
+# them) is written once, like a golden. The manifest only gains lines, and
+# names each doc and only docs. The four
 # files the census rewrites by design — golden/meta.json, verdicts.tsv,
 # divergences.tsv and manifest.tsv — are the exceptions to "no modified file".
 #

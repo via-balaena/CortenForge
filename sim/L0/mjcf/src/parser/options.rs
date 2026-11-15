@@ -335,10 +335,10 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart, compiler: &mut MjcfCompiler) 
         ));
     }
 
-    // Deferred attributes (stored but no behavior yet)
     if let Some(fitaabb) = a.boolean("fitaabb")? {
         compiler.fitaabb = fitaabb;
     }
+    // Deferred attributes (stored but no behavior yet)
     if let Some(usethread) = a.boolean("usethread")? {
         compiler.usethread = usethread;
     }

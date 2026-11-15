@@ -913,8 +913,8 @@ const CONVEX: Loads = Loads {
 };
 
 /// The most a value of [`CONVEX`] may be from MuJoCo's, times the larger of 1
-/// and MuJoCo's magnitude: the largest measured, 7.8e-16 (a stored vertex),
-/// 2026-11-14.
+/// and MuJoCo's magnitude: the largest measured, 8.3e-16 (the body's second
+/// principal moment), 2026-11-14.
 const HULL_ROUNDING: f64 = 1e-14;
 
 /// `(what, document, MuJoCo's reason)`: a fitted geom's mass is checked on
