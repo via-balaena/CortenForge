@@ -472,9 +472,11 @@ pub struct MjcfCompiler {
     pub discardvisual: bool,
     /// Fuse static (jointless) bodies into their parent.
     pub fusestatic: bool,
-    // Deferred attributes (stored, no behavior yet):
-    /// Fit AABBs to geom groups.
+    /// Fit a sphere, capsule, cylinder, ellipsoid or box that names a mesh to
+    /// the mesh's bounding box in its own frame, rather than to its
+    /// equivalent inertia box (MuJoCo's `fitaabb`).
     pub fitaabb: bool,
+    // Deferred attributes (stored, no behavior yet):
     /// Enable multi-threaded compilation.
     pub usethread: bool,
     /// Align free joints to body frame.
