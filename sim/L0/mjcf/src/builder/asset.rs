@@ -1,8 +1,9 @@
 //! Asset path resolution for MJCF mesh, hfield, and texture files.
 //!
-//! Implements MuJoCo's path resolution rules: `strippath`, `assetdir`,
-//! `meshdir`, and `texturedir` compiler settings are applied in the correct
-//! priority order to locate asset files on disk.
+//! An asset's path is built as MuJoCo 3.5.0 builds it, as text: `strippath`,
+//! `meshdir` or `texturedir` (else `assetdir`) and the model's directory
+//! applied in its order, `/` and `\` both separators, `.` and `..` reduced
+//! by the text ([`resolve_asset_path`]).
 
 use std::path::{Path, PathBuf};
 
@@ -18,14 +19,21 @@ pub enum AssetKind {
     Texture,
 }
 
-/// Resolve an asset file path using compiler path settings.
+/// Resolve an asset file path as MuJoCo 3.5.0 resolves it.
 ///
-/// # Path Resolution Rules (matches MuJoCo exactly)
-///
-/// 1. If `strippath` is enabled, strip directory components from `file_path`
-/// 2. If the result is absolute, use it directly
-/// 3. Otherwise, try type-specific dir (`meshdir`/`texturedir`), then `assetdir`,
-///    then bare `base_path`
+/// MuJoCo reduces every path it reads (`FilePath`, `PathReduce`,
+/// `user_util.cc:1006-1035`; [`path_reduce`]): `/` and `\` both separate, on
+/// every platform. The `file` is reduced as it is read (`ReadAttrFile`,
+/// `xml_util.cc:760-768`); under `strippath` only its part past the last
+/// separator is kept (`mjuu_strippath`, `user_util.cc:768-781`); the type's
+/// directory (`meshdir` or `texturedir`, else `assetdir`,
+/// `xml_native_reader.cc:1124-1135`) is put before it
+/// unless it is absolute ([`combine`]), and the two reduced together
+/// (`mjCMesh::TryCompile`, `user_mesh.cc:706-719`); and a path still
+/// relative is opened from the model's directory, the two reduced together
+/// again (`VFS::Open`, `user_vfs.cc:151-152`). So `..` is taken away by its text, not
+/// by the file system: `sub/nowhere/../m.obj` is `sub/m.obj` whether or not
+/// `sub/nowhere` exists.
 ///
 /// # Errors
 ///
@@ -38,45 +46,31 @@ pub fn resolve_asset_path(
     compiler: &MjcfCompiler,
     kind: AssetKind,
 ) -> Result<PathBuf, String> {
-    // A9. strippath: strip directory components, keeping only the base filename.
-    let file_name = if compiler.strippath {
-        Path::new(file_path)
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_else(|| file_path.to_string())
-    } else {
-        file_path.to_string()
-    };
-
-    let path = Path::new(&file_name);
-
-    // Absolute paths are used directly
-    if path.is_absolute() {
-        if !path.exists() {
-            return Err(format!("asset file not found: '{}'", path.display()));
-        }
-        return Ok(path.to_path_buf());
+    let mut file = path_reduce(file_path);
+    if compiler.strippath
+        && let Some(cut) = file.rfind(['/', '\\'])
+    {
+        file = file[cut + 1..].to_string();
     }
-
-    // A3. Type-specific directory takes precedence over assetdir.
     let type_dir = match kind {
         AssetKind::Mesh => compiler.meshdir.as_deref(),
         AssetKind::Texture => compiler.texturedir.as_deref(),
     };
-
-    // Try: type-specific dir, then assetdir, then bare base_path
-    let resolved = if let Some(dir) = type_dir.or(compiler.assetdir.as_deref()) {
-        let dir_path = Path::new(dir);
-        if dir_path.is_absolute() {
-            dir_path.join(path)
-        } else if let Some(base) = base_path {
-            base.join(dir_path).join(path)
-        } else {
-            // No base path but relative dir — try dir/filename as-is
-            dir_path.join(path)
-        }
+    let path = match type_dir.or(compiler.assetdir.as_deref()) {
+        Some(dir) => path_reduce(&combine(&path_reduce(dir), &file)),
+        None => file,
+    };
+    let resolved = if !abs_prefix(&path).is_empty() {
+        PathBuf::from(&path)
     } else if let Some(base) = base_path {
-        base.join(path)
+        match base.to_str() {
+            Some(base) => PathBuf::from(path_reduce(&combine(base, &path))),
+            None => base.join(&path),
+        }
+    } else if type_dir.or(compiler.assetdir.as_deref()).is_some() {
+        // No model directory: the directory and file, relative to the
+        // process's working directory, as before.
+        PathBuf::from(&path)
     } else {
         return Err(format!(
             "asset file '{file_path}' is relative but no base path provided (use load_model_from_file or pass base_path to model_from_mjcf)"
@@ -90,8 +84,65 @@ pub fn resolve_asset_path(
             resolved.display()
         ));
     }
-
     Ok(resolved)
+}
+
+/// Whether `c` separates a path's parts for MuJoCo 3.5.0: `/` or `\`
+/// (`FilePath::IsSeparator`, `user_util.h:220`).
+fn is_separator(c: char) -> bool {
+    c == '/' || c == '\\'
+}
+
+/// The part of `path` that makes it absolute for MuJoCo 3.5.0, or `""`
+/// (`FilePath::AbsPrefix`, `user_util.cc:1063-1094`): a leading separator,
+/// or everything to a `:/` or `:\` (a drive, or a scheme such as
+/// `file:/`). MuJoCo's resource providers' own prefixes are not read here:
+/// sim-mjcf registers none.
+fn abs_prefix(path: &str) -> &str {
+    if path.starts_with(is_separator) {
+        return &path[..1];
+    }
+    match path.find(":/").or_else(|| path.find(":\\")) {
+        Some(at) => &path[..at + 2],
+        None => "",
+    }
+}
+
+/// `first` and `second` joined as MuJoCo 3.5.0's `FilePath::Combine` joins
+/// them (`user_util.cc:993-1004`): `second` alone where it is absolute,
+/// else the two with a `/` between unless `first` is empty or ends in a
+/// separator.
+fn combine(first: &str, second: &str) -> String {
+    if !abs_prefix(second).is_empty() {
+        return second.to_string();
+    }
+    if !first.is_empty() && !first.ends_with(is_separator) {
+        format!("{first}/{second}")
+    } else {
+        format!("{first}{second}")
+    }
+}
+
+/// `path` reduced as MuJoCo 3.5.0's `FilePath::PathReduce` reduces it
+/// (`user_util.cc:1006-1035`): past its absolute prefix ([`abs_prefix`]),
+/// split at every `/` and `\`; a `.` part dropped; a `..` part taking the
+/// part before it away, unless there is none or that part is `..` itself;
+/// the parts, empty ones among them, joined by `/`.
+fn path_reduce(path: &str) -> String {
+    let prefix = abs_prefix(path);
+    let mut parts: Vec<&str> = Vec::new();
+    let mut rest = &path[prefix.len()..];
+    while let Some(at) = rest.find(is_separator) {
+        let part = &rest[..at];
+        rest = &rest[at + 1..];
+        if part == ".." && parts.last().is_some_and(|&last| last != "..") {
+            parts.pop();
+        } else if part != "." {
+            parts.push(part);
+        }
+    }
+    parts.push(rest);
+    format!("{prefix}{}", parts.join("/"))
 }
 
 #[cfg(test)]
@@ -270,5 +321,59 @@ mod tests {
             tex_result.unwrap().to_string_lossy().contains("textures"),
             "texture path should use texturedir"
         );
+    }
+
+    /// A path reduced as MuJoCo 3.5.0's `FilePath::PathReduce` reduces it
+    /// (`user_util.cc:1006-1035`, its steps traced by hand): `/` and `\` both
+    /// split it, `.` goes, `..` takes away the part before it unless there is
+    /// none or that part is `..`, empty parts stay, and the parts are joined
+    /// by `/` after the absolute prefix as written.
+    #[test]
+    fn a_path_is_reduced_as_mujoco_reduces_it() {
+        for (path, reduced) in [
+            ("sub/./c.obj", "sub/c.obj"),
+            (r"sub\c.obj", "sub/c.obj"),
+            ("sub/nowhere/../c.obj", "sub/c.obj"),
+            ("./c.obj", "c.obj"),
+            ("../c.obj", "../c.obj"),
+            ("../../c.obj", "../../c.obj"),
+            ("a/../../c.obj", "../c.obj"),
+            ("sub//c.obj", "sub//c.obj"),
+            ("sub/", "sub/"),
+            ("/abs/./x/../c.obj", "/abs/c.obj"),
+            (r"\abs\c.obj", r"\abs/c.obj"),
+            (r"C:\dir\..\c.obj", r"C:\c.obj"),
+            ("file:/a/../b", "file:/b"),
+        ] {
+            assert_eq!(path_reduce(path), reduced, "{path}");
+        }
+    }
+
+    /// The absolute prefix and the join, as MuJoCo 3.5.0's
+    /// `FilePath::AbsPrefix` (`user_util.cc:1063-1094`) and
+    /// `FilePath::Combine` (`:993-1004`) make them.
+    #[test]
+    fn a_path_is_absolute_and_joined_as_mujoco_takes_it() {
+        for (path, prefix) in [
+            ("", ""),
+            ("rel/c.obj", ""),
+            ("/x", "/"),
+            (r"\x", r"\"),
+            ("C:/x", "C:/"),
+            (r"C:\x", r"C:\"),
+            (r"a:\b:/c", "a:\\b:/"),
+        ] {
+            assert_eq!(abs_prefix(path), prefix, "{path}");
+        }
+        for (first, second, joined) in [
+            ("dir", "c.obj", "dir/c.obj"),
+            ("dir/", "c.obj", "dir/c.obj"),
+            (r"dir\", "c.obj", r"dir\c.obj"),
+            ("", "c.obj", "c.obj"),
+            ("dir", "/abs/c.obj", "/abs/c.obj"),
+            ("dir", r"C:\c.obj", r"C:\c.obj"),
+        ] {
+            assert_eq!(combine(first, second), joined, "{first} {second}");
+        }
     }
 }

@@ -45,25 +45,16 @@ fn an_unnamed_mesh_is_named_by_its_file() {
         .expect(file);
         assert_eq!(model.mesh_name, [name], "{file}");
     }
-    // A `\` ends the directory too. MuJoCo also opens the file there, reading
-    // `\` as a separator on every platform (`FilePath::PathReduce`); sim-mjcf
-    // hands the path to the operating system (ledger L329), which on Windows
-    // reads it as MuJoCo does and elsewhere finds no such file, so elsewhere
-    // the name is checked in the error.
+    // A `\` ends the directory too, and the file is opened there, `\` a
+    // separator on every platform as MuJoCo reads it (`FilePath::PathReduce`;
+    // tests/asset_paths.rs).
     let backslash = load(
         dir.path(),
         r#"<mesh file="sub\two.obj"/>"#,
         r#"<geom type="mesh" mesh="two"/>"#,
-    );
-    if cfg!(windows) {
-        assert_eq!(backslash.expect("loads on Windows").mesh_name, ["two"]);
-    } else {
-        let err = backslash.expect_err("no such file elsewhere");
-        assert!(
-            matches!(&err, MjcfError::Asset { name, .. } if name == "two"),
-            "{err}"
-        );
-    }
+    )
+    .expect("loads");
+    assert_eq!(backslash.mesh_name, ["two"]);
     // Only the last extension goes: `a` names no mesh (MuJoCo: "mesh 'a'
     // not found in geom 0").
     let err = load(
