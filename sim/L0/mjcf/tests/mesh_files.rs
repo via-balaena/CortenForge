@@ -9,10 +9,12 @@
 //! with the `threemf` feature a 3MF file, which MuJoCo does not read, is read
 //! and turned the same way (registry `D-MESH-FORMAT`).
 //!
-//! Every expected face list, mass and reason was printed by MuJoCo 3.5.0
-//! (the census's unfused oracle, 2026-11-16) from the same files, one
-//! process each. A mass is a sum of products of the file's floats, with no
-//! library function, so its bits are the same on every platform.
+//! Every expected face list, mass and reason said to be MuJoCo's was printed
+//! by MuJoCo 3.5.0 (the census's unfused oracle, 2026-11-16) from the same
+//! bytes, one process each; a PLY or 3MF file, which MuJoCo does not read, is
+//! held to the model of the same tetrahedron's OBJ. A mass is sums of
+//! products of the file's floats and square roots, which IEEE 754 rounds
+//! exactly, so its bits are the same on every platform.
 
 #![allow(
     clippy::unwrap_used,
@@ -182,6 +184,10 @@ fn an_msh_file_loads_as_mujoco_reads_it() {
     let dir = tempfile::tempdir().unwrap();
     let plain = msh([4, 0, 0, 4], &TET_FLOATS, &[], &TET_FACES);
     let with_extra = msh([4, 4, 4, 4], &TET_FLOATS, &[0.0; 20], &TET_FACES);
+    // Normals or texture coordinates alone: their floats, 3 or 2 a vertex,
+    // tell where the faces begin.
+    let normals = msh([4, 4, 0, 4], &TET_FLOATS, &[0.0; 12], &TET_FACES);
+    let texcoords = msh([4, 0, 4, 4], &TET_FLOATS, &[0.0; 8], &TET_FACES);
     // The fourth corner written twice, the last face naming the second.
     let twice_floats = [&TET_FLOATS[..], &TET_FLOATS[9..]].concat();
     let mut twice_faces = TET_FACES;
@@ -197,6 +203,16 @@ fn an_msh_file_loads_as_mujoco_reads_it() {
         ),
         (
             &with_extra,
+            r#"inertia="exact""#,
+            (4, tet.clone(), 1000.000024835268),
+        ),
+        (
+            &normals,
+            r#"inertia="exact""#,
+            (4, tet.clone(), 1000.000024835268),
+        ),
+        (
+            &texcoords,
             r#"inertia="exact""#,
             (4, tet, 1000.000024835268),
         ),
@@ -449,6 +465,14 @@ fn a_3mf_file_loads_by_its_extension_or_its_type() {
         let model = load_bytes(dir.path(), file, &bytes, attrs).unwrap();
         assert_eq!(mesh_and_mass(&model), mesh_and_mass(&obj), "{file}");
     }
+    // Turned under a left-handed `scale` as the OBJ is (MuJoCo's faces and
+    // mass for the OBJ: `a_left_handed_scale_turns_an_objs_faces`).
+    let attrs = r#"scale="1 -2 1" inertia="exact""#;
+    let mirrored = load_bytes(dir.path(), "tet.3mf", &bytes, attrs).unwrap();
+    assert_eq!(
+        mesh_and_mass(&mirrored),
+        (4, TET_TURNED.to_vec(), 2000.0000496705366)
+    );
 }
 
 /// Without the `threemf` feature a `.3mf` file is refused as MuJoCo refuses

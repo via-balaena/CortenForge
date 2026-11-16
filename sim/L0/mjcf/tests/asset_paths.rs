@@ -87,12 +87,13 @@ fn a_mesh_path_is_read_as_mujoco_reads_it() {
             .unwrap_or_else(|e| panic!("{compiler} {file}: {e}"));
         assert_eq!(&got, expected, "{compiler} {file}");
     }
-    // A name the reduced path does not find is refused still (MuJoCo:
-    // "Error opening file 'sub/c.obj '").
-    let err = mesh_model(dir.path(), "", "sub/c.obj ").unwrap_err();
+    // A file the built path does not find is refused still (MuJoCo: "Error
+    // opening file 'sub/d.obj'"); not a name with a trailing space, which
+    // Windows trims.
+    let err = mesh_model(dir.path(), "", "sub/nowhere/../d.obj").unwrap_err();
     assert!(
         err.to_string()
-            .contains("asset file not found: 'sub/c.obj '"),
+            .contains("asset file not found: 'sub/nowhere/../d.obj'"),
         "{err}"
     );
 }
