@@ -332,6 +332,19 @@ mod bounds_tests {
         );
     }
 
+    /// A plane's bounding radius is MuJoCo's 0 (`GetRBound`), as deriving
+    /// gives it and as `add_ground_plane` appends it (ledger L173: the two
+    /// gave infinity and 0).
+    #[test]
+    fn a_planes_bounding_radius_is_mujocos() {
+        let mut model = Model::free_body(1.0, Vector3::new(0.01, 0.01, 0.01));
+        model.add_ground_plane();
+        let appended = model.geom_rbound[0];
+        model.compute_geom_bounding_radii();
+        assert_eq!(appended.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(model.geom_rbound[0].to_bits(), 0.0_f64.to_bits());
+    }
+
     /// A box mesh 20 to 22 below its geom's origin: its bounding radius is
     /// MuJoCo's, about the origin, sqrt(1 + 1 + 22²), which reaches the far
     /// corners. The half-diagonal of the box, sqrt(3), is about the box's

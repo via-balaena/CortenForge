@@ -175,6 +175,7 @@ pub(super) fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
     defaults.fromto = a.array("fromto")?;
     defaults.mesh = a.string("mesh");
     defaults.hfield = a.string("hfield");
+    defaults.fitscale = a.real("fitscale")?;
 
     // Rendering
     defaults.material = a.string("material");

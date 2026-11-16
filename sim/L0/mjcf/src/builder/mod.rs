@@ -15,6 +15,7 @@ mod composite;
 pub mod contact;
 mod eig3;
 pub mod equality;
+mod fit;
 pub mod flex;
 mod flexcomp;
 pub mod fluid;

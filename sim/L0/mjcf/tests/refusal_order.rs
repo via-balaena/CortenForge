@@ -48,7 +48,8 @@
 //! is judged by its new body's inertia rule: ledger L388); a pair's condim,
 //! then its geoms, after the assets and before the sizes, where MuJoCo
 //! compiles pairs; `CONDIM_COSTS` pins the faults this crate meets first
-//! that MuJoCo meets after a condim. A `<size>` `nuser_` below -1 is refused
+//! that MuJoCo meets after a condim (a height field: `HFIELD_COSTS`). A
+//! `<size>` `nuser_` below -1 is refused
 //! once the document is parsed, or when a fault outside `<compiler>` and
 //! `<option>` stops the parser first, as MuJoCo's reader reads `<compiler>`,
 //! `<option>` and then `<size>` before the other sections; `NUSER_COSTS`
@@ -116,9 +117,17 @@
 //! (its area, its volume, an exact mesh's orientation, its principal
 //! moments) are made as the meshes are built, after the checks this crate
 //! makes before building the model, where MuJoCo makes them before its
-//! bodies; a fault this crate checks first (a geom's size, `fromto` or fit,
-//! a tendon's or an actuator's reference among them) is named first here:
-//! `MESH_COSTS` (ledger L353).
+//! bodies; a fault this crate checks first (a geom's size or `fromto`, a
+//! tendon's or an actuator's reference among them) is named first here:
+//! `MESH_COSTS` (ledger L353). RL-9b3 fits a primitive geom to the mesh it
+//! names as its body is built, after those checks, where MuJoCo fits each
+//! geom as it compiles it; a size those checks refuse in a later body or a
+//! site is named before a fitted size MuJoCo refuses: `FIT_COSTS` (ledger
+//! L353). A fitted size is named before a fault this crate checks after
+//! the build (`check_bodies`) that MuJoCo meets first: `FIT_FIRST_COSTS`. A
+//! geom's height field is checked as the model is validated, before its
+//! condim and a mesh or SDF geom's mesh, which MuJoCo checks first:
+//! `HFIELD_COSTS`.
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, with the reason its row gives as MuJoCo's (RL-6a's measured
@@ -169,11 +178,18 @@
 //! RB's documents) set `shellinertia` on an SDF or mesh geom beside a condim,
 //! a plane in a moving body, a `zaxis`, a `user` count or an earlier geom's
 //! negative mass: nine in `TWO_FAULTS`; and a mesh refused for its volume
-//! or an exact mesh's orientation beside a geom's size, `fromto` or fit: ten
-//! in `MESH_COSTS`. Its fix-diff pass's (FD's documents) set `shellinertia`
-//! beside a later element's fault this crate meets as it reads (seven in
-//! `SHELLINERTIA_COSTS`) and a mesh refused beside a tendon's or an
-//! actuator's reference (three more in `MESH_COSTS`).
+//! or an exact mesh's orientation beside a geom's size, `fromto` or fit: ten,
+//! of which the two beside a fit are in `TWO_FAULTS` since RL-9b3 fits a
+//! primitive to its mesh, the rest in `MESH_COSTS`. Its fix-diff pass's (FD's
+//! documents) set `shellinertia` beside a later element's fault this crate
+//! meets as it reads (seven in `SHELLINERTIA_COSTS`) and a mesh refused
+//! beside a tendon's or an actuator's reference (three more in
+//! `MESH_COSTS`). RL-9b3's (measured 2026-11-13, its start set) set a
+//! fitted size MuJoCo refuses beside a later body's or a site's size: two in
+//! `FIT_COSTS`. Its review's first round's (2026-11-14) set a fitted size
+//! beside a fault checked after the build, seven in `FIT_FIRST_COSTS`, and a
+//! height field beside a condim or a mesh geom's missing mesh, two in
+//! `HFIELD_COSTS`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -2001,6 +2017,18 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "mass, inertia or density are negative in geom",
         "mass, inertia or density are negative in geom (geom #0 in body #1)",
     ),
+    (
+        "a mesh too small in volume, then a sphere fitted to a mesh",
+        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="flat" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="sphere" mesh="m"/></body></worldbody></mujoco>"#,
+        "mesh volume is too small: flat . Try setting inertia to shell",
+        "mesh 'flat': mesh volume is too small. Try setting inertia to shell",
+    ),
+    (
+        "an exact mesh's faces turned, then a sphere fitted to a mesh",
+        r#"<mujoco><asset><mesh name="turn" inertia="exact" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 1 2  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="turn" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="sphere" mesh="m"/></body></worldbody></mujoco>"#,
+        "faces of mesh 'turn' have inconsistent orientation. Please check the faces containing the vertices 1 and 2.",
+        "mesh 'turn': its faces have inconsistent orientation. Please check the faces containing the vertices 1 and 2.",
+    ),
 ];
 
 #[test]
@@ -2969,9 +2997,8 @@ fn an_inertia_fault_beside_another_is_named_as_ledgered() {
 
 /// Two faults, one a mesh MuJoCo 3.5.0 refuses as it builds the meshes, before
 /// the bodies (its volume, an exact mesh's orientation), one a geom's this
-/// crate checks before it builds the meshes (a size, a `fromto`, a primitive
-/// fitted to a mesh), where this crate names the geom's, as it did before
-/// RL-9b: ledger L353 holds each. `(what, document, MuJoCo 3.5.0's reason,
+/// crate checks before it builds the meshes (a size, a `fromto`), where this
+/// crate names the geom's, as it did before RL-9b: ledger L353 holds each. `(what, document, MuJoCo 3.5.0's reason,
 /// this crate's error)`, measured 2026-11-10 (RL-9b's review, RB's documents).
 const MESH_COSTS: &[(&str, &str, &str, &str)] = &[
     (
@@ -2985,18 +3012,6 @@ const MESH_COSTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><asset><mesh name="turn" inertia="exact" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 1 2  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="turn" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="sphere" size="0"/></body></worldbody></mujoco>"#,
         "faces of mesh 'turn' have inconsistent orientation. Please check the faces containing the vertices 1 and 2.",
         "invalid size on <geom>: size 0 must be positive (geom #2 in body 'c')",
-    ),
-    (
-        "a mesh too small in volume, then a sphere fitted to a mesh (D-MESH-FIT)",
-        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="flat" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="sphere" mesh="m"/></body></worldbody></mujoco>"#,
-        "mesh volume is too small: flat . Try setting inertia to shell",
-        "not supported by sim-mjcf (valid in MuJoCo 3.5.0): a sphere, capsule, cylinder, ellipsoid or box fitted to the mesh it names (geom #2 in body 'c')",
-    ),
-    (
-        "an exact mesh's faces turned, then a sphere fitted to a mesh (D-MESH-FIT)",
-        r#"<mujoco><asset><mesh name="turn" inertia="exact" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 1 2  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="turn" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="sphere" mesh="m"/></body></worldbody></mujoco>"#,
-        "faces of mesh 'turn' have inconsistent orientation. Please check the faces containing the vertices 1 and 2.",
-        "not supported by sim-mjcf (valid in MuJoCo 3.5.0): a sphere, capsule, cylinder, ellipsoid or box fitted to the mesh it names (geom #2 in body 'c')",
     ),
     (
         "a mesh too small in volume, then a mesh geom's fromto",
@@ -3124,6 +3139,148 @@ const SHELLINERTIA_COSTS: &[(&str, &str, &str, &str)] = &[
 fn shellinertia_beside_a_later_fault_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in SHELLINERTIA_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, a sphere, capsule, cylinder, ellipsoid or box whose fit to the
+/// mesh it names gives a size MuJoCo 3.5.0 refuses, and a size this crate
+/// checks before it builds the model, in a later body or a site of the
+/// geom's body. MuJoCo fits and checks each geom as it compiles it, before
+/// the body's sites and the next body; this crate fits it as it builds the
+/// body, after those checks, and names the other: ledger L353 holds each.
+/// `(what, document, MuJoCo 3.5.0's reason, this crate's error)`, measured
+/// 2026-11-13 (RL-9b3's start set).
+const FIT_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "a capsule fitted to a flat mesh's box, its half length not above 0, then a later body's sphere of size 0",
+        r#"<mujoco><compiler fitaabb="true"/><asset><mesh name="f" vertex="-1 -1 -0.1  1 -1 -0.1  1 1 -0.1  -1 1 -0.1  -1 -1 0.1  1 -1 0.1  1 1 0.1  -1 1 0.1" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="capsule" mesh="f"/></body><body name="c"><freejoint/><geom type="sphere" size="0"/></body></worldbody></mujoco>"#,
+        "size 1 must be positive in geom",
+        "invalid size on <geom>: size 0 must be positive (geom #1 in body 'c')",
+    ),
+    (
+        "a capsule fitted to a flat mesh's box, its half length not above 0, then its body's site of size 0",
+        r#"<mujoco><compiler fitaabb="true"/><asset><mesh name="f" vertex="-1 -1 -0.1  1 -1 -0.1  1 1 -0.1  -1 1 -0.1  -1 -1 0.1  1 -1 0.1  1 1 0.1  -1 1 0.1" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="capsule" mesh="f"/><site type="sphere" size="0"/></body></worldbody></mujoco>"#,
+        "size 1 must be positive in geom",
+        "invalid size on <site>: size 0 must be positive (site in body 'b')",
+    ),
+];
+
+#[test]
+fn a_fitted_size_beside_a_size_checked_before_the_build_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in FIT_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, a fitted size MuJoCo 3.5.0 refuses and a fault this crate
+/// checks after it builds the model (`check_bodies`), in the fitted geom or
+/// before it. MuJoCo meets the other first, as it compiles each body and
+/// geom in turn; this crate checks the fitted size as it builds the body,
+/// before those checks, and names it: ledger L353 holds the class. The rows
+/// are the documents review round 1 measured (RA-2), not one for each fault
+/// `check_bodies` makes. `(what, document, MuJoCo 3.5.0's reason, this
+/// crate's error)`, measured 2026-11-14.
+const FIT_FIRST_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "a capsule fitted to a flat mesh's box, its half length not above 0, with a condim of 2",
+        r#"<mujoco><compiler fitaabb="true"/><asset><mesh name="f" vertex="-1 -1 -0.1  1 -1 -0.1  1 1 -0.1  -1 1 -0.1  -1 -1 0.1  1 -1 0.1  1 1 0.1  -1 1 0.1" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="capsule" mesh="f" condim="2"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid size on <geom>: size 1 must be positive (geom #0 in body 'b')",
+    ),
+    (
+        "a sphere with a condim of 2, then a capsule fitted to a flat mesh's box, its half length not above 0",
+        r#"<mujoco><compiler fitaabb="true"/><asset><mesh name="f" vertex="-1 -1 -0.1  1 -1 -0.1  1 1 -0.1  -1 1 -0.1  -1 -1 0.1  1 -1 0.1  1 1 0.1  -1 1 0.1" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom size=".1" condim="2"/><geom type="capsule" mesh="f"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid size on <geom>: size 1 must be positive (geom #1 in body 'b')",
+    ),
+    (
+        "a mesh geom with a condim of 5, then a capsule fitted to a flat mesh's box, its half length not above 0",
+        r#"<mujoco><compiler fitaabb="true"/><asset><mesh name="f" vertex="-1 -1 -0.1  1 -1 -0.1  1 1 -0.1  -1 1 -0.1  -1 -1 0.1  1 -1 0.1  1 1 0.1  -1 1 0.1" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="f" condim="5"/><geom type="capsule" mesh="f"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid size on <geom>: size 1 must be positive (geom #1 in body 'b')",
+    ),
+    (
+        "a sphere of mass -1, then a capsule fitted to a flat mesh's box, its half length not above 0",
+        r#"<mujoco><compiler fitaabb="true"/><asset><mesh name="f" vertex="-1 -1 -0.1  1 -1 -0.1  1 1 -0.1  -1 1 -0.1  -1 -1 0.1  1 -1 0.1  1 1 0.1  -1 1 0.1" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom size=".1" mass="-1"/><geom type="capsule" mesh="f"/></body></worldbody></mujoco>"#,
+        "mass, inertia or density are negative in geom",
+        "invalid size on <geom>: size 1 must be positive (geom #1 in body 'b')",
+    ),
+    (
+        "a body's sphere of mass -1, then a later body's capsule fitted to a flat mesh's box, its half length not above 0",
+        r#"<mujoco><compiler fitaabb="true"/><asset><mesh name="f" vertex="-1 -1 -0.1  1 -1 -0.1  1 1 -0.1  -1 1 -0.1  -1 -1 0.1  1 -1 0.1  1 1 0.1  -1 1 0.1" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="a" pos="0 0 1"><freejoint/><geom size=".1" mass="-1"/></body><body name="b"><freejoint/><geom type="capsule" mesh="f"/></body></worldbody></mujoco>"#,
+        "mass, inertia or density are negative in geom",
+        "invalid size on <geom>: size 1 must be positive (geom #1 in body 'b')",
+    ),
+    (
+        "a plane in a moving body, then a capsule fitted to a flat mesh's box, its half length not above 0",
+        r#"<mujoco><compiler fitaabb="true"/><asset><mesh name="f" vertex="-1 -1 -0.1  1 -1 -0.1  1 1 -0.1  -1 1 -0.1  -1 -1 0.1  1 -1 0.1  1 1 0.1  -1 1 0.1" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="plane" size="1 1 1"/><geom type="capsule" mesh="f"/></body></worldbody></mujoco>"#,
+        "plane only allowed in static bodies",
+        "invalid size on <geom>: size 1 must be positive (geom #1 in body 'b')",
+    ),
+    (
+        "a body's inertial with fullinertia and a diagonal inertia, then a later body's capsule fitted to a flat mesh's box, its half length not above 0",
+        r#"<mujoco><compiler fitaabb="true"/><asset><mesh name="f" vertex="-1 -1 -0.1  1 -1 -0.1  1 1 -0.1  -1 1 -0.1  -1 -1 0.1  1 -1 0.1  1 1 0.1  -1 1 0.1" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="a" pos="0 0 1"><freejoint/><inertial pos="0 0 0" mass="1" fullinertia="1 1 1 0 0 0" diaginertia="1 1 1"/><geom size=".1"/></body><body name="b"><freejoint/><geom type="capsule" mesh="f"/></body></worldbody></mujoco>"#,
+        "fullinertia and diagonal inertia cannot both be specified",
+        "invalid size on <geom>: size 1 must be positive (geom #1 in body 'b')",
+    ),
+];
+
+#[test]
+fn a_fitted_size_beside_a_fault_checked_after_the_build_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in FIT_FIRST_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults in one geom, a height field it names but is not, and a fault
+/// MuJoCo 3.5.0 checks before that: its condim, or a mesh or SDF geom's
+/// missing mesh (`user_objects.cc:3651-3664`). This crate checks the height
+/// field as it validates, before both, and names the height field: ledger
+/// L353 holds each. `(what, document, MuJoCo 3.5.0's reason, this crate's
+/// error)`, measured 2026-11-14 (review round 1, RW-4, RB-2; F1-5).
+const HFIELD_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "a sphere with a condim of 2 that names a height field",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><hfield name="h" nrow="2" ncol="2" elevation="0 0 0 0" size="1 1 0.1 0.1"/></asset><worldbody><geom condim="2" hfield="h" size="0.1"/></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "hfield geom must have valid hfieldid (geom #0 in body 'world')",
+    ),
+    (
+        "a mesh geom that names no mesh but a height field",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><hfield name="h" nrow="2" ncol="2" elevation="0 0 0 0" size="1 1 0.1 0.1"/></asset><worldbody><geom type="mesh" hfield="h"/></worldbody></mujoco>"#,
+        "mesh geom '' (id = 0) must have valid meshid",
+        "hfield geom must have valid hfieldid (geom #0 in body 'world')",
+    ),
+    (
+        "an SDF geom that names no mesh but a height field",
+        r#"<mujoco><asset><hfield name="h" nrow="2" ncol="2" elevation="0 0 0 0" size="1 1 0.1 0.1"/></asset><worldbody><geom type="sdf" hfield="h"/></worldbody></mujoco>"#,
+        "mesh geom '' (id = 0) must have valid meshid",
+        "hfield geom must have valid hfieldid (geom #0 in body 'world')",
+    ),
+];
+
+#[test]
+fn a_height_field_beside_a_geoms_earlier_fault_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in HFIELD_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),

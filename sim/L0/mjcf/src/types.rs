@@ -472,9 +472,11 @@ pub struct MjcfCompiler {
     pub discardvisual: bool,
     /// Fuse static (jointless) bodies into their parent.
     pub fusestatic: bool,
-    // Deferred attributes (stored, no behavior yet):
-    /// Fit AABBs to geom groups.
+    /// Fit a sphere, capsule, cylinder, ellipsoid or box that names a mesh to
+    /// the mesh's bounding box in its own frame, rather than to its
+    /// equivalent inertia box (MuJoCo's `fitaabb`).
     pub fitaabb: bool,
+    // Deferred attributes (stored, no behavior yet):
     /// Enable multi-threaded compilation.
     pub usethread: bool,
     /// Align free joints to body frame.
@@ -849,6 +851,8 @@ pub struct MjcfGeomDefaults {
     pub mesh: Option<String>,
     /// Default height field asset name.
     pub hfield: Option<String>,
+    /// Default `fitscale`.
+    pub fitscale: Option<f64>,
     /// Default material asset name.
     pub material: Option<String>,
     /// Fluid shape for ellipsoid fluid model: `"none"` or `"ellipsoid"`.
@@ -1356,10 +1360,15 @@ pub struct MjcfGeom {
     pub conaffinity: Option<i32>,
     /// Contact dimensionality (condim).
     pub condim: Option<i32>,
-    /// Mesh asset name (for type="mesh").
+    /// Mesh asset name: a mesh or SDF geom's mesh, or the mesh a sphere,
+    /// capsule, cylinder, ellipsoid or box is fitted to.
     pub mesh: Option<String>,
     /// Height field asset name (for type="hfield").
     pub hfield: Option<String>,
+    /// The factor a sphere, capsule, cylinder, ellipsoid or box fitted to
+    /// the mesh it names scales its three sizes by (`None` is MuJoCo's 1,
+    /// `user_init.c:146`).
+    pub fitscale: Option<f64>,
     /// Solver reference parameters for contacts [timeconst, dampratio].
     /// Controls contact softness/stiffness.
     pub solref: Option<Prefix<2>>,
@@ -1414,6 +1423,7 @@ impl Default for MjcfGeom {
             condim: None,
             mesh: None,
             hfield: None,
+            fitscale: None,
             solref: None,
             solimp: None,
             priority: None,

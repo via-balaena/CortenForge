@@ -613,16 +613,19 @@ fn bodies_on_a_bumpy_height_field_as_mujoco() {
 /// one farther below, and a pyramid mesh: each bounding radius is MuJoCo's
 /// (`mjCGeom::GetRBound`), a height field's from its size, sqrt(x² + y² +
 /// max(top², base²)), the mesh's from its box in MuJoCo's mesh frame, about
-/// its centre of mass (book Rigid-loading L35). The scene's plane is not
-/// compared: a plane's radius is infinite here, MuJoCo's 0 (ledger L173).
+/// its centre of mass (book Rigid-loading L35); the scene's plane, MuJoCo's 0
+/// (ledger L173).
 #[test]
 fn bounding_radii_are_mujocos() {
     let case = &golden()["bounds"];
     let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
     let want = floats(&case["rbound"]);
     let (hfield, mesh) = (sim_core::GeomType::Hfield, sim_core::GeomType::Mesh);
-    assert_eq!(model.geom_type[1..4], [hfield, hfield, mesh]);
-    for g in [1, 2, 3] {
+    assert_eq!(
+        model.geom_type[..4],
+        [sim_core::GeomType::Plane, hfield, hfield, mesh]
+    );
+    for g in [0, 1, 2, 3] {
         assert_eq!(
             model.geom_rbound[g].to_bits(),
             want[g].to_bits(),
@@ -638,9 +641,10 @@ fn bounding_radii_are_mujocos() {
 /// farther than the half-diagonal of the pyramid's box (3.20), within its
 /// bounding radius (4.64), so the bounding-sphere filter passes the pair, as
 /// MuJoCo's. Our contacts after `forward` against
-/// MuJoCo's: the same geoms in order, each distance within 1e-13 and
-/// position within 1e-14, midway between the apex and the plane
-/// (`mjc_PlaneConvex`).
+/// MuJoCo's: the same geoms in order, each distance and position MuJoCo's
+/// bit for bit on macOS arm64, where they are measured (a zero's sign too),
+/// and elsewhere within 1e-13 and 1e-14 (ledger L417), midway between the
+/// apex and the plane (`mjc_PlaneConvex`).
 #[test]
 fn a_mesh_apex_on_a_plane_is_listed_as_mujoco() {
     let case = &golden()["bounds"];
@@ -662,16 +666,24 @@ fn a_mesh_apex_on_a_plane_is_listed_as_mujoco() {
         })
         .collect();
     assert_eq!(ours, theirs, "contact geoms in order");
+    let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let near = |a: f64, b: f64, bound: f64| {
+        if exact {
+            a.to_bits() == b.to_bits()
+        } else {
+            (a - b).abs() <= bound
+        }
+    };
     for (k, (c, w)) in data.contacts.iter().zip(want).enumerate() {
         let dist = w["dist"].as_f64().expect("dist");
         assert!(
-            (-c.depth - dist).abs() <= 1e-13,
+            near(-c.depth, dist, 1e-13),
             "contact {k}: depth {}, MuJoCo's dist {dist}",
             c.depth
         );
         let pos = floats(&w["pos"]);
         assert!(
-            (0..3).all(|i| (c.pos[i] - pos[i]).abs() <= 1e-14),
+            (0..3).all(|i| near(c.pos[i], pos[i], 1e-14)),
             "contact {k}: position {:?}, MuJoCo's {pos:?}",
             c.pos
         );

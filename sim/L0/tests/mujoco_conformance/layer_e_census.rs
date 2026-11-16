@@ -87,6 +87,44 @@ fn list<T: std::fmt::Debug>(out: &mut String, what: &str, items: &[T]) {
     }
 }
 
+/// MuJoCo's `geom_rbound` and `geom_aabb` for the docs whose golden was
+/// written before it held them (`assets/census/bounds.json`, written by
+/// `scripts/gen_census_bounds.py` with the oracle `golden/meta.json` names,
+/// checked on read).
+struct Bounds(serde_json::Map<String, Value>);
+
+impl Bounds {
+    fn read(dir: &Path) -> Self {
+        let file = read_json(&dir.join("bounds.json"));
+        let meta = read_json(&dir.join("golden").join("meta.json"));
+        assert_eq!(
+            file["oracle"], meta["oracle"],
+            "bounds.json and the golden name different oracles"
+        );
+        Self(file["docs"].as_object().expect("bounds.json docs").clone())
+    }
+
+    /// Puts the file's bounds for `doc` into its golden `mj`. A doc the file
+    /// names must have a golden that loads and holds none; one it does not
+    /// name is left as it is.
+    fn fill(&self, doc: &str, mj: &mut Value) {
+        let Some(entry) = self.0.get(doc) else {
+            return;
+        };
+        let model = mj
+            .get_mut("model")
+            .and_then(Value::as_object_mut)
+            .unwrap_or_else(|| panic!("bounds.json names {doc}, whose golden holds no model"));
+        assert!(
+            !model.contains_key("geom_rbound"),
+            "bounds.json names {doc}, whose golden holds its bounds"
+        );
+        for f in ["geom_rbound", "geom_aabb"] {
+            model.insert(f.to_string(), entry[f].clone());
+        }
+    }
+}
+
 #[test]
 fn layer_e_parity_census() {
     let dir = census_dir();
@@ -98,12 +136,14 @@ fn layer_e_parity_census() {
         "census docs and golden must pair one to one; unpaired: {unpaired:?}"
     );
 
+    let bounds = Bounds::read(&dir);
     let mut got = BTreeMap::new();
     for doc in &golden {
         let xml_path = dir.join("docs").join(format!("{doc}.xml"));
         let xml = std::fs::read_to_string(&xml_path)
             .unwrap_or_else(|e| panic!("read {}: {e}", xml_path.display()));
-        let mj = read_json(&dir.join("golden").join(format!("{doc}.json")));
+        let mut mj = read_json(&dir.join("golden").join(format!("{doc}.json")));
+        bounds.fill(doc, &mut mj);
         got.insert(doc.clone(), ratchet::verdict(&mj, &ours::record(&xml)));
     }
 

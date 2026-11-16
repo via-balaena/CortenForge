@@ -257,11 +257,14 @@ impl ModelBuilder {
         self.body_jnt_num.push(body.joints.len());
         self.body_dof_num.push(body_nv);
 
-        // Process geoms for this body
-        for geom in &body.geoms {
-            self.process_geom(geom, body_id)?;
-        }
-        self.body_geom_num.push(body.geoms.len());
+        // Process geoms for this body: each as built, a primitive naming a
+        // mesh fitted to it, is what the body's mass and checks below read.
+        let built = body
+            .geoms
+            .iter()
+            .map(|geom| self.process_geom(geom, body_id))
+            .collect::<Result<Vec<_>>>()?;
+        self.body_geom_num.push(built.len());
         // A body's inertia from the geoms MuJoCo selects, each in its frame
         // as `process_geom` resolved it (`InertiaFromGeom` reads each
         // compiled geom, `user_objects.cc:2158-2224`); where it selects none
@@ -272,8 +275,7 @@ impl ModelBuilder {
             // The geoms in `inertiagrouprange` whose mass is above mjEPS, the
             // predicate of [`Self::selects`] on the mass `InertialGeom`
             // computes, each mesh's properties computed once.
-            let geoms: Vec<InertialGeom> = body
-                .geoms
+            let geoms: Vec<InertialGeom> = built
                 .iter()
                 .enumerate()
                 .filter(|(_, geom)| self.in_inertia_groups(geom))
@@ -332,8 +334,7 @@ impl ModelBuilder {
         // (`:3781-3807`).
         let infers =
             body.inertial.is_none() || self.compiler.inertiafromgeom == InertiaFromGeom::True;
-        let negative = body
-            .geoms
+        let negative = built
             .iter()
             .position(|geom| infers && self.in_inertia_groups(geom) && self.negative_mass(geom));
         let full_and_diagonal = body.inertial.as_ref().is_some_and(|inertial| {
@@ -354,7 +355,7 @@ impl ModelBuilder {
         // bound.
         if self.compiler.inertiafromgeom == InertiaFromGeom::True
             && self.kept_negative_inertial.is_none()
-            && !body.geoms.iter().any(|geom| self.selects(geom))
+            && !built.iter().any(|geom| self.selects(geom))
         {
             self.kept_negative_inertial = body
                 .inertial

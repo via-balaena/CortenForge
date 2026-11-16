@@ -163,6 +163,7 @@ pub fn model_json(m: &Model) -> Value {
         "geom_margin": nums(m.geom_margin.iter().copied()), "geom_gap": nums(m.geom_gap.iter().copied()),
         "geom_priority": m.geom_priority, "geom_solmix": nums(m.geom_solmix.iter().copied()),
         "geom_solref": rows(&m.geom_solref), "geom_solimp": rows(&m.geom_solimp),
+        "geom_rbound": nums(m.geom_rbound.iter().copied()), "geom_aabb": rows(&m.geom_aabb),
     });
     let actuators = json!({
         "actuator_trntype": names(&m.actuator_trntype), "actuator_dyntype": names(&m.actuator_dyntype),

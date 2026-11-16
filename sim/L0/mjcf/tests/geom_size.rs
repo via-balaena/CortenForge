@@ -122,7 +122,7 @@ fn s3_08s_second_geom_takes_the_main_class() {
 }
 
 /// An SDF geom naming a mesh is not one MuJoCo fits: it loads, as MuJoCo
-/// loads it (`D-MESH-FIT` covers the primitive types only).
+/// loads it (`tests/fit_geom.rs` fits the primitive types).
 #[test]
 fn an_sdf_geom_naming_a_mesh_loads() {
     let model = load_model(
@@ -283,54 +283,49 @@ fn a_size_mujoco_refuses_is_refused() {
     assert_refused_as_mujoco(REFUSED);
 }
 
-/// MuJoCo fits a primitive geom that names a mesh to the mesh before its
-/// size check, replacing its size (`FitGeom`; measured on this tetrahedron: a
-/// box naming it, with no size or with `size="0.1 0.2 0.3"`, loads as
-/// (0.194, 0.387, 0.387), a capsule of size 0 0 loads too). sim-mjcf does not
-/// fit one (ledger L337), so it refuses such a geom as not supported
-/// (`D-MESH-FIT`).
-#[test]
-fn a_primitive_fitted_to_a_mesh_is_not_supported() {
-    let mesh = r#"<asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 2 1 0 1 3 0 3 2 1 2 3"/></asset>"#;
-    let mut missed = Vec::new();
-    for geom in [
-        r#"<geom type="box" mesh="m"/>"#,
-        r#"<geom type="sphere" mesh="m"/>"#,
-        r#"<geom type="capsule" mesh="m" size="0 0"/>"#,
-        r#"<geom type="box" mesh="m" size="0.1 0.2 0.3"/>"#,
-    ] {
-        let xml = format!("<mujoco>{mesh}<worldbody>{geom}</worldbody></mujoco>");
-        match load_model(&xml) {
-            Err(e @ MjcfError::Unsupported { .. }) if e.to_string().contains("mesh") => {}
-            Err(other) => missed.push(format!("{geom}: {other}")),
-            Ok(m) => missed.push(format!("{geom}: loads, size {:?}", m.geom_size[0])),
-        }
-    }
-    assert!(missed.is_empty(), "{}", missed.join("\n"));
-}
-
 /// A plane or height field naming a mesh: MuJoCo refuses it, "invalid geom
-/// type in fitting mesh" (`FitGeom` fits neither, `user_mesh.cc:1008-1009`;
-/// measured), and so does sim-mjcf, as MuJoCo does.
+/// type in fitting mesh", or under `fitaabb` "invalid fittype in mesh"
+/// (`FitGeom` fits neither, `user_mesh.cc:1008-1009`, `:1047`; measured),
+/// and so does sim-mjcf, as MuJoCo does.
 #[test]
 fn a_plane_or_height_field_naming_a_mesh_is_refused_as_mujoco_refuses_it() {
     let assets = r#"<asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 2 1 0 1 3 0 3 2 1 2 3"/><hfield name="h" nrow="2" ncol="2" size="1 1 1 0.1" elevation="0 0 0 0"/></asset>"#;
     let mut missed = Vec::new();
-    for geom in [
-        r#"<geom type="plane" mesh="m" size="1 1 1"/>"#,
-        r#"<geom type="plane" mesh="m"/>"#,
-        r#"<geom type="hfield" hfield="h" mesh="m"/>"#,
+    for (compiler, geom, words) in [
+        (
+            "",
+            r#"<geom type="plane" mesh="m" size="1 1 1"/>"#,
+            "invalid geom type in fitting mesh",
+        ),
+        (
+            "",
+            r#"<geom type="plane" mesh="m"/>"#,
+            "invalid geom type in fitting mesh",
+        ),
+        (
+            "",
+            r#"<geom type="hfield" hfield="h" mesh="m"/>"#,
+            "invalid geom type in fitting mesh",
+        ),
+        (
+            r#"<compiler fitaabb="true"/>"#,
+            r#"<geom type="plane" mesh="m" size="1 1 1"/>"#,
+            "invalid fittype in mesh",
+        ),
+        (
+            r#"<compiler fitaabb="true"/>"#,
+            r#"<geom type="hfield" hfield="h" mesh="m"/>"#,
+            "invalid fittype in mesh",
+        ),
     ] {
-        let xml = format!("<mujoco>{assets}<worldbody>{geom}</worldbody></mujoco>");
+        let xml = format!("<mujoco>{compiler}{assets}<worldbody>{geom}</worldbody></mujoco>");
         match load_model(&xml) {
             Err(MjcfError::InvalidValue {
                 element,
                 attribute,
                 reason,
                 ..
-            }) if element == "geom"
-                && attribute == "type"
-                && reason == "invalid geom type in fitting mesh" => {}
+            }) if element == "geom" && attribute == "type" && reason == words => {}
             other => missed.push(format!("{geom}: {other:?}")),
         }
     }

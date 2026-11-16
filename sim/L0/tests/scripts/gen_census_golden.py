@@ -22,7 +22,9 @@ For every <docs>/<id>.xml (or every id in ids-file) it writes <golden>/<id>.json
 docs (which of two missing mesh files it names), and the golden must be
 byte-stable. "stops": MuJoCo loads the doc and stops (mju_error) while it
 runs it, in mj_forward or mj_step; like "refused" it carries no data. Non-finite numbers are the strings "inf", "-inf" and "nan",
-because JSON has none. Without an ids-file it also writes <golden>/meta.json:
+because JSON has none. A model holds geom_rbound and geom_aabb since
+Rigid-loading PR RL-9b3; the goldens written before it have their two in
+../bounds.json (gen_census_bounds.py). Without an ids-file it also writes <golden>/meta.json:
 the oracle, the platform, the versions and the rules below, with no timestamp.
 
 The rules are the census's, and layer_e_census.rs runs the same ones on our side:
@@ -139,7 +141,8 @@ def model_json(m):
         'geom_conaffinity': ints(m.geom_conaffinity), 'geom_margin': floats(m.geom_margin),
         'geom_gap': floats(m.geom_gap), 'geom_priority': ints(m.geom_priority),
         'geom_solmix': floats(m.geom_solmix), 'geom_solref': rows(m.geom_solref, 2),
-        'geom_solimp': rows(m.geom_solimp, 5),
+        'geom_solimp': rows(m.geom_solimp, 5), 'geom_rbound': floats(m.geom_rbound),
+        'geom_aabb': rows(m.geom_aabb, 6),
         'actuator_trntype': [TRANSMISSION.get(int(t), str(int(t))) for t in m.actuator_trntype],
         'actuator_dyntype': [DYNAMICS[int(t)] for t in m.actuator_dyntype],
         'actuator_gaintype': [GAIN[int(t)] for t in m.actuator_gaintype],

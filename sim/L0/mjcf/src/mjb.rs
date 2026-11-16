@@ -64,6 +64,8 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
 ///
+/// 21 since Rigid-loading PR RL-9b3: `MjcfGeom` and `MjcfGeomDefaults` took
+/// `fitscale`.
 /// 20 since Rigid-loading PR RL-9b: `MjcfMesh` took `refpos` and `refquat`.
 /// 19 since Rigid-loading PR RL-9a: `MjcfCompiler` took `inertiagrouprange`,
 /// `MjcfBody` `pose_as_written`, and `MjcfInertial` `euler`, `axisangle`,
@@ -98,7 +100,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// one below mjMINVAL is refused (Rigid-loading PR RL-3b): a version-6 file
 /// holds 0.0 there for a flexcomp that did not write it. 6 since `MjcfFlex`
 /// took `vertex_bodies` (Rigid-loading L10).
-pub const MJB_VERSION: u32 = 20;
+pub const MJB_VERSION: u32 = 21;
 
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;
@@ -1223,6 +1225,32 @@ mod tests {
         assert!(
             matches!(second, Some(MjcfError::MjbDecode { .. })),
             "{second:?}"
+        );
+    }
+
+    /// `tests/assets/mjb/pinned.mjb` holds `pinned.xml` saved at this
+    /// [`MJB_VERSION`] (`MJB_PIN_WRITE=1` writes it again). It decodes to the
+    /// document's model only while the version and the fields the document
+    /// sets keep their places and types: a change to those with the version
+    /// unchanged decodes it to another model or not at all, and a new version
+    /// refuses it. It cannot see a type the document does not use, nor a field
+    /// dropped after the last one it sets (the decoder leaves trailing bytes
+    /// unread).
+    #[test]
+    fn the_pinned_file_decodes_to_its_document() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/assets/mjb");
+        let xml = std::fs::read_to_string(dir.join("pinned.xml")).unwrap();
+        let model = parse_mjcf_str(&xml).unwrap();
+        let file = dir.join("pinned.mjb");
+        if std::env::var("MJB_PIN_WRITE").is_ok_and(|v| v == "1") {
+            save_mjb_file(&model, &file).unwrap();
+        }
+        let read = load_mjb_file(&file)
+            .map_err(|e| format!("pinned.mjb, written at another version or layout: {e}"))
+            .unwrap();
+        assert!(
+            read == model,
+            "pinned.mjb decodes to another model: the layout changed, MJB_VERSION did not"
         );
     }
 }

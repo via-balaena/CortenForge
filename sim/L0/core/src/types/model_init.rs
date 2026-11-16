@@ -1565,8 +1565,8 @@ impl Model {
 /// `engine_setconst.c:976-1025`): the largest distance from the body's centre
 /// of mass to the anchor of a joint of its own or of a child's; then the
 /// largest `rbound` plus the distance from the centre of mass to the geom, over
-/// its geoms with a finite positive `rbound` (a plane's is 0 in MuJoCo and
-/// infinite here); at least 1e-5. MuJoCo also takes the flex
+/// its geoms with a positive `rbound` (a plane's is 0); at least 1e-5. MuJoCo
+/// also takes the flex
 /// edge lengths at a flex vertex body; a flex vertex body here has slide
 /// joints only, whose dofs do not read the size, so that term is left out.
 fn compute_body_lengths(model: &Model) -> Vec<f64> {
@@ -1582,7 +1582,7 @@ fn compute_body_lengths(model: &Model) -> Vec<f64> {
     for (b, body_size) in size.iter_mut().enumerate().skip(1) {
         for g in model.body_geom_adr[b]..model.body_geom_adr[b] + model.body_geom_num[b] {
             let rbound = model.geom_rbound[g];
-            if rbound > 0.0 && rbound.is_finite() {
+            if rbound > 0.0 {
                 *body_size = body_size.max(rbound + (data.xipos[b] - data.geom_xpos[g]).norm());
             }
         }
@@ -1660,7 +1660,7 @@ mod dof_length_tests {
     use nalgebra::Vector3;
 
     /// A plane on a moving body (MuJoCo refuses one; this crate takes it) has
-    /// an infinite bounding radius, so it does not size its body: the free
+    /// MuJoCo's bounding radius of 0, so it does not size its body: the free
     /// body's centre of mass is its joint anchor, which leaves MuJoCo's
     /// floor, 1e-5.
     #[test]
@@ -1672,9 +1672,30 @@ mod dof_length_tests {
         model.body_geom_adr[1] = 0;
         model.body_geom_num[1] = 1;
         model.compute_geom_bounding_radii();
-        assert!(model.geom_rbound[0].is_infinite());
+        assert_eq!(model.geom_rbound[0].to_bits(), 0.0_f64.to_bits());
         compute_dof_lengths(&mut model);
         assert_eq!(model.dof_length, vec![1.0, 1.0, 1.0, 1e-5, 1e-5, 1e-5]);
+    }
+
+    /// A geom with an infinite bounding radius (a model built in code) sizes
+    /// its body, as MuJoCo's `rbound > 0` takes it: its rotational dofs'
+    /// lengths are infinite.
+    #[test]
+    fn an_infinite_radius_sizes_its_body() {
+        let mut model = Model::free_body(1.0, Vector3::new(0.01, 0.01, 0.01));
+        model.add_ground_plane();
+        model.geom_type[0] = crate::types::GeomType::Sphere;
+        model.geom_size[0] = Vector3::new(0.1, 0.0, 0.0);
+        model.geom_body[0] = 1;
+        model.body_geom_num[0] = 0;
+        model.body_geom_adr[1] = 0;
+        model.body_geom_num[1] = 1;
+        model.compute_simple_bodies();
+        model.compute_geom_bounding_radii();
+        model.geom_rbound[0] = f64::INFINITY;
+        compute_dof_lengths(&mut model);
+        assert_eq!(model.dof_length[..3], [1.0, 1.0, 1.0]);
+        assert!(model.dof_length[3..].iter().all(|l| l.is_infinite()));
     }
 
     /// A geom with a bounding radius of 0 does not size its body either, as

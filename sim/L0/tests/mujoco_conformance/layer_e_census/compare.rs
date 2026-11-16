@@ -6,7 +6,9 @@
 //! or two different non-finite values always differ, and NaN equals NaN at
 //! the same position. Model fields are compared only where they act (a
 //! joint's range only when it is limited, a geom's solver parameters only when
-//! it collides, and so on).
+//! it collides, and so on). A geom's bounds are compared geom by geom, each on
+//! its own scale, so a plane's 1e10 box does not hide another geom's
+//! difference.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -261,6 +263,15 @@ impl ModelDiff<'_> {
         }
     }
 
+    /// Entry by entry, each on its own scale; the field is reported once.
+    fn close_each(&mut self, f: &str, n: usize) {
+        let differs = (0..n)
+            .any(|i| scaled(&pick(&self.ours[f], &[i]), &pick(&self.mj[f], &[i])) > TOLERANCE);
+        if differs {
+            self.fields.push(f.to_string());
+        }
+    }
+
     /// Indices `0..n` where `keep` holds of MuJoCo's model.
     fn where_mj(&self, n: usize, keep: impl Fn(&Value, usize) -> bool) -> Vec<usize> {
         (0..n).filter(|&i| keep(self.mj, i)).collect()
@@ -349,6 +360,12 @@ pub fn model_diff(ours: &Value, mj: &Value) -> Vec<String> {
         "Hfield" => 0,
         _ => 3,
     });
+    // A geom's bounds, each geom on its own scale, as a plane's box reaches
+    // 1e10. `gen_census_golden.py` writes them since Rigid-loading PR RL-9b3,
+    // and the census fills them in from `bounds.json` for the goldens written
+    // before; a golden without them reads as a difference.
+    d.close_each("geom_rbound", ngeom);
+    d.close_rows("geom_aabb", ngeom, |_| 6);
     let colliding = d.where_mj(ngeom, |m, g| {
         int_at(&m["geom_contype"], g) != 0 || int_at(&m["geom_conaffinity"], g) != 0
     });
@@ -713,6 +730,31 @@ pub fn state_differs(ours: &Value, mj: &Value, k_ours: usize, k_mj: usize) -> bo
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A model compares each geom's bounds on its own scale: a sphere's 1e6
+    /// radius does not hide a 1e-6 difference in a box's, nor a plane's 1e10
+    /// box one in the box's box, which one scale for the field would.
+    #[test]
+    fn a_geoms_bounds_are_compared_geom_by_geom() {
+        let model = |rbound: f64, half: f64| {
+            json!({
+                "ngeom": 3,
+                "geom_type": ["Plane", "Box", "Sphere"],
+                "body_quat": [],
+                "geom_quat": [[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+                "geom_rbound": [0.0, rbound, 1e6],
+                "geom_aabb": [
+                    [0.0, 0.0, -5e9, 1e10, 1e10, 5e9],
+                    [0.0, 0.0, 0.0, half, 0.5, 0.5],
+                    [0.0, 0.0, 0.0, 1e6, 1e6, 1e6],
+                ],
+            })
+        };
+        let mj = model(0.5, 0.5);
+        assert_eq!(model_diff(&mj, &mj), Vec::<String>::new());
+        assert_eq!(model_diff(&model(0.500_001, 0.5), &mj), ["geom_rbound"]);
+        assert_eq!(model_diff(&model(0.5, 0.500_001), &mj), ["geom_aabb"]);
+    }
 
     /// A contact in the golden's layout: geoms, flex vertices, distance,
     /// position, normal, two tangents, then flexes and elements.

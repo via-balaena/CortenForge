@@ -93,6 +93,10 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 /// - No name repeated within a kind (`names::check_names`)
 /// - Each pair's condim one of 1, 3, 4 or 6, then the geoms it names, after
 ///   the assets (a geom named "" only where the model has no unnamed geom)
+/// - Each geom's height field (a height-field geom names one, no other geom
+///   does), then its size (a primitive's that names a mesh once it is
+///   fitted, as the model is built), and each site's type and size, after
+///   the pairs
 /// - Actuators reference valid joints
 /// - An inertial's mass and diagonal inertia finite (if present)
 /// - Valid simulation options
@@ -482,13 +486,15 @@ fn check_pairs(model: &MjcfModel) -> Result<()> {
     Ok(())
 }
 
-/// Each geom's size, then each site's type and size, body by body from the
-/// world down, as MuJoCo 3.5.0 compiles a body's geoms, then its sites, then
-/// its children.
+/// Each geom's height field and size, then each site's type and size, body
+/// by body from the world down, as MuJoCo 3.5.0 compiles a body's geoms,
+/// then its sites, then its children.
 fn check_sizes(model: &MjcfModel) -> Result<()> {
     for (body_id, first_geom, body) in bodies_in_order(&model.worldbody) {
         for (k, geom) in body.geoms.iter().enumerate() {
-            check_geom_size(geom, || geom_at(geom, first_geom + k, body, body_id))?;
+            let at = || geom_at(geom, first_geom + k, body, body_id);
+            check_geom_hfield(geom, at)?;
+            check_geom_size(geom, model.compiler.fitaabb, at)?;
         }
         for site in &body.sites {
             crate::builder::geom::check_site(site).map_err(|e| {
@@ -505,28 +511,46 @@ fn check_sizes(model: &MjcfModel) -> Result<()> {
     Ok(())
 }
 
+/// A geom's height field as MuJoCo 3.5.0 checks it, before the geom's
+/// size: a height-field geom names one and no other geom does
+/// (`mjCGeom::Compile`, `user_objects.cc:3661-3664`; an empty name names
+/// none). MuJoCo checks a geom's condim and a mesh geom's mesh first
+/// (`:3651-3659`); sim-mjcf checks them later (`builder::body::check_bodies`,
+/// the builder's `resolve_geom_asset_links`), so a geom with one of those
+/// faults and this one is refused for this one, where MuJoCo names the
+/// other (`refusal_order.rs` `HFIELD_COSTS`); the resolve pass refuses a
+/// `fromto` before this, and the parser a size that is not finite, both of
+/// which MuJoCo checks after this (ledger L353).
+fn check_geom_hfield(geom: &MjcfGeom, at: impl Fn() -> Location) -> Result<()> {
+    let is_one = geom.geom_type == Some(MjcfGeomType::Hfield);
+    let names_one = geom.hfield.as_deref().is_some_and(|h| !h.is_empty());
+    if is_one != names_one {
+        return Err(MjcfError::invalid_model("hfield geom must have valid hfieldid").at(at()));
+    }
+    Ok(())
+}
+
 /// Check a geom's size: finite, then as MuJoCo 3.5.0's `checksize`
-/// (`user_objects.cc:152-167`, on the size its `fromto` gave).
+/// ([`checksize`], on the size its `fromto` gave).
 ///
 /// Rejects NaN or ±Inf in the `size` at the validation boundary so
 /// that downstream mass/volume computation, mesh construction, and collision
 /// code can assume finite geometry (a non-finite `fromto` is refused where the
-/// resolve pass resolves it, `resolve_geom_fromto`). Then a plane's third
-/// value, and each of the first `mjGEOMINFO[type]` values of any other type
-/// (`user_objects.h:77`: a sphere 1, a capsule or cylinder 2, an ellipsoid or
-/// box 3, a mesh, height field or SDF none), must be above 0, a place neither
-/// the geom nor its class writes being MuJoCo's 0. MuJoCo first fits a
-/// sphere, capsule, cylinder, ellipsoid or box that names a mesh to the mesh
-/// (`FitGeom`, `:3739`), replacing its size, and refuses a plane or height
-/// field that names one (`user_mesh.cc:1008-1009`, `:1047`); sim-mjcf fits
-/// none (ledger L337), so it refuses the first as not supported
-/// (`D-MESH-FIT`) and the second too.
+/// resolve pass resolves it, `resolve_geom_fromto`). MuJoCo first fits a
+/// sphere, capsule, cylinder, ellipsoid or box that names a mesh to the
+/// mesh (`FitGeom`, `user_objects.cc:3739`), replacing its size, and checks
+/// the fitted size: the builder fits it and checks that
+/// (`builder::fit`, `process_geom`), so its written size is not checked
+/// here. MuJoCo refuses a plane or height field that names a mesh, in the
+/// words of its `fitaabb` mode (`user_mesh.cc:1008-1009`, `:1047`), and so
+/// does this; a plane in a moving body it refuses first, as not static,
+/// where this names the mesh (ledger L353).
 /// Other numeric fields
 /// (orientation, friction, density, solver params) are out of scope here;
 /// mass/inertia have separate validation
 /// paths via the inertial check, and the rest are deferred as a follow-up
 /// audit candidate.
-fn check_geom_size(geom: &MjcfGeom, at: impl Fn() -> Location) -> Result<()> {
+fn check_geom_size(geom: &MjcfGeom, fitaabb: bool, at: impl Fn() -> Location) -> Result<()> {
     // A geom's `fromto` is its pose and size already (the resolve pass refuses
     // a non-finite one).
     let size = geom.size.map_or([0.0; 3], |s| s.over([0.0; 3]));
@@ -538,18 +562,24 @@ fn check_geom_size(geom: &MjcfGeom, at: impl Fn() -> Location) -> Result<()> {
         && geom.mesh.as_deref().is_some_and(|m| !m.is_empty())
     {
         if matches!(kind, MjcfGeomType::Plane | MjcfGeomType::Hfield) {
-            return Err(MjcfError::invalid_value(
-                "geom",
-                "type",
-                "invalid geom type in fitting mesh",
-            )
-            .at(at()));
+            let reason = if fitaabb {
+                "invalid fittype in mesh"
+            } else {
+                "invalid geom type in fitting mesh"
+            };
+            return Err(MjcfError::invalid_value("geom", "type", reason).at(at()));
         }
-        return Err(MjcfError::unsupported(
-            "a sphere, capsule, cylinder, ellipsoid or box fitted to the mesh it names",
-        )
-        .at(at()));
+        return Ok(());
     }
+    checksize(kind, size).map_err(|e| e.at(at()))
+}
+
+/// MuJoCo 3.5.0's `checksize` (`user_objects.cc:152-167`): a plane's third
+/// size, and each of the first `mjGEOMINFO[type]` sizes of any other type
+/// (`user_objects.h:77`: a sphere 1, a capsule or cylinder 2, an ellipsoid or
+/// box 3, a mesh, height field or SDF none), above 0, a place neither the
+/// geom nor its class writes being MuJoCo's 0. The error has no location.
+pub fn checksize(kind: MjcfGeomType, size: [f64; 3]) -> Result<()> {
     let places = match kind {
         MjcfGeomType::Plane => {
             if size[2] <= 0.0 {
@@ -557,8 +587,7 @@ fn check_geom_size(geom: &MjcfGeom, at: impl Fn() -> Location) -> Result<()> {
                     "geom",
                     "size",
                     "plane size(3) must be positive",
-                )
-                .at(at()));
+                ));
             }
             0
         }
@@ -568,9 +597,11 @@ fn check_geom_size(geom: &MjcfGeom, at: impl Fn() -> Location) -> Result<()> {
         MjcfGeomType::Mesh | MjcfGeomType::Hfield | MjcfGeomType::Sdf => 0,
     };
     if let Some(i) = (0..places).find(|&i| size[i] <= 0.0) {
-        return Err(
-            MjcfError::invalid_value("geom", "size", format!("size {i} must be positive")).at(at()),
-        );
+        return Err(MjcfError::invalid_value(
+            "geom",
+            "size",
+            format!("size {i} must be positive"),
+        ));
     }
     Ok(())
 }
