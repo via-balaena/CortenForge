@@ -77,7 +77,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 |---------|--------|----------|-------|
 | `<mujoco>` | ✓ | ✓ | Root element |
 | `<compiler>` | ✓ | ✓ | Full: angle, eulerseq, meshdir/texturedir/assetdir, autolimits, inertiafromgeom, boundmass/boundinertia, balanceinertia, settotalmass, strippath, discardvisual, fusestatic, coordinate, exactmeshinertia |
-| `<include>` | ✓ | ✓ | Pre-parse XML expansion with recursive includes, duplicate detection, path resolution relative to main model |
+| `<include>` | ✓ | ⚠️ | Pre-parse XML expansion with recursive includes, duplicate detection, path resolution relative to main model; an included file's assets are found only from the main model's directory, where MuJoCo also looks in the included file's, and an include's own `file` is not read with `\` as a separator or `..` reduced by its text, as MuJoCo reads it |
 | `<option>` | ✓ | ✓ | Full: timestep, gravity, integrator, solver, cone, jacobian, wind, flags, etc. |
 | `<size>` | ✓ | ⚠️ | Memory hints, may not apply |
 | `<visual>` | ✓ | ❌ | L1 concern (sim-bevy) |
