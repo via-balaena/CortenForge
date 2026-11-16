@@ -1,7 +1,8 @@
 //! A mesh file other than an STL read as MuJoCo 3.5.0 reads it (book
-//! Rigid-loading L36; ledger L411 (b)): under a `scale` whose product is not
-//! positive each face's last two vertices change places (`LoadOBJ`,
-//! `user_mesh.cc:1085-1104`), its repeated vertices stay apart, and a
+//! Rigid-loading L36; ledger L411 (b)): an MSH file as `LoadMSH` reads it
+//! (`user_mesh.cc:1282-1368`); under a `scale` whose product is not positive
+//! each face's last two vertices change places (`LoadOBJ`, `:1085-1104`;
+//! `LoadMSH`, `:1359-1366`), its repeated vertices stay apart, and a
 //! coordinate that is not finite is refused naming its vertex
 //! (`ProcessVertices`, `:557-561`). A PLY file, which MuJoCo does not read,
 //! is turned the same way.
@@ -149,6 +150,121 @@ fn an_obj_coordinate_beyond_single_precision_is_refused() {
     ] {
         let text = TET_OBJ.replacen(vertex, huge, 1);
         let err = load_bytes(dir.path(), "huge.obj", text.as_bytes(), "").unwrap_err();
+        assert_eq!(err.to_string(), format!("mesh 'm': {words}"));
+    }
+}
+
+/// An MSH file: its four counts, then its vertices' floats, `extra` floats
+/// (normals and texture coordinates), and its faces' vertex ids.
+fn msh(counts: [i32; 4], vertices: &[f32], extra: &[f32], faces: &[i32]) -> Vec<u8> {
+    let mut bytes: Vec<u8> = counts.iter().flat_map(|n| n.to_le_bytes()).collect();
+    for x in vertices.iter().chain(extra) {
+        bytes.extend_from_slice(&x.to_le_bytes());
+    }
+    for i in faces {
+        bytes.extend_from_slice(&i.to_le_bytes());
+    }
+    bytes
+}
+
+/// The tetrahedron's corners and faces, as an MSH file holds them.
+const TET_FLOATS: [f32; 12] = [0.1, 0.2, 0.3, 1.1, 0.2, 0.3, 0.1, 2.2, 0.3, 0.1, 0.2, 3.3];
+const TET_FACES: [i32; 12] = [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3];
+
+/// An MSH file is read as MuJoCo's `LoadMSH` reads it, its normals and
+/// texture coordinates passed over, its repeated vertices kept apart, its
+/// faces turned under a left-handed `scale` (at the parent it was refused as
+/// of no format read here).
+#[test]
+fn an_msh_file_loads_as_mujoco_reads_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let plain = msh([4, 0, 0, 4], &TET_FLOATS, &[], &TET_FACES);
+    let with_extra = msh([4, 4, 4, 4], &TET_FLOATS, &[0.0; 20], &TET_FACES);
+    // The fourth corner written twice, the last face naming the second.
+    let twice_floats = [&TET_FLOATS[..], &TET_FLOATS[9..]].concat();
+    let mut twice_faces = TET_FACES;
+    twice_faces[11] = 4;
+    let twice = msh([5, 0, 0, 4], &twice_floats, &[], &twice_faces);
+    let tet = vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3];
+    let tet_twice = vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 4];
+    for (bytes, attrs, expected) in [
+        (
+            &plain,
+            r#"inertia="exact""#,
+            (4, tet.clone(), 1000.000024835268),
+        ),
+        (
+            &with_extra,
+            r#"inertia="exact""#,
+            (4, tet, 1000.000024835268),
+        ),
+        (
+            &plain,
+            r#"scale="1 -2 1" inertia="exact""#,
+            (4, TET_TURNED.to_vec(), 2000.0000496705366),
+        ),
+        (
+            &twice,
+            r#"inertia="exact""#,
+            (5, tet_twice, 1000.000024835268),
+        ),
+    ] {
+        let model = load_bytes(dir.path(), "tet.msh", bytes, attrs).unwrap();
+        assert_eq!(mesh_and_mass(&model), expected, "{attrs}");
+    }
+}
+
+/// An MSH file is refused in MuJoCo's order and words: its sizes, then its
+/// vertices, then its faces.
+#[test]
+fn an_msh_file_is_refused_as_mujoco_refuses_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut nan = TET_FLOATS;
+    nan[4] = f32::NAN;
+    let mut negative = TET_FACES;
+    negative[4] = -1;
+    let mut past = TET_FACES;
+    past[4] = 4;
+    let mut longer = msh([4, 0, 0, 4], &TET_FLOATS, &[], &TET_FACES);
+    longer.extend_from_slice(&[0; 4]);
+    for (bytes, words) in [
+        (Vec::new(), "MSH file 't.msh' is empty"),
+        (vec![0; 12], "missing header in MSH file 't.msh'"),
+        (
+            msh([3, 0, 0, 1], &TET_FLOATS[..9], &[], &[0, 1, 2]),
+            "invalid sizes in MSH file 't.msh'",
+        ),
+        (
+            msh([4, 3, 0, 4], &TET_FLOATS, &[0.0; 9], &TET_FACES),
+            "invalid sizes in MSH file 't.msh'",
+        ),
+        (
+            msh([4, 0, 3, 4], &TET_FLOATS, &[0.0; 6], &TET_FACES),
+            "invalid sizes in MSH file 't.msh'",
+        ),
+        (
+            msh([4, 0, 0, -1], &TET_FLOATS, &[], &[]),
+            "invalid sizes in MSH file 't.msh'",
+        ),
+        (
+            msh([178_956_970, 0, 0, 4], &[], &[], &[]),
+            "too large sizes in MSH file 't.msh'.",
+        ),
+        (longer, "unexpected file size in MSH file 't.msh'"),
+        (
+            msh([4, 0, 0, 4], &nan, &[], &negative),
+            "vertex coordinate 1 is not finite",
+        ),
+        (
+            msh([4, 0, 0, 4], &TET_FLOATS, &[], &negative),
+            "in face 1, vertex index -1 does not exist",
+        ),
+        (
+            msh([4, 0, 0, 4], &TET_FLOATS, &[], &past),
+            "in face 1, vertex index 4 does not exist",
+        ),
+    ] {
+        let err = load_bytes(dir.path(), "t.msh", &bytes, "").unwrap_err();
         assert_eq!(err.to_string(), format!("mesh 'm': {words}"));
     }
 }
