@@ -1,9 +1,9 @@
 //! Mesh and heightfield asset processing.
 //!
-//! Handles loading mesh data from files (STL, OBJ, PLY; also 3MF when
-//! the `threemf` feature is enabled), converting embedded vertex/face
-//! data, computing mesh inertia properties, and registering mesh/hfield
-//! assets in the builder's lookup tables.
+//! Handles a mesh's vertices and faces, from its file (`mesh_file`) or its
+//! embedded vertex/face data, computing mesh inertia properties, loading
+//! height fields, and registering mesh/hfield assets in the builder's lookup
+//! tables.
 
 use nalgebra::{Point3, Vector3};
 use sim_core::HeightFieldData;
@@ -16,6 +16,7 @@ use super::ModelBuilder;
 use super::asset::{AssetKind, resolve_asset_path};
 use super::eig3::eig3;
 use super::mass::MJ_MINVAL;
+use super::mesh_file::load_mesh_file;
 use super::orientation::{mulvecmat, mulvecmat_t, normvec, quat2mat};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{MeshInertia, MjcfCompiler, MjcfHfield, MjcfMesh, MjcfModel};
@@ -183,81 +184,9 @@ impl ModelBuilder {
 }
 
 /// A mesh's vertices and its faces' vertex indices (three per face), as its
-/// file or its `vertex` and `face` attributes hold them, before MuJoCo's
-/// transformations ([`apply_transformations`]).
+/// file is read ([`load_mesh_file`]) or its `vertex` and `face` attributes
+/// hold them, before MuJoCo's transformations ([`apply_transformations`]).
 pub type RawMesh = (Vec<Point3<f64>>, Vec<usize>);
-
-/// Load a mesh file's vertices and faces as the file holds them.
-///
-/// Supports STL, OBJ, and PLY formats out of the box (auto-detected from
-/// extension). Enable the `threemf` feature to add 3MF; otherwise `.3mf`
-/// paths return an `UnknownFormat` error from mesh-io.
-///
-/// # Arguments
-///
-/// * `file_path` - Path string from MJCF `<mesh file="..."/>` attribute
-/// * `base_path` - Base directory for resolving relative paths
-/// * `mesh_name` - Mesh name for error messages
-///
-/// # Errors
-///
-/// Returns an [`MjcfError::Asset`] if:
-/// - Path resolution fails (see [`resolve_asset_path`])
-/// - File format is unsupported or corrupt
-/// - Mesh contains no vertices or faces
-pub fn load_mesh_file(
-    file_path: &str,
-    base_path: Option<&Path>,
-    compiler: &MjcfCompiler,
-    mesh_name: &str,
-) -> Result<RawMesh> {
-    // 1. Resolve path using compiler path settings
-    let refuse = |reason: String| MjcfError::asset(ElementKind::Mesh, mesh_name, reason);
-    let resolved_path =
-        resolve_asset_path(file_path, base_path, compiler, AssetKind::Mesh).map_err(refuse)?;
-
-    // 2. Load mesh via mesh-io
-    let indexed_mesh = mesh_io::load_mesh(&resolved_path)
-        .map_err(|e| refuse(format!("failed to load '{file_path}': {e}")))?;
-
-    // 3. Validate non-empty
-    if indexed_mesh.vertices.is_empty() {
-        return Err(refuse(format!("file '{file_path}' contains no vertices")));
-    }
-    if indexed_mesh.faces.is_empty() {
-        return Err(refuse(format!("file '{file_path}' contains no faces")));
-    }
-
-    // 4. Faces to flat indices: mesh-io holds [u32; 3] per face.
-    let indices: Vec<usize> = indexed_mesh
-        .faces
-        .iter()
-        .flat_map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
-        .collect();
-
-    // 5. MuJoCo 3.5.0's loaders hand a file's vertices to `ProcessVertices`
-    // as floats (`user_mesh.cc:543`; tinyobjloader's for OBJ, the files'
-    // own for STL and MSH), so each is rounded to one, as an embedded
-    // mesh's are when they are read.
-    #[allow(clippy::cast_possible_truncation)] // the rounding is MuJoCo's
-    let vertices: Vec<Point3<f64>> = indexed_mesh
-        .vertices
-        .iter()
-        .map(|v| v.map(|c| f64::from(c as f32)))
-        .collect();
-
-    // 6. Each face's vertices exist (`CheckInitialMesh`,
-    // `user_mesh.cc:1835-1841`), in MuJoCo's words.
-    if let Some(i) = indices.iter().position(|&index| index >= vertices.len()) {
-        return Err(refuse(format!(
-            "in face {}, vertex index {} does not exist",
-            i / 3,
-            indices[i]
-        )));
-    }
-
-    Ok((vertices, indices))
-}
 
 /// Convert an MJCF hfield asset to `HeightFieldData`.
 ///
@@ -416,8 +345,8 @@ fn load_hfield_png(
 ///
 /// Handles two sources of mesh data:
 /// 1. **Embedded data**: `vertex` and `face` attributes in MJCF
-/// 2. **File-based**: `file` attribute pointing to STL/OBJ/PLY (also
-///    3MF when the `threemf` feature is enabled)
+/// 2. **File-based**: `file` attribute naming an STL, OBJ or PLY file (also
+///    3MF when the `threemf` feature is enabled), read by [`load_mesh_file`]
 ///
 /// Its vertices are moved, turned and scaled as MuJoCo 3.5.0 does
 /// ([`apply_transformations`]); the BVH is built over them.
@@ -431,7 +360,7 @@ pub fn convert_mjcf_mesh(
         // Embedded vertex data takes precedence (MuJoCo semantics)
         (Some(verts), _) => convert_embedded_mesh(mjcf_mesh, verts)?,
         // File-based loading
-        (None, Some(file_path)) => load_mesh_file(file_path, base_path, compiler, &mjcf_mesh.name)?,
+        (None, Some(file_path)) => load_mesh_file(file_path, base_path, compiler, mjcf_mesh)?,
         // Neither specified
         (None, None) => {
             return Err(MjcfError::asset(
@@ -820,7 +749,7 @@ pub fn mesh_mass_properties(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
-    use super::{convert_mjcf_mesh, load_mesh_file};
+    use super::convert_mjcf_mesh;
     use crate::types::{MjcfCompiler, MjcfMesh};
     use nalgebra::Vector3;
     use sim_core::mesh::TriangleMeshData;
@@ -841,26 +770,6 @@ mod tests {
         mesh.faces.push([2, 0, 3]); // left
 
         mesh_io::save_mesh(&mesh, path).expect("Failed to save test STL");
-    }
-
-    /// Test load_mesh_file with STL format.
-    #[test]
-    fn test_load_mesh_file_stl() {
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mesh_path = temp_dir.path().join("test.stl");
-        create_test_stl(&mesh_path);
-
-        let result = load_mesh_file(
-            &mesh_path.to_string_lossy(),
-            None,
-            &MjcfCompiler::default(),
-            "test_mesh",
-        );
-
-        assert!(result.is_ok(), "Should load STL file");
-        let (vertices, indices) = result.unwrap();
-        assert!(vertices.len() >= 4, "Should have at least 4 vertices");
-        assert!(indices.len() >= 12, "Should have at least 4 triangles");
     }
 
     /// The file's mesh, loaded by `convert_mjcf_mesh` with `scale`.
@@ -925,51 +834,6 @@ mod tests {
             assert!((s.y - u.y * 2.0).abs() < 1e-10, "Y should be 2x");
             assert!((s.z - u.z * 3.0).abs() < 1e-10, "Z should be 3x");
         }
-    }
-
-    /// Test load_mesh_file fails for unsupported format.
-    #[test]
-    fn test_load_mesh_file_unsupported_format() {
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mesh_path = temp_dir.path().join("test.xyz");
-        std::fs::write(&mesh_path, b"invalid mesh data").unwrap();
-
-        let result = load_mesh_file(
-            &mesh_path.to_string_lossy(),
-            None,
-            &MjcfCompiler::default(),
-            "unsupported",
-        );
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("failed to load"));
-    }
-
-    /// Test load_mesh_file fails gracefully for corrupt STL data.
-    ///
-    /// A file with `.stl` extension but invalid content should produce
-    /// a clear error, not panic.
-    #[test]
-    fn test_load_mesh_file_corrupt_stl() {
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mesh_path = temp_dir.path().join("corrupt.stl");
-
-        // Write invalid STL data (valid STL needs specific binary/ASCII structure)
-        std::fs::write(&mesh_path, b"this is not a valid stl file content").unwrap();
-
-        let result = load_mesh_file(
-            &mesh_path.to_string_lossy(),
-            None,
-            &MjcfCompiler::default(),
-            "corrupt_mesh",
-        );
-
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("corrupt_mesh") && err_msg.contains("failed to load"),
-            "error should identify mesh and indicate load failure: {err_msg}"
-        );
     }
 
     /// Test convert_mjcf_mesh with file attribute.
