@@ -49,6 +49,9 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
+// A hash map's order varies from run to run, so nothing read from one may
+// depend on it (book L36, Q108).
+#![deny(clippy::iter_over_hash_type)]
 
 mod error;
 mod obj;

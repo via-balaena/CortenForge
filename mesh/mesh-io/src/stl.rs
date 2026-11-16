@@ -5,8 +5,12 @@
 //! # Format Detection
 //!
 //! The loader automatically detects whether a file is ASCII or binary:
-//! - ASCII files start with "solid" (after optional whitespace)
-//! - Binary files have an 80-byte header followed by face count
+//! - A file exactly as long as its 80-byte header, its face count and 50
+//!   bytes per face is binary, whatever its header says: a binary header is
+//!   free text and may itself begin with "solid"
+//! - So is a file whose header holds a NUL byte, which ASCII text does not
+//! - Otherwise a file that starts with "solid" (after optional whitespace) is
+//!   ASCII, and any other is read as binary
 //!
 //! # Binary Format
 //!
@@ -92,6 +96,7 @@ pub fn load_stl<P: AsRef<Path>>(path: P) -> IoResult<IndexedMesh> {
             IoError::Io(e)
         }
     })?;
+    let len = file.metadata()?.len();
 
     let mut reader = BufReader::new(file);
 
@@ -107,7 +112,7 @@ pub fn load_stl<P: AsRef<Path>>(path: P) -> IoResult<IndexedMesh> {
     let header_str = String::from_utf8_lossy(&header[..bytes_read.min(HEADER_SIZE)]);
     let trimmed = header_str.trim_start();
 
-    if trimmed.starts_with("solid") && !is_binary_stl_header(&header[..bytes_read]) {
+    if trimmed.starts_with("solid") && !is_binary_stl(&header[..bytes_read], len) {
         // ASCII format - need to re-read from start
         drop(reader);
         let file = File::open(path)?;
@@ -119,18 +124,22 @@ pub fn load_stl<P: AsRef<Path>>(path: P) -> IoResult<IndexedMesh> {
     }
 }
 
-/// Check if the header suggests binary STL despite starting with "solid".
-///
-/// Some binary STLs happen to have "solid" in the header. We check by seeing
-/// if the face count makes sense given the file structure.
-fn is_binary_stl_header(header: &[u8]) -> bool {
-    if header.len() < HEADER_SIZE + 4 {
+/// Whether a file of `len` bytes that begins with "solid", the word an ASCII
+/// STL begins with, is binary all the same, from its first bytes (`header`:
+/// the 80-byte header and the face count after it). A binary header is free
+/// text, so it is binary if it is exactly the size its count gives, 84 bytes
+/// and 50 per face, as MuJoCo 3.5.0's `LoadSTL` tests it
+/// (`user_mesh.cc:1237`), or if its header holds a NUL byte, which ASCII
+/// text does not.
+fn is_binary_stl(header: &[u8], len: u64) -> bool {
+    let (Some(text), Some(count)) = (
+        header.get(..HEADER_SIZE),
+        header.get(HEADER_SIZE..HEADER_SIZE + 4),
+    ) else {
         return false;
-    }
-
-    // Check if there are any null bytes in what would be ASCII header
-    // Binary headers often contain nulls
-    header[..HEADER_SIZE].contains(&0)
+    };
+    let faces = u32::from_le_bytes([count[0], count[1], count[2], count[3]]);
+    len == (HEADER_SIZE + 4) as u64 + TRIANGLE_SIZE as u64 * u64::from(faces) || text.contains(&0)
 }
 
 /// Load a binary STL given the already-read header.
@@ -573,5 +582,62 @@ endsolid test"#;
             assert_eq!(m.face_count(), 1);
             assert_eq!(m.vertex_count(), 3);
         }
+    }
+
+    /// A binary STL whose free-text header begins with "solid" (as some CAD
+    /// tools write it) is read as binary, by its size: 53 of the test assets'
+    /// submodule STL files are such (ledger L43 (b)).
+    #[test]
+    fn binary_stl_with_solid_header_loads() {
+        let original = mesh_types::unit_cube();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("solid_header.stl");
+        save_stl(&original, &path, true).expect("save_stl");
+        let mut bytes = std::fs::read(&path).expect("read back");
+        let header = b"solid cube made by a CAD tool";
+        bytes[..HEADER_SIZE].fill(b' ');
+        bytes[..header.len()].copy_from_slice(header);
+        std::fs::write(&path, &bytes).expect("rewrite header");
+
+        let loaded = load_stl(&path).expect("a binary STL with a 'solid' header loads");
+        let soup: Vec<Point3<f64>> = original
+            .faces
+            .iter()
+            .flat_map(|f| f.map(|i| original.vertices[i as usize]))
+            .collect();
+        assert_eq!(loaded.face_count(), 12);
+        assert_eq!(loaded.vertices, soup);
+    }
+
+    /// A binary STL whose header begins with "solid" and holds a NUL byte is
+    /// read as binary even when it is not the size its count gives, as
+    /// before the size test: here, ten bytes past its last face.
+    #[test]
+    fn binary_stl_with_solid_and_nul_header_and_trailing_bytes_loads() {
+        let original = mesh_types::unit_cube();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("solid_nul.stl");
+        save_stl(&original, &path, true).expect("save_stl");
+        let mut bytes = std::fs::read(&path).expect("read back");
+        bytes[..HEADER_SIZE].fill(0);
+        bytes[..5].copy_from_slice(b"solid");
+        bytes.extend_from_slice(&[0; 10]);
+        std::fs::write(&path, &bytes).expect("rewrite");
+
+        let loaded = load_stl(&path).expect("loads as binary");
+        assert_eq!(loaded.face_count(), 12);
+    }
+
+    /// A file that is not the size its count gives, and starts with "solid",
+    /// is read as ASCII.
+    #[test]
+    fn ascii_stl_is_told_by_its_size_and_its_first_word() {
+        let original = create_test_triangle();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ascii.stl");
+        save_stl(&original, &path, false).expect("save_stl");
+        let loaded = load_stl(&path).expect("an ASCII STL loads");
+        assert_eq!(loaded.face_count(), 1);
+        assert_eq!(loaded.vertices, original.vertices);
     }
 }
