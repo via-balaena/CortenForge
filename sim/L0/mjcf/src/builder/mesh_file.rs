@@ -37,10 +37,12 @@ const STL_MAX_COORD: f64 = 1_073_741_824.0;
 /// mesh compiler (`mjCMesh::TryCompile`, `user_mesh.cc:692-729`).
 ///
 /// An STL (by its extension, in any case) is read as MuJoCo's `LoadSTL`
-/// reads one ([`read_stl`]), its vertices merged where repeated
-/// ([`process_vertices`]); OBJ, PLY and, with the `threemf` feature, 3MF are
-/// read by mesh-io and rounded to single precision, as MuJoCo's loaders hand
-/// a file's vertices on as floats.
+/// reads one ([`read_stl`]); OBJ, PLY and, with the `threemf` feature, 3MF
+/// are read by mesh-io and rounded to single precision, as MuJoCo's loaders
+/// hand a file's vertices on as floats. Under a left-handed `scale` each
+/// face is turned ([`turn_faces`]), as MuJoCo's loaders turn an STL's, an
+/// OBJ's and an MSH's; then the vertices are checked, an STL's merged where
+/// repeated ([`process_vertices`]).
 ///
 /// # Errors
 ///
@@ -59,18 +61,15 @@ pub fn load_mesh_file(
     let resolved_path =
         resolve_asset_path(file_path, base_path, compiler, AssetKind::Mesh).map_err(refuse)?;
 
-    let (vertices, indices) = if is_stl(&resolved_path) {
+    let (vert, mut faces, merge) = if is_stl(&resolved_path) {
         let bytes = std::fs::read(&resolved_path)
             .map_err(|e| refuse(format!("could not read STL file '{file_path}': {e}")))?;
-        let (vert, mut faces) = read_stl(&bytes, file_path).map_err(refuse)?;
-        if left_handed(mjcf_mesh) {
-            turn_faces(&mut faces);
-        }
-        process_vertices(&vert, faces).map_err(refuse)?
+        let (vert, faces) = read_stl(&bytes, file_path).map_err(refuse)?;
+        (vert, faces, true)
     } else {
         let indexed_mesh = mesh_io::load_mesh(&resolved_path)
             .map_err(|e| refuse(format!("failed to load '{file_path}': {e}")))?;
-        let indices: Vec<usize> = indexed_mesh
+        let faces: Vec<usize> = indexed_mesh
             .faces
             .iter()
             .flat_map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
@@ -79,13 +78,17 @@ pub fn load_mesh_file(
         // as floats (`user_mesh.cc:543`), so each is rounded to one, as an
         // embedded mesh's are when they are read.
         #[allow(clippy::cast_possible_truncation)] // the rounding is MuJoCo's
-        let vertices: Vec<Point3<f64>> = indexed_mesh
+        let vert: Vec<f32> = indexed_mesh
             .vertices
             .iter()
-            .map(|v| v.map(|c| f64::from(c as f32)))
+            .flat_map(|v| [v.x as f32, v.y as f32, v.z as f32])
             .collect();
-        (vertices, indices)
+        (vert, faces, false)
     };
+    if left_handed(mjcf_mesh) {
+        turn_faces(&mut faces);
+    }
+    let (vertices, indices) = process_vertices(&vert, faces, merge).map_err(refuse)?;
 
     if vertices.is_empty() {
         return Err(refuse(format!("file '{file_path}' contains no vertices")));
@@ -121,8 +124,9 @@ fn left_handed(mjcf_mesh: &MjcfMesh) -> bool {
 }
 
 /// Each face's second and third vertices exchanged, so a left-handed
-/// `scale` leaves it facing out, as MuJoCo 3.5.0's `LoadSTL` places them
-/// (`user_mesh.cc:1263-1268`).
+/// `scale` leaves it facing out, as MuJoCo 3.5.0's `LoadSTL`, `LoadOBJ` and
+/// `LoadMSH` place them (`user_mesh.cc:1263-1268`, `:1097-1104`,
+/// `:1359-1366`).
 fn turn_faces(faces: &mut [usize]) {
     for face in faces.chunks_exact_mut(3) {
         face.swap(1, 2);
@@ -259,20 +263,33 @@ fn read_ascii_stl(text: &str, file: &str) -> std::result::Result<(Vec<f32>, Vec<
     stl_soup(read.into_iter(), file)
 }
 
-/// An STL's vertices (`vert`, three floats each) and its faces' vertex
-/// ids, as MuJoCo 3.5.0's `ProcessVertices` passes an STL's on
-/// (`user_mesh.cc:543-614`, called with `remove_repeated`, `:1276`): each in
-/// double precision, a coordinate that is not finite refused, and vertices
-/// equal as floats, `-0` and `0` among them, made one: numbered in the order
-/// they first appear, each keeping its first appearance's value, the faces
-/// renumbered.
+/// A file's vertices (`vert`, three floats each) and its faces' vertex ids,
+/// as MuJoCo 3.5.0's `ProcessVertices` passes them on
+/// (`user_mesh.cc:543-614`): each in double precision, a coordinate that is
+/// not finite refused. Where `merge` (an STL: `remove_repeated`, `:1276`), vertices
+/// equal as floats, `-0` and `0` among them, are made one: numbered in the
+/// order they first appear, each keeping its first appearance's value, the
+/// faces renumbered.
 ///
 /// # Errors
 ///
 /// Returns MuJoCo's words for the first coordinate that is not finite,
-/// naming the index of its vertex's first float, as that loop counts
-/// (`:573-577`).
-fn process_vertices(vert: &[f32], mut faces: Vec<usize>) -> std::result::Result<RawMesh, String> {
+/// naming its vertex's index where it does not merge and the index of the
+/// vertex's first float where it does, as MuJoCo's two loops count
+/// (`:557-561`, `:573-577`).
+fn process_vertices(
+    vert: &[f32],
+    mut faces: Vec<usize>,
+    merge: bool,
+) -> std::result::Result<RawMesh, String> {
+    let point = |c: &[f32]| Point3::new(f64::from(c[0]), f64::from(c[1]), f64::from(c[2]));
+    let not_finite = |c: &[f32]| !c.iter().all(|x| x.is_finite());
+    if !merge {
+        if let Some(i) = vert.chunks_exact(3).position(not_finite) {
+            return Err(format!("vertex coordinate {i} is not finite"));
+        }
+        return Ok((vert.chunks_exact(3).map(point).collect(), faces));
+    }
     // Float `==`: a key's bits, with -0 read as 0 (a NaN is refused first).
     let key = |c: &[f32]| -> [u32; 3] {
         std::array::from_fn(|k| if c[k] == 0.0 { 0 } else { c[k].to_bits() })
@@ -281,15 +298,11 @@ fn process_vertices(vert: &[f32], mut faces: Vec<usize>) -> std::result::Result<
     let mut kept: Vec<Point3<f64>> = Vec::new();
     let mut renumber = Vec::with_capacity(vert.len() / 3);
     for (i, c) in vert.chunks_exact(3).enumerate() {
-        if !c.iter().all(|x| x.is_finite()) {
+        if not_finite(c) {
             return Err(format!("vertex coordinate {} is not finite", 3 * i));
         }
         let id = *ids.entry(key(c)).or_insert_with(|| {
-            kept.push(Point3::new(
-                f64::from(c[0]),
-                f64::from(c[1]),
-                f64::from(c[2]),
-            ));
+            kept.push(point(c));
             kept.len() - 1
         });
         renumber.push(id);
@@ -357,7 +370,7 @@ mod tests {
     fn process_vertices_keeps_the_first_of_equal_vertices() {
         for (first, second) in [(-0.0f32, 0.0f32), (0.0, -0.0)] {
             let vert = [first, 1.0, 2.0, second, 1.0, 2.0, 3.0, 4.0, 5.0];
-            let (kept, faces) = process_vertices(&vert, vec![0, 1, 2]).unwrap();
+            let (kept, faces) = process_vertices(&vert, vec![0, 1, 2], true).unwrap();
             assert_eq!(faces, vec![0, 0, 1]);
             assert_eq!(kept.len(), 2);
             assert_eq!(kept[0].x.to_bits(), f64::from(first).to_bits());
