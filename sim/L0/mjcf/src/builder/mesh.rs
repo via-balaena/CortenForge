@@ -345,8 +345,9 @@ fn load_hfield_png(
 ///
 /// Handles two sources of mesh data:
 /// 1. **Embedded data**: `vertex` and `face` attributes in MJCF
-/// 2. **File-based**: `file` attribute naming an STL, OBJ or PLY file (also
-///    3MF when the `threemf` feature is enabled), read by [`load_mesh_file`]
+/// 2. **File-based**: `file` attribute naming an STL, OBJ, MSH or PLY file
+///    (also 3MF when the `threemf` feature is enabled), read by
+///    [`load_mesh_file`]
 ///
 /// Its vertices are moved, turned and scaled as MuJoCo 3.5.0 does
 /// ([`apply_transformations`]); the BVH is built over them.
