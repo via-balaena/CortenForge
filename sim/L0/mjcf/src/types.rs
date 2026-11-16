@@ -953,6 +953,10 @@ pub struct MjcfMesh {
     pub class: Option<String>,
     /// File path for external mesh (STL, OBJ, etc.).
     pub file: Option<String>,
+    /// The file's format as a content type (`content_type`), as MuJoCo 3.5.0
+    /// reads one: `type/subtype`, with any `;parameter=value`; unwritten or
+    /// empty, the file's extension names its format.
+    pub content_type: Option<String>,
     /// Scale factor for the mesh vertices.
     pub scale: Option<Vector3<f64>>,
     /// The mesh's reference position (`refpos`), (0, 0, 0) unwritten: its
@@ -985,6 +989,7 @@ impl Default for MjcfMesh {
             name: String::new(),
             class: None,
             file: None,
+            content_type: None,
             scale: None,
             refpos: Vector3::zeros(),
             refquat: [1.0, 0.0, 0.0, 0.0],

@@ -42,11 +42,11 @@ type FileMesh = (Vec<f32>, Vec<i64>);
 /// Load a mesh file's vertices and faces as MuJoCo 3.5.0 hands them to its
 /// mesh compiler (`mjCMesh::TryCompile`, `user_mesh.cc:692-729`).
 ///
-/// An STL or an MSH (by its extension, in any case) is read as MuJoCo's
-/// `LoadSTL` or `LoadMSH` reads one ([`read_stl`], [`read_msh`]); OBJ, PLY
-/// and, with the `threemf` feature, 3MF are read by mesh-io and rounded to
-/// single precision, as MuJoCo's loaders hand a file's vertices on as
-/// floats. Under a left-handed `scale` each
+/// Its format is its `content_type`'s, else its extension's ([`file_format`]).
+/// An STL or an MSH is read as MuJoCo's `LoadSTL` or `LoadMSH` reads one
+/// ([`read_stl`], [`read_msh`]); OBJ, PLY and, with the `threemf` feature,
+/// 3MF are read by mesh-io and rounded to single precision, as MuJoCo's
+/// loaders hand a file's vertices on as floats. Under a left-handed `scale` each
 /// face is turned ([`turn_faces`]), as MuJoCo's loaders turn an STL's, an
 /// OBJ's and an MSH's; then the vertices are checked, an STL's merged where
 /// repeated ([`process_vertices`]).
@@ -72,13 +72,21 @@ pub fn load_mesh_file(
         std::fs::read(&resolved_path)
             .map_err(|e| refuse(format!("could not read {what} file '{file_path}': {e}")))
     };
-    let ((vert, mut faces), merge) = if has_extension(&resolved_path, "stl") {
+    let format = file_format(&resolved_path, mjcf_mesh.content_type.as_deref(), file_path)
+        .map_err(refuse)?;
+    let ((vert, mut faces), merge) = if format == Format::Stl {
         (read_stl(&read("STL")?, file_path).map_err(refuse)?, true)
-    } else if has_extension(&resolved_path, "msh") {
+    } else if format == Format::Msh {
         (read_msh(&read("MSH")?, file_path).map_err(refuse)?, false)
     } else {
-        let indexed_mesh = mesh_io::load_mesh(&resolved_path)
-            .map_err(|e| refuse(format!("failed to load '{file_path}': {e}")))?;
+        // An OBJ, a PLY or a 3MF file, through mesh-io.
+        let indexed_mesh = match format {
+            Format::Ply => mesh_io::load_ply(&resolved_path),
+            #[cfg(feature = "threemf")]
+            Format::ThreeMf => mesh_io::load_3mf(&resolved_path),
+            _ => mesh_io::load_obj(&resolved_path),
+        }
+        .map_err(|e| refuse(format!("failed to load '{file_path}': {e}")))?;
         let faces: Vec<i64> = indexed_mesh
             .faces
             .iter()
@@ -124,12 +132,85 @@ pub fn load_mesh_file(
     Ok((vertices, indices))
 }
 
-/// Whether the file's extension is `ext`, in any case, as MuJoCo 3.5.0
-/// tells a file's format by it (`mjuu_extToContentType`,
-/// `user_util.cc:957-973`).
-fn has_extension(path: &Path, ext: &str) -> bool {
-    path.extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+/// A mesh file's format: MuJoCo 3.5.0's three, and the two this crate reads
+/// beside them through mesh-io (registry `D-MESH-FORMAT`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Format {
+    Stl,
+    Obj,
+    Msh,
+    /// MuJoCo names the type (`model/ply`) and reads no such file.
+    Ply,
+    /// MuJoCo names no such type.
+    #[cfg(feature = "threemf")]
+    ThreeMf,
+}
+
+/// A mesh file's format, as MuJoCo 3.5.0 names it (`GetAssetContentType`,
+/// `user_objects.cc:1225-1237`, read by `LoadFromResource`,
+/// `user_mesh.cc:646-666`): its `content_type` where written, as
+/// `type/subtype` ([`content_type_of`]); else its extension's, in any
+/// case (`mjuu_extToContentType`, `user_util.cc:957-973`). `.3mf` and
+/// `model/3mf` name a 3MF file with the `threemf` feature.
+///
+/// # Errors
+///
+/// MuJoCo's words: a `content_type` not of that form, "invalid content
+/// type"; an extension of no type, "unknown or unsupported mesh file",
+/// naming the file as written (`file`); a type of no mesh format,
+/// "unsupported mesh type".
+fn file_format(
+    path: &Path,
+    content_type: Option<&str>,
+    file: &str,
+) -> std::result::Result<Format, String> {
+    let named = if let Some(text) = content_type.filter(|text| !text.is_empty()) {
+        content_type_of(text).ok_or_else(|| format!("invalid content type: '{text}'"))?
+    } else {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase);
+        let named = match ext.as_deref() {
+            Some("stl") => "model/stl",
+            Some("obj") => "model/obj",
+            Some("ply") => "model/ply",
+            Some("msh") => "model/vnd.mujoco.msh",
+            Some("png") => "image/png",
+            #[cfg(feature = "threemf")]
+            Some("3mf") => "model/3mf",
+            _ => return Err(format!("unknown or unsupported mesh file: '{file}'")),
+        };
+        named.to_string()
+    };
+    match named.as_str() {
+        "model/stl" => Ok(Format::Stl),
+        "model/obj" => Ok(Format::Obj),
+        "model/vnd.mujoco.msh" => Ok(Format::Msh),
+        "model/ply" => Ok(Format::Ply),
+        #[cfg(feature = "threemf")]
+        "model/3mf" => Ok(Format::ThreeMf),
+        _ => Err(format!("unsupported mesh type: '{named}'")),
+    }
+}
+
+/// A `content_type`'s `type/subtype`, past any `;parameter=value`, where it
+/// is of the form MuJoCo 3.5.0 accepts (`mjuu_isValidContentType`,
+/// `mjuu_parseContentTypeAttrType` and `…Subtype`, `user_util.cc:895-952`):
+/// a `/` that is not its last character, and where it holds a `;`, the `;`
+/// past the `/` and an `=` past the `;`.
+fn content_type_of(text: &str) -> Option<String> {
+    let slash = text.find('/').filter(|&n| n + 1 < text.len())?;
+    let subtype_end = match text.find(';') {
+        None => text.len(),
+        Some(semi) if semi > slash && text.find('=').is_some_and(|eq| eq > semi) => semi,
+        Some(_) => return None,
+    };
+    Some(format!(
+        "{}/{}",
+        &text[..slash],
+        &text[slash + 1..subtype_end]
+    ))
 }
 
 /// Whether a mesh's `scale` turns it inside out: its product is not
@@ -443,22 +524,22 @@ mod tests {
         }
     }
 
-    /// A file of no format mesh-io reads is refused.
+    /// A file whose extension names no mesh format is refused in MuJoCo
+    /// 3.5.0's words, naming the file as written.
     #[test]
     fn test_load_mesh_file_unsupported_format() {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let mesh_path = temp_dir.path().join("test.xyz");
         std::fs::write(&mesh_path, b"invalid mesh data").unwrap();
+        let file = mesh_path.to_string_lossy().to_string();
 
-        let result = load_mesh_file(
-            &mesh_path.to_string_lossy(),
-            None,
-            &MjcfCompiler::default(),
-            &named("unsupported"),
+        let err = load_mesh_file(&file, None, &MjcfCompiler::default(), &named("unsupported"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            format!("mesh 'unsupported': unknown or unsupported mesh file: '{file}'")
         );
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("failed to load"));
     }
 
     /// A file named `.stl` shorter than an STL's header is refused in
