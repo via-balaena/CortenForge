@@ -3,7 +3,9 @@
 //! MuJoCo reads a mesh file by its format (`mjCMesh::LoadFromResource`,
 //! `user_mesh.cc:646-666`) and hands every file's vertices to
 //! `ProcessVertices` (`:543-614`), which refuses a coordinate that is not
-//! finite and, for an STL, merges repeated vertices. An STL and an MSH are
+//! finite and, for an STL, merges repeated vertices (for a `<mesh>`: a
+//! flexcomp's file is merged whatever its format, `user_flexcomp.cc:1168`).
+//! An STL and an MSH are
 //! read here as MuJoCo's `LoadSTL` and `LoadMSH` read them (`:1209-1277`,
 //! `:1282-1368`); the other formats are read by mesh-io.
 
@@ -46,7 +48,8 @@ type FileMesh = (Vec<f32>, Vec<i64>);
 /// An STL or an MSH is read as MuJoCo's `LoadSTL` or `LoadMSH` reads one
 /// ([`read_stl`], [`read_msh`]); OBJ, PLY and, with the `threemf` feature,
 /// 3MF are read by mesh-io and rounded to single precision, as MuJoCo's
-/// loaders hand a file's vertices on as floats. Under a left-handed `scale` each
+/// loaders hand a file's vertices on as floats ([`mesh_io_file`]). Under a
+/// left-handed `scale` each
 /// face is turned ([`turn_faces`]), as MuJoCo's loaders turn an STL's, an
 /// OBJ's and an MSH's; then the vertices are checked, an STL's merged where
 /// repeated ([`process_vertices`]).
@@ -56,8 +59,8 @@ type FileMesh = (Vec<f32>, Vec<i64>);
 /// Returns an [`MjcfError::Asset`] naming the mesh if its path does not
 /// resolve ([`resolve_asset_path`]), if the file cannot be read or is not
 /// one of its format, in MuJoCo's words where MuJoCo reads the format, or
-/// if it holds no vertex or no face, or a face naming a vertex it does not
-/// hold.
+/// if it holds a coordinate that is not finite, no vertex or no face, or a
+/// face naming a vertex it does not hold.
 pub fn load_mesh_file(
     file_path: &str,
     base_path: Option<&Path>,
@@ -74,35 +77,23 @@ pub fn load_mesh_file(
     };
     let format = file_format(&resolved_path, mjcf_mesh.content_type.as_deref(), file_path)
         .map_err(refuse)?;
-    let ((vert, mut faces), merge) = if format == Format::Stl {
-        (read_stl(&read("STL")?, file_path).map_err(refuse)?, true)
-    } else if format == Format::Msh {
-        (read_msh(&read("MSH")?, file_path).map_err(refuse)?, false)
-    } else {
-        // An OBJ, a PLY or a 3MF file, through mesh-io.
-        let indexed_mesh = match format {
-            Format::Ply => mesh_io::load_ply(&resolved_path),
-            #[cfg(feature = "threemf")]
-            Format::ThreeMf => mesh_io::load_3mf(&resolved_path),
-            _ => mesh_io::load_obj(&resolved_path),
+    let failed = |e: mesh_io::IoError| refuse(format!("failed to load '{file_path}': {e}"));
+    let ((vert, mut faces), merge) = match format {
+        Format::Stl => (read_stl(&read("STL")?, file_path).map_err(refuse)?, true),
+        Format::Msh => (read_msh(&read("MSH")?, file_path).map_err(refuse)?, false),
+        Format::Obj => {
+            let mesh = mesh_io::load_obj(&resolved_path).map_err(failed)?;
+            (mesh_io_file(&mesh.vertices, &mesh.faces), false)
         }
-        .map_err(|e| refuse(format!("failed to load '{file_path}': {e}")))?;
-        let faces: Vec<i64> = indexed_mesh
-            .faces
-            .iter()
-            .flatten()
-            .map(|&i| i64::from(i))
-            .collect();
-        // MuJoCo 3.5.0's loaders hand a file's vertices to `ProcessVertices`
-        // as floats (`user_mesh.cc:543`), so each is rounded to one, as an
-        // embedded mesh's are when they are read.
-        #[allow(clippy::cast_possible_truncation)] // the rounding is MuJoCo's
-        let vert: Vec<f32> = indexed_mesh
-            .vertices
-            .iter()
-            .flat_map(|v| [v.x as f32, v.y as f32, v.z as f32])
-            .collect();
-        ((vert, faces), false)
+        Format::Ply => {
+            let mesh = mesh_io::load_ply(&resolved_path).map_err(failed)?;
+            (mesh_io_file(&mesh.vertices, &mesh.faces), false)
+        }
+        #[cfg(feature = "threemf")]
+        Format::ThreeMf => {
+            let mesh = mesh_io::load_3mf(&resolved_path).map_err(failed)?;
+            (mesh_io_file(&mesh.vertices, &mesh.faces), false)
+        }
     };
     if left_handed(mjcf_mesh) {
         turn_faces(&mut faces);
@@ -132,6 +123,20 @@ pub fn load_mesh_file(
     Ok((vertices, indices))
 }
 
+/// An OBJ's, PLY's or 3MF's vertices and faces as mesh-io read them, each
+/// coordinate rounded to single precision, as MuJoCo 3.5.0's loaders hand a
+/// file's vertices to `ProcessVertices` as floats (`user_mesh.cc:543`), as an
+/// embedded mesh's are when they are read.
+#[allow(clippy::cast_possible_truncation)] // the rounding is MuJoCo's
+fn mesh_io_file(vertices: &[Point3<f64>], faces: &[[u32; 3]]) -> FileMesh {
+    let vert = vertices
+        .iter()
+        .flat_map(|v| [v.x as f32, v.y as f32, v.z as f32])
+        .collect();
+    let faces = faces.iter().flatten().map(|&i| i64::from(i)).collect();
+    (vert, faces)
+}
+
 /// A mesh file's format: MuJoCo 3.5.0's three, and the two this crate reads
 /// beside them through mesh-io (registry `D-MESH-FORMAT`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,7 +155,9 @@ enum Format {
 /// `user_objects.cc:1225-1237`, read by `LoadFromResource`,
 /// `user_mesh.cc:646-666`): its `content_type` where written, as
 /// `type/subtype` ([`content_type_of`]); else its extension's, in any
-/// case (`mjuu_extToContentType`, `user_util.cc:957-973`). `.3mf` and
+/// case (`mjuu_extToContentType`, `user_util.cc:957-973`): the text after the
+/// path's last `.` (`mjuu_getext`, `:831-838`), so a file named only `.stl`
+/// is an STL. `.3mf` and
 /// `model/3mf` name a 3MF file with the `threemf` feature.
 ///
 /// # Errors
@@ -167,10 +174,10 @@ fn file_format(
     let named = if let Some(text) = content_type.filter(|text| !text.is_empty()) {
         content_type_of(text).ok_or_else(|| format!("invalid content type: '{text}'"))?
     } else {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(str::to_ascii_lowercase);
+        let text = path.to_string_lossy();
+        let ext = text
+            .rfind('.')
+            .map(|dot| text[dot + 1..].to_ascii_lowercase());
         let named = match ext.as_deref() {
             Some("stl") => "model/stl",
             Some("obj") => "model/obj",
@@ -238,8 +245,9 @@ fn turn_faces(faces: &mut [i64]) {
 /// A file exactly the size its face count gives, 84 bytes and 50 per face,
 /// is binary; one that is not, begins with `solid` and is text (UTF-8,
 /// with no NUL byte) is read as ASCII ([`read_ascii_stl`]), which MuJoCo
-/// does not read (book L36, Q118). A
-/// binary file of more than 200,000 faces is read too (Q118). Otherwise the
+/// does not read (book L36, Q118), unless it holds no vertex line, when it
+/// is read as MuJoCo reads it. A binary file of more than 200,000 faces is
+/// read too (Q118). Otherwise the
 /// file is refused as MuJoCo refuses it, in its order and words: empty,
 /// shorter than its header, a count of 0 or (where the size does not fit
 /// either) above 200,000, the wrong size. Each vertex is refused when a
@@ -264,7 +272,10 @@ fn read_stl(bytes: &[u8], file: &str) -> std::result::Result<FileMesh, String> {
         && !bytes.contains(&0)
         && let Ok(text) = std::str::from_utf8(bytes)
     {
-        return read_ascii_stl(text, file);
+        let ascii = read_ascii_stl(text, file)?;
+        if !ascii.0.is_empty() {
+            return Ok(ascii);
+        }
     }
     let Some(n) = count else {
         return Err(format!("invalid header in STL file '{file}'"));
@@ -320,15 +331,15 @@ fn starts_with_solid(bytes: &[u8]) -> bool {
 }
 
 /// An ASCII STL read as [`read_stl`] reads a binary one, which MuJoCo
-/// 3.5.0 does not do (book L36, Q118: lenient): each `vertex` line's three
+/// 3.5.0 does not do (book L36, Q118; registry `D-STL-ASCII`): each `vertex` line's three
 /// numbers are parsed straight to single precision, three lines to a face in
 /// the file's order, gathered as [`stl_soup`] gathers a binary file's.
 ///
 /// # Errors
 ///
-/// Returns why, naming the file and the line counted from 1, where a
-/// `vertex` line does not hold three numbers or the file's vertices do not
-/// make whole faces.
+/// Returns why, naming the file: where a `vertex` line does not hold three
+/// numbers, the line, counted from 1; where the file's vertices do not make
+/// whole faces, their count.
 fn read_ascii_stl(text: &str, file: &str) -> std::result::Result<FileMesh, String> {
     let mut read = Vec::new();
     for (line, l) in text.lines().enumerate() {
@@ -462,7 +473,7 @@ fn process_vertices(
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
-mod tests {
+pub mod tests {
     use super::{load_mesh_file, process_vertices};
     use crate::types::{MjcfCompiler, MjcfMesh};
 
@@ -475,8 +486,8 @@ mod tests {
     }
 
     /// A tetrahedron saved by mesh-io as a binary STL (each face's three
-    /// vertices its own).
-    fn create_test_stl(path: &std::path::Path) {
+    /// vertices its own); the builder's other tests use it too.
+    pub fn create_test_stl(path: &std::path::Path) {
         use mesh_types::{IndexedMesh, Point3};
 
         let mut mesh = IndexedMesh::new();

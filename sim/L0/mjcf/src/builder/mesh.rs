@@ -358,7 +358,10 @@ pub fn convert_mjcf_mesh(
 ) -> Result<TriangleMeshData> {
     // Dispatch based on data source
     let (mut vertices, indices) = match (&mjcf_mesh.vertex, &mjcf_mesh.file) {
-        // Embedded vertex data takes precedence (MuJoCo semantics)
+        // Embedded vertices are read in place of a file. MuJoCo 3.5.0
+        // refuses a mesh whose file and attributes both give its vertices or
+        // its faces (`TryCompile`, `user_mesh.cc:742-750`); this crate does
+        // not.
         (Some(verts), _) => convert_embedded_mesh(mjcf_mesh, verts)?,
         // File-based loading
         (None, Some(file_path)) => load_mesh_file(file_path, base_path, compiler, mjcf_mesh)?,
@@ -751,27 +754,10 @@ pub fn mesh_mass_properties(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::convert_mjcf_mesh;
+    use crate::builder::mesh_file::tests::create_test_stl;
     use crate::types::{MjcfCompiler, MjcfMesh};
     use nalgebra::Vector3;
     use sim_core::mesh::TriangleMeshData;
-
-    /// Helper to create a simple STL file for testing.
-    fn create_test_stl(path: &std::path::Path) {
-        use mesh_types::{IndexedMesh, Point3};
-
-        let mut mesh = IndexedMesh::new();
-        // Simple tetrahedron (4 vertices, 4 faces)
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
-        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
-        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
-        mesh.vertices.push(Point3::new(0.5, 0.5, 1.0));
-        mesh.faces.push([0, 1, 2]); // base
-        mesh.faces.push([0, 1, 3]); // front
-        mesh.faces.push([1, 2, 3]); // right
-        mesh.faces.push([2, 0, 3]); // left
-
-        mesh_io::save_mesh(&mesh, path).expect("Failed to save test STL");
-    }
 
     /// The file's mesh, loaded by `convert_mjcf_mesh` with `scale`.
     fn file_mesh(path: &std::path::Path, scale: Vector3<f64>) -> TriangleMeshData {

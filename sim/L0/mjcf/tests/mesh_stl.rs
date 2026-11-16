@@ -8,10 +8,13 @@
 //! ASCII STL and one of more than 200,000 faces, which MuJoCo refuses
 //! (Q118).
 //!
-//! Every expected count, face list, mass and reason was printed by MuJoCo
-//! 3.5.0 (the census's unfused oracle, 2026-11-16) from the same files. A
-//! mass is a sum of products of the file's floats, with no library function,
-//! so its bits are the same on every platform.
+//! Every expected count, face list, mass and reason said to be MuJoCo's was
+//! printed by MuJoCo 3.5.0 (the census's unfused oracle, 2026-11-16) from the
+//! same bytes; a file MuJoCo does not read (ASCII, more than 200,000 faces) is
+//! held to the model of its MuJoCo-measured twin, or refused in this crate's
+//! words where a test says so. A mass is sums of products of the file's
+//! floats and square roots, which IEEE 754 rounds exactly, so its bits are the
+//! same on every platform.
 
 #![allow(
     clippy::unwrap_used,
@@ -133,7 +136,8 @@ const CUBE_FACES: [u32; 36] = [
 /// An STL's vertices equal as floats are one, numbered as they first
 /// appear: the cube's 36 are 8, and its faces MuJoCo's, in every inertia
 /// mode MuJoCo computes from the faces; a file is an STL by its extension in
-/// any case (`mjuu_extToContentType` compares it with `strcasecmp`).
+/// any case (`mjuu_extToContentType` compares it with `strcasecmp`), the text
+/// after its last `.`, so a file named `.stl` is one (MuJoCo loads it).
 #[test]
 fn an_stls_repeated_vertices_are_one() {
     let dir = tempfile::tempdir().unwrap();
@@ -152,8 +156,14 @@ fn an_stls_repeated_vertices_are_one() {
             "{mode}"
         );
     }
-    let model = write_and_load(dir.path(), "CUBE.Stl", &bytes, "").unwrap();
-    assert_eq!(mesh_and_mass(&model), (8, CUBE_FACES.to_vec(), 1000.0));
+    for file in ["CUBE.Stl", ".stl"] {
+        let model = write_and_load(dir.path(), file, &bytes, "").unwrap();
+        assert_eq!(
+            mesh_and_mass(&model),
+            (8, CUBE_FACES.to_vec(), 1000.0),
+            "{file}"
+        );
+    }
 }
 
 /// `-0` and `0` are one vertex, whichever appears first (MuJoCo: 4
@@ -338,7 +348,8 @@ fn a_binary_stl_with_a_solid_header_loads() {
 /// A file MuJoCo cannot read as a binary STL, and this crate cannot read as
 /// an ASCII one, is refused in MuJoCo's order and words: among them two
 /// binary files whose header begins with `solid`, one not UTF-8 and one
-/// UTF-8 but for its NUL bytes.
+/// UTF-8 but for its NUL bytes, and two texts beginning `solid` with no
+/// vertex line, which are read as binary as MuJoCo reads them.
 #[test]
 fn an_stl_of_the_wrong_size_is_refused_as_mujoco_refuses_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -385,6 +396,14 @@ fn an_stl_of_the_wrong_size_is_refused_as_mujoco_refuses_it() {
             solid_nul_trailing,
             "STL file 'c.stl' has wrong size; perhaps this is an ASCII file?",
         ),
+        (
+            b"solid\nendsolid\n".to_vec(),
+            "invalid header in STL file 'c.stl'",
+        ),
+        (
+            [&b"solid"[..], &[b' '; 79]].concat(),
+            "number of faces should be between 1 and 200000 in STL file 'c.stl'; perhaps this is an ASCII file?",
+        ),
     ] {
         let got = reason(write_and_load(dir.path(), "c.stl", &bytes, ""));
         assert_eq!(got, format!("mesh 'm': {words}"));
@@ -422,11 +441,12 @@ fn an_ascii_stl_loads_as_its_binary_twin() {
     assert_eq!(mesh_and_mass(&shouted), mesh_and_mass(&binary));
 }
 
-/// An ASCII STL that does not hold three numbers to a vertex and three
-/// vertices to a face is refused naming the file and the line (MuJoCo reads
-/// no ASCII STL).
+/// An ASCII STL that does not hold three numbers to a vertex is refused
+/// naming the file and the line, and one whose vertices do not make whole
+/// faces naming the file and their count (MuJoCo reads no ASCII STL: these
+/// words are this crate's).
 #[test]
-fn a_malformed_ascii_stl_is_refused_naming_its_line() {
+fn a_malformed_ascii_stl_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let text = ascii_stl(&soup(&cube_corners(), &CUBE));
     let fourth = "      vertex -0.5 -0.5 0.5\n";

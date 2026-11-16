@@ -1160,24 +1160,8 @@ fn apply_flags(flag: &crate::types::MjcfFlag, disableflags: &mut u32, enableflag
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
+    use crate::builder::mesh_file::tests::create_test_stl;
     use crate::builder::{load_model, load_model_from_file, model_from_mjcf};
-
-    /// Helper to create a simple STL file for testing.
-    fn create_test_stl(path: &std::path::Path) {
-        use mesh_types::{IndexedMesh, Point3};
-
-        let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
-        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
-        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
-        mesh.vertices.push(Point3::new(0.5, 0.5, 1.0));
-        mesh.faces.push([0, 1, 2]);
-        mesh.faces.push([0, 1, 3]);
-        mesh.faces.push([1, 2, 3]);
-        mesh.faces.push([2, 0, 3]);
-
-        mesh_io::save_mesh(&mesh, path).expect("Failed to save test STL");
-    }
 
     /// Test load_model_from_file with mesh geometry.
     #[test]
