@@ -125,9 +125,10 @@ const UPSTREAMS: [Upstream; 2] = [
             "cortenforge-sim-mjcf",
             "cortenforge-sim-urdf",
         ],
-        // A test's comment giving the lines of `engine_forward.c` whose
-        // behaviour the test asserts (`langevin.rs`).
-        cites: &["cortenforge-sim-thermostat"],
+        // mesh-io: a doc comment in `stl.rs` citing `user_mesh.cc`.
+        // sim-thermostat: a test's comment giving the lines of
+        // `engine_forward.c` whose behaviour the test asserts (`langevin.rs`).
+        cites: &["cortenforge-mesh-io", "cortenforge-sim-thermostat"],
     },
     Upstream {
         name: "OpenSim",

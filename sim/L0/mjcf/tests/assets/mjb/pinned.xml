@@ -14,7 +14,7 @@
     </default>
   </default>
   <asset>
-    <mesh name="tet" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3" refpos="0 0 0.1"/>
+    <mesh name="tet" content_type="model/stl" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3" refpos="0 0 0.1"/>
     <hfield name="hf" size="1 1 0.1 0.05" nrow="2" ncol="2" elevation="0 0.5 1 0.25"/>
   </asset>
   <worldbody>

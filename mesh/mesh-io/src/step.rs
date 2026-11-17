@@ -100,7 +100,11 @@ pub fn load_step<P: AsRef<Path>>(path: P) -> IoResult<IndexedMesh> {
     // Extract shells and tessellate them
     let mut mesh = IndexedMesh::new();
 
-    for shell_holder in table.shell.values() {
+    // In the order of their ids: the table holds them in a hash map, whose
+    // order varies from run to run.
+    let mut shells: Vec<_> = table.shell.iter().collect();
+    shells.sort_unstable_by_key(|&(id, _)| *id);
+    for (_, shell_holder) in shells {
         // Convert to compressed shell
         let Ok(compressed_shell) = table.to_compressed_shell(shell_holder) else {
             continue; // Skip shells that fail to convert

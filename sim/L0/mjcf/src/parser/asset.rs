@@ -56,6 +56,7 @@ pub(super) fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
     mesh.name = a.string("name").unwrap_or_default();
     mesh.class = a.string("class");
     mesh.file = a.string("file");
+    mesh.content_type = a.string("content_type");
 
     mesh.scale = a.vec3("scale")?;
     if let Some(refpos) = a.vec3("refpos")? {

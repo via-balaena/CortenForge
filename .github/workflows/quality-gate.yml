@@ -54,8 +54,8 @@
 # - `feature-combos` (ubuntu): explicit non-default-feature paths, plus
 #   the workspace-union `--all-features` gate. Currently sim-soft
 #   `gpu-probe` (the only feature that flips a tier per
-#   `tier_up_features`), sim-mjcf `mjb` and the `cortenforge` facade
-#   subsets. Add new combos here as features land.
+#   `tier_up_features`), sim-mjcf `mjb` and `threemf`, and the `cortenforge`
+#   facade subsets. Add new combos here as features land.
 #
 # Relocated (NOT dropped):
 # - `--all-features` from the test matrix (plan §6.1). The union is a
@@ -1192,6 +1192,14 @@ jobs:
         if: env.MJCF_PKGS != ''
         run: |
           cargo test -p cortenforge-sim-mjcf --features mjb --lib mjb::
+
+      # sim-mjcf's 3MF mesh files (`load_mesh_file`'s `ThreeMf` arm and the
+      # mesh-file tests' 3MF cases) are behind the non-default `threemf`
+      # feature, which forwards to mesh-io's.
+      - name: Test sim-mjcf's mesh files with threemf
+        if: env.MJCF_PKGS != ''
+        run: |
+          cargo test -p cortenforge-sim-mjcf --features threemf --test mesh_files
 
       # The default-feature build (tests-debug) only exercises the facade with
       # ALL domains on. These subset builds guard the per-domain feature gating
