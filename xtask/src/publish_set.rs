@@ -125,9 +125,12 @@ const UPSTREAMS: [Upstream; 2] = [
             "cortenforge-sim-mjcf",
             "cortenforge-sim-urdf",
         ],
-        // A test's comment giving the lines of `engine_forward.c` whose
-        // behaviour the test asserts (`langevin.rs`).
-        cites: &["cortenforge-sim-thermostat"],
+        // mesh-io: a doc comment in `stl.rs` giving the line of `user_mesh.cc`
+        // where MuJoCo's `LoadSTL` refuses a binary STL whose size is not 84
+        // bytes and 50 per face, the size `stl.rs` tells a binary STL by.
+        // sim-thermostat: a test's comment giving the lines of
+        // `engine_forward.c` whose behaviour the test asserts (`langevin.rs`).
+        cites: &["cortenforge-mesh-io", "cortenforge-sim-thermostat"],
     },
     Upstream {
         name: "OpenSim",
