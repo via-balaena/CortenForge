@@ -11,10 +11,10 @@
 //!
 //! Every expected face list, mass and reason said to be MuJoCo's was printed
 //! by MuJoCo 3.5.0 (the census's unfused oracle, 2026-11-16) from the same
-//! bytes, one process each; a PLY or 3MF file, which MuJoCo does not read, is
-//! held to the model of the same tetrahedron's OBJ. A mass is sums of
-//! products of the file's floats and square roots, which IEEE 754 rounds
-//! exactly, so its bits are the same on every platform.
+//! bytes; a PLY or 3MF file, which MuJoCo does not read, is held to the
+//! model of the same tetrahedron's OBJ. A mass is computed from the file's
+//! floats by `+`, `-`, `*`, `/`, `abs` and `sqrt` alone, whose results
+//! IEEE 754 fixes to the bit, so its bits are the same on every platform.
 
 #![allow(
     clippy::unwrap_used,

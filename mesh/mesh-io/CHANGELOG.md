@@ -14,7 +14,7 @@ workspace and were never published to crates.io.
 
 - `load_stl` tells a binary file by its size (an 84-byte header, then 50
   bytes a face), so a binary file whose 80-byte header begins with `solid`
-  is read as binary; before, it was read as ASCII and refused. A file whose
+  is read as binary; before, it was read as ASCII. A file whose
   header holds a NUL byte is read as binary as before.
 - `load_step` reads a file's shells in the order of their ids; before, it
   read them in a hash map's order, which varies from run to run.
