@@ -28,6 +28,7 @@ mod limits;
 pub mod mass;
 pub mod mesh;
 mod mesh_file;
+mod obj;
 pub mod orientation;
 mod resolve;
 pub mod sensor;

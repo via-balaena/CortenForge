@@ -54,8 +54,11 @@ at your option. Both texts ship with this crate.
 Portions of some of the crates this one brings in are ported from
 [MuJoCo](https://github.com/google-deepmind/mujoco) and
 [OpenSim](https://github.com/opensim-org/opensim-core), whose source code is
-licensed under the Apache License, Version 2.0; those portions stay under it
-whichever license you take for the rest. The `NOTICE` that ships with this crate names those crates
-in its MUJOCO and OPENSIM sections and carries the projects' copyright notices.
-CortenForge is not affiliated with or endorsed by Google DeepMind, Stanford
-University or the OpenSim project.
+licensed under the Apache License, Version 2.0, and sim-mjcf's OBJ reader from
+[tinyobjloader](https://github.com/tinyobjloader/tinyobjloader), under the MIT
+license; those portions stay under their licenses whichever license you take
+for the rest. The `NOTICE` that ships with this crate names those crates in its
+MUJOCO, OPENSIM and TINYOBJLOADER sections and carries the projects' copyright
+notices. CortenForge is not affiliated with or endorsed by Google DeepMind,
+Stanford University, the OpenSim project, Syoyo Fujita, the tinyobjloader
+project or W. Randolph Franklin.
