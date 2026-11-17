@@ -154,7 +154,8 @@ const UPSTREAMS: [Upstream; 3] = [
         name: "tinyobjloader",
         url: "https://github.com/tinyobjloader/tinyobjloader",
         not_affiliated_with: "Syoyo Fujita, the tinyobjloader project or W. Randolph Franklin",
-        licence: "the MIT license",
+        licence: "the MIT license (the ear clipping's point-in-polygon test, \
+                  W. Randolph Franklin's PNPOLY, under its own license as well)",
         section: "TINYOBJLOADER",
         // Its one header named, as a port cites it (`tiny_obj_loader.h:814`).
         // The name tinyobjloader alone is no citation.
@@ -1589,7 +1590,13 @@ mod tests {
             (
                 "tinyobjloader",
                 &["tiny_obj_loader.h", "tiny_obj_loader.h:814-938"],
-                &["tinyobjloader", "tiny_obj_loader", "my_tiny_obj_loader.hpp"],
+                &[
+                    "tinyobjloader",
+                    "tiny_obj_loader",
+                    "my_tiny_obj_loader.hpp",
+                    "my_tiny_obj_loader.h",
+                    "tiny_obj_loader.hpp",
+                ],
             ),
         ];
         for (name, seen, unseen) in cases {
@@ -1668,7 +1675,10 @@ mod tests {
             "{mjcf}"
         );
         assert!(
-            mjcf[tinyobj..].contains("licensed under the MIT license,"),
+            mjcf[tinyobj..].contains(
+                "licensed under the MIT license (the ear clipping's point-in-polygon test, \
+                 W. Randolph Franklin's PNPOLY, under its own license as well),"
+            ),
             "{mjcf}"
         );
         assert!(
