@@ -129,7 +129,7 @@ pub fn load_stl<P: AsRef<Path>>(path: P) -> IoResult<IndexedMesh> {
 /// the 80-byte header and the face count after it). A binary header is free
 /// text, so it is binary if it is exactly the size its count gives, 84 bytes
 /// and 50 per face, as MuJoCo 3.5.0's `LoadSTL` tests it
-/// (`user_mesh.cc:1237`), or if its header holds a NUL byte, which ASCII
+/// (`user_mesh.cc:1238`), or if its header holds a NUL byte, which ASCII
 /// text does not.
 fn is_binary_stl(header: &[u8], len: u64) -> bool {
     let (Some(text), Some(count)) = (
