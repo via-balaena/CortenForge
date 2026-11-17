@@ -3,13 +3,17 @@
 //! MuJoCo hands an OBJ file's bytes to tinyobjloader (`mjCMesh::LoadOBJ`,
 //! `user_mesh.cc:1060-1130`) at the commit it pins, `1421a10d`
 //! (`cmake/MujocoDependencies.cmake:25`), built in single precision with its
-//! default configuration, which triangulates every polygon. It keeps every
-//! vertex the file holds and the faces of the file's first shape only.
-//! [`read_obj`] ports what of tinyobjloader's `LoadObj`
+//! default configuration, which triangulates every polygon; this module
+//! reads as that build does when compiled without fused multiply-adds
+//! (`-ffp-contract=off`), as the MuJoCo this crate's goldens are measured on
+//! is. MuJoCo keeps every vertex the file holds and the faces of the file's
+//! first shape only. [`read_obj`] ports what of tinyobjloader's `LoadObj`
 //! (`tiny_obj_loader.h:2173-2680`) decides those: its lines, numbers and
 //! indices, the shapes its groups make, and its ear clipping. A normal, a
-//! texture coordinate, a material, a tag or a smoothing group is read only as
-//! far as it moves a relative index, ends a shape or fails the file.
+//! texture coordinate, a tag or a smoothing group is not read; a material
+//! only as far as its change exports the faces read so far, and a face's
+//! texture-coordinate or normal index only as far as an index of 0 fails the
+//! file.
 
 /// The vertices of an OBJ file, three floats each, and its first shape's
 /// faces, three vertex ids each, as MuJoCo 3.5.0's `LoadOBJ` hands them to
@@ -67,10 +71,6 @@ fn lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
 struct Reader {
     /// Every vertex read so far, three floats each (`v`).
     vertices: Vec<f32>,
-    /// How many texture coordinates and normals have been read: a relative
-    /// index counts back from them.
-    texcoords: usize,
-    normals: usize,
     /// The group being read (`prim_group`).
     group: Group,
     /// The shape its groups are exported to (`shape`).
@@ -143,7 +143,7 @@ impl Reader {
     /// tests. `None` where tinyobjloader fails the file.
     fn line(&mut self, line: &[u8]) -> Option<()> {
         let at = skip(line, 0, b" \t");
-        let [c0, c1, c2] = [0, 1, 2].map(|k| byte(line, at + k));
+        let [c0, c1] = [0, 1].map(|k| byte(line, at + k));
         if c0 == 0 || c0 == b'#' {
             return Some(());
         }
@@ -154,10 +154,6 @@ impl Reader {
             for _ in 0..3 {
                 self.vertices.push(parse_real(line, &mut at));
             }
-        } else if c0 == b'v' && c1 == b'n' && is_space(c2) {
-            self.normals += 1;
-        } else if c0 == b'v' && c1 == b't' && is_space(c2) {
-            self.texcoords += 1;
         } else if (c0 == b'l' || c0 == b'p') && is_space(c1) {
             // No space is skipped before the first index (`:2281`, `:2313`).
             let ids = self.indices(line, at + 2)?.len();
@@ -200,8 +196,9 @@ impl Reader {
             self.shape = Shape::default();
             self.group = Group::default();
         }
-        // A tag (`t`), a smoothing group (`s`) or any other line moves
-        // nothing MuJoCo reads.
+        // A normal (`vn`), a texture coordinate (`vt`), a tag (`t`), a
+        // smoothing group (`s`) or any other line moves nothing [`read_obj`]
+        // returns.
         Some(())
     }
 
@@ -209,8 +206,10 @@ impl Reader {
     /// reads each (`:1078-1129`) and `LoadObj` steps between them
     /// (`:2349-2378`). `None` where an index is 0.
     fn indices(&self, line: &[u8], mut at: usize) -> Option<Vec<i32>> {
-        let count = |n: usize| i32::try_from(n).unwrap_or(i32::MAX);
-        let [nv, nvt, nvn] = [self.vertices.len() / 3, self.texcoords, self.normals].map(count);
+        let nv = i32::try_from(self.vertices.len() / 3).unwrap_or(i32::MAX);
+        // `fixIndex` fails a texture-coordinate or normal index only where it
+        // is 0; the id it makes is not among what [`read_obj`] returns.
+        let slot = |at: usize| (atoi(line, at) != 0).then_some(());
         let mut ids = Vec::new();
         while !matches!(byte(line, at), 0 | b'\r' | b'\n') {
             let v = fix_index(atoi(line, at), nv)?;
@@ -219,14 +218,14 @@ impl Reader {
                 at += 1;
                 if byte(line, at) == b'/' {
                     at += 1;
-                    fix_index(atoi(line, at), nvn)?;
+                    slot(at)?;
                     at = skip_to(line, at, b"/ \t\r");
                 } else {
-                    fix_index(atoi(line, at), nvt)?;
+                    slot(at)?;
                     at = skip_to(line, at, b"/ \t\r");
                     if byte(line, at) == b'/' {
                         at += 1;
-                        fix_index(atoi(line, at), nvn)?;
+                        slot(at)?;
                         at = skip_to(line, at, b"/ \t\r");
                     }
                 }
@@ -256,9 +255,9 @@ impl Reader {
     }
 }
 
-/// C's `atoi` from `at`, as Apple's libc and glibc make it: `(int)strtol`, so
-/// spaces skipped, a sign, digits, a value past a `long` held at its bound
-/// and then cut to an `int`'s 32 bits.
+/// C's `atoi` from `at`, as Apple's libc and glibc make it in the C locale:
+/// `(int)strtol`, so the C locale's spaces skipped, a sign, digits, a value
+/// past a 64-bit `long` held at its bound and then cut to an `int`'s 32 bits.
 #[allow(clippy::cast_possible_truncation)] // the cut is `(int)`'s
 fn atoi(line: &[u8], at: usize) -> i32 {
     let mut at = skip(line, at, b" \t\n\x0b\x0c\r");
@@ -493,8 +492,10 @@ fn ldexp(x: f64, n: i32) -> f64 {
 /// One face's triangles, three vertex ids each, appended to `out` as
 /// tinyobjloader ear-clips it (`exportGroupsToShape`'s triangulation,
 /// `:1360-1574`), in single precision: a face of fewer than 3 vertices
-/// dropped, a triangle kept as written; a polygon projected onto the two
-/// axes its first corner leaves widest, then its ears cut where its signed
+/// dropped, a triangle kept as written; a polygon projected by dropping the
+/// axis its normal is largest along (y where the largest tie), the normal
+/// the cross product at its first corner whose vertices exist and whose
+/// cross product passes float epsilon, then its ears cut where its signed
 /// area's sign and the other vertices allow, losing whatever it cannot cut in
 /// as many tries as it has vertices. A vertex id that names no vertex reads
 /// as the origin, or is passed over where tinyobjloader passes it over, and
@@ -653,11 +654,21 @@ mod tests {
                     let rest = line.unwrap().strip_prefix(key).unwrap();
                     rest.split_whitespace().map(str::to_string).collect()
                 };
+                // Rust leaves a NaN's sign to the platform (`f32`'s "NaN bit
+                // patterns"), so a NaN is compared as a NaN, every other float
+                // by its bits.
+                let bits = |x: f32| {
+                    if x.is_nan() {
+                        f32::NAN.to_bits()
+                    } else {
+                        x.to_bits()
+                    }
+                };
                 let want: Vec<u32> = words(lines.next(), "v")
                     .iter()
-                    .map(|w| u32::from_str_radix(w, 16).unwrap())
+                    .map(|w| bits(f32::from_bits(u32::from_str_radix(w, 16).unwrap())))
                     .collect();
-                let got: Vec<u32> = vertices.iter().map(|x| x.to_bits()).collect();
+                let got: Vec<u32> = vertices.iter().map(|&x| bits(x)).collect();
                 assert_eq!(got, want, "{name}");
                 let want: Vec<i64> = words(lines.next(), "f")
                     .iter()
@@ -667,7 +678,7 @@ mod tests {
             }
             cases += 1;
         }
-        assert_eq!(cases, 125);
+        assert_eq!(cases, 139);
     }
 
     /// On MuJoCo's platform, macOS on arm64, the powers are the libm's
