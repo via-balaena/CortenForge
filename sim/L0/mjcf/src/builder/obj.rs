@@ -27,12 +27,11 @@ pub fn read_obj(bytes: &[u8], file: &str) -> Result<(Vec<f32>, Vec<i64>), String
             .line(line)
             .ok_or_else(|| format!("could not parse OBJ file '{file}'"))?;
     }
-    // At the end the shape is kept if its group held anything or it holds
-    // faces already (`:2656-2665`).
-    let exported = reader.export();
-    if exported || !reader.shape.faces.is_empty() {
-        reader.push();
-    }
+    // At the end tinyobjloader keeps the shape where its group held anything
+    // or it holds faces already (`:2656-2665`): one it does not keep holds no
+    // faces, so it is kept here either way.
+    reader.export();
+    reader.push();
     let faces = reader.first.unwrap_or_default();
     Ok((reader.vertices, faces.into_iter().map(i64::from).collect()))
 }
@@ -97,13 +96,6 @@ struct Group {
     faces: Vec<Vec<i32>>,
     lines: Vec<usize>,
     points: Vec<usize>,
-}
-
-impl Group {
-    /// `PrimGroup::IsEmpty`.
-    fn is_empty(&self) -> bool {
-        self.faces.is_empty() && self.lines.is_empty() && self.points.is_empty()
-    }
 }
 
 /// A shape's triangles, three vertex ids each, and how many ids its lines
@@ -247,18 +239,13 @@ impl Reader {
 
     /// The group's faces triangulated into the shape, and its lines' and
     /// points' ids counted (`exportGroupsToShape`, `:1343-1637`), each
-    /// polygon against the vertices read so far. Whether the group held
-    /// anything.
-    fn export(&mut self) -> bool {
-        if self.group.is_empty() {
-            return false;
-        }
+    /// polygon against the vertices read so far.
+    fn export(&mut self) {
         for face in &self.group.faces {
             triangulate(face, &self.vertices, &mut self.shape.faces);
         }
         self.shape.line_ids += self.group.lines.iter().sum::<usize>();
         self.shape.point_ids += self.group.points.iter().sum::<usize>();
-        true
     }
 
     /// The shape pushed: the first one pushed keeps its faces.
@@ -642,13 +629,10 @@ mod tests {
         bytes
     }
 
-    /// tinyobjloader's own reading of 120 OBJ texts (`tests/assets/obj/
-    /// tinyobjloader.txt`, its header says how it was made) is
+    /// tinyobjloader's own reading of each OBJ text in `tests/assets/obj/
+    /// tinyobjloader.txt` (its header says how it was made) is
     /// [`read_obj`]'s: whether the file reads, every coordinate's float bits
-    /// and every id of the first shape's faces. The texts are the start
-    /// probes' files and generated ones: number tokens of every form the
-    /// parser branches on, indices and shapes, and polygons whose ear
-    /// clipping is not their fan.
+    /// and every id of the first shape's faces.
     #[test]
     fn every_case_reads_as_tinyobjloader_reads_it() {
         let path = concat!(
@@ -683,7 +667,7 @@ mod tests {
             }
             cases += 1;
         }
-        assert_eq!(cases, 120);
+        assert_eq!(cases, 125);
     }
 
     /// On MuJoCo's platform, macOS on arm64, the powers are the libm's
