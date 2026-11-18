@@ -23,7 +23,8 @@ name = "sim_mjcf"
 [dependencies]
 # Physics Model / Data the MJCF loader populates
 sim-core = { workspace = true }
-# OBJ / STL / PLY mesh file loaders referenced from <mesh> tags
+# PLY and 3MF mesh files referenced from <mesh> tags (STL, OBJ and MSH are
+# read by sim-mjcf itself)
 mesh-io = { workspace = true }
 # Matrix / vector / rotation primitives for transform composition
 nalgebra = { workspace = true }

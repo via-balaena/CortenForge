@@ -9,3 +9,5 @@ This crate is part of [CortenForge](https://github.com/via-balaena/CortenForge),
 Licensed under either of the Apache License, Version 2.0, or the MIT license, at your option. Both texts ship with this crate, with a `NOTICE` that carries the disclaimer.
 
 Portions of this crate are ported from [MuJoCo](https://github.com/google-deepmind/mujoco), translated to Rust and changed. Those portions are licensed under the Apache License, Version 2.0, whichever license you take for the rest; `NOTICE` carries MuJoCo's copyright notices. CortenForge is not affiliated with or endorsed by Google DeepMind.
+
+Portions of this crate are ported from [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader), translated to Rust and changed. Those portions are licensed under the MIT license (the ear clipping's point-in-polygon test, W. Randolph Franklin's PNPOLY, under its own license as well), whichever license you take for the rest; `NOTICE` carries tinyobjloader's copyright notices. CortenForge is not affiliated with or endorsed by Syoyo Fujita, the tinyobjloader project or W. Randolph Franklin.

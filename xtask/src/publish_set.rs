@@ -44,7 +44,8 @@ closure over normal and build dependencies (optional ones included):
     to the root's file, which cargo packages as the file itself. Every crate
     but the facade has exactly the README its name, library name, description
     and the upstream projects it ports code from give; the failure prints it;
-  - for each upstream project the set ports code from (MuJoCo, OpenSim), every
+  - for each upstream project the set ports code from (MuJoCo, OpenSim,
+    tinyobjloader), every
     crate inside it whose `src` cites the project is on one of two closed
     lists: the crates holding code ported from it, each named in the first
     paragraph of the project's section of the root NOTICE and each README
@@ -54,7 +55,8 @@ closure over normal and build dependencies (optional ones included):
     a section that carries no `Copyright` line. A citation is what the
     project's `cited_by` in `UPSTREAMS` matches (for MuJoCo a source file
     named with its extension, for OpenSim a path into its source tree or its
-    repository's name), in a regular UTF-8 file under `src`; the tests,
+    repository's name, for tinyobjloader its header's name), in a regular
+    UTF-8 file under `src`; the tests,
     examples and benches cargo also packages are not read.
     This sees citations, not derivation: a port that cites nothing in those
     forms goes unseen. It does not check what the copyright lines say (they
@@ -94,6 +96,8 @@ struct Upstream {
     url: &'static str,
     /// Whom the README paragraph says CortenForge is not affiliated with.
     not_affiliated_with: &'static str,
+    /// The licence its code is under, as the README paragraph names it.
+    licence: &'static str,
     /// The heading line of its section in the root NOTICE.
     section: &'static str,
     /// What, in a crate's `src`, cites it: a regex.
@@ -107,11 +111,12 @@ struct Upstream {
 /// The upstream projects, each with its two closed lists: every crate in the
 /// set whose `src` matches `cited_by` is on `ports` or `cites`, and every crate
 /// on either matches it.
-const UPSTREAMS: [Upstream; 2] = [
+const UPSTREAMS: [Upstream; 3] = [
     Upstream {
         name: "MuJoCo",
         url: "https://github.com/google-deepmind/mujoco",
         not_affiliated_with: "Google DeepMind",
+        licence: "the Apache License, Version 2.0",
         section: "MUJOCO",
         // A MuJoCo source file named with its extension, as a port cites it:
         // a file of its `engine`, `user`, `xml`, `thread`, `render` or `ui`
@@ -134,6 +139,7 @@ const UPSTREAMS: [Upstream; 2] = [
         name: "OpenSim",
         url: "https://github.com/opensim-org/opensim-core",
         not_affiliated_with: "Stanford University or the OpenSim project",
+        licence: "the Apache License, Version 2.0",
         section: "OPENSIM",
         // A path into OpenSim's source tree (`OpenSim/Common`,
         // `OpenSim/Actuators`) or its repository's name. Neither the name
@@ -142,6 +148,20 @@ const UPSTREAMS: [Upstream; 2] = [
         cited_by: r"\b(?:OpenSim/[A-Z][A-Za-z]*|opensim-core)\b",
         // `forward/millard.rs`: OpenSim's `Millard2012EquilibriumMuscle`.
         ports: &["cortenforge-sim-core"],
+        cites: &[],
+    },
+    Upstream {
+        name: "tinyobjloader",
+        url: "https://github.com/tinyobjloader/tinyobjloader",
+        not_affiliated_with: "Syoyo Fujita, the tinyobjloader project or W. Randolph Franklin",
+        licence: "the MIT license (the ear clipping's point-in-polygon test, \
+                  W. Randolph Franklin's PNPOLY, under its own license as well)",
+        section: "TINYOBJLOADER",
+        // Its one header named, as a port cites it (`tiny_obj_loader.h:814`).
+        // The name tinyobjloader alone is no citation.
+        cited_by: r"\btiny_obj_loader\.h\b",
+        // `builder/obj.rs`: its `LoadObj` as MuJoCo 3.5.0's `LoadOBJ` calls it.
+        ports: &["cortenforge-sim-mjcf"],
         cites: &[],
     },
 ];
@@ -674,12 +694,12 @@ fn member_readme(name: &str, lib: &str, description: &str) -> String {
         .map(|upstream| {
             format!(
                 "\nPortions of this crate are ported from [{project}]({url}), translated to \
-                 Rust and changed. Those portions are licensed under the Apache License, \
-                 Version 2.0, whichever license you take for the rest; `NOTICE` carries \
-                 {project}'s copyright notices. CortenForge is not affiliated with or \
-                 endorsed by {whom}.\n",
+                 Rust and changed. Those portions are licensed under {licence}, whichever \
+                 license you take for the rest; `NOTICE` carries {project}'s copyright \
+                 notices. CortenForge is not affiliated with or endorsed by {whom}.\n",
                 project = upstream.name,
                 url = upstream.url,
+                licence = upstream.licence,
                 whom = upstream.not_affiliated_with,
             )
         })
@@ -1507,20 +1527,19 @@ mod tests {
             assert!(!words.contains(outside), "{outside} in {words:?}");
         }
         assert_eq!(notice_problems(&notice), Vec::<String>::new());
-        let bare = notice.replacen("    Copyright 2021 A\n", "", 1);
-        assert_eq!(
-            notice_problems(&bare),
-            ["the root NOTICE's MUJOCO section carries no `Copyright` line"]
-        );
-        let last = notice
-            .rfind("    Copyright 2021 A\n")
-            .expect("OPENSIM's line");
-        let mut opensim_bare = notice.clone();
-        opensim_bare.replace_range(last..last + "    Copyright 2021 A\n".len(), "");
-        assert_eq!(
-            notice_problems(&opensim_bare),
-            ["the root NOTICE's OPENSIM section carries no `Copyright` line"]
-        );
+        let line = "    Copyright 2021 A\n";
+        for (k, upstream) in UPSTREAMS.iter().enumerate() {
+            let (at, _) = notice.match_indices(line).nth(k).expect("its line");
+            let mut bare = notice.clone();
+            bare.replace_range(at..at + line.len(), "");
+            assert_eq!(
+                notice_problems(&bare),
+                [format!(
+                    "the root NOTICE's {} section carries no `Copyright` line",
+                    upstream.section
+                )]
+            );
+        }
         assert_eq!(notice_problems("no sections\n"), Vec::<String>::new());
     }
 
@@ -1528,7 +1547,7 @@ mod tests {
     /// of the others listed with it.
     #[test]
     fn each_upstreams_pattern_finds_its_citation_forms() {
-        let cases: [(&str, &[&str], &[&str]); 2] = [
+        let cases: [(&str, &[&str], &[&str]); 3] = [
             (
                 "MuJoCo",
                 &[
@@ -1568,6 +1587,17 @@ mod tests {
                     "SmoothSegmentedFunction.cpp",
                 ],
             ),
+            (
+                "tinyobjloader",
+                &["tiny_obj_loader.h", "tiny_obj_loader.h:814-938"],
+                &[
+                    "tinyobjloader",
+                    "tiny_obj_loader",
+                    "my_tiny_obj_loader.hpp",
+                    "my_tiny_obj_loader.h",
+                    "tiny_obj_loader.hpp",
+                ],
+            ),
         ];
         for (name, seen, unseen) in cases {
             let upstream = UPSTREAMS.iter().find(|u| u.name == name).expect(name);
@@ -1594,8 +1624,10 @@ mod tests {
         let write = |path: &str, text: &str| std::fs::write(src.join(path), text).expect("write");
         write(
             "a.rs",
-            "// self.h made.h filled.h test.c user_meshes OpenSim, validated vs OpenSim\n",
+            "// self.h made.h filled.h test.c user_meshes OpenSim, validated vs OpenSim, \
+             tinyobjloader\n",
         );
+        write("c.rs", "// tinyobjloader's `tiny_obj_loader.h:814`\n");
         write(
             "s.wgsl",
             "// MuJoCo skips it (`engine_forward.c:288-292`).\n",
@@ -1614,11 +1646,12 @@ mod tests {
             read.expect("read src"),
             [
                 Some("src/s.wgsl: `engine_forward.c`".to_owned()),
-                Some("src/notes.md: `OpenSim/Actuators`".to_owned())
+                Some("src/notes.md: `OpenSim/Actuators`".to_owned()),
+                Some("src/c.rs: `tiny_obj_loader.h`".to_owned())
             ]
         );
-        assert_eq!(missing.expect("no src"), [None, None]);
-        assert_eq!(empty.expect("an empty src"), [None, None]);
+        assert_eq!(missing.expect("no src"), [None, None, None]);
+        assert_eq!(empty.expect("an empty src"), [None, None, None]);
     }
 
     /// A crate's README carries a paragraph for each upstream it ports code
@@ -1629,13 +1662,30 @@ mod tests {
         let mjcf = member_readme("cortenforge-sim-mjcf", "sim_mjcf", "Does one thing");
         let core = member_readme("cortenforge-sim-core", "sim_core", "Does one thing");
         assert!(!plain.contains("Portions of this crate"), "{plain}");
-        assert_eq!(mjcf.matches("Portions of this crate").count(), 1, "{mjcf}");
+        assert_eq!(mjcf.matches("Portions of this crate").count(), 2, "{mjcf}");
+        let mujoco = mjcf
+            .find("[MuJoCo](https://github.com/google-deepmind/mujoco)")
+            .expect("MuJoCo's paragraph");
+        let tinyobj = mjcf
+            .find("[tinyobjloader](https://github.com/tinyobjloader/tinyobjloader)")
+            .expect("tinyobjloader's paragraph");
+        assert!(mujoco < tinyobj, "{mjcf}");
         assert!(
-            mjcf.contains("[MuJoCo](https://github.com/google-deepmind/mujoco)"),
+            mjcf[mujoco..tinyobj].contains("licensed under the Apache License, Version 2.0,"),
             "{mjcf}"
         );
         assert!(
-            mjcf.ends_with("not affiliated with or endorsed by Google DeepMind.\n"),
+            mjcf[tinyobj..].contains(
+                "licensed under the MIT license (the ear clipping's point-in-polygon test, \
+                 W. Randolph Franklin's PNPOLY, under its own license as well),"
+            ),
+            "{mjcf}"
+        );
+        assert!(
+            mjcf.ends_with(
+                "not affiliated with or endorsed by Syoyo Fujita, the tinyobjloader project or \
+                 W. Randolph Franklin.\n"
+            ),
             "{mjcf}"
         );
         assert!(!mjcf.contains("OpenSim"), "{mjcf}");

@@ -253,7 +253,7 @@ Measured defects or gaps a section handed off and no section's commit list picke
 | U10 | sim-urdf writes URDF `rpy` as intrinsic `xyz` | A20 §1A.3.9 | (a) | parity with MuJoCo's URDF reader; 3.4e-3 inertia residual "not isolated" | L43 |
 | U11 | spatial tendon velocity over a sphere wrap reads 0 at the initial forward | A20 §1A.3.9 | (a) | not isolated | P29 (isolates it) |
 | U12 | no dim-3 or 2-D membrane flex elasticity in sim-core | A9 §7 H6 | **(c)** | implement later or refuse as a limitation: scope | L32 |
-| U13 | 17 OBJ files with a face count ≠ MuJoCo's; MuJoCo's OBJ graph ids disagree with its `mesh_vert` | A10 §4.1, §6 item 8 | (b) | not isolated | — |
+| U13 | 17 OBJ files with a face count ≠ MuJoCo's; MuJoCo's OBJ graph ids disagree with its `mesh_vert` | A10 §4.1, §6 item 8 | (b) | the face counts isolated in Rigid-loading PR RL-9c2: at its base 16 OBJ files of the submodules had a face count ≠ MuJoCo's, each of two or more shapes, of which MuJoCo keeps the first's faces, and RL-9c2 reads them as MuJoCo does; which file was the 17th is not known, as at that base no other OBJ file's count differed. The graph ids stay with the hull (RL-9d) | — |
 | U14 | MuJoCo refuses < 4 vertices for every mesh; ours with faces + 3 vertices "not measured" | A10 §6 item 9 | (a) | parity | L38 |
 | U15 | `<composite type="cable" count="1000">` reached ~2 GB RSS; cause not isolated | A4 §1.4; 41-what-planning | (b) | "whoever owns composites should look before Rigid ships" | — |
 | U16 | `Data::reset` sets `stat_meaninertia = 0.0`, `make_data` 1.0 (settled: since chunk 2b, `reset` rebuilds the `Data` `make_data` makes, both 1.0) | A1 §4 | (b) | readers overwrite it first; the field is since removed (Q53) | — |

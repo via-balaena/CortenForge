@@ -78,10 +78,15 @@ at your option.
 Portions of some crates are ported from
 [MuJoCo](https://github.com/google-deepmind/mujoco) and
 [OpenSim](https://github.com/opensim-org/opensim-core), whose source code is
-licensed under the Apache License, Version 2.0; those portions stay under it
-whichever license you take for the rest. [NOTICE](./NOTICE)'s MUJOCO and OPENSIM sections name the
-crates and carry the projects' copyright notices. CortenForge is not affiliated
-with or endorsed by Google DeepMind, Stanford University or the OpenSim project.
+licensed under the Apache License, Version 2.0, and sim-mjcf's OBJ reader from
+[tinyobjloader](https://github.com/tinyobjloader/tinyobjloader), under the MIT
+license (its ear clipping's point-in-polygon test, W. Randolph Franklin's
+PNPOLY, under its own license as well); those portions stay under their licenses
+whichever license you take for the rest. [NOTICE](./NOTICE)'s MUJOCO, OPENSIM
+and TINYOBJLOADER sections name the crates and carry the projects' copyright
+notices. CortenForge is not affiliated with or endorsed by Google DeepMind,
+Stanford University, the OpenSim project, Syoyo Fujita, the tinyobjloader
+project or W. Randolph Franklin.
 
 ### Contribution
 

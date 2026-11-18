@@ -7,7 +7,9 @@
 //! flexcomp's file is merged whatever its format, `user_flexcomp.cc:1168`).
 //! An STL and an MSH are
 //! read here as MuJoCo's `LoadSTL` and `LoadMSH` read them (`:1209-1277`,
-//! `:1282-1368`); the other formats are read by mesh-io.
+//! `:1282-1368`), an OBJ as its `LoadOBJ` has tinyobjloader read one
+//! (`:1060-1130`, [`read_obj`]); PLY and 3MF, which MuJoCo does not read, by
+//! mesh-io.
 
 use nalgebra::{Point3, Vector3};
 use std::cmp::Ordering;
@@ -16,6 +18,7 @@ use std::path::Path;
 
 use super::asset::{AssetKind, resolve_asset_path};
 use super::mesh::RawMesh;
+use super::obj::read_obj;
 use crate::error::{ElementKind, MjcfError, Result};
 use crate::types::{MjcfCompiler, MjcfMesh};
 
@@ -37,7 +40,7 @@ const STL_MAX_COORD: f64 = 1_073_741_824.0;
 
 /// A file's vertices, three floats each, and its faces' vertex ids, three
 /// to a face, signed as MuJoCo 3.5.0 holds them (`face_`, ints): an MSH
-/// file's may be negative, refused only after its vertices are checked
+/// file's or an OBJ's may be negative, refused only after its vertices are checked
 /// (`CheckInitialMesh`, `user_mesh.cc:1835-1841`).
 type FileMesh = (Vec<f32>, Vec<i64>);
 
@@ -45,11 +48,11 @@ type FileMesh = (Vec<f32>, Vec<i64>);
 /// mesh compiler (`mjCMesh::TryCompile`, `user_mesh.cc:692-729`).
 ///
 /// Its format is its `content_type`'s, else its extension's ([`file_format`]).
-/// An STL or an MSH is read as MuJoCo's `LoadSTL` or `LoadMSH` reads one
-/// ([`read_stl`], [`read_msh`]); OBJ, PLY and, with the `threemf` feature,
-/// 3MF are read by mesh-io and rounded to single precision, as MuJoCo's
-/// loaders hand a file's vertices on as floats ([`mesh_io_file`]). Under a
-/// left-handed `scale` each
+/// An STL, an MSH or an OBJ is read as MuJoCo's `LoadSTL`, `LoadMSH` or
+/// `LoadOBJ` reads one ([`read_stl`], [`read_msh`], [`read_obj`]); PLY and,
+/// with the `threemf` feature, 3MF are read by mesh-io and rounded to single
+/// precision, as MuJoCo's loaders hand a file's vertices on as floats
+/// ([`mesh_io_file`]). Under a left-handed `scale` each
 /// face is turned ([`turn_faces`]), as MuJoCo's loaders turn an STL's, an
 /// OBJ's and an MSH's; then the vertices are checked, an STL's merged where
 /// repeated ([`process_vertices`]).
@@ -81,10 +84,7 @@ pub fn load_mesh_file(
     let ((vert, mut faces), merge) = match format {
         Format::Stl => (read_stl(&read("STL")?, file_path).map_err(refuse)?, true),
         Format::Msh => (read_msh(&read("MSH")?, file_path).map_err(refuse)?, false),
-        Format::Obj => {
-            let mesh = mesh_io::load_obj(&resolved_path).map_err(failed)?;
-            (mesh_io_file(&mesh.vertices, &mesh.faces), false)
-        }
+        Format::Obj => (read_obj(&read("OBJ")?, file_path).map_err(refuse)?, false),
         Format::Ply => {
             let mesh = mesh_io::load_ply(&resolved_path).map_err(failed)?;
             (mesh_io_file(&mesh.vertices, &mesh.faces), false)
@@ -123,7 +123,7 @@ pub fn load_mesh_file(
     Ok((vertices, indices))
 }
 
-/// An OBJ's, PLY's or 3MF's vertices and faces as mesh-io read them, each
+/// A PLY's or 3MF's vertices and faces as mesh-io read them, each
 /// coordinate rounded to single precision, as MuJoCo 3.5.0's loaders hand a
 /// file's vertices to `ProcessVertices` as floats (`user_mesh.cc:543`), as an
 /// embedded mesh's are when they are read.
