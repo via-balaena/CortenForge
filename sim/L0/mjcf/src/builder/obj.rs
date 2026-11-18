@@ -11,7 +11,7 @@
 //! (`tiny_obj_loader.h:2173-2680`) decides those: its lines, numbers and
 //! indices, the shapes its groups make, and its ear clipping. A normal, a
 //! texture coordinate, a tag or a smoothing group is not read; a material
-//! only as far as its change exports the faces read so far, and a face's
+//! only as far as its change exports the faces read so far, and a
 //! texture-coordinate or normal index only as far as an index of 0 fails the
 //! file.
 
@@ -197,7 +197,7 @@ impl Reader {
             self.group = Group::default();
         }
         // A normal (`vn`), a texture coordinate (`vt`), a tag (`t`), a
-        // smoothing group (`s`) or any other line moves nothing [`read_obj`]
+        // smoothing group (`s`) or any other line moves nothing `read_obj`
         // returns.
         Some(())
     }
@@ -208,7 +208,7 @@ impl Reader {
     fn indices(&self, line: &[u8], mut at: usize) -> Option<Vec<i32>> {
         let nv = i32::try_from(self.vertices.len() / 3).unwrap_or(i32::MAX);
         // `fixIndex` fails a texture-coordinate or normal index only where it
-        // is 0; the id it makes is not among what [`read_obj`] returns.
+        // is 0; the id it makes is not among what `read_obj` returns.
         let slot = |at: usize| (atoi(line, at) != 0).then_some(());
         let mut ids = Vec::new();
         while !matches!(byte(line, at), 0 | b'\r' | b'\n') {
@@ -492,10 +492,8 @@ fn ldexp(x: f64, n: i32) -> f64 {
 /// One face's triangles, three vertex ids each, appended to `out` as
 /// tinyobjloader ear-clips it (`exportGroupsToShape`'s triangulation,
 /// `:1360-1574`), in single precision: a face of fewer than 3 vertices
-/// dropped, a triangle kept as written; a polygon projected by dropping the
-/// axis its normal is largest along (y where the largest tie), the normal
-/// the cross product at its first corner whose vertices exist and whose
-/// cross product passes float epsilon, then its ears cut where its signed
+/// dropped, a triangle kept as written; a polygon projected onto the two axes
+/// tinyobjloader picks (`:1372-1414`), then its ears cut where its signed
 /// area's sign and the other vertices allow, losing whatever it cannot cut in
 /// as many tries as it has vertices. A vertex id that names no vertex reads
 /// as the origin, or is passed over where tinyobjloader passes it over, and
@@ -632,8 +630,8 @@ mod tests {
 
     /// tinyobjloader's own reading of each OBJ text in `tests/assets/obj/
     /// tinyobjloader.txt` (its header says how it was made) is
-    /// [`read_obj`]'s: whether the file reads, every coordinate's float bits
-    /// and every id of the first shape's faces.
+    /// [`read_obj`]'s: whether the file reads, every coordinate (by its float
+    /// bits, a NaN as a NaN) and every id of the first shape's faces.
     #[test]
     fn every_case_reads_as_tinyobjloader_reads_it() {
         let path = concat!(
@@ -678,7 +676,7 @@ mod tests {
             }
             cases += 1;
         }
-        assert_eq!(cases, 139);
+        assert_eq!(cases, 140);
     }
 
     /// On MuJoCo's platform, macOS on arm64, the powers are the libm's
