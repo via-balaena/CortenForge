@@ -10,6 +10,7 @@ use crate::keywords;
 use crate::types::{MjcfHfield, MjcfMesh};
 
 use super::attrs::{Attrs, parse_maxhullvert, skip_element};
+use super::mesh_builtin::{self, MeshBuiltin};
 
 /// Parse asset element (contains mesh, texture, material definitions;
 /// `empty`: it closed itself, so it has none).
@@ -69,15 +70,10 @@ pub(super) fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
     // Parse embedded vertex data
     mesh.vertex = a.vector("vertex")?;
 
-    // Parse embedded face data: vertex indices, integers
-    if let Some(face) = a.int_vector("face")? {
-        let indices = face
-            .iter()
-            .map(|&i| u32::try_from(i))
-            .collect::<std::result::Result<Vec<u32>, _>>()
-            .map_err(|_| MjcfError::invalid_value("mesh", "face", "a vertex index is negative"))?;
-        mesh.face = Some(indices);
-    }
+    // Parse embedded face data: vertex indices, integers, their signs
+    // checked last, as MuJoCo checks them only when it compiles the mesh:
+    // a built-in mesh's faces replace them unchecked.
+    let face = a.int_vector("face")?;
 
     // Parse maxhullvert (maximum convex hull vertices)
     if let Some(n) = a.int("maxhullvert")? {
@@ -87,7 +83,60 @@ pub(super) fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
     // Parse mesh inertia mode
     mesh.inertia = a.keyword("inertia", keywords::mesh_inertia)?;
 
+    let made_faces = match a.keyword("builtin", MeshBuiltin::from_keyword)? {
+        Some(builtin) => make_builtin(&mut mesh, builtin, &a)?,
+        None => false,
+    };
+    if let (false, Some(face)) = (made_faces, face) {
+        let indices = face
+            .iter()
+            .map(|&i| u32::try_from(i))
+            .collect::<std::result::Result<Vec<u32>, _>>()
+            .map_err(|_| MjcfError::invalid_value("mesh", "face", "a vertex index is negative"))?;
+        mesh.face = Some(indices);
+    }
+
     Ok(mesh)
+}
+
+/// A built-in mesh made into `mesh` as MuJoCo 3.5.0's reader has
+/// `mjs_makeMesh` make it
+/// (`mjXReader::OneMesh`, `xml_native_reader.cc:1621-1634`): `params`
+/// required, refused beside a `file` or written vertices, then the
+/// generator's vertices, its faces where it makes them, and the plate's
+/// shell inertia, in place of what was written ([`mesh_builtin`]). Whether
+/// it made the faces.
+fn make_builtin(mesh: &mut MjcfMesh, builtin: MeshBuiltin, a: &Attrs) -> Result<bool> {
+    let params = a
+        .vector("params")?
+        .ok_or_else(|| MjcfError::missing_attribute("mesh", "params"))?;
+    if mesh.file.is_some() {
+        return Err(MjcfError::invalid_value(
+            "mesh",
+            "builtin",
+            "builtin cannot be used with a mesh file",
+        ));
+    }
+    if mesh.vertex.is_some() {
+        return Err(MjcfError::invalid_value(
+            "mesh",
+            "builtin",
+            "builtin mesh cannot be used with user vertex data",
+        ));
+    }
+    let made = mesh_builtin::make_mesh(builtin, &params)
+        .map_err(|reason| MjcfError::invalid_value("mesh", "params", reason))?;
+    // An empty list is no data, as an empty `vertex` or `face` reads.
+    mesh.vertex =
+        (!made.vertex.is_empty()).then(|| made.vertex.into_iter().map(f64::from).collect());
+    let made_faces = made.face.is_some();
+    if let Some(face) = made.face {
+        mesh.face = (!face.is_empty()).then_some(face);
+    }
+    if made.inertia.is_some() {
+        mesh.inertia = made.inertia;
+    }
+    Ok(made_faces)
 }
 
 /// Parse hfield attributes from a `<hfield>` element.

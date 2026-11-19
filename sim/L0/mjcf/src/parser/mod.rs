@@ -14,6 +14,7 @@ mod equality;
 mod extension;
 mod flexcomp;
 mod keyframe;
+mod mesh_builtin;
 mod options;
 mod sensor;
 mod tendon;

@@ -189,7 +189,11 @@
 //! `FIT_COSTS`. Its review's first round's (2026-11-14) set a fitted size
 //! beside a fault checked after the build, seven in `FIT_FIRST_COSTS`, and a
 //! height field beside a condim or a mesh geom's missing mesh, two in
-//! `HFIELD_COSTS`.
+//! `HFIELD_COSTS`. RL-9c3, which checks a written face's sign after the
+//! mesh's other attributes, as MuJoCo does when it compiles the mesh: its
+//! review's (measured 2026-11-19, RW's documents) set a negative face id
+//! beside a bad `maxhullvert` or `inertia`, which MuJoCo names: two in
+//! `TWO_FAULTS`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -2028,6 +2032,18 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><asset><mesh name="turn" inertia="exact" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 1 2  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/><mesh name="m" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5  -0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="turn" contype="0" conaffinity="0"/><geom size=".1"/></body><body name="c"><freejoint/><geom type="sphere" mesh="m"/></body></worldbody></mujoco>"#,
         "faces of mesh 'turn' have inconsistent orientation. Please check the faces containing the vertices 1 and 2.",
         "mesh 'turn': its faces have inconsistent orientation. Please check the faces containing the vertices 1 and 2.",
+    ),
+    (
+        "a negative face id, then a maxhullvert below 4",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 2 1 0 1 -3 0 3 2 1 2 3" maxhullvert="2"/></asset><worldbody><geom type="mesh" mesh="m"/></worldbody></mujoco>"#,
+        "maxhullvert must be larger than 3",
+        "invalid maxhullvert on <mesh>: maxhullvert must be larger than 3 (line 1: asset > mesh 'm')",
+    ),
+    (
+        "a negative face id, then an inertia keyword",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 2 1 0 1 -3 0 3 2 1 2 3" inertia="bogus"/></asset><worldbody><geom type="mesh" mesh="m"/></worldbody></mujoco>"#,
+        "invalid keyword: 'bogus'",
+        "invalid keyword \"bogus\" in attribute 'inertia' on <mesh> (line 1: asset > mesh 'm')",
     ),
 ];
 

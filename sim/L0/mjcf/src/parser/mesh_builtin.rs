@@ -1,0 +1,972 @@
+//! MuJoCo 3.5.0's built-in meshes, `<mesh builtin="…" params="…"/>`.
+//!
+//! MuJoCo's reader hands a mesh's `builtin` and `params` to `mjs_makeMesh`
+//! (`mjXReader::OneMesh`, `xml_native_reader.cc:1621-1634`), which checks the
+//! parameters (`user_api.cc:580-731`) and has one of seven generators
+//! (`mjCMesh::Make*`, `user_mesh.cc:2072-2560`) write the mesh's vertices,
+//! as floats, and all but the cone's and the wedge's faces; the plate's also
+//! makes the mesh a shell. The compiler then sees the mesh as one written
+//! with `vertex` and `face`. [`make_mesh`] ports the checks and the
+//! generators, each sum, product and rounding to a float in MuJoCo's order,
+//! with the platform's `pow`, and an angle's sine and cosine from the calls
+//! MuJoCo's build takes them from ([`sin_cos`], [`sin`], [`cos`]) in an
+//! optimised build: at opt-level 0, a wedge's, a supertorus's or a
+//! supersphere's vertex can be a float's last bit off MuJoCo's. The normals
+//! the wedge and the plate also write are not made: this crate reads no
+//! mesh's `normal` either.
+
+use std::collections::BTreeMap;
+use std::f64::consts::PI;
+
+use crate::types::MeshInertia;
+
+/// A mesh's `builtin` keyword (`meshbuiltin_map`,
+/// `xml_native_reader.cc:877-885`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeshBuiltin {
+    /// `none`, which `mjs_makeMesh` refuses ("Unsupported mesh type").
+    None,
+    /// `sphere`: an icosahedron, subdivided.
+    Sphere,
+    /// `hemisphere`: a quad-projected half sphere with a flat cap.
+    Hemisphere,
+    /// `cone`: a discrete cone or frustum; vertices only.
+    Cone,
+    /// `supersphere`: a superellipsoid.
+    Supersphere,
+    /// `supertorus`: a supertoroid.
+    Supertorus,
+    /// `wedge`: points on a spherical wedge; vertices only.
+    Wedge,
+    /// `plate`: a flat grid of points with its faces, a shell.
+    Plate,
+}
+
+impl MeshBuiltin {
+    /// The keyword's kind, as `meshbuiltin_map` names it.
+    pub fn from_keyword(s: &str) -> Option<Self> {
+        match s {
+            "none" => Some(Self::None),
+            "sphere" => Some(Self::Sphere),
+            "hemisphere" => Some(Self::Hemisphere),
+            "cone" => Some(Self::Cone),
+            "supertorus" => Some(Self::Supertorus),
+            "supersphere" => Some(Self::Supersphere),
+            "wedge" => Some(Self::Wedge),
+            "plate" => Some(Self::Plate),
+            _ => None,
+        }
+    }
+}
+
+/// What a generator writes into a mesh's specification.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuiltinMesh {
+    /// Its vertices, three floats each (`uservert`).
+    pub vertex: Vec<f32>,
+    /// Its faces, three vertex ids each (`userface`), where the generator
+    /// writes them: the cone's and the wedge's do not, so a mesh's written
+    /// `face` stays.
+    pub face: Option<Vec<u32>>,
+    /// The inertia mode it sets, whatever was written: the plate's is
+    /// [`MeshInertia::Shell`] (`MakeRect`, `user_mesh.cc:2501`).
+    pub inertia: Option<MeshInertia>,
+}
+
+/// The mesh `mjs_makeMesh` makes of `builtin` and `params`
+/// (`user_api.cc:580-731`), or [`check`]'s refusal.
+pub fn make_mesh(builtin: MeshBuiltin, params: &[f64]) -> Result<BuiltinMesh, String> {
+    check(builtin, params).map(Generator::make)
+}
+
+/// A kind with the parameters `mjs_makeMesh`'s checks passed, as its
+/// generator takes them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Generator {
+    Sphere(i32),
+    Hemisphere(i32),
+    Supersphere(i32, f64, f64),
+    Supertorus(i32, f64, f64, f64),
+    Wedge([i32; 2], [f64; 2], f64),
+    Plate([i32; 2]),
+    Cone(i32, f64),
+}
+
+impl Generator {
+    /// The mesh the kind's generator makes.
+    fn make(self) -> BuiltinMesh {
+        match self {
+            Self::Sphere(subdiv) => sphere(subdiv),
+            Self::Hemisphere(res) => hemisphere(res),
+            Self::Supersphere(res, e, n) => supersphere(res, e, n),
+            Self::Supertorus(res, radius, s, t) => supertorus(res, radius, s, t),
+            Self::Wedge(resolution, fov, gamma) => wedge(resolution, fov, gamma),
+            Self::Plate(resolution) => plate(resolution),
+            Self::Cone(nedge, radius) => cone(nedge, radius),
+        }
+    }
+}
+
+/// `mjs_makeMesh`'s checks of `params` for `builtin`, in its order and
+/// words.
+///
+/// Each kind takes an exact count of parameters, some of which are cast to
+/// integers ([`as_int`]) and checked as MuJoCo checks them, a NaN passing
+/// each comparison as it passes MuJoCo's. Two inputs MuJoCo's checks pass are
+/// refused here (`D-MESH-BUILTIN-UNCHECKED`): a cone of fewer than 0 edges
+/// (measured: the error "vector", or for -1 edges at a radius of 0 a
+/// segmentation fault), and a mesh whose counts overflow the `int`
+/// arithmetic MuJoCo sizes it with (measured: "vector", "std::bad_alloc", or
+/// gigabytes allocated).
+fn check(builtin: MeshBuiltin, params: &[f64]) -> Result<Generator, String> {
+    match builtin {
+        MeshBuiltin::Hemisphere => {
+            let [res] = take(params, "Hemisphere mesh type requires 1 parameter")?;
+            let res = as_int(res);
+            if res < 0 {
+                return Err("Hemisphere resolution cannot be negative".into());
+            }
+            if res > 10 {
+                return Err("Hemisphere resolution cannot be greater than 10".into());
+            }
+            Ok(Generator::Hemisphere(res))
+        }
+        MeshBuiltin::Sphere => {
+            let [subdiv] = take(params, "Sphere mesh type requires 1 parameter")?;
+            let subdiv = as_int(subdiv);
+            if subdiv < 0 {
+                return Err("Sphere subdivision cannot be negative".into());
+            }
+            if subdiv > 4 {
+                return Err("Sphere subdivision cannot be greater than 4".into());
+            }
+            Ok(Generator::Sphere(subdiv))
+        }
+        MeshBuiltin::Supersphere => {
+            let [res, e, n] = take(params, "Supersphere mesh type requires 3 parameters")?;
+            let res = as_int(res);
+            if res < 3 {
+                return Err("Supersphere resolution must be greater than 2".into());
+            }
+            if e < 0.0 {
+                return Err("Supersphere 'e' cannot be negative".into());
+            }
+            if n < 0.0 {
+                return Err("Supersphere 'n' cannot be negative".into());
+            }
+            sized(supersphere_sizes(res), "Supersphere")?;
+            Ok(Generator::Supersphere(res, e, n))
+        }
+        MeshBuiltin::Supertorus => {
+            let [res, radius, s, t] = take(params, "Supertorus mesh type requires 4 parameters")?;
+            let res = as_int(res);
+            if res < 3 {
+                return Err("Supertorus resolution must be greater than 3".into());
+            }
+            if radius <= 0.0 || radius > 1.0 {
+                return Err("Supertorus radius must be in (0, 1]".into());
+            }
+            if s <= 0.0 {
+                return Err("Supertorus 's' must be greater than 0".into());
+            }
+            if t <= 0.0 {
+                return Err("Supertorus 't' must be greater than 0".into());
+            }
+            sized(supertorus_sizes(res), "Supertorus")?;
+            Ok(Generator::Supertorus(res, radius, s, t))
+        }
+        MeshBuiltin::Wedge => {
+            let [r0, r1, fov0, fov1, gamma] =
+                take(params, "Wedge builtin mesh types require 5 parameters")?;
+            let resolution = [as_int(r0), as_int(r1)];
+            if fov0 <= 0.0 || fov0 > 180.0 {
+                return Err("fov[0] must be a float between (0, 180] degrees".into());
+            }
+            if fov1 <= 0.0 || fov1 > 90.0 {
+                return Err("`fov[1]` must be a float between (0, 90] degrees".into());
+            }
+            if resolution[0] <= 0 || resolution[1] <= 0 {
+                return Err("Horizontal and vertical resolutions must be positive".into());
+            }
+            #[allow(clippy::manual_range_contains)] // MuJoCo's form, which a NaN passes
+            if gamma < 0.0 || gamma > 1.0 {
+                return Err("`gamma` must be a nonnegative float between [0, 1]".into());
+            }
+            sized(grid_sizes(resolution), "Wedge")?;
+            Ok(Generator::Wedge(resolution, [fov0, fov1], gamma))
+        }
+        MeshBuiltin::Plate => {
+            let [r0, r1] = take(params, "Plate builtin mesh type requires 2 parameters")?;
+            let resolution = [as_int(r0), as_int(r1)];
+            if resolution[0] <= 0 || resolution[1] <= 0 {
+                return Err("Horizontal and vertical resolutions must be positive".into());
+            }
+            sized(grid_sizes(resolution), "Plate")?;
+            Ok(Generator::Plate(resolution))
+        }
+        MeshBuiltin::Cone => {
+            let [nedge, radius] = take(params, "Cone mesh type requires 2 parameters")?;
+            let nedge = as_int(nedge);
+            if nedge < 0 {
+                return Err("Cone edge count cannot be negative".into());
+            }
+            sized(cone_sizes(nedge, radius), "Cone")?;
+            Ok(Generator::Cone(nedge, radius))
+        }
+        MeshBuiltin::None => Err("Unsupported mesh type".into()),
+    }
+}
+
+/// The parameters, exactly `N` of them, or `refusal`.
+fn take<const N: usize>(params: &[f64], refusal: &str) -> Result<[f64; N], String> {
+    <[f64; N]>::try_from(params).map_err(|_| refusal.to_owned())
+}
+
+/// A parameter as `mjs_makeMesh`'s `static_cast<int>` makes it. C++ leaves a
+/// value outside `int`'s range undefined; on arm64, where this crate's
+/// goldens are measured, it truncates toward zero, saturating at `int`'s
+/// bounds, and makes a NaN 0, as Rust's `as` does (measured: `params="1e10"`
+/// is refused for a sphere as greater than 4).
+#[allow(clippy::cast_possible_truncation)] // the cut is `static_cast<int>`'s
+fn as_int(x: f64) -> i32 {
+    x as i32
+}
+
+/// Refused where MuJoCo's `int` arithmetic sizing the mesh overflows
+/// (`sizes` is `None`).
+fn sized(sizes: Option<()>, kind: &str) -> Result<(), String> {
+    sizes.ok_or_else(|| format!("{kind} mesh is too large"))
+}
+
+/// `MakeSupersphere`'s sizes, each `int` expression it computes them by
+/// (`user_mesh.cc:2300-2305`), `None` where one overflows.
+fn supersphere_sizes(res: i32) -> Option<()> {
+    let nvert = (res - 1).checked_mul(res)?.checked_add(2)?;
+    let nface = 2_i32.checked_mul(res)?.checked_mul(res - 1)?;
+    3_i32.checked_mul(nvert)?;
+    3_i32.checked_mul(nface)?;
+    Some(())
+}
+
+/// `MakeSupertorus`'s sizes (`user_mesh.cc:2415-2418`), as
+/// [`supersphere_sizes`].
+fn supertorus_sizes(res: i32) -> Option<()> {
+    let nvert = res.checked_mul(res)?;
+    let nface = res.checked_mul(res)?.checked_mul(2)?;
+    3_i32.checked_mul(nvert)?;
+    3_i32.checked_mul(nface)?;
+    Some(())
+}
+
+/// The wedge's and the plate's sizes (`MakeWedge`, `user_mesh.cc:2467-2471`;
+/// `MakeRect`, `:2494-2500`): the bin edges, three floats per vertex, nine
+/// per normal and six ids per cell, as [`supersphere_sizes`].
+fn grid_sizes([r0, r1]: [i32; 2]) -> Option<()> {
+    r0.checked_add(1)?;
+    r1.checked_add(1)?;
+    3_i32.checked_mul(r0)?.checked_mul(r1)?;
+    9_i32.checked_mul(r0)?.checked_mul(r1)?;
+    6_i32.checked_mul(r0 - 1)?.checked_mul(r1 - 1)?;
+    Some(())
+}
+
+/// `MakeCone`'s sizes (`user_mesh.cc:2538-2557`), as [`supersphere_sizes`].
+fn cone_sizes(nedge: i32, radius: f64) -> Option<()> {
+    if radius > 0.0 {
+        3_i32.checked_mul(nedge.checked_add(nedge)?)?;
+    } else {
+        3_i32.checked_mul(nedge.checked_add(1)?)?;
+    }
+    Some(())
+}
+
+/// A count or id the checks have made non-negative, as an index.
+#[allow(clippy::cast_sign_loss)] // [`make_mesh`] refuses a negative count
+fn index(n: i32) -> usize {
+    n as usize
+}
+
+/// A vertex id, as a face holds it.
+#[allow(clippy::cast_possible_truncation)] // the size check keeps every id below `i32::MAX`
+fn id(n: usize) -> u32 {
+    n as u32
+}
+
+/// `mjCMesh::MakeHemisphere` with faces and a cap
+/// (`user_mesh.cc:2072-2189`): the north pole; rows of points from it to the
+/// equator, each row's four arcs interpolated in double and pushed out to
+/// the unit sphere; the cap's centre last.
+#[allow(clippy::cast_possible_truncation)] // each cast is the store into a float
+fn hemisphere(res: i32) -> BuiltinMesh {
+    const NORTH: [f64; 3] = [0.0, 0.0, 1.0];
+    const EQUATOR: [[f64; 3]; 4] = [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+    ];
+    let r = index(res);
+    let nvert = 1 + 2 * (r + 1) * (r + 2) + 1;
+    let mut vert = vec![0.0_f32; 3 * nvert];
+    vert[2] = 1.0;
+
+    let mut v = 1;
+    for row in 0..=res {
+        for side in 0..4 {
+            let factor = f64::from(row + 1) / f64::from(res + 1);
+            let start: [f64; 3] =
+                std::array::from_fn(|i| NORTH[i] + factor * (EQUATOR[side][i] - NORTH[i]));
+            let end: [f64; 3] = std::array::from_fn(|i| {
+                NORTH[i] + factor * (EQUATOR[(side + 1) % 4][i] - NORTH[i])
+            });
+            let delta: [f64; 3] = std::array::from_fn(|i| (end[i] - start[i]) / f64::from(row + 1));
+            for i in 0..=row {
+                let p: [f64; 3] = std::array::from_fn(|j| start[j] + f64::from(i) * delta[j]);
+                let norm = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+                for j in 0..3 {
+                    vert[3 * v + j] = (p[j] / norm) as f32;
+                }
+                v += 1;
+            }
+        }
+    }
+
+    let mut face: Vec<u32> = vec![0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 1];
+    for row in 0..r {
+        let start_curr = 2 * row * (row + 1) + 1;
+        let count_curr = 4 * (row + 1);
+        let start_next = start_curr + count_curr;
+        let count_next = 4 * (row + 2);
+        for side in 0..4 {
+            for i in 0..row + 2 {
+                let v_curr = i + (row + 1) * side;
+                let v_next = i + (row + 2) * side;
+                face.extend(
+                    [
+                        start_curr + v_curr % count_curr,
+                        start_next + v_next % count_next,
+                        start_next + (v_next + 1) % count_next,
+                    ]
+                    .map(id),
+                );
+                if i < row + 1 {
+                    face.extend(
+                        [
+                            start_curr + v_curr % count_curr,
+                            start_next + (v_next + 1) % count_next,
+                            start_curr + (v_curr + 1) % count_curr,
+                        ]
+                        .map(id),
+                    );
+                }
+            }
+        }
+    }
+    let start = 2 * r * (r + 1) + 1;
+    let count = 4 * (r + 1);
+    for i in 0..count {
+        face.extend([start + i, nvert - 1, start + (i + 1) % count].map(id));
+    }
+    BuiltinMesh {
+        vertex: vert,
+        face: Some(face),
+        inertia: None,
+    }
+}
+
+/// `mjCMesh::MakeSphere` with faces (`user_mesh.cc:2194-2293`): an
+/// icosahedron on the unit sphere, each triangle split in four `subdiv`
+/// times, each edge's midpoint made once per subdivision and pushed out to
+/// the sphere; every value a float but the first normalisation's divisor.
+#[allow(clippy::cast_possible_truncation)] // each cast is the store into a float
+fn sphere(subdiv: i32) -> BuiltinMesh {
+    // `const float phi = (1.0 + std::sqrt(5.0)) / 2.0`, the sum and the
+    // halving MuJoCo's, not a midpoint function's.
+    #[allow(clippy::manual_midpoint)]
+    let phi = ((1.0 + 5.0_f64.sqrt()) / 2.0) as f32;
+    #[rustfmt::skip]
+    let mut vert: Vec<f32> = vec![
+        -1.0,  phi, 0.0,    1.0,  phi, 0.0,   -1.0, -phi, 0.0,    1.0, -phi, 0.0,
+         0.0, -1.0, phi,    0.0,  1.0, phi,    0.0, -1.0, -phi,   0.0,  1.0, -phi,
+         phi,  0.0, -1.0,   phi,  0.0, 1.0,   -phi,  0.0, -1.0,  -phi,  0.0, 1.0,
+    ];
+    // `std::sqrt(1.0 + phi * phi)`: the square a float's, the sum a double.
+    let norm = (1.0 + f64::from(phi * phi)).sqrt();
+    for x in &mut vert {
+        *x = (f64::from(*x) / norm) as f32;
+    }
+    #[rustfmt::skip]
+    let mut face: Vec<u32> = vec![
+        0, 11, 5,   0, 5, 1,    0, 1, 7,    0, 7, 10,   0, 10, 11,
+        1, 5, 9,    5, 11, 4,   11, 10, 2,  10, 7, 6,   7, 1, 8,
+        3, 9, 4,    3, 4, 2,    3, 2, 6,    3, 6, 8,    3, 8, 9,
+        4, 9, 5,    2, 4, 11,   6, 2, 10,   8, 6, 7,    9, 8, 1,
+    ];
+    for _ in 0..subdiv {
+        let mut cache = BTreeMap::new();
+        let mut next = Vec::with_capacity(face.len() * 4);
+        for tri in face.chunks_exact(3) {
+            let [v1, v2, v3] = [tri[0], tri[1], tri[2]];
+            let m12 = midpoint(&mut vert, &mut cache, v1, v2);
+            let m23 = midpoint(&mut vert, &mut cache, v2, v3);
+            let m31 = midpoint(&mut vert, &mut cache, v3, v1);
+            next.extend([v1, m12, m31, v2, m23, m12, v3, m31, m23, m12, m23, m31]);
+        }
+        face = next;
+    }
+    BuiltinMesh {
+        vertex: vert,
+        face: Some(face),
+        inertia: None,
+    }
+}
+
+/// `MakeSphere`'s `get_midpoint` (`user_mesh.cc:2230-2265`): the vertex
+/// between `a` and `b`, made the first time the edge is met in this
+/// subdivision (`cache`, keyed by the edge's ids in order) and appended.
+fn midpoint(vert: &mut Vec<f32>, cache: &mut BTreeMap<(u32, u32), u32>, a: u32, b: u32) -> u32 {
+    let key = (a.min(b), a.max(b));
+    if let Some(&made) = cache.get(&key) {
+        return made;
+    }
+    let (p, q) = (3 * a as usize, 3 * b as usize);
+    // `(v1[0] + v2[0]) / 2.0f`: a float sum halved, MuJoCo's, not a midpoint
+    // function's.
+    #[allow(clippy::manual_midpoint)]
+    let mid: [f32; 3] = std::array::from_fn(|k| (vert[p + k] + vert[q + k]) / 2.0);
+    let norm = (mid[0] * mid[0] + mid[1] * mid[1] + mid[2] * mid[2]).sqrt();
+    let made = id(vert.len() / 3);
+    vert.extend(mid.map(|x| x / norm));
+    cache.insert(key, made);
+    made
+}
+
+/// `MakeSupersphere`'s and `MakeSupertorus`'s `aux_c` and `aux_s`
+/// (`user_mesh.cc:146-151`), of the angle's cosine or sine `trig`: `trig`
+/// raised to `m` in magnitude, its sign kept.
+fn aux(trig: f64, m: f64) -> f64 {
+    trig.abs().powf(m).copysign(trig)
+}
+
+/// An angle's sine and cosine from one call, where MuJoCo's build takes
+/// them from one (`__sincos_stret` on macOS, whose sine can be a double's
+/// last bit off `sin`'s): the cone's, the supertorus's, the wedge's and the
+/// supersphere's `v`. LLVM joins the two calls in an optimised build (at
+/// opt-level 0 the golden's wedges and supertori tuned to show the last bit
+/// fail, measured). Out of line: inlined, the cone's bottom ring took `sin`
+/// and `cos` apart (`otool -tV`), which no golden case can show.
+#[inline(never)]
+fn sin_cos(x: f64) -> (f64, f64) {
+    (x.sin(), x.cos())
+}
+
+/// An angle's sine alone, where MuJoCo's build calls `sin` apart from the
+/// angle's `cos` (the supersphere's `u`): out of line, so that LLVM cannot
+/// join it to [`cos`]'s call; the golden's two superspheres of resolution 40
+/// fail otherwise.
+#[inline(never)]
+fn sin(x: f64) -> f64 {
+    x.sin()
+}
+
+/// An angle's cosine alone, as [`sin`].
+#[inline(never)]
+fn cos(x: f64) -> f64 {
+    x.cos()
+}
+
+/// `mjCMesh::MakeSupersphere` (`user_mesh.cc:2298-2355`): the south pole,
+/// `res - 1` rings of `res` points from south to north, the north pole; a
+/// fan of faces at each pole and two faces per ring cell.
+#[allow(clippy::cast_possible_truncation)] // each cast is the store into a float
+#[allow(clippy::many_single_char_names)] // MuJoCo's names, to read beside `user_mesh.cc`
+fn supersphere(res: i32, e: f64, n: f64) -> BuiltinMesh {
+    let r = index(res);
+    let nvert = (r - 1) * r + 2;
+    let mut vert: Vec<f32> = Vec::with_capacity(3 * nvert);
+    vert.extend([0.0, 0.0, -1.0]);
+    for i in 1..res {
+        let v = -PI / 2.0 + f64::from(i) * PI / f64::from(res);
+        let (sin_v, cos_v) = sin_cos(v);
+        for j in 0..res {
+            let u = -PI + f64::from(j * 2) * PI / f64::from(res);
+            vert.extend([
+                (aux(cos_v, n) * aux(cos(u), e)) as f32,
+                (aux(cos_v, n) * aux(sin(u), e)) as f32,
+                aux(sin_v, n) as f32,
+            ]);
+        }
+    }
+    vert.extend([0.0, 0.0, 1.0]);
+
+    let mut face: Vec<u32> = Vec::with_capacity(6 * r * (r - 1));
+    for j in 0..r {
+        face.extend([0, 1 + (j + 1) % r, 1 + j].map(id));
+    }
+    for i in 0..r - 2 {
+        for j in 0..r {
+            let v1 = 1 + i * r + j;
+            let v2 = 1 + i * r + (j + 1) % r;
+            let v4 = 1 + (i + 1) * r + j;
+            let v3 = 1 + (i + 1) * r + (j + 1) % r;
+            face.extend([v1, v2, v4, v2, v3, v4].map(id));
+        }
+    }
+    let north = nvert - 1;
+    let last_ring = 1 + (r - 2) * r;
+    for j in 0..r {
+        face.extend([last_ring + j, last_ring + (j + 1) % r, north].map(id));
+    }
+    BuiltinMesh {
+        vertex: vert,
+        face: Some(face),
+        inertia: None,
+    }
+}
+
+/// `mjCMesh::MakeSupertorus` (`user_mesh.cc:2413-2461`): `res × res`
+/// points, `u` around the axis and `v` around the tube, two faces per cell.
+#[allow(clippy::cast_possible_truncation)] // each cast is the store into a float
+#[allow(clippy::many_single_char_names)] // MuJoCo's names, to read beside `user_mesh.cc`
+fn supertorus(res: i32, radius: f64, s: f64, t: f64) -> BuiltinMesh {
+    let r = index(res);
+    let mut vert = vec![0.0_f32; 3 * r * r];
+    for i in 0..res {
+        for j in 0..res {
+            let u = 2.0 * PI * f64::from(i) / f64::from(res);
+            let v = 2.0 * PI * f64::from(j) / f64::from(res);
+            let ((sin_u, cos_u), (sin_v, cos_v)) = (sin_cos(u), sin_cos(v));
+            let at = 3 * (index(i) * r + index(j));
+            vert[at] = ((1.0 + radius * aux(cos_v, s)) * aux(cos_u, t)) as f32;
+            vert[at + 1] = ((1.0 + radius * aux(cos_v, s)) * aux(sin_u, t)) as f32;
+            vert[at + 2] = (radius * aux(sin_v, s)) as f32;
+        }
+    }
+    let mut face: Vec<u32> = Vec::with_capacity(6 * r * r);
+    for i in 0..r {
+        for j in 0..r {
+            let (i_next, j_next) = ((i + 1) % r, (j + 1) % r);
+            let v1 = i * r + j;
+            let v2 = i_next * r + j;
+            let v3 = i_next * r + j_next;
+            let v4 = i * r + j_next;
+            face.extend([v1, v2, v4, v2, v3, v4].map(id));
+        }
+    }
+    BuiltinMesh {
+        vertex: vert,
+        face: Some(face),
+        inertia: None,
+    }
+}
+
+/// `LinSpace` (`user_mesh.cc:94-101`): `n` numbers from `lower`, each the
+/// last plus the step.
+fn lin_space(lower: f64, upper: f64, n: i32) -> Vec<f64> {
+    let increment = if n > 1 {
+        (upper - lower) / f64::from(n - 1)
+    } else {
+        0.0
+    };
+    let mut x = lower;
+    (0..n)
+        .map(|_| {
+            let at = x;
+            x += increment;
+            at
+        })
+        .collect()
+}
+
+/// `Fovea` (`user_mesh.cc:84-91`): a gamma's blend of `x` and `x⁵`.
+fn fovea(x: f64, gamma: f64) -> f64 {
+    if gamma == 0.0 {
+        return x;
+    }
+    // `mjMAX(0, mjMIN(1, gamma))`, as the macros compare.
+    let low = if 1.0 < gamma { 1.0 } else { gamma };
+    let g = if 0.0 > low { 0.0 } else { low };
+    g * x.powf(5.0) + (1.0 - g) * x
+}
+
+/// `BinEdges` (`user_mesh.cc:104-121`): the unit edges of `size` bins,
+/// deformed by [`fovea`] and scaled to the field of view in radians.
+fn bin_edges(size: i32, fov: f64, gamma: f64) -> Vec<f64> {
+    let scale = fov * PI / 180.0;
+    lin_space(-1.0, 1.0, size + 1)
+        .into_iter()
+        .map(|x| scale * fovea(x, gamma))
+        .collect()
+}
+
+/// `mjCMesh::MakeWedge` (`user_mesh.cc:2466-2488`): a point at each bin's
+/// centre in azimuth and elevation, on the unit sphere
+/// (`SphericalToCartesian`, `:124-129`); no faces.
+#[allow(clippy::cast_possible_truncation)] // each cast is the store into a float
+fn wedge(resolution: [i32; 2], fov: [f64; 2], gamma: f64) -> BuiltinMesh {
+    let x_edges = bin_edges(resolution[0], fov[0], gamma);
+    let y_edges = bin_edges(resolution[1], fov[1], gamma);
+    let [r0, r1] = resolution.map(index);
+    let mut vert = vec![0.0_f32; 3 * r0 * r1];
+    let r = 1.0_f64;
+    for i in 0..r0 {
+        for j in 0..r1 {
+            let a = 0.5 * (x_edges[i + 1] + x_edges[i]);
+            let e = 0.5 * (y_edges[j + 1] + y_edges[j]);
+            let ((sin_a, cos_a), (sin_e, cos_e)) = (sin_cos(a), sin_cos(e));
+            let at = 3 * (i * r1 + j);
+            vert[at] = (r * cos_e * sin_a) as f32;
+            vert[at + 1] = (r * sin_e) as f32;
+            vert[at + 2] = (-r * cos_e * cos_a) as f32;
+        }
+    }
+    BuiltinMesh {
+        vertex: vert,
+        face: None,
+        inertia: None,
+    }
+}
+
+/// `mjCMesh::MakeRect` (`user_mesh.cc:2493-2532`): a point at each cell's
+/// centre of a `resolution` grid over [-1, 1]² at z = -1, two faces between
+/// each four neighbours; the mesh a shell.
+#[allow(clippy::cast_possible_truncation)] // each cast is the store into a float
+fn plate(resolution: [i32; 2]) -> BuiltinMesh {
+    let [r0, r1] = resolution.map(index);
+    let dx = 2.0 / f64::from(resolution[0]);
+    let dy = 2.0 / f64::from(resolution[1]);
+    let mut vert = vec![0.0_f32; 3 * r0 * r1];
+    let mut face = vec![0_u32; 6 * (r0 - 1) * (r1 - 1)];
+    for (i, x) in (0..resolution[0]).map(|i| (index(i), f64::from(i))) {
+        for (j, y) in (0..resolution[1]).map(|j| (index(j), f64::from(j))) {
+            let v = i * r1 + j;
+            vert[3 * v] = (-1.0 + (x + 0.5) * dx) as f32;
+            vert[3 * v + 1] = (-1.0 + (y + 0.5) * dy) as f32;
+            vert[3 * v + 2] = -1.0;
+            if i > 0 && j > 0 {
+                let cell = (i - 1) * (r1 - 1) + j - 1;
+                face[6 * cell..6 * cell + 6].copy_from_slice(
+                    &[
+                        (i - 1) * r1 + j - 1,
+                        i * r1 + j - 1,
+                        (i - 1) * r1 + j,
+                        i * r1 + j,
+                        (i - 1) * r1 + j,
+                        i * r1 + j - 1,
+                    ]
+                    .map(id),
+                );
+            }
+        }
+    }
+    BuiltinMesh {
+        vertex: vert,
+        face: Some(face),
+        inertia: Some(MeshInertia::Shell),
+    }
+}
+
+/// `mjCMesh::MakeCone` (`user_mesh.cc:2537-2560`): `nedge` points on the
+/// unit circle at z = -1, then `nedge` on the circle of `radius` at z = 1,
+/// or, for a radius of 0 or less, the apex (0, 0, 1); no faces.
+#[allow(clippy::cast_possible_truncation)] // each cast is the store into a float
+fn cone(nedge: i32, radius: f64) -> BuiltinMesh {
+    let top = radius > 0.0;
+    let n = index(nedge);
+    let mut vert = vec![0.0_f32; 3 * (n + if top { n } else { 1 })];
+    let angle = |i: i32| f64::from(2 * i) * PI / f64::from(nedge);
+    for i in 0..nedge {
+        let (s, c) = sin_cos(angle(i));
+        let at = 3 * index(i);
+        vert[at] = c as f32;
+        vert[at + 1] = s as f32;
+        vert[at + 2] = -1.0;
+    }
+    if top {
+        for i in nedge..2 * nedge {
+            let (s, c) = sin_cos(angle(i));
+            let at = 3 * index(i);
+            vert[at] = (radius * c) as f32;
+            vert[at + 1] = (radius * s) as f32;
+            vert[at + 2] = 1.0;
+        }
+    } else {
+        vert[3 * n + 2] = 1.0;
+    }
+    BuiltinMesh {
+        vertex: vert,
+        face: None,
+        inertia: None,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::{
+        BuiltinMesh, MeshBuiltin, check, cone_sizes, grid_sizes, make_mesh, supersphere_sizes,
+        supertorus_sizes,
+    };
+    use crate::types::MeshInertia;
+
+    /// Whether this is MuJoCo's platform, macOS on arm64, where the golden's
+    /// floats were printed and the libm is the one MuJoCo called.
+    const MUJOCO_PLATFORM: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+
+    /// FNV-1a 64 of `bytes`, as the golden's writer hashes them.
+    fn fnv(bytes: impl IntoIterator<Item = u8>) -> String {
+        let hash = bytes.into_iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        format!("{hash:016x}")
+    }
+
+    /// The words of `line` after `key`.
+    fn words<'a>(line: &'a str, key: &str) -> Result<impl Iterator<Item = &'a str>, String> {
+        line.strip_prefix(key)
+            .map(str::split_whitespace)
+            .ok_or_else(|| format!("{line:.40} is not {key:?}"))
+    }
+
+    /// The case in `case` (a `case` line and what follows it in the golden)
+    /// against [`make_mesh`]'s mesh, or what differs.
+    fn check_case(case: &str) -> Result<(), String> {
+        let mut lines = case.lines();
+        let mut next = || lines.next().ok_or("the case ends early");
+        let head = next()?;
+        let (keyword, params) = head.split_once(' ').ok_or("no parameters")?;
+        let builtin = MeshBuiltin::from_keyword(keyword).ok_or("no such kind")?;
+        let params: Vec<f64> = params
+            .split_whitespace()
+            .map(|w| w.parse().map_err(|_| format!("{w} is not a number")))
+            .collect::<Result<_, _>>()?;
+        let made = make_mesh(builtin, &params);
+        let line = next()?;
+        if let Some(refusal) = line.strip_prefix("err ") {
+            if made != Err(refusal.to_owned()) {
+                return Err(format!("{made:?}, MuJoCo's {refusal:?}"));
+            }
+        } else {
+            check_made(builtin, &made?, line, &mut next)?;
+        }
+        match lines.next() {
+            None => Ok(()),
+            Some(extra) => Err(format!("a line the case does not take: {extra:.40}")),
+        }
+    }
+
+    /// The made mesh against the golden's lines from its vertices' (`line`)
+    /// on.
+    fn check_made<'a>(
+        builtin: MeshBuiltin,
+        made: &BuiltinMesh,
+        line: &'a str,
+        next: &mut impl FnMut() -> Result<&'a str, &'static str>,
+    ) -> Result<(), String> {
+        let libm = matches!(
+            builtin,
+            MeshBuiltin::Supersphere
+                | MeshBuiltin::Supertorus
+                | MeshBuiltin::Wedge
+                | MeshBuiltin::Cone
+        );
+        if line.starts_with("vfnv ") {
+            let [hash, count]: [&str; 2] = words(line, "vfnv ")?
+                .collect::<Vec<_>>()
+                .try_into()
+                .map_err(|_| "not a hash and a count")?;
+            if made.vertex.len().to_string() != count {
+                return Err(format!(
+                    "{} coordinates, MuJoCo's {count}",
+                    made.vertex.len()
+                ));
+            }
+            let ours = fnv(made.vertex.iter().flat_map(|x| x.to_le_bytes()));
+            if (MUJOCO_PLATFORM || !libm) && ours != hash {
+                return Err(format!("vertex hash {ours}, MuJoCo's {hash}"));
+            }
+        } else {
+            let want = words(line, "v ")?
+                .map(|w| u32::from_str_radix(w, 16).map(f32::from_bits))
+                .collect::<Result<Vec<f32>, _>>()
+                .map_err(|e| e.to_string())?;
+            if made.vertex.len() != want.len() {
+                return Err(format!(
+                    "{} coordinates, MuJoCo's {}",
+                    made.vertex.len(),
+                    want.len()
+                ));
+            }
+            for (k, (&got, &want)) in made.vertex.iter().zip(&want).enumerate() {
+                let differs = if MUJOCO_PLATFORM || !libm {
+                    got.to_bits() != want.to_bits()
+                } else {
+                    let within = (got - want).abs() <= 1e-6;
+                    !within
+                };
+                if differs {
+                    return Err(format!("coordinate {k}: {got:e}, MuJoCo's {want:e}"));
+                }
+            }
+        }
+        // The golden's faces are the generator's, or the sentinel `0 1 2` it
+        // was written beside where the generator writes none.
+        let faces = made.face.clone().unwrap_or_else(|| vec![0, 1, 2]);
+        let line = next()?;
+        if line.starts_with("ffnv ") {
+            let [hash, count]: [&str; 2] = words(line, "ffnv ")?
+                .collect::<Vec<_>>()
+                .try_into()
+                .map_err(|_| "not a hash and a count")?;
+            let ours = fnv(faces.iter().flat_map(|i| i.to_le_bytes()));
+            if faces.len().to_string() != count || ours != hash {
+                return Err(format!(
+                    "{} ids hashing to {ours}, MuJoCo's {count} to {hash}",
+                    faces.len()
+                ));
+            }
+        } else {
+            let want = words(line, "f")?
+                .map(str::parse)
+                .collect::<Result<Vec<u32>, _>>()
+                .map_err(|e| e.to_string())?;
+            if faces != want {
+                return Err(format!("faces {faces:?}, MuJoCo's {want:?}"));
+            }
+        }
+        // Written `exact`, the mode is exact unless the generator sets one.
+        let inertia = match made.inertia.unwrap_or(MeshInertia::Exact) {
+            MeshInertia::Exact => "exact",
+            MeshInertia::Shell => "shell",
+            other => return Err(format!("inertia {other:?}")),
+        };
+        let line = next()?;
+        if line == format!("inertia {inertia}") {
+            Ok(())
+        } else {
+            Err(format!("inertia {inertia}, MuJoCo's {line:?}"))
+        }
+    }
+
+    /// Each case of `golden` checked, the cases counted, and every one that
+    /// differs listed.
+    fn check_golden(golden: &str) -> (usize, Vec<String>) {
+        let golden = golden.replace("\r\n", "\n");
+        let cases: Vec<&str> = golden.split("\ncase ").skip(1).collect();
+        let missed = cases
+            .iter()
+            .filter_map(|case| {
+                check_case(case)
+                    .err()
+                    .map(|e| format!("{}: {e}", case.lines().next().unwrap_or("")))
+            })
+            .collect();
+        (cases.len(), missed)
+    }
+
+    /// MuJoCo 3.5.0's own making of each case in `tests/assets/mesh_builtin/
+    /// mjs_makemesh.txt` (its header says how it was made) is
+    /// [`make_mesh`]'s: its refusal, or every vertex coordinate, every face
+    /// id, and the inertia mode. A coordinate is compared by its bits on
+    /// MuJoCo's platform; elsewhere a sphere's, hemisphere's or plate's still
+    /// is, as their arithmetic calls no libm, and a supersphere's,
+    /// supertorus's, wedge's or cone's, whose `cos`, `sin` or `pow` give the
+    /// platform's last bit, within 1e-6, which a NaN fails, or, for a case the
+    /// golden holds as a hash, by its count. The golden is read as the
+    /// checkout leaves it, and with every line ended `\r\n`.
+    #[test]
+    fn every_case_makes_the_mesh_mujoco_makes() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/assets/mesh_builtin/mjs_makemesh.txt"
+        );
+        let golden = std::fs::read_to_string(path).unwrap();
+        let crlf = golden.replace("\r\n", "\n").replace('\n', "\r\n");
+        for text in [golden, crlf] {
+            let (cases, missed) = check_golden(&text);
+            assert!(missed.is_empty(), "{}", missed.join("\n"));
+            assert_eq!(cases, 142);
+        }
+    }
+
+    /// What MuJoCo 3.5.0's checks pass and this crate's refuse
+    /// (`D-MESH-BUILTIN-UNCHECKED`): a cone of fewer than 0 edges (measured:
+    /// MuJoCo reports "vector", and for -1 edges at a radius of 0 stops with a
+    /// segmentation fault) and a mesh whose sizes overflow MuJoCo's `int`
+    /// (measured: "vector", "std::bad_alloc", or gigabytes allocated). Only
+    /// the checks run, so a check that let one through would fail here, not
+    /// make the mesh.
+    #[test]
+    fn inputs_mujoco_does_not_check_are_refused() {
+        use MeshBuiltin::{Cone, Plate, Supersphere, Supertorus, Wedge};
+        let cases: [(MeshBuiltin, &[f64], &str); 10] = [
+            (Cone, &[-1.0, 0.5], "Cone edge count cannot be negative"),
+            (Cone, &[-1.0, 0.0], "Cone edge count cannot be negative"),
+            (Cone, &[-3.0, 0.5], "Cone edge count cannot be negative"),
+            (Cone, &[1e9, 0.5], "Cone mesh is too large"),
+            (Cone, &[2_147_483_647.0, 0.5], "Cone mesh is too large"),
+            (
+                Supersphere,
+                &[20000.0, 1.0, 1.0],
+                "Supersphere mesh is too large",
+            ),
+            (
+                Supertorus,
+                &[20000.0, 0.5, 1.0, 1.0],
+                "Supertorus mesh is too large",
+            ),
+            (Plate, &[50000.0, 50000.0], "Plate mesh is too large"),
+            (Plate, &[2_147_483_647.0, 1.0], "Plate mesh is too large"),
+            (
+                Wedge,
+                &[50000.0, 50000.0, 90.0, 45.0, 0.0],
+                "Wedge mesh is too large",
+            ),
+        ];
+        for (builtin, params, refusal) in cases {
+            assert_eq!(
+                check(builtin, params),
+                Err(refusal.to_owned()),
+                "{builtin:?} {params:?}"
+            );
+        }
+    }
+
+    /// A NaN passes each check of a float, as it passes MuJoCo's comparisons
+    /// (`user_api.cc:620-697`); the reader refuses one before (`D-NONFINITE`).
+    #[test]
+    fn a_nan_passes_each_check_of_a_float() {
+        use MeshBuiltin::{Supersphere, Supertorus, Wedge};
+        let nan = f64::NAN;
+        let cases: [(MeshBuiltin, &[f64]); 6] = [
+            (Supersphere, &[8.0, nan, 1.0]),
+            (Supersphere, &[8.0, 1.0, nan]),
+            (Supertorus, &[8.0, nan, nan, nan]),
+            (Wedge, &[2.0, 2.0, nan, 45.0, 0.0]),
+            (Wedge, &[2.0, 2.0, 90.0, nan, 0.0]),
+            (Wedge, &[2.0, 2.0, 90.0, 45.0, nan]),
+        ];
+        for (builtin, params) in cases {
+            assert!(check(builtin, params).is_ok(), "{builtin:?} {params:?}");
+        }
+    }
+
+    /// Each size check refuses exactly where MuJoCo's `int` arithmetic first
+    /// overflows: the largest of each that holds its counts passes (checked
+    /// without making the mesh).
+    #[test]
+    fn a_size_check_refuses_from_the_first_int_overflow() {
+        assert_eq!(supersphere_sizes(18_919), Some(()));
+        assert_eq!(supersphere_sizes(18_920), None);
+        assert_eq!(supertorus_sizes(18_918), Some(()));
+        assert_eq!(supertorus_sizes(18_919), None);
+        assert_eq!(grid_sizes([1, 238_609_294]), Some(()));
+        assert_eq!(grid_sizes([1, 238_609_295]), None);
+        assert_eq!(grid_sizes([238_609_294, 1]), Some(()));
+        assert_eq!(grid_sizes([238_609_295, 1]), None);
+        assert_eq!(cone_sizes(357_913_941, 0.5), Some(()));
+        assert_eq!(cone_sizes(357_913_942, 0.5), None);
+        assert_eq!(cone_sizes(715_827_881, 0.0), Some(()));
+        assert_eq!(cone_sizes(715_827_882, 0.0), None);
+    }
+}
