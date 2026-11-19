@@ -360,12 +360,12 @@ const BUILTIN_LOADS: [(&str, &str, Body, (usize, usize)); 14] = [
 
 // A plate's points are coplanar, so MuJoCo's qhull refuses its hull, which
 // MuJoCo builds for a mesh geom that can collide (`user_model.cc:4905-4922`);
-// on one that cannot, the plate loads (ledger L43 (h): this crate loads
-// either).
+// on one that cannot, the plate loads. This crate builds no hull for it
+// (ledger L43 (h)), so the plates here are on geoms that cannot collide.
 
 /// `MakeRect` makes a plate a shell, whatever `inertia` is written on it or
 /// on its class: MuJoCo reads `inertia` before `builtin`
-/// (`xml_native_reader.cc:1574-1576`, `user_mesh.cc:2501`).
+/// (`xml_native_reader.cc:1571-1573`, `user_mesh.cc:2501`).
 #[test]
 fn a_plate_is_a_shell_whatever_inertia_is_written() {
     let six_by_two: Body = (
@@ -464,9 +464,33 @@ fn a_written_face_is_kept_by_a_cone_and_replaced_by_a_sphere_or_a_plate() {
     );
 }
 
-/// What MuJoCo's reader refuses about a built-in mesh, in MuJoCo's words,
-/// and in its order: the keyword, `params` (required), a `file` beside it,
-/// written vertices beside it, then `mjs_makeMesh`'s count and range checks.
+/// A built-in mesh that makes no faces, or no vertices, is a mesh written
+/// without them: a plate one point wide replaces a written face with none
+/// and is refused as a mesh with no faces, and a cone of no edges as a mesh
+/// with no vertices. MuJoCo refuses both too, when it builds their hull
+/// ("qhull error", "at least 4 vertices required").
+#[test]
+fn a_builtin_mesh_that_makes_no_faces_or_no_vertices_is_one_written_without_them() {
+    for (mesh, refusal) in [
+        (
+            r#"builtin="plate" params="1 4" face="0 1 2""#,
+            "embedded vertex data requires face data",
+        ),
+        (
+            r#"builtin="cone" params="0 0.5""#,
+            "no vertex data and no file specified",
+        ),
+    ] {
+        let err = load_model(&builtin(mesh, "")).unwrap_err().to_string();
+        assert!(err.contains(refusal), "{mesh}: {err}");
+    }
+}
+
+/// What MuJoCo's reader refuses about a built-in mesh, in its order: the
+/// keyword, `params` (required), a `file` beside it, written vertices beside
+/// it, then `mjs_makeMesh`'s count and range checks. Each in MuJoCo's words
+/// but the keyword's, which this crate words as it words every keyword's
+/// (MuJoCo: "invalid keyword: 'cube'").
 #[test]
 fn a_builtin_mesh_is_refused_as_mujoco_refuses_it() {
     let cases = [

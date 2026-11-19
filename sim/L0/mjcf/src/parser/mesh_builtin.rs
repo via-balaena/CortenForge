@@ -8,9 +8,10 @@
 //! makes the mesh a shell. The compiler then sees the mesh as one written
 //! with `vertex` and `face`. [`make_mesh`] ports the checks and the
 //! generators, each sum, product and rounding to a float in MuJoCo's order,
-//! with the platform's `cos`, `sin` and `pow`, as MuJoCo calls them. The
-//! normals the wedge and the plate also write are not made: this crate keeps
-//! no mesh's normals.
+//! with the platform's `pow`, and an angle's sine and cosine from the calls
+//! MuJoCo's build takes them from ([`sin_cos`], [`sin`], [`cos`]). The
+//! normals the wedge and the plate also write are not made: this crate reads
+//! no mesh's `normal` either.
 
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
@@ -71,16 +72,52 @@ pub struct BuiltinMesh {
 }
 
 /// The mesh `mjs_makeMesh` makes of `builtin` and `params`
-/// (`user_api.cc:580-731`), or its refusal in MuJoCo's words.
+/// (`user_api.cc:580-731`), or its refusal in MuJoCo's words: [`check`]'s,
+/// then [`Generator::make`]'s.
+pub fn make_mesh(builtin: MeshBuiltin, params: &[f64]) -> Result<BuiltinMesh, String> {
+    check(builtin, params).map(Generator::make)
+}
+
+/// A kind with the parameters `mjs_makeMesh`'s checks passed, as its
+/// generator takes them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Generator {
+    Sphere(i32),
+    Hemisphere(i32),
+    Supersphere(i32, f64, f64),
+    Supertorus(i32, f64, f64, f64),
+    Wedge([i32; 2], [f64; 2], f64),
+    Plate([i32; 2]),
+    Cone(i32, f64),
+}
+
+impl Generator {
+    /// The mesh the kind's generator makes.
+    fn make(self) -> BuiltinMesh {
+        match self {
+            Self::Sphere(subdiv) => sphere(subdiv),
+            Self::Hemisphere(res) => hemisphere(res),
+            Self::Supersphere(res, e, n) => supersphere(res, e, n),
+            Self::Supertorus(res, radius, s, t) => supertorus(res, radius, s, t),
+            Self::Wedge(resolution, fov, gamma) => wedge(resolution, fov, gamma),
+            Self::Plate(resolution) => plate(resolution),
+            Self::Cone(nedge, radius) => cone(nedge, radius),
+        }
+    }
+}
+
+/// `mjs_makeMesh`'s checks of `params` for `builtin`, in its order and
+/// words.
 ///
 /// Each kind takes an exact count of parameters, some of which are cast to
-/// integers ([`as_int`]) and checked as MuJoCo checks them. Two inputs that
-/// MuJoCo goes on with are refused here (`D-MESH-BUILTIN-UNDEFINED`): a cone
-/// of fewer than 0 edges, which MuJoCo builds a vector of negative size for
-/// (measured: the error "vector", or at a radius of 0 a segmentation fault),
-/// and a mesh whose counts overflow the `int` arithmetic MuJoCo sizes it with
-/// (measured: "vector", "std::bad_alloc", or gigabytes allocated).
-pub fn make_mesh(builtin: MeshBuiltin, params: &[f64]) -> Result<BuiltinMesh, String> {
+/// integers ([`as_int`]) and checked as MuJoCo checks them, a NaN passing
+/// each comparison as it passes MuJoCo's. Two inputs MuJoCo's checks pass are
+/// refused here (`D-MESH-BUILTIN-UNCHECKED`): a cone of fewer than 0 edges
+/// (measured: the error "vector", or for -1 edges at a radius of 0 a
+/// segmentation fault), and a mesh whose counts overflow the `int`
+/// arithmetic MuJoCo sizes it with (measured: "vector", "std::bad_alloc", or
+/// gigabytes allocated).
+fn check(builtin: MeshBuiltin, params: &[f64]) -> Result<Generator, String> {
     match builtin {
         MeshBuiltin::Hemisphere => {
             let [res] = take(params, "Hemisphere mesh type requires 1 parameter")?;
@@ -91,7 +128,7 @@ pub fn make_mesh(builtin: MeshBuiltin, params: &[f64]) -> Result<BuiltinMesh, St
             if res > 10 {
                 return Err("Hemisphere resolution cannot be greater than 10".into());
             }
-            Ok(hemisphere(res))
+            Ok(Generator::Hemisphere(res))
         }
         MeshBuiltin::Sphere => {
             let [subdiv] = take(params, "Sphere mesh type requires 1 parameter")?;
@@ -102,7 +139,7 @@ pub fn make_mesh(builtin: MeshBuiltin, params: &[f64]) -> Result<BuiltinMesh, St
             if subdiv > 4 {
                 return Err("Sphere subdivision cannot be greater than 4".into());
             }
-            Ok(sphere(subdiv))
+            Ok(Generator::Sphere(subdiv))
         }
         MeshBuiltin::Supersphere => {
             let [res, e, n] = take(params, "Supersphere mesh type requires 3 parameters")?;
@@ -117,7 +154,7 @@ pub fn make_mesh(builtin: MeshBuiltin, params: &[f64]) -> Result<BuiltinMesh, St
                 return Err("Supersphere 'n' cannot be negative".into());
             }
             sized(supersphere_sizes(res), "Supersphere")?;
-            Ok(supersphere(res, e, n))
+            Ok(Generator::Supersphere(res, e, n))
         }
         MeshBuiltin::Supertorus => {
             let [res, radius, s, t] = take(params, "Supertorus mesh type requires 4 parameters")?;
@@ -135,7 +172,7 @@ pub fn make_mesh(builtin: MeshBuiltin, params: &[f64]) -> Result<BuiltinMesh, St
                 return Err("Supertorus 't' must be greater than 0".into());
             }
             sized(supertorus_sizes(res), "Supertorus")?;
-            Ok(supertorus(res, radius, s, t))
+            Ok(Generator::Supertorus(res, radius, s, t))
         }
         MeshBuiltin::Wedge => {
             let [r0, r1, fov0, fov1, gamma] =
@@ -150,11 +187,12 @@ pub fn make_mesh(builtin: MeshBuiltin, params: &[f64]) -> Result<BuiltinMesh, St
             if resolution[0] <= 0 || resolution[1] <= 0 {
                 return Err("Horizontal and vertical resolutions must be positive".into());
             }
-            if !(0.0..=1.0).contains(&gamma) {
+            #[allow(clippy::manual_range_contains)] // MuJoCo's form, which a NaN passes
+            if gamma < 0.0 || gamma > 1.0 {
                 return Err("`gamma` must be a nonnegative float between [0, 1]".into());
             }
             sized(grid_sizes(resolution), "Wedge")?;
-            Ok(wedge(resolution, [fov0, fov1], gamma))
+            Ok(Generator::Wedge(resolution, [fov0, fov1], gamma))
         }
         MeshBuiltin::Plate => {
             let [r0, r1] = take(params, "Plate builtin mesh type requires 2 parameters")?;
@@ -163,7 +201,7 @@ pub fn make_mesh(builtin: MeshBuiltin, params: &[f64]) -> Result<BuiltinMesh, St
                 return Err("Horizontal and vertical resolutions must be positive".into());
             }
             sized(grid_sizes(resolution), "Plate")?;
-            Ok(plate(resolution))
+            Ok(Generator::Plate(resolution))
         }
         MeshBuiltin::Cone => {
             let [nedge, radius] = take(params, "Cone mesh type requires 2 parameters")?;
@@ -172,7 +210,7 @@ pub fn make_mesh(builtin: MeshBuiltin, params: &[f64]) -> Result<BuiltinMesh, St
                 return Err("Cone edge count cannot be negative".into());
             }
             sized(cone_sizes(nedge, radius), "Cone")?;
-            Ok(cone(nedge, radius))
+            Ok(Generator::Cone(nedge, radius))
         }
         MeshBuiltin::None => Err("Unsupported mesh type".into()),
     }
@@ -402,16 +440,39 @@ fn midpoint(vert: &mut Vec<f32>, cache: &mut BTreeMap<(u32, u32), u32>, a: u32, 
     made
 }
 
-/// `MakeSupersphere`'s and `MakeSupertorus`'s `aux_c`
-/// (`user_mesh.cc:146-148`): `cos(omega)` raised to `m` in magnitude, its
-/// sign kept.
-fn aux_c(omega: f64, m: f64) -> f64 {
-    omega.cos().abs().powf(m).copysign(omega.cos())
+/// `MakeSupersphere`'s and `MakeSupertorus`'s `aux_c` and `aux_s`
+/// (`user_mesh.cc:146-151`), of the angle's cosine or sine `trig`: `trig`
+/// raised to `m` in magnitude, its sign kept.
+fn aux(trig: f64, m: f64) -> f64 {
+    trig.abs().powf(m).copysign(trig)
 }
 
-/// `aux_s` (`user_mesh.cc:149-151`): as [`aux_c`], of `sin(omega)`.
-fn aux_s(omega: f64, m: f64) -> f64 {
-    omega.sin().abs().powf(m).copysign(omega.sin())
+/// An angle's sine and cosine from one call, where MuJoCo's build takes
+/// them from one (`__sincos_stret` on macOS, whose sine can be a double's
+/// last bit off `sin`'s): the cone's, the supertorus's, the wedge's and the
+/// supersphere's `v`. Out of line, so that LLVM makes its two calls the one
+/// and joins no other to them; the golden's wedge cases tuned to show the
+/// last bit fail otherwise. LLVM joins them in an optimised build, as every
+/// profile of this workspace is; at opt-level 0 it does not, and those cases
+/// and the tuned supertori fail (measured).
+#[inline(never)]
+fn sin_cos(x: f64) -> (f64, f64) {
+    (x.sin(), x.cos())
+}
+
+/// An angle's sine alone, where MuJoCo's build calls `sin` apart from the
+/// angle's `cos` (the supersphere's `u`): out of line, so that LLVM cannot
+/// join it to [`cos`]'s call; the golden's two superspheres of resolution 40
+/// fail otherwise.
+#[inline(never)]
+fn sin(x: f64) -> f64 {
+    x.sin()
+}
+
+/// An angle's cosine alone, as [`sin`].
+#[inline(never)]
+fn cos(x: f64) -> f64 {
+    x.cos()
 }
 
 /// `mjCMesh::MakeSupersphere` (`user_mesh.cc:2298-2355`): the south pole,
@@ -426,12 +487,13 @@ fn supersphere(res: i32, e: f64, n: f64) -> BuiltinMesh {
     vert.extend([0.0, 0.0, -1.0]);
     for i in 1..res {
         let v = -PI / 2.0 + f64::from(i) * PI / f64::from(res);
+        let (sin_v, cos_v) = sin_cos(v);
         for j in 0..res {
             let u = -PI + f64::from(j * 2) * PI / f64::from(res);
             vert.extend([
-                (aux_c(v, n) * aux_c(u, e)) as f32,
-                (aux_c(v, n) * aux_s(u, e)) as f32,
-                aux_s(v, n) as f32,
+                (aux(cos_v, n) * aux(cos(u), e)) as f32,
+                (aux(cos_v, n) * aux(sin(u), e)) as f32,
+                aux(sin_v, n) as f32,
             ]);
         }
     }
@@ -473,10 +535,11 @@ fn supertorus(res: i32, radius: f64, s: f64, t: f64) -> BuiltinMesh {
         for j in 0..res {
             let u = 2.0 * PI * f64::from(i) / f64::from(res);
             let v = 2.0 * PI * f64::from(j) / f64::from(res);
+            let ((sin_u, cos_u), (sin_v, cos_v)) = (sin_cos(u), sin_cos(v));
             let at = 3 * (index(i) * r + index(j));
-            vert[at] = ((1.0 + radius * aux_c(v, s)) * aux_c(u, t)) as f32;
-            vert[at + 1] = ((1.0 + radius * aux_c(v, s)) * aux_s(u, t)) as f32;
-            vert[at + 2] = (radius * aux_s(v, s)) as f32;
+            vert[at] = ((1.0 + radius * aux(cos_v, s)) * aux(cos_u, t)) as f32;
+            vert[at + 1] = ((1.0 + radius * aux(cos_v, s)) * aux(sin_u, t)) as f32;
+            vert[at + 2] = (radius * aux(sin_v, s)) as f32;
         }
     }
     let mut face: Vec<u32> = Vec::with_capacity(6 * r * r);
@@ -550,10 +613,11 @@ fn wedge(resolution: [i32; 2], fov: [f64; 2], gamma: f64) -> BuiltinMesh {
         for j in 0..r1 {
             let a = 0.5 * (x_edges[i + 1] + x_edges[i]);
             let e = 0.5 * (y_edges[j + 1] + y_edges[j]);
+            let ((sin_a, cos_a), (sin_e, cos_e)) = (sin_cos(a), sin_cos(e));
             let at = 3 * (i * r1 + j);
-            vert[at] = (r * e.cos() * a.sin()) as f32;
-            vert[at + 1] = (r * e.sin()) as f32;
-            vert[at + 2] = (-r * e.cos() * a.cos()) as f32;
+            vert[at] = (r * cos_e * sin_a) as f32;
+            vert[at + 1] = (r * sin_e) as f32;
+            vert[at + 2] = (-r * cos_e * cos_a) as f32;
         }
     }
     BuiltinMesh {
@@ -612,16 +676,18 @@ fn cone(nedge: i32, radius: f64) -> BuiltinMesh {
     let mut vert = vec![0.0_f32; 3 * (n + if top { n } else { 1 })];
     let angle = |i: i32| f64::from(2 * i) * PI / f64::from(nedge);
     for i in 0..nedge {
+        let (s, c) = sin_cos(angle(i));
         let at = 3 * index(i);
-        vert[at] = angle(i).cos() as f32;
-        vert[at + 1] = angle(i).sin() as f32;
+        vert[at] = c as f32;
+        vert[at + 1] = s as f32;
         vert[at + 2] = -1.0;
     }
     if top {
         for i in nedge..2 * nedge {
+            let (s, c) = sin_cos(angle(i));
             let at = 3 * index(i);
-            vert[at] = (radius * angle(i).cos()) as f32;
-            vert[at + 1] = (radius * angle(i).sin()) as f32;
+            vert[at] = (radius * c) as f32;
+            vert[at + 1] = (radius * s) as f32;
             vert[at + 2] = 1.0;
         }
     } else {
@@ -638,7 +704,8 @@ fn cone(nedge: i32, radius: f64) -> BuiltinMesh {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::{
-        MeshBuiltin, cone_sizes, grid_sizes, make_mesh, supersphere_sizes, supertorus_sizes,
+        BuiltinMesh, MeshBuiltin, check, cone_sizes, grid_sizes, make_mesh, supersphere_sizes,
+        supertorus_sizes,
     };
     use crate::types::MeshInertia;
 
@@ -655,10 +722,146 @@ mod tests {
     }
 
     /// The words of `line` after `key`.
-    fn words<'a>(line: &'a str, key: &str) -> impl Iterator<Item = &'a str> {
+    fn words<'a>(line: &'a str, key: &str) -> Result<impl Iterator<Item = &'a str>, String> {
         line.strip_prefix(key)
-            .unwrap_or_else(|| panic!("{line:.40} is not {key:?}"))
+            .map(str::split_whitespace)
+            .ok_or_else(|| format!("{line:.40} is not {key:?}"))
+    }
+
+    /// The case in `case` (a `case` line and what follows it in the golden)
+    /// against [`make_mesh`]'s mesh, or what differs.
+    fn check_case(case: &str) -> Result<(), String> {
+        let mut lines = case.lines();
+        let mut next = || lines.next().ok_or("the case ends early");
+        let head = next()?;
+        let (keyword, params) = head.split_once(' ').ok_or("no parameters")?;
+        let builtin = MeshBuiltin::from_keyword(keyword).ok_or("no such kind")?;
+        let params: Vec<f64> = params
             .split_whitespace()
+            .map(|w| w.parse().map_err(|_| format!("{w} is not a number")))
+            .collect::<Result<_, _>>()?;
+        let made = make_mesh(builtin, &params);
+        let line = next()?;
+        if let Some(refusal) = line.strip_prefix("err ") {
+            if made != Err(refusal.to_owned()) {
+                return Err(format!("{made:?}, MuJoCo's {refusal:?}"));
+            }
+        } else {
+            check_made(builtin, &made?, line, &mut next)?;
+        }
+        match lines.next() {
+            None => Ok(()),
+            Some(extra) => Err(format!("a line the case does not take: {extra:.40}")),
+        }
+    }
+
+    /// The made mesh against the golden's lines from its vertices' (`line`)
+    /// on.
+    fn check_made<'a>(
+        builtin: MeshBuiltin,
+        made: &BuiltinMesh,
+        line: &'a str,
+        next: &mut impl FnMut() -> Result<&'a str, &'static str>,
+    ) -> Result<(), String> {
+        let libm = matches!(
+            builtin,
+            MeshBuiltin::Supersphere
+                | MeshBuiltin::Supertorus
+                | MeshBuiltin::Wedge
+                | MeshBuiltin::Cone
+        );
+        if line.starts_with("vfnv ") {
+            let [hash, count]: [&str; 2] = words(line, "vfnv ")?
+                .collect::<Vec<_>>()
+                .try_into()
+                .map_err(|_| "not a hash and a count")?;
+            if made.vertex.len().to_string() != count {
+                return Err(format!(
+                    "{} coordinates, MuJoCo's {count}",
+                    made.vertex.len()
+                ));
+            }
+            let ours = fnv(made.vertex.iter().flat_map(|x| x.to_le_bytes()));
+            if (MUJOCO_PLATFORM || !libm) && ours != hash {
+                return Err(format!("vertex hash {ours}, MuJoCo's {hash}"));
+            }
+        } else {
+            let want = words(line, "v ")?
+                .map(|w| u32::from_str_radix(w, 16).map(f32::from_bits))
+                .collect::<Result<Vec<f32>, _>>()
+                .map_err(|e| e.to_string())?;
+            if made.vertex.len() != want.len() {
+                return Err(format!(
+                    "{} coordinates, MuJoCo's {}",
+                    made.vertex.len(),
+                    want.len()
+                ));
+            }
+            for (k, (&got, &want)) in made.vertex.iter().zip(&want).enumerate() {
+                let differs = if MUJOCO_PLATFORM || !libm {
+                    got.to_bits() != want.to_bits()
+                } else {
+                    let within = (got - want).abs() <= 1e-6;
+                    !within
+                };
+                if differs {
+                    return Err(format!("coordinate {k}: {got:e}, MuJoCo's {want:e}"));
+                }
+            }
+        }
+        // The golden's faces are the generator's, or the sentinel `0 1 2` it
+        // was written beside where the generator writes none.
+        let faces = made.face.clone().unwrap_or_else(|| vec![0, 1, 2]);
+        let line = next()?;
+        if line.starts_with("ffnv ") {
+            let [hash, count]: [&str; 2] = words(line, "ffnv ")?
+                .collect::<Vec<_>>()
+                .try_into()
+                .map_err(|_| "not a hash and a count")?;
+            let ours = fnv(faces.iter().flat_map(|i| i.to_le_bytes()));
+            if faces.len().to_string() != count || ours != hash {
+                return Err(format!(
+                    "{} ids hashing to {ours}, MuJoCo's {count} to {hash}",
+                    faces.len()
+                ));
+            }
+        } else {
+            let want = words(line, "f")?
+                .map(str::parse)
+                .collect::<Result<Vec<u32>, _>>()
+                .map_err(|e| e.to_string())?;
+            if faces != want {
+                return Err(format!("faces {faces:?}, MuJoCo's {want:?}"));
+            }
+        }
+        // Written `exact`, the mode is exact unless the generator sets one.
+        let inertia = match made.inertia.unwrap_or(MeshInertia::Exact) {
+            MeshInertia::Exact => "exact",
+            MeshInertia::Shell => "shell",
+            other => return Err(format!("inertia {other:?}")),
+        };
+        let line = next()?;
+        if line == format!("inertia {inertia}") {
+            Ok(())
+        } else {
+            Err(format!("inertia {inertia}, MuJoCo's {line:?}"))
+        }
+    }
+
+    /// Each case of `golden` checked, the cases counted, and every one that
+    /// differs listed.
+    fn check_golden(golden: &str) -> (usize, Vec<String>) {
+        let golden = golden.replace("\r\n", "\n");
+        let cases: Vec<&str> = golden.split("\ncase ").skip(1).collect();
+        let missed = cases
+            .iter()
+            .filter_map(|case| {
+                check_case(case)
+                    .err()
+                    .map(|e| format!("{}: {e}", case.lines().next().unwrap_or("")))
+            })
+            .collect();
+        (cases.len(), missed)
     }
 
     /// MuJoCo 3.5.0's own making of each case in `tests/assets/mesh_builtin/
@@ -668,7 +871,9 @@ mod tests {
     /// MuJoCo's platform; elsewhere a sphere's, hemisphere's or plate's still
     /// is, as their arithmetic calls no libm, and a supersphere's,
     /// supertorus's, wedge's or cone's, whose `cos`, `sin` or `pow` give the
-    /// platform's last bit, within 1e-6, which a NaN fails.
+    /// platform's last bit, within 1e-6, which a NaN fails, or, for a case the
+    /// golden holds as a hash, by its count. The golden is read as written and
+    /// with its lines ended `\r\n`, as a checkout on Windows may end them.
     #[test]
     fn every_case_makes_the_mesh_mujoco_makes() {
         let path = concat!(
@@ -676,92 +881,22 @@ mod tests {
             "/tests/assets/mesh_builtin/mjs_makemesh.txt"
         );
         let golden = std::fs::read_to_string(path).unwrap();
-        let mut cases = 0;
-        for case in golden.split("\ncase ").skip(1) {
-            let mut lines = case.lines();
-            let head = lines.next().unwrap();
-            let (keyword, params) = head.split_once(' ').unwrap();
-            let builtin = MeshBuiltin::from_keyword(keyword).unwrap();
-            let params: Vec<f64> = params
-                .split_whitespace()
-                .map(|w| w.parse().unwrap())
-                .collect();
-            let made = make_mesh(builtin, &params);
-            cases += 1;
-            let line = lines.next().unwrap();
-            if let Some(refusal) = line.strip_prefix("err ") {
-                assert_eq!(made, Err(refusal.to_owned()), "{head}");
-                continue;
-            }
-            let made = made.unwrap_or_else(|e| panic!("{head}: {e}"));
-            if line.starts_with("vfnv ") {
-                let [hash, count]: [&str; 2] =
-                    words(line, "vfnv ").collect::<Vec<_>>().try_into().unwrap();
-                assert_eq!(made.vertex.len().to_string(), count, "{head}");
-                assert_eq!(
-                    fnv(made.vertex.iter().flat_map(|x| x.to_le_bytes())),
-                    hash,
-                    "{head}"
-                );
-            } else {
-                let want: Vec<f32> = words(line, "v ")
-                    .map(|w| f32::from_bits(u32::from_str_radix(w, 16).unwrap()))
-                    .collect();
-                assert_eq!(made.vertex.len(), want.len(), "{head}");
-                let libm = matches!(
-                    builtin,
-                    MeshBuiltin::Supersphere
-                        | MeshBuiltin::Supertorus
-                        | MeshBuiltin::Wedge
-                        | MeshBuiltin::Cone
-                );
-                for (k, (&got, &want)) in made.vertex.iter().zip(&want).enumerate() {
-                    if MUJOCO_PLATFORM || !libm {
-                        assert_eq!(got.to_bits(), want.to_bits(), "{head}: coordinate {k}");
-                    } else {
-                        assert!((got - want).abs() <= 1e-6, "{head}: coordinate {k}");
-                    }
-                }
-            }
-            // The golden's faces are the generator's, or the sentinel
-            // `0 1 2` it was written beside where the generator writes none.
-            let faces = made.face.clone().unwrap_or_else(|| vec![0, 1, 2]);
-            let line = lines.next().unwrap();
-            if line.starts_with("ffnv ") {
-                let [hash, count]: [&str; 2] =
-                    words(line, "ffnv ").collect::<Vec<_>>().try_into().unwrap();
-                assert_eq!(faces.len().to_string(), count, "{head}");
-                assert_eq!(
-                    fnv(faces.iter().flat_map(|i| i.to_le_bytes())),
-                    hash,
-                    "{head}"
-                );
-            } else {
-                let want: Vec<u32> = words(line, "f").map(|w| w.parse().unwrap()).collect();
-                assert_eq!(faces, want, "{head}");
-            }
-            // Written `exact`, the mode is exact unless the generator sets one.
-            let inertia = match made.inertia.unwrap_or(MeshInertia::Exact) {
-                MeshInertia::Exact => "exact",
-                MeshInertia::Shell => "shell",
-                other => panic!("{head}: {other:?}"),
-            };
-            assert_eq!(
-                lines.next(),
-                Some(format!("inertia {inertia}").as_str()),
-                "{head}"
-            );
+        for text in [golden.clone(), golden.replace('\n', "\r\n")] {
+            let (cases, missed) = check_golden(&text);
+            assert!(missed.is_empty(), "{}", missed.join("\n"));
+            assert_eq!(cases, 145);
         }
-        assert_eq!(cases, 87);
     }
 
-    /// Where MuJoCo 3.5.0's C leaves a built-in mesh undefined, it is refused
-    /// here (`D-MESH-BUILTIN-UNDEFINED`): a cone of fewer than 0 edges
-    /// (measured: MuJoCo reports "vector", and at a radius of 0 stops with a
+    /// What MuJoCo 3.5.0's checks pass and this crate's refuse
+    /// (`D-MESH-BUILTIN-UNCHECKED`): a cone of fewer than 0 edges (measured:
+    /// MuJoCo reports "vector", and for -1 edges at a radius of 0 stops with a
     /// segmentation fault) and a mesh whose sizes overflow MuJoCo's `int`
-    /// (measured: "vector", "std::bad_alloc", or gigabytes allocated).
+    /// (measured: "vector", "std::bad_alloc", or gigabytes allocated). Only
+    /// the checks run, so a check that let one through would fail here, not
+    /// make the mesh.
     #[test]
-    fn inputs_mujoco_leaves_undefined_are_refused() {
+    fn inputs_mujoco_does_not_check_are_refused() {
         use MeshBuiltin::{Cone, Plate, Supersphere, Supertorus, Wedge};
         let cases: [(MeshBuiltin, &[f64], &str); 10] = [
             (Cone, &[-1.0, 0.5], "Cone edge count cannot be negative"),
@@ -789,10 +924,29 @@ mod tests {
         ];
         for (builtin, params, refusal) in cases {
             assert_eq!(
-                make_mesh(builtin, params),
+                check(builtin, params),
                 Err(refusal.to_owned()),
                 "{builtin:?} {params:?}"
             );
+        }
+    }
+
+    /// A NaN passes each check of a float, as it passes MuJoCo's comparisons
+    /// (`user_api.cc:620-697`); the reader refuses one before (`D-NONFINITE`).
+    #[test]
+    fn a_nan_passes_each_check_of_a_float() {
+        use MeshBuiltin::{Supersphere, Supertorus, Wedge};
+        let nan = f64::NAN;
+        let cases: [(MeshBuiltin, &[f64]); 6] = [
+            (Supersphere, &[8.0, nan, 1.0]),
+            (Supersphere, &[8.0, 1.0, nan]),
+            (Supertorus, &[8.0, nan, nan, nan]),
+            (Wedge, &[2.0, 2.0, nan, 45.0, 0.0]),
+            (Wedge, &[2.0, 2.0, 90.0, nan, 0.0]),
+            (Wedge, &[2.0, 2.0, 90.0, 45.0, nan]),
+        ];
+        for (builtin, params) in cases {
+            assert!(check(builtin, params).is_ok(), "{builtin:?} {params:?}");
         }
     }
 

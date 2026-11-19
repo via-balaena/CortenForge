@@ -2551,6 +2551,7 @@ b2e5547ad0b344a1	agree
 b2f47cf2b4cd101c	agree
 b2fccd3ab2c9b3fc	both-refuse
 b30cd38d92d48c53	agree
+b336e2a589710cac	both-refuse
 b33abfa794630776	agree
 b35dbea3d5481bdc	mj-refuses
 b38e4a6c90e91be2	both-refuse
@@ -3507,6 +3508,7 @@ f71b7bc3dabb73a6	agree
 f736afb45271ef32	both-refuse
 f74745a6bca00bba	agree
 f755f97997aaced0	ours-refused	divergence=D-CYLINDER-BIAS
+f76b93d5eb81be7f	both-refuse
 f7b03338af7f1e3f	ours-refused	divergence=D-TENDON-ARMATURE-NEGATIVE
 f7beea3bc2acf9e4	both-refuse
 f7c3d6dc4c715237	agree

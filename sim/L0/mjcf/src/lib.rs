@@ -98,6 +98,7 @@
 //! - `<mesh name="..." builtin="sphere" params="2"/>` - A mesh MuJoCo 3.5.0
 //!   generates: `sphere`, `hemisphere`, `supersphere`, `supertorus` or
 //!   `plate`; a `cone` or a `wedge`, which generate no faces, is refused
+//!   unless its `face` is written
 //! - `<mesh name="..." scale="sx sy sz"/>` - Scale factor for mesh vertices
 //!
 //! ## Actuators
