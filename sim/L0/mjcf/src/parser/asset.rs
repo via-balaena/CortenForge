@@ -100,8 +100,7 @@ pub(super) fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
 }
 
 /// A built-in mesh made into `mesh` as MuJoCo 3.5.0's reader has
-/// `mjs_makeMesh` make it, after the other attributes this crate reads,
-/// each of which `OneMesh` reads before `builtin`
+/// `mjs_makeMesh` make it
 /// (`mjXReader::OneMesh`, `xml_native_reader.cc:1621-1634`): `params`
 /// required, refused beside a `file` or written vertices, then the
 /// generator's vertices, its faces where it makes them, and the plate's

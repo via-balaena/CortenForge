@@ -29,7 +29,7 @@ HEADER = """# MuJoCo 3.5.0 (built from its 3.5.0 tag with -ffp-contract=off, mac
 # coordinate's float bits, `f` the face ids after it (`0 1 2` where the generator writes none), `inertia` the
 # mode after it; `vfnv`/`ffnv` in place of `v`/`f` are FNV-1a 64 hashes of the floats' or the ids' little-endian
 # bytes and their count (a vertex hash of a generator that calls cos, sin or pow is compared on macOS arm64 only;
-# an id hash for more than 1,000 ids).
+# an id hash for a hashed case and for more than 1,000 ids).
 # Written by sim/L0/tests/scripts/gen_mesh_builtin_reference.py; the oracle's libraries' sha256 (without UUID):
 # {oracle}
 # `parser/mesh_builtin.rs`'s test makes each case's mesh with the same parameters."""
@@ -86,8 +86,9 @@ CASES = [
     ('supertorus', '8 0.5 0 0'),
     # an angle's sum, product or order of operations that a rounding to float shows
     ('cone', '22 0.5'), ('cone', '26 0'), ('wedge', '3 3 89 20 0'), ('wedge', '3 3 157 20 0'),
-    # angles whose sine __sincos_stret and sin give a double's last bit apart, tuned so that the float shows it:
-    # MuJoCo takes the wedge's from __sincos_stret and the supersphere's u's from sin
+    # angles at which __sincos_stret's sine and sin's round a vertex to different floats (review round 1's
+    # searches): each case fails when its angle's sine is taken from the other call than MuJoCo's build takes,
+    # __sincos_stret for the wedge's, the supertorus's and the supersphere's v, sin for the supersphere's u
     ('wedge', '2 1 49.77219617845156 45.0 0.0'), ('wedge', '2 1 76.93697507539862 45.0 0.0'),
     ('wedge', '2 1 79.4821470198428 45.0 0.0'), ('wedge', '1 2 90.0 84.97358776835924 0.0'),
     ('wedge', '1 2 90.0 87.11669442434288 0.0'), ('wedge', '1 2 90.0 74.46280348425043 0.0'),
@@ -98,12 +99,9 @@ CASES = [
     ('supertorus', '40 1.0 1e300 1.5246355854531397', 'hash'),
     ('supertorus', '58 1.0 1e300 2.39721118128265', 'hash'),
     ('supertorus', '65 1.0 1e300 2.0017596890764535', 'hash'),
-    # the same, tuned on the other angle: MuJoCo takes the supersphere's v's and each of the supertorus's from
-    # __sincos_stret
     ('supersphere', '19 1.0 3.0897383245849674', 'hash'), ('supersphere', '20 1.0 1.5246355854531397', 'hash'),
-    ('supersphere', '25 1.0 1.0252169133610043', 'hash'), ('supersphere', '37 3.2693758288106567 1.0', 'hash'),
-    ('supertorus', '29 0.5 2.39721118128265 1.0', 'hash'), ('supertorus', '29 0.5 1.0 2.39721118128265', 'hash'),
-    ('supertorus', '37 0.5 1.6766900027980545 1.0', 'hash'), ('supertorus', '37 0.5 1.0 1.6766900027980545', 'hash'),
+    ('supersphere', '25 1.0 1.0252169133610043', 'hash'),
+    ('supertorus', '29 0.5 2.39721118128265 1.0', 'hash'), ('supertorus', '37 0.5 1.6766900027980545 1.0', 'hash'),
 ]
 
 INERTIA = {0: 'convex', 1: 'exact', 2: 'legacy', 3: 'shell'}

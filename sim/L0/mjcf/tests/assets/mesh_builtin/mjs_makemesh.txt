@@ -4,7 +4,7 @@
 # coordinate's float bits, `f` the face ids after it (`0 1 2` where the generator writes none), `inertia` the
 # mode after it; `vfnv`/`ffnv` in place of `v`/`f` are FNV-1a 64 hashes of the floats' or the ids' little-endian
 # bytes and their count (a vertex hash of a generator that calls cos, sin or pow is compared on macOS arm64 only;
-# an id hash for more than 1,000 ids).
+# an id hash for a hashed case and for more than 1,000 ids).
 # Written by sim/L0/tests/scripts/gen_mesh_builtin_reference.py; the oracle's libraries' sha256 (without UUID):
 # c93ffab5e67c7e2aa544ea4c971cf531f5a64d9d84116dd13dda2f486a4dee9d
 # `parser/mesh_builtin.rs`'s test makes each case's mesh with the same parameters.
@@ -482,23 +482,11 @@ case supersphere 25 1.0 1.0252169133610043
 vfnv c5247f8f0cab0c0d 1806
 ffnv bb9d50a4a2a3a0f5 3600
 inertia exact
-case supersphere 37 3.2693758288106567 1.0
-vfnv 30fe18ea98499c95 4002
-ffnv b05bcf35dfe1d2dd 7992
-inertia exact
 case supertorus 29 0.5 2.39721118128265 1.0
 vfnv c7dc16ab60f5e590 2523
 ffnv 48710c3dc9c792d5 5046
 inertia exact
-case supertorus 29 0.5 1.0 2.39721118128265
-vfnv 6b39277a74cfa350 2523
-ffnv 48710c3dc9c792d5 5046
-inertia exact
 case supertorus 37 0.5 1.6766900027980545 1.0
 vfnv 16ec266a00d27798 4107
-ffnv 2a79dda53efd0111 8214
-inertia exact
-case supertorus 37 0.5 1.0 1.6766900027980545
-vfnv 118955bd71353064 4107
 ffnv 2a79dda53efd0111 8214
 inertia exact

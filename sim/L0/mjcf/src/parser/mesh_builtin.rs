@@ -9,9 +9,11 @@
 //! with `vertex` and `face`. [`make_mesh`] ports the checks and the
 //! generators, each sum, product and rounding to a float in MuJoCo's order,
 //! with the platform's `pow`, and an angle's sine and cosine from the calls
-//! MuJoCo's build takes them from ([`sin_cos`], [`sin`], [`cos`]). The
-//! normals the wedge and the plate also write are not made: this crate reads
-//! no mesh's `normal` either.
+//! MuJoCo's build takes them from ([`sin_cos`], [`sin`], [`cos`]) in an
+//! optimised build: at opt-level 0, a wedge's, a supertorus's or a
+//! supersphere's vertex can be a float's last bit off MuJoCo's. The normals
+//! the wedge and the plate also write are not made: this crate reads no
+//! mesh's `normal` either.
 
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
@@ -72,8 +74,7 @@ pub struct BuiltinMesh {
 }
 
 /// The mesh `mjs_makeMesh` makes of `builtin` and `params`
-/// (`user_api.cc:580-731`), or its refusal in MuJoCo's words: [`check`]'s,
-/// then [`Generator::make`]'s.
+/// (`user_api.cc:580-731`), or [`check`]'s refusal.
 pub fn make_mesh(builtin: MeshBuiltin, params: &[f64]) -> Result<BuiltinMesh, String> {
     check(builtin, params).map(Generator::make)
 }
@@ -450,11 +451,10 @@ fn aux(trig: f64, m: f64) -> f64 {
 /// An angle's sine and cosine from one call, where MuJoCo's build takes
 /// them from one (`__sincos_stret` on macOS, whose sine can be a double's
 /// last bit off `sin`'s): the cone's, the supertorus's, the wedge's and the
-/// supersphere's `v`. Out of line, so that LLVM makes its two calls the one
-/// and joins no other to them; the golden's wedge cases tuned to show the
-/// last bit fail otherwise. LLVM joins them in an optimised build, as every
-/// profile of this workspace is; at opt-level 0 it does not, and those cases
-/// and the tuned supertori fail (measured).
+/// supersphere's `v`. LLVM joins the two calls in an optimised build (at
+/// opt-level 0 the golden's wedges and supertori tuned to show the last bit
+/// fail, measured). Out of line: inlined, the cone's bottom ring took `sin`
+/// and `cos` apart (`otool -tV`), which no golden case can show.
 #[inline(never)]
 fn sin_cos(x: f64) -> (f64, f64) {
     (x.sin(), x.cos())
@@ -872,8 +872,8 @@ mod tests {
     /// is, as their arithmetic calls no libm, and a supersphere's,
     /// supertorus's, wedge's or cone's, whose `cos`, `sin` or `pow` give the
     /// platform's last bit, within 1e-6, which a NaN fails, or, for a case the
-    /// golden holds as a hash, by its count. The golden is read as written and
-    /// with its lines ended `\r\n`, as a checkout on Windows may end them.
+    /// golden holds as a hash, by its count. The golden is read as the
+    /// checkout leaves it, and with every line ended `\r\n`.
     #[test]
     fn every_case_makes_the_mesh_mujoco_makes() {
         let path = concat!(
@@ -881,10 +881,11 @@ mod tests {
             "/tests/assets/mesh_builtin/mjs_makemesh.txt"
         );
         let golden = std::fs::read_to_string(path).unwrap();
-        for text in [golden.clone(), golden.replace('\n', "\r\n")] {
+        let crlf = golden.replace("\r\n", "\n").replace('\n', "\r\n");
+        for text in [golden, crlf] {
             let (cases, missed) = check_golden(&text);
             assert!(missed.is_empty(), "{}", missed.join("\n"));
-            assert_eq!(cases, 145);
+            assert_eq!(cases, 142);
         }
     }
 
