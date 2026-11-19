@@ -493,6 +493,7 @@ fn check_sizes(model: &MjcfModel) -> Result<()> {
     for (body_id, first_geom, body) in bodies_in_order(&model.worldbody) {
         for (k, geom) in body.geoms.iter().enumerate() {
             let at = || geom_at(geom, first_geom + k, body, body_id);
+            check_geom_mesh(geom, at)?;
             check_geom_hfield(geom, at)?;
             check_geom_size(geom, model.compiler.fitaabb, at)?;
         }
@@ -511,14 +512,26 @@ fn check_sizes(model: &MjcfModel) -> Result<()> {
     Ok(())
 }
 
+/// A mesh or SDF geom's mesh as MuJoCo 3.5.0 checks it, directly before its
+/// height field: the geom names one (`mjCGeom::Compile`,
+/// `user_objects.cc:3656-3659`; an empty name names none). A named mesh the
+/// model lacks was refused before ([`check_geom_assets`]).
+fn check_geom_mesh(geom: &MjcfGeom, at: impl Fn() -> Location) -> Result<()> {
+    let needs_one = matches!(geom.geom_type, Some(MjcfGeomType::Mesh | MjcfGeomType::Sdf));
+    let names_one = geom.mesh.as_deref().is_some_and(|m| !m.is_empty());
+    if needs_one && !names_one {
+        return Err(MjcfError::invalid_model("mesh geom must have valid meshid").at(at()));
+    }
+    Ok(())
+}
+
 /// A geom's height field as MuJoCo 3.5.0 checks it, before the geom's
 /// size: a height-field geom names one and no other geom does
 /// (`mjCGeom::Compile`, `user_objects.cc:3661-3664`; an empty name names
-/// none). MuJoCo checks a geom's condim and a mesh geom's mesh first
-/// (`:3651-3659`); sim-mjcf checks them later (`builder::body::check_bodies`,
-/// the builder's `resolve_geom_asset_links`), so a geom with one of those
-/// faults and this one is refused for this one, where MuJoCo names the
-/// other (`refusal_order.rs` `HFIELD_COSTS`); the resolve pass refuses a
+/// none). MuJoCo checks a geom's condim first (`:3651-3654`); sim-mjcf
+/// checks it later (`builder::body::check_bodies`), so a geom with that
+/// fault and this one is refused for this one, where MuJoCo names the
+/// condim (`refusal_order.rs` `HFIELD_COSTS`); the resolve pass refuses a
 /// `fromto` before this, and the parser a size that is not finite, both of
 /// which MuJoCo checks after this (ledger L353).
 fn check_geom_hfield(geom: &MjcfGeom, at: impl Fn() -> Location) -> Result<()> {

@@ -128,8 +128,7 @@ impl ModelBuilder {
         self.geom_condim.push(geom.condim.unwrap_or(3));
         // A mesh or SDF geom's inertia is its mesh's: `shellinertia` on one
         // is refused once every geom is built (`check_bodies`), where MuJoCo
-        // 3.5.0 refuses it (and an SDF that names no mesh, which MuJoCo
-        // refuses for that, ledger L357).
+        // 3.5.0 refuses it.
         self.geom_shellinertia_on_mesh.push(
             geom.shellinertia == Some(true) && matches!(geom_type, GeomType::Mesh | GeomType::Sdf),
         );
@@ -255,8 +254,7 @@ impl ModelBuilder {
                 }
             },
             // An SDF geom's mesh, as MuJoCo's `geom_dataid` holds it: its
-            // bounds are its mesh's. One that names none has none (ledger
-            // L357).
+            // bounds are its mesh's.
             GeomType::Sdf => geom_mesh_id(geom, &self.mesh_name_to_id),
             _ => None,
         };
@@ -549,8 +547,7 @@ pub(super) fn geom_volume(
         MjcfGeomType::Ellipsoid => 4.0 * PI * size[0] * size[1] * size[2] / 3.0,
         MjcfGeomType::Box | MjcfGeomType::Hfield => size[0] * size[1] * size[2] * 8.0,
         MjcfGeomType::Mesh => mesh_props.map_or(0.001, |props| props.volume),
-        // Its mesh's, as a mesh geom's (`GetVolume`'s first arm); an SDF
-        // with no mesh keeps 0.001 (ledger L357).
+        // Its mesh's, as a mesh geom's (`GetVolume`'s first arm).
         MjcfGeomType::Sdf => mesh_props.map_or(0.001, |props| props.volume),
         MjcfGeomType::Plane => 0.0,
     }
@@ -650,8 +647,7 @@ pub fn compute_geom_inertia(
             ))
         }
         // MuJoCo's mesh arm, an SDF's too: the box of the mesh's volume and
-        // principal moments, along the mesh's principal axes. An SDF with no
-        // mesh keeps 0.001 (ledger L357).
+        // principal moments, along the mesh's principal axes.
         MjcfGeomType::Mesh | MjcfGeomType::Sdf => match mesh_props {
             Some(props) => {
                 let [b00, b11, b22] = props.boxsz.map(|b| b * b);

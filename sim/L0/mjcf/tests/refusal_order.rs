@@ -2045,6 +2045,18 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "invalid keyword: 'bogus'",
         "invalid keyword \"bogus\" in attribute 'inertia' on <mesh> (line 1: asset > mesh 'm')",
     ),
+    (
+        "a mesh geom that names no mesh but a height field",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><hfield name="h" nrow="2" ncol="2" elevation="0 0 0 0" size="1 1 0.1 0.1"/></asset><worldbody><geom type="mesh" hfield="h"/></worldbody></mujoco>"#,
+        "mesh geom '' (id = 0) must have valid meshid",
+        "mesh geom must have valid meshid (geom #0 in body 'world')",
+    ),
+    (
+        "an SDF geom that names no mesh but a height field",
+        r#"<mujoco><asset><hfield name="h" nrow="2" ncol="2" elevation="0 0 0 0" size="1 1 0.1 0.1"/></asset><worldbody><geom type="sdf" hfield="h"/></worldbody></mujoco>"#,
+        "mesh geom '' (id = 0) must have valid meshid",
+        "mesh geom must have valid meshid (geom #0 in body 'world')",
+    ),
 ];
 
 #[test]
@@ -2205,10 +2217,12 @@ fn a_nuser_below_minus_1_set_in_code_is_refused_first() {
 /// added, after every check this crate makes before building the model, a
 /// pair's after the assets; a sphere's `fromto` is refused when the classes
 /// are applied, a height field written without `elevation` while parsing
-/// (ledger L359), a body's orientation when the tree is built, and a pair
-/// with no `geom1` while parsing (registry `D-PAIR-NO-GEOM`); MuJoCo 3.5.0
-/// checks each condim and pair before these (ledger L353). `(what, document, MuJoCo's reason, this crate's
-/// error)`, measured 2026-11-04 (the last five: review round 1's).
+/// (ledger L359), a body's orientation when the tree is built, a pair with
+/// no `geom1` while parsing (registry `D-PAIR-NO-GEOM`), and a mesh or SDF
+/// geom naming no mesh as it validates; MuJoCo 3.5.0 checks each condim and
+/// pair before these (ledger L353). `(what, document, MuJoCo's reason, this
+/// crate's error)`, measured 2026-11-04 (the five before the last: review
+/// round 1's), the last 2026-11-19 (RL-9d).
 const CONDIM_COSTS: &[(&str, &str, &str, &str)] = &[
     (
         "condim then its size",
@@ -2335,6 +2349,12 @@ const CONDIM_COSTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="b"><freejoint/><geom name="g" size=".1"/><geom size=".2"/></body><body name="c" pos="1 0 1"><freejoint/><geom name="z" size="0"/></body></worldbody><contact><pair geom2="g"/></contact></mujoco>"#,
         "size 0 must be positive in geom",
         "required attribute missing: 'geom1' on <pair> (line 1: contact > pair)",
+    ),
+    (
+        "an SDF geom naming no mesh with a condim of 2",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><body name="b"><freejoint/><geom type="sdf" condim="2"/><geom size=".1"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "mesh geom must have valid meshid (geom #0 in body 'b')",
     ),
 ];
 
@@ -3013,9 +3033,11 @@ fn an_inertia_fault_beside_another_is_named_as_ledgered() {
 
 /// Two faults, one a mesh MuJoCo 3.5.0 refuses as it builds the meshes, before
 /// the bodies (its volume, an exact mesh's orientation), one a geom's this
-/// crate checks before it builds the meshes (a size, a `fromto`), where this
-/// crate names the geom's, as it did before RL-9b: ledger L353 holds each. `(what, document, MuJoCo 3.5.0's reason,
-/// this crate's error)`, measured 2026-11-10 (RL-9b's review, RB's documents).
+/// crate checks before it builds the meshes (a size, a `fromto`, a mesh or
+/// SDF geom naming no mesh), where this crate names the geom's: ledger L353
+/// holds each. `(what, document, MuJoCo 3.5.0's reason, this crate's error)`,
+/// measured 2026-11-10 (RL-9b's review, RB's documents), the last 2026-11-19
+/// (RL-9d).
 const MESH_COSTS: &[(&str, &str, &str, &str)] = &[
     (
         "a mesh too small in volume, then a sphere of size 0",
@@ -3082,6 +3104,12 @@ const MESH_COSTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="flat"/><geom size=".1"/></body></worldbody><actuator><motor joint="nope"/></actuator></mujoco>"#,
         "mesh volume is too small: flat . Try setting inertia to shell",
         "unknown joint 'nope' (actuator #0)",
+    ),
+    (
+        "a mesh too small in volume, then an SDF geom naming no mesh",
+        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/></asset><worldbody><body name="b"><freejoint/><geom type="sdf"/><geom size=".1"/></body></worldbody></mujoco>"#,
+        "mesh volume is too small: flat . Try setting inertia to shell",
+        "mesh geom must have valid meshid (geom #0 in body 'b')",
     ),
 ];
 
@@ -3267,31 +3295,16 @@ fn a_fitted_size_beside_a_fault_checked_after_the_build_is_named_as_ledgered() {
 }
 
 /// Two faults in one geom, a height field it names but is not, and a fault
-/// MuJoCo 3.5.0 checks before that: its condim, or a mesh or SDF geom's
-/// missing mesh (`user_objects.cc:3651-3664`). This crate checks the height
-/// field as it validates, before both, and names the height field: ledger
-/// L353 holds each. `(what, document, MuJoCo 3.5.0's reason, this crate's
+/// MuJoCo 3.5.0 checks before that: its condim (`user_objects.cc:3651-3654`).
+/// This crate checks the height field as it validates, before the condim,
+/// and names the height field: ledger L353 holds each. `(what, document, MuJoCo 3.5.0's reason, this crate's
 /// error)`, measured 2026-11-14 (review round 1, RW-4, RB-2; F1-5).
-const HFIELD_COSTS: &[(&str, &str, &str, &str)] = &[
-    (
-        "a sphere with a condim of 2 that names a height field",
-        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><hfield name="h" nrow="2" ncol="2" elevation="0 0 0 0" size="1 1 0.1 0.1"/></asset><worldbody><geom condim="2" hfield="h" size="0.1"/></worldbody></mujoco>"#,
-        "invalid condim in geom",
-        "hfield geom must have valid hfieldid (geom #0 in body 'world')",
-    ),
-    (
-        "a mesh geom that names no mesh but a height field",
-        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><hfield name="h" nrow="2" ncol="2" elevation="0 0 0 0" size="1 1 0.1 0.1"/></asset><worldbody><geom type="mesh" hfield="h"/></worldbody></mujoco>"#,
-        "mesh geom '' (id = 0) must have valid meshid",
-        "hfield geom must have valid hfieldid (geom #0 in body 'world')",
-    ),
-    (
-        "an SDF geom that names no mesh but a height field",
-        r#"<mujoco><asset><hfield name="h" nrow="2" ncol="2" elevation="0 0 0 0" size="1 1 0.1 0.1"/></asset><worldbody><geom type="sdf" hfield="h"/></worldbody></mujoco>"#,
-        "mesh geom '' (id = 0) must have valid meshid",
-        "hfield geom must have valid hfieldid (geom #0 in body 'world')",
-    ),
-];
+const HFIELD_COSTS: &[(&str, &str, &str, &str)] = &[(
+    "a sphere with a condim of 2 that names a height field",
+    r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><hfield name="h" nrow="2" ncol="2" elevation="0 0 0 0" size="1 1 0.1 0.1"/></asset><worldbody><geom condim="2" hfield="h" size="0.1"/></worldbody></mujoco>"#,
+    "invalid condim in geom",
+    "hfield geom must have valid hfieldid (geom #0 in body 'world')",
+)];
 
 #[test]
 fn a_height_field_beside_a_geoms_earlier_fault_is_named_as_ledgered() {
