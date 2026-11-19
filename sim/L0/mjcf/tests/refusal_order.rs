@@ -131,7 +131,10 @@
 //! model, after its classes are applied and its frames and composites
 //! expanded, before every name: a repeated mesh name, which MuJoCo's reader
 //! refuses, is named after them, and a `NaN` written in a vertex, refused as it
-//! is read, before them: `MESH_DATA_COSTS`.
+//! is read, before them: `MESH_DATA_COSTS`. Beside a geom's mesh name that no
+//! mesh holds, which MuJoCo names as it indexes the assets, before any geom
+//! compiles, this crate names a `fromto` it refuses as the classes are
+//! applied: `ASSET_COSTS` (ledger L353).
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, with the reason its row gives as MuJoCo's (RL-6a's measured
@@ -197,8 +200,11 @@
 //! geom's mesh before its height field. RL-9c3's review's (measured
 //! 2026-11-19, RW's documents) set a negative face id beside a bad
 //! `maxhullvert` or `inertia`, which MuJoCo names: two in `TWO_FAULTS`.
-//! RL-9d's (measured 2026-11-19) set a mesh's written counts beside a
-//! repeated mesh name or a vertex's `NaN`: two in `MESH_DATA_COSTS`.
+//! RL-9d's (measured 2026-11-19) set an SDF geom naming no mesh beside its
+//! condim or a mesh's volume: one each in `CONDIM_COSTS` and `MESH_COSTS`;
+//! a mesh's written counts beside a repeated mesh name or a vertex's `NaN`:
+//! two in `MESH_DATA_COSTS`; and a box's `fromto` beside a mesh name no mesh
+//! holds: one in `ASSET_COSTS`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -3350,6 +3356,33 @@ const HFIELD_COSTS: &[(&str, &str, &str, &str)] = &[(
 fn a_height_field_beside_a_geoms_earlier_fault_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in HFIELD_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults in one geom, a mesh name that no mesh holds and a `fromto`,
+/// which MuJoCo 3.5.0 refuses beside any mesh as it compiles the geom
+/// (`user_objects.cc:3727-3730`), after it indexes the assets and names the
+/// missing mesh (`IndexAssets`, `user_model.cc:1889-1899`). This crate refuses
+/// the `fromto` as the classes are applied, before it checks the names, and
+/// names it: ledger L353. `(what, document, MuJoCo 3.5.0's reason, this
+/// crate's error)`, measured 2026-11-19 (RL-9d's start set, `a04`).
+const ASSET_COSTS: &[(&str, &str, &str, &str)] = &[(
+    "a box's fromto naming a mesh no mesh holds",
+    r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 1 0  0 0 1" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="box" size=".1" fromto="0 0 0 0 0 1" mesh="nope"/></body></worldbody></mujoco>"#,
+    "mesh 'nope' not found in geom 0",
+    "invalid fromto on <geom>: fromto cannot be used with mesh geom (geom in body 'b')",
+)];
+
+#[test]
+fn a_fromto_beside_a_missing_mesh_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in ASSET_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),
