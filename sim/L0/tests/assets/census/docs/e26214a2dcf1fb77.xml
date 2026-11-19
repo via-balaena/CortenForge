@@ -1,0 +1,1 @@
+<mujoco><default><default class="c"><mesh inertia="exact"/></default></default><asset><mesh name="m" class="c" builtin="plate" params="3 3"/></asset><worldbody><body name="b"><freejoint/><geom type="mesh" mesh="m" contype="0" conaffinity="0"/></body></worldbody></mujoco>

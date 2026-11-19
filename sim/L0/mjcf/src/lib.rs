@@ -95,6 +95,9 @@
 //! - `<mesh name="..." file="..." content_type="model/stl"/>` - The file's
 //!   format, read in place of its extension's
 //! - `<mesh name="..." vertex="x y z ..."/>` - Embedded vertex data
+//! - `<mesh name="..." builtin="sphere" params="2"/>` - A mesh MuJoCo 3.5.0
+//!   generates: `sphere`, `hemisphere`, `supersphere`, `supertorus` or
+//!   `plate`; a `cone` or a `wedge`, which generate no faces, is refused
 //! - `<mesh name="..." scale="sx sy sz"/>` - Scale factor for mesh vertices
 //!
 //! ## Actuators

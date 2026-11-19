@@ -3727,3 +3727,4 @@ b9c5adf926d3a0ab	sim/L0/mjcf/tests/refusal_order.rs:3269
 c505ad83f0604e99	sim/L0/mjcf/tests/refusal_order.rs:3216
 e6d37da9eb757338	sim/L0/mjcf/tests/refusal_order.rs:3204
 1c67195a21e93244	sim/L0/mjcf/tests/refusal_order.rs:3274
+e26214a2dcf1fb77	sim/L0/mjcf/tests/mesh_builtin.rs:389
