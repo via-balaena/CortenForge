@@ -21,16 +21,22 @@ use super::orientation::{mulvecmat, mulvecmat_t, normvec, quat2mat};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{MeshInertia, MjcfCompiler, MjcfHfield, MjcfMesh, MjcfModel};
 
-/// Gives each unnamed mesh and height field the name MuJoCo 3.5.0 gives it
-/// (`mjCMesh::CopyFromSpec`, `mjCHField::CopyFromSpec`): its `file`'s text
-/// past the last `/` or `\`, cut at the last `.` (`mjuu_strippath`,
-/// `mjuu_stripext`, `user_util.cc:768-829`), an empty one refused as
-/// MuJoCo refuses it ("empty name in mesh", "empty name in height field",
+/// Checks each mesh's written vertex and face counts
+/// ([`check_written_counts`]), then gives each unnamed mesh and height field
+/// the name MuJoCo 3.5.0 gives it (`mjCMesh::CopyFromSpec`,
+/// `mjCHField::CopyFromSpec`): its `file`'s text past the last `/` or `\`,
+/// cut at the last `.` (`mjuu_strippath`, `mjuu_stripext`,
+/// `user_util.cc:768-829`), an empty one refused as MuJoCo refuses it
+/// ("empty name in mesh", "empty name in height field",
 /// `user_model.cc:2034-2041`), and two of one name refused as a repeated
 /// name, as MuJoCo's `ProcessLists` refuses them before any pass drops an
-/// unused mesh (`user_model.cc:4888-4891`). It runs on the model before
-/// validation and every compiler pass, which find assets by name.
+/// unused mesh (`user_model.cc:4888-4891`). It runs where MuJoCo's
+/// `mjCModel::TryCompile` begins: after the model's classes are applied and
+/// its frames and composites expanded, which MuJoCo does as it reads the
+/// model, and before validation and every compiler pass, which find assets
+/// by name.
 pub fn name_assets(mjcf: &mut MjcfModel) -> Result<()> {
+    check_written_counts(&mjcf.meshes)?;
     let named = |name: &str, file: Option<&str>, what: &str| {
         if !name.is_empty() {
             return Ok(name.to_owned());
@@ -67,6 +73,39 @@ pub fn name_assets(mjcf: &mut MjcfModel) -> Result<()> {
         ElementKind::Hfield,
         mjcf.hfields.iter().map(|h| h.name.as_str()).collect(),
     )?;
+    Ok(())
+}
+
+/// Each mesh's written vertices and faces as MuJoCo 3.5.0's `CopyFromSpec`
+/// checks them, every mesh in order before any is named
+/// (`mjCModel::TryCompile`, `user_model.cc:4872`; `ProcessVertices`,
+/// `user_mesh.cc:543-561`): the vertex count a multiple of 3, then the face
+/// count, then each vertex finite (a `NaN` or an infinity written in a document
+/// is refused as it is read, registry `D-NONFINITE`; one set in code is
+/// refused here). A mesh is located by its name as written, unnamed where its
+/// file will name it, as MuJoCo names it there.
+fn check_written_counts(meshes: &[MjcfMesh]) -> Result<()> {
+    for (i, mesh) in meshes.iter().enumerate() {
+        let vertex = mesh.vertex.as_deref().unwrap_or_default();
+        let face = mesh.face.as_deref().unwrap_or_default();
+        let reason = if !vertex.len().is_multiple_of(3) {
+            "vertex data must be a multiple of 3".to_owned()
+        } else if !face.len().is_multiple_of(3) {
+            "face data must be a multiple of 3".to_owned()
+        } else if let Some(v) = vertex
+            .chunks_exact(3)
+            .position(|c| !c.iter().all(|x| x.is_finite()))
+        {
+            format!("vertex coordinate {v} is not finite")
+        } else {
+            continue;
+        };
+        return Err(MjcfError::invalid_model(reason).at(Location::nth(
+            ElementKind::Mesh,
+            Some(&mesh.name),
+            i,
+        )));
+    }
     Ok(())
 }
 
@@ -183,10 +222,21 @@ impl ModelBuilder {
     }
 }
 
-/// A mesh's vertices and its faces' vertex indices (three per face), as its
-/// file is read ([`load_mesh_file`]) or its `vertex` and `face` attributes
-/// hold them, before MuJoCo's transformations ([`apply_transformations`]).
-pub type RawMesh = (Vec<Point3<f64>>, Vec<usize>);
+/// A mesh's data as MuJoCo 3.5.0 checks it before it processes it
+/// (`mjCMesh::CheckInitialMesh`, `user_mesh.cc:1806-1842`): its vertices,
+/// an STL's merged where repeated; its faces' vertex ids, three to a face,
+/// signed; how many normal and texture-coordinate numbers it holds; and
+/// whether it is an OBJ (`IsObj`). Each is its file's ([`load_mesh_file`]),
+/// or its own where the file gave none or it names no file
+/// ([`take_written`]).
+#[derive(Debug)]
+pub(super) struct InitialMesh {
+    pub(super) vertices: Vec<Point3<f64>>,
+    pub(super) faces: Vec<i64>,
+    pub(super) normals: usize,
+    pub(super) texcoords: usize,
+    pub(super) obj: bool,
+}
 
 /// Convert an MJCF hfield asset to `HeightFieldData`.
 ///
@@ -341,42 +391,144 @@ fn load_hfield_png(
     Ok((ncol, nrow, elevation))
 }
 
-/// Convert MJCF mesh asset to `TriangleMeshData`.
+/// Convert MJCF mesh asset to `TriangleMeshData`, as MuJoCo 3.5.0 compiles
+/// a mesh (`mjCMesh::TryCompile`, `user_mesh.cc:686-770`), in its order:
 ///
-/// Handles two sources of mesh data:
-/// 1. **Embedded data**: `vertex` and `face` attributes in MJCF
-/// 2. **File-based**: `file` attribute naming an STL, OBJ, MSH or PLY file
-///    (also 3MF when the `threemf` feature is enabled), read by
-///    [`load_mesh_file`]
+/// 1. its file read, where it names one ([`load_mesh_file`]): an STL, OBJ,
+///    MSH or PLY file (also 3MF when the `threemf` feature is enabled);
+/// 2. its own normals, texture coordinates, faces and vertices taken where
+///    the file gave none, and refused where it gave some ([`take_written`]);
+/// 3. the whole checked ([`check_initial_mesh`]);
+/// 4. a mesh with no faces refused, whose faces MuJoCo makes from its convex
+///    hull, which this crate does not (ledger L405);
+/// 5. an `exact` mesh's face orientation checked ([`check_face_orientation`]).
 ///
-/// Its vertices are moved, turned and scaled as MuJoCo 3.5.0 does
-/// ([`apply_transformations`]); the BVH is built over them.
+/// Its vertices are then moved, turned and scaled as MuJoCo 3.5.0 does
+/// ([`apply_transformations`]); the BVH is built over them. Its written
+/// vertex and face counts were checked before ([`name_assets`]).
 pub fn convert_mjcf_mesh(
     mjcf_mesh: &MjcfMesh,
     base_path: Option<&Path>,
     compiler: &MjcfCompiler,
 ) -> Result<TriangleMeshData> {
-    // Dispatch based on data source
-    let (mut vertices, indices) = match (&mjcf_mesh.vertex, &mjcf_mesh.file) {
-        // Embedded vertices are read in place of a file. MuJoCo 3.5.0
-        // refuses a mesh whose file and attributes both give its vertices or
-        // its faces (`TryCompile`, `user_mesh.cc:742-750`); this crate does
-        // not.
-        (Some(verts), _) => convert_embedded_mesh(mjcf_mesh, verts)?,
-        // File-based loading
-        (None, Some(file_path)) => load_mesh_file(file_path, base_path, compiler, mjcf_mesh)?,
-        // Neither specified
-        (None, None) => {
-            return Err(MjcfError::asset(
-                ElementKind::Mesh,
-                &mjcf_mesh.name,
-                "no vertex data and no file specified",
-            ));
-        }
+    let refuse = |reason: String| MjcfError::asset(ElementKind::Mesh, &mjcf_mesh.name, reason);
+    let file = match &mjcf_mesh.file {
+        Some(file) => Some(load_mesh_file(file, base_path, compiler, mjcf_mesh)?),
+        None => None,
     };
+    let mesh = take_written(file, mjcf_mesh).map_err(refuse)?;
+    check_initial_mesh(&mesh).map_err(refuse)?;
+    if mesh.faces.is_empty() {
+        return Err(refuse(match &mjcf_mesh.file {
+            Some(file) => format!("file '{file}' contains no faces"),
+            None => "embedded vertex data requires face data".to_owned(),
+        }));
+    }
+    let InitialMesh {
+        mut vertices,
+        faces,
+        ..
+    } = mesh;
+    // Each id names a vertex the mesh holds (`check_initial_mesh`).
+    let indices: Vec<usize> = faces
+        .into_iter()
+        .filter_map(|id| usize::try_from(id).ok())
+        .collect();
     check_face_orientation(&vertices, &indices, mjcf_mesh)?;
     apply_transformations(&mut vertices, mjcf_mesh);
     Ok(TriangleMeshData::new(vertices, indices))
+}
+
+/// The mesh's data: its file's, with its own normals, texture coordinates,
+/// faces and vertices taken where the file gave none, as MuJoCo 3.5.0 takes
+/// them (`mjCMesh::TryCompile`, `user_mesh.cc:731-760`), in that order; its
+/// own alone where it names no file. It is an OBJ where its file is one or,
+/// with no file, where its `content_type` is written `model/obj` (`IsObj`,
+/// `:631-633`, the type as the mesh holds it).
+///
+/// # Errors
+///
+/// MuJoCo's words for the first of the four that the file and the mesh both
+/// give.
+fn take_written(
+    file: Option<InitialMesh>,
+    mjcf_mesh: &MjcfMesh,
+) -> std::result::Result<InitialMesh, String> {
+    let mut mesh = file.unwrap_or_else(|| InitialMesh {
+        vertices: Vec::new(),
+        faces: Vec::new(),
+        normals: 0,
+        texcoords: 0,
+        obj: mjcf_mesh.content_type.as_deref() == Some("model/obj"),
+    });
+    let normals = mjcf_mesh.normal.as_ref().map_or(0, Vec::len);
+    let texcoords = mjcf_mesh.texcoord.as_ref().map_or(0, Vec::len);
+    let faces = mjcf_mesh.face.as_deref().unwrap_or_default();
+    let vertices = mjcf_mesh.vertex.as_deref().unwrap_or_default();
+    if mesh.normals > 0 && normals > 0 {
+        return Err("repeated normal specification".to_owned());
+    }
+    if mesh.normals == 0 {
+        mesh.normals = normals;
+    }
+    if mesh.texcoords > 0 && texcoords > 0 {
+        return Err("repeated texcoord specification".to_owned());
+    }
+    if mesh.texcoords == 0 {
+        mesh.texcoords = texcoords;
+    }
+    if !mesh.faces.is_empty() && !faces.is_empty() {
+        return Err("repeated face specification".to_owned());
+    }
+    if mesh.faces.is_empty() {
+        mesh.faces = faces.iter().map(|&id| i64::from(id)).collect();
+    }
+    if !mesh.vertices.is_empty() && !vertices.is_empty() {
+        return Err("repeated vertex specification".to_owned());
+    }
+    if mesh.vertices.is_empty() {
+        mesh.vertices = vertices
+            .chunks_exact(3)
+            .map(|c| Point3::new(c[0], c[1], c[2]))
+            .collect();
+    }
+    Ok(mesh)
+}
+
+/// MuJoCo 3.5.0's checks of a mesh's data before it processes it
+/// (`mjCMesh::CheckInitialMesh`, `user_mesh.cc:1806-1842`), in its order
+/// and words: at least 4 vertices; normals three numbers each; texture
+/// coordinates two each and, but in an OBJ, one pair per vertex (MuJoCo
+/// waives it too where the faces carry texture-coordinate indices, which
+/// only an OBJ's do); then each face's vertex ids, in order, naming a vertex
+/// the mesh holds. Its vertex and face counts, a file's multiples of 3,
+/// were checked as written before ([`name_assets`]).
+fn check_initial_mesh(mesh: &InitialMesh) -> std::result::Result<(), String> {
+    let nvert = mesh.vertices.len();
+    if nvert < 4 {
+        return Err("at least 4 vertices required".to_owned());
+    }
+    if !mesh.normals.is_multiple_of(3) {
+        return Err("normal data must be a multiple of 3".to_owned());
+    }
+    if !mesh.texcoords.is_multiple_of(2) {
+        return Err("texcoord must be a multiple of 2".to_owned());
+    }
+    if mesh.texcoords != 0 && mesh.texcoords != 2 * nvert && !mesh.obj {
+        return Err(
+            "texcoord must be 2*nv if face texcoord indices are not provided in an OBJ file"
+                .to_owned(),
+        );
+    }
+    let held = |id: &i64| usize::try_from(*id).is_ok_and(|id| id < nvert);
+    match mesh.faces.iter().position(|id| !held(id)) {
+        Some(i) => Err(format!(
+            "in face {}, vertex index {} does not exist",
+            i / 3,
+            mesh.faces[i]
+        )),
+        None => Ok(()),
+    }
 }
 
 /// MuJoCo 3.5.0's check of an `exact` mesh's face orientation
@@ -513,61 +665,6 @@ fn to_principal_frame(vertices: &[Point3<f64>], props: &MeshProps) -> Vec<Point3
             Point3::new(x, y, z)
         })
         .collect()
-}
-
-/// An embedded mesh's vertices and faces, from its `vertex` and `face`
-/// attributes, checked and as written.
-pub fn convert_embedded_mesh(mjcf_mesh: &MjcfMesh, verts: &[f64]) -> Result<RawMesh> {
-    let refuse = |reason: String| MjcfError::asset(ElementKind::Mesh, &mjcf_mesh.name, reason);
-    // Validate vertex data
-    if !verts.len().is_multiple_of(3) {
-        return Err(refuse(format!(
-            "vertex count ({}) not divisible by 3",
-            verts.len()
-        )));
-    }
-
-    let vertices: Vec<Point3<f64>> = verts
-        .chunks_exact(3)
-        .map(|chunk| Point3::new(chunk[0], chunk[1], chunk[2]))
-        .collect();
-
-    // Extract and validate faces (convert u32 -> usize)
-    let indices: Vec<usize> = match &mjcf_mesh.face {
-        Some(face_data) => {
-            if face_data.len() % 3 != 0 {
-                return Err(refuse(format!(
-                    "face index count ({}) not divisible by 3",
-                    face_data.len()
-                )));
-            }
-            face_data.iter().map(|&idx| idx as usize).collect()
-        }
-        None => {
-            return Err(refuse("embedded vertex data requires face data".into()));
-        }
-    };
-
-    // Validate non-empty
-    if vertices.is_empty() {
-        return Err(refuse("empty vertex array".into()));
-    }
-    if indices.is_empty() {
-        return Err(refuse("empty face array".into()));
-    }
-
-    // Validate index bounds
-    let max_idx = vertices.len();
-    for (i, &idx) in indices.iter().enumerate() {
-        if idx >= max_idx {
-            return Err(refuse(format!(
-                "face index {idx} at position {i} out of bounds (max: {})",
-                max_idx - 1
-            )));
-        }
-    }
-
-    Ok((vertices, indices))
 }
 
 /// A mesh's mass properties as MuJoCo 3.5.0's `mjCMesh::Process` computes
@@ -897,7 +994,8 @@ mod tests {
         assert_eq!(mesh_data.triangles().len(), 4); // 4 triangles
     }
 
-    /// Test convert_mjcf_mesh fails when neither file nor vertex is present.
+    /// A mesh of neither file nor vertices is refused for its count of
+    /// vertices, in MuJoCo 3.5.0's words.
     #[test]
     fn test_convert_mjcf_mesh_no_data() {
         let mjcf_mesh = MjcfMesh {
@@ -910,7 +1008,9 @@ mod tests {
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no vertex data"));
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "mesh 'empty': at least 4 vertices required"
+        );
     }
 }

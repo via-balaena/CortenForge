@@ -412,8 +412,8 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
 
 /// The model as the loader checks it ([`front_end`]).
 pub struct FrontEnd {
-    /// A clone of the model with its assets named, every element but its
-    /// actuators given its class, its frames and composites expanded.
+    /// A clone of the model with every element but its actuators given its
+    /// class, its frames and composites expanded, its assets named.
     pub mjcf: MjcfModel,
     /// Its classes.
     pub resolver: DefaultResolver,
@@ -426,16 +426,17 @@ pub struct FrontEnd {
     pub flexcomp_refusal: Option<(usize, MjcfError)>,
 }
 
-/// The model as the loader checks it: a clone of `mjcf` with its assets
-/// named, every element but its actuators given its class (each actuator's
-/// class, as the actuator writes it, returned beside it), its frames and
-/// composites expanded, then validated (`validate_resolved`), before the compiler passes remove any
-/// element. The caller has checked the tree's depth.
+/// The model as the loader checks it: a clone of `mjcf` with every element
+/// but its actuators given its class (each actuator's class, as the actuator
+/// writes it, returned beside it), its frames and composites expanded, its
+/// meshes' written counts checked and its assets named
+/// ([`mesh::name_assets`]), then validated (`validate_resolved`), before the
+/// compiler passes remove any element. The caller has checked the tree's
+/// depth.
 pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
     // A model built in code: a parsed `<size>`'s are refused while parsing.
     crate::validation::check_user_sizes(mjcf)?;
     let mut mjcf = mjcf.clone();
-    mesh::name_assets(&mut mjcf)?;
 
     // Each element's class, before frames, composites and the compiler
     // passes move or make elements, as MuJoCo applies it when it reads one.
@@ -466,6 +467,7 @@ pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
     let first_flexcomp = mjcf.flex.len();
     mjcf.flex.extend(placed.flexes);
     crate::validation::check_tree_depth(&mjcf.worldbody)?;
+    mesh::name_assets(&mut mjcf)?;
 
     // Every name, reference and value check, on the model as resolved and
     // expanded, before fusion or discarding hides an element (MuJoCo 3.5.0

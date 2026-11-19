@@ -466,10 +466,9 @@ fn a_written_face_is_kept_by_a_cone_and_replaced_by_a_sphere_or_a_plate() {
 
 /// A built-in mesh that makes no faces, or no vertices, is a mesh written
 /// without them: a plate one point wide replaces a written face with none
-/// and is refused as a mesh with no faces, and a cone of no edges as a mesh
-/// with no vertices. MuJoCo refuses both too: the plate's hull ("qhull
-/// error"), the cone for its count of vertices ("at least 4 vertices
-/// required").
+/// and is refused as a mesh with no faces, which MuJoCo refuses for its hull
+/// ("qhull error"); a cone of no edges is refused as MuJoCo refuses it, for
+/// its count of vertices.
 #[test]
 fn a_builtin_mesh_that_makes_no_faces_or_no_vertices_is_one_written_without_them() {
     for (mesh, refusal) in [
@@ -479,7 +478,7 @@ fn a_builtin_mesh_that_makes_no_faces_or_no_vertices_is_one_written_without_them
         ),
         (
             r#"builtin="cone" params="0 0.5""#,
-            "no vertex data and no file specified",
+            "mesh 'm': at least 4 vertices required",
         ),
     ] {
         let err = load_model(&builtin(mesh, "")).unwrap_err().to_string();

@@ -67,12 +67,13 @@ pub(super) fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
         mesh.refquat = refquat;
     }
 
-    // Parse embedded vertex data
+    // The written vertices, normals, texture coordinates and faces, as
+    // MuJoCo's `OneMesh` reads them (`xml_native_reader.cc`), each checked
+    // when the mesh is built: a face's vertex index, negative or not, then
+    // too (`CheckInitialMesh`, `user_mesh.cc:1835-1841`).
     mesh.vertex = a.vector("vertex")?;
-
-    // Parse embedded face data: vertex indices, integers, their signs
-    // checked last, as MuJoCo checks them only when it compiles the mesh:
-    // a built-in mesh's faces replace them unchecked.
+    mesh.normal = a.vector("normal")?;
+    mesh.texcoord = a.vector("texcoord")?;
     let face = a.int_vector("face")?;
 
     // Parse maxhullvert (maximum convex hull vertices)
@@ -87,13 +88,8 @@ pub(super) fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
         Some(builtin) => make_builtin(&mut mesh, builtin, &a)?,
         None => false,
     };
-    if let (false, Some(face)) = (made_faces, face) {
-        let indices = face
-            .iter()
-            .map(|&i| u32::try_from(i))
-            .collect::<std::result::Result<Vec<u32>, _>>()
-            .map_err(|_| MjcfError::invalid_value("mesh", "face", "a vertex index is negative"))?;
-        mesh.face = Some(indices);
+    if !made_faces {
+        mesh.face = face;
     }
 
     Ok(mesh)
@@ -131,6 +127,10 @@ fn make_builtin(mesh: &mut MjcfMesh, builtin: MeshBuiltin, a: &Attrs) -> Result<
         (!made.vertex.is_empty()).then(|| made.vertex.into_iter().map(f64::from).collect());
     let made_faces = made.face.is_some();
     if let Some(face) = made.face {
+        // MuJoCo's `userface` holds ints; the generator's size check keeps
+        // each id below `i32::MAX`.
+        #[allow(clippy::cast_possible_wrap)]
+        let face: Vec<i32> = face.into_iter().map(|id| id as i32).collect();
         mesh.face = (!face.is_empty()).then_some(face);
     }
     if made.inertia.is_some() {

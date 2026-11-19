@@ -126,8 +126,12 @@
 //! L353). A fitted size is named before a fault this crate checks after
 //! the build (`check_bodies`) that MuJoCo meets first: `FIT_FIRST_COSTS`. A
 //! geom's height field is checked as the model is validated, before its
-//! condim and a mesh or SDF geom's mesh, which MuJoCo checks first:
-//! `HFIELD_COSTS`.
+//! condim, which MuJoCo checks first: `HFIELD_COSTS`. RL-9d checks each
+//! mesh's written vertex and face counts where MuJoCo begins to compile the
+//! model, after its classes are applied and its frames and composites
+//! expanded, before every name: a repeated mesh name, which MuJoCo's reader
+//! refuses, is named after them, and a `NaN` written in a vertex, refused as it
+//! is read, before them: `MESH_DATA_COSTS`.
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, with the reason its row gives as MuJoCo's (RL-6a's measured
@@ -189,11 +193,12 @@
 //! `FIT_COSTS`. Its review's first round's (2026-11-14) set a fitted size
 //! beside a fault checked after the build, seven in `FIT_FIRST_COSTS`, and a
 //! height field beside a condim or a mesh geom's missing mesh, two in
-//! `HFIELD_COSTS`. RL-9c3, which checks a written face's sign after the
-//! mesh's other attributes, as MuJoCo does when it compiles the mesh: its
-//! review's (measured 2026-11-19, RW's documents) set a negative face id
-//! beside a bad `maxhullvert` or `inertia`, which MuJoCo names: two in
-//! `TWO_FAULTS`.
+//! `HFIELD_COSTS`, the second in `TWO_FAULTS` since RL-9d checks a mesh
+//! geom's mesh before its height field. RL-9c3's review's (measured
+//! 2026-11-19, RW's documents) set a negative face id beside a bad
+//! `maxhullvert` or `inertia`, which MuJoCo names: two in `TWO_FAULTS`.
+//! RL-9d's (measured 2026-11-19) set a mesh's written counts beside a
+//! repeated mesh name or a vertex's `NaN`: two in `MESH_DATA_COSTS`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -3117,6 +3122,41 @@ const MESH_COSTS: &[(&str, &str, &str, &str)] = &[
 fn a_mesh_refusal_beside_a_geoms_fault_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in MESH_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, one a mesh's written vertex or face count, which MuJoCo
+/// 3.5.0 checks as it begins to compile the model, where this crate names
+/// the other: a repeated mesh name, which MuJoCo's reader refuses as it
+/// reads the second mesh and this crate checks after the counts (ledger
+/// L353); a `NaN` written in a vertex, which this crate refuses as it reads it
+/// and MuJoCo after the counts (registry `D-NONFINITE`). `(what, document,
+/// MuJoCo's reason, this crate's error)`, measured 2026-11-19 (RL-9d).
+const MESH_DATA_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "a repeated mesh name, then the second mesh's face of four numbers",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1 3"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
+        "Error: repeated name 'm' in mesh",
+        "face data must be a multiple of 3 (mesh 'm')",
+    ),
+    (
+        "a vertex's NaN and a face of four numbers",
+        r#"<mujoco><asset><mesh name="m" vertex="nan 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1 3"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
+        "face data must be a multiple of 3",
+        "vertex on <mesh> is not finite (NaN) (line 1: asset > mesh 'm')",
+    ),
+];
+
+#[test]
+fn a_meshs_written_count_beside_another_fault_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in MESH_DATA_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),

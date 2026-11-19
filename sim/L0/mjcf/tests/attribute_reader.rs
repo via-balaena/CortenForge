@@ -1242,12 +1242,13 @@ fn a_composite_joint_with_a_closing_tag_names_its_kind() {
 
 #[test]
 fn an_index_or_a_count_below_zero_or_with_a_fraction_is_refused() {
-    // MuJoCo 3.5.0 refuses each in its own form (measured: a mesh face of -1,
-    // "vertex index -1 does not exist"; a flex dim of -1, "dim must be 1, 2 or
-    // 3"; a flex element id of -1, "elem vertex id out of range"; a flexcomp
-    // count of -1, "Count too small"); a skin's child `<vertex>` is
-    // sim-mjcf's form. A skin face below zero, which MuJoCo loads, is
-    // D-SKIN-FACE-NEGATIVE.
+    // MuJoCo 3.5.0 refuses each in its own form (measured: a flex dim of -1,
+    // "dim must be 1, 2 or 3"; a flex element id of -1, "elem vertex id out of
+    // range"; a flexcomp count of -1, "Count too small"); a skin's child
+    // `<vertex>` is sim-mjcf's form. A skin face below zero, which MuJoCo
+    // loads, is D-SKIN-FACE-NEGATIVE. A mesh face of -1 is refused when the
+    // mesh is built, as MuJoCo refuses it (measured: "in face 0, vertex index
+    // -1 does not exist").
     let flex = |dim: &str, element: &str| {
         format!(
             r#"<mujoco><worldbody><body name="a" pos="0 0 1"></body><body name="b" pos="0.05 0 1"></body><body name="c" pos="0.1 0 1"></body></worldbody><deformable><flex name="f" dim="{dim}" body="a b c" element="{element}"></flex></deformable></mujoco>"#
@@ -1258,12 +1259,12 @@ fn an_index_or_a_count_below_zero_or_with_a_fraction_is_refused() {
             r#"<mujoco><worldbody><body name="b"><geom size="0.1"/></body></worldbody><deformable><skin name="k" vertex="0 0 0 1 0 0 0 1 0" face="{face}"><bone body="b" bindpos="0 0 0" bindquat="1 0 0 0" vertid="0 1 2" vertweight="1 1 1"/>{children}</skin></deformable></mujoco>"#
         )
     };
+    let mesh = r#"<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 -1 0 1 3"/></asset><worldbody/></mujoco>"#;
+    assert_eq!(
+        refused(mesh).to_string(),
+        "mesh 'm': in face 0, vertex index -1 does not exist"
+    );
     let cases = [
-        (
-            r#"<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 -1 0 1 3"/></asset><worldbody/></mujoco>"#.to_string(),
-            "mesh",
-            "face",
-        ),
         (flex("-1", "0 1"), "flex", "dim"),
         (flex("1", "0 1  1 -2"), "flex", "element"),
         (

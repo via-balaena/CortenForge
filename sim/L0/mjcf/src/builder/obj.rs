@@ -9,22 +9,27 @@
 //! is. MuJoCo keeps every vertex the file holds and the faces of the file's
 //! first shape only. [`read_obj`] ports what of tinyobjloader's `LoadObj`
 //! (`tiny_obj_loader.h:2173-2680`) decides those: its lines, numbers and
-//! indices, the shapes its groups make, and its ear clipping. A normal, a
-//! texture coordinate, a tag or a smoothing group is not read; a material
-//! only as far as its change exports the faces read so far, and a
+//! indices, the shapes its groups make, and its ear clipping. A normal or a
+//! texture coordinate is counted, not read, as MuJoCo checks only whether a
+//! file gives any; a tag or a smoothing group is not read; a material only
+//! as far as its change exports the faces read so far, and a
 //! texture-coordinate or normal index only as far as an index of 0 fails the
 //! file.
 
-/// The vertices of an OBJ file, three floats each, and its first shape's
-/// faces, three vertex ids each, as MuJoCo 3.5.0's `LoadOBJ` hands them to
-/// `ProcessVertices` (`user_mesh.cc:1077-1130`).
+use super::mesh_file::FileMesh;
+
+/// The vertices of an OBJ file, three floats each, its first shape's faces,
+/// three vertex ids each, and how many normal and texture-coordinate numbers
+/// it gives (three per `vn` line, two per `vt`), as MuJoCo 3.5.0's `LoadOBJ`
+/// takes them from tinyobjloader (`attrib.normals`, `attrib.texcoords`,
+/// `user_mesh.cc:1077-1130`).
 ///
 /// A file tinyobjloader refuses is refused in MuJoCo's words, "could not
 /// parse OBJ file", naming the file as written (`file`): an index of 0 in a
 /// face, line or point, its vertex, texture coordinate or normal slot alike
 /// (`fixIndex`, `tiny_obj_loader.h:748-769`). Nothing else is refused here;
 /// MuJoCo's later checks see the vertices and faces.
-pub fn read_obj(bytes: &[u8], file: &str) -> Result<(Vec<f32>, Vec<i64>), String> {
+pub fn read_obj(bytes: &[u8], file: &str) -> Result<FileMesh, String> {
     let mut reader = Reader::default();
     for line in lines(bytes) {
         reader
@@ -37,7 +42,12 @@ pub fn read_obj(bytes: &[u8], file: &str) -> Result<(Vec<f32>, Vec<i64>), String
     reader.export();
     reader.push();
     let faces = reader.first.unwrap_or_default();
-    Ok((reader.vertices, faces.into_iter().map(i64::from).collect()))
+    Ok(FileMesh {
+        vert: reader.vertices,
+        faces: faces.into_iter().map(i64::from).collect(),
+        normals: reader.normals,
+        texcoords: reader.texcoords,
+    })
 }
 
 /// The lines of a file as tinyobjloader's `safeGetline` splits them
@@ -71,6 +81,11 @@ fn lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
 struct Reader {
     /// Every vertex read so far, three floats each (`v`).
     vertices: Vec<f32>,
+    /// How many normal numbers read so far, three per `vn` line (`vn`).
+    normals: usize,
+    /// How many texture-coordinate numbers read so far, two per `vt` line
+    /// (`vt`).
+    texcoords: usize,
     /// The group being read (`prim_group`).
     group: Group,
     /// The shape its groups are exported to (`shape`).
@@ -154,6 +169,13 @@ impl Reader {
             for _ in 0..3 {
                 self.vertices.push(parse_real(line, &mut at));
             }
+        } else if c0 == b'v' && c1 == b'n' && is_space(byte(line, at + 2)) {
+            // `parseReal3` (`:2257-2265`): three numbers, each 0 where its
+            // token does not read.
+            self.normals += 3;
+        } else if c0 == b'v' && c1 == b't' && is_space(byte(line, at + 2)) {
+            // `parseReal2` (`:2268-2275`): two.
+            self.texcoords += 2;
         } else if (c0 == b'l' || c0 == b'p') && is_space(c1) {
             // No space is skipped before the first index (`:2281`, `:2313`).
             let ids = self.indices(line, at + 2)?.len();
@@ -196,9 +218,8 @@ impl Reader {
             self.shape = Shape::default();
             self.group = Group::default();
         }
-        // A normal (`vn`), a texture coordinate (`vt`), a tag (`t`), a
-        // smoothing group (`s`) or any other line moves nothing `read_obj`
-        // returns.
+        // A tag (`t`), a smoothing group (`s`) or any other line moves
+        // nothing `read_obj` returns.
         Some(())
     }
 
@@ -601,7 +622,7 @@ fn pnpoly(vx: [f32; 3], vy: [f32; 3], tx: f32, ty: f32) -> bool {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
-    use super::{read_obj, try_parse_double};
+    use super::{FileMesh, read_obj, try_parse_double};
 
     /// The bytes of a case as the golden escapes them on one line.
     fn unescape(text: &str) -> Vec<u8> {
@@ -647,7 +668,12 @@ mod tests {
             let valid = lines.next().unwrap() == "valid 1";
             let read = read_obj(&bytes, name);
             assert_eq!(read.is_ok(), valid, "{name}");
-            if let Ok((vertices, faces)) = read {
+            if let Ok(FileMesh {
+                vert: vertices,
+                faces,
+                ..
+            }) = read
+            {
                 let words = |line: Option<&str>, key: &str| -> Vec<String> {
                     let rest = line.unwrap().strip_prefix(key).unwrap();
                     rest.split_whitespace().map(str::to_string).collect()
