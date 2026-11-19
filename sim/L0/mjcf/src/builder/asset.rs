@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::types::MjcfCompiler;
 
 /// Asset type for path resolution.
+#[derive(Clone, Copy)]
 pub enum AssetKind {
     /// Mesh or hfield file (uses `meshdir`).
     Mesh,
@@ -46,20 +47,7 @@ pub fn resolve_asset_path(
     compiler: &MjcfCompiler,
     kind: AssetKind,
 ) -> Result<PathBuf, String> {
-    let mut file = path_reduce(file_path);
-    if compiler.strippath
-        && let Some(cut) = file.rfind(['/', '\\'])
-    {
-        file = file[cut + 1..].to_string();
-    }
-    let type_dir = match kind {
-        AssetKind::Mesh => compiler.meshdir.as_deref(),
-        AssetKind::Texture => compiler.texturedir.as_deref(),
-    };
-    let path = match type_dir.or(compiler.assetdir.as_deref()) {
-        Some(dir) => path_reduce(&combine(&path_reduce(dir), &file)),
-        None => file,
-    };
+    let path = in_type_dir(&stripped_file(file_path, compiler), compiler, kind);
     let resolved = if !abs_prefix(&path).is_empty() {
         PathBuf::from(&path)
     } else if let Some(base) = base_path {
@@ -67,7 +55,7 @@ pub fn resolve_asset_path(
             Some(base) => PathBuf::from(path_reduce(&combine(base, &path))),
             None => base.join(&path),
         }
-    } else if type_dir.or(compiler.assetdir.as_deref()).is_some() {
+    } else if type_dir(compiler, kind).is_some() {
         // No model directory: the directory and file, relative to the
         // process's working directory, as before.
         PathBuf::from(&path)
@@ -85,6 +73,37 @@ pub fn resolve_asset_path(
         ));
     }
     Ok(resolved)
+}
+
+/// An asset's `file` as MuJoCo 3.5.0 holds it once read: reduced
+/// ([`path_reduce`]), and under `strippath` only its part past the last
+/// separator, which may be nothing (`mjuu_strippath`, `user_util.cc:768-781`).
+pub fn stripped_file(file_path: &str, compiler: &MjcfCompiler) -> String {
+    let file = path_reduce(file_path);
+    match file.rfind(is_separator) {
+        Some(cut) if compiler.strippath => file[cut + 1..].to_string(),
+        _ => file,
+    }
+}
+
+/// `file`, as [`stripped_file`] gives it, put after the type's directory
+/// unless it is absolute ([`combine`]), the two reduced together: the path
+/// MuJoCo 3.5.0 opens from the model's directory.
+pub fn in_type_dir(file: &str, compiler: &MjcfCompiler, kind: AssetKind) -> String {
+    match type_dir(compiler, kind) {
+        Some(dir) => path_reduce(&combine(&path_reduce(dir), file)),
+        None => file.to_string(),
+    }
+}
+
+/// The directory an asset of `kind` is read from: `meshdir` or
+/// `texturedir`, else `assetdir`.
+fn type_dir(compiler: &MjcfCompiler, kind: AssetKind) -> Option<&str> {
+    match kind {
+        AssetKind::Mesh => compiler.meshdir.as_deref(),
+        AssetKind::Texture => compiler.texturedir.as_deref(),
+    }
+    .or(compiler.assetdir.as_deref())
 }
 
 /// Whether `c` separates a path's parts for MuJoCo 3.5.0: `/` or `\`

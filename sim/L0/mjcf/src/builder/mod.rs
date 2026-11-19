@@ -226,7 +226,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         actuators,
         flexcomp_refusal,
         ..
-    } = front_end(mjcf)?;
+    } = front_end(mjcf, base_path)?;
 
     // This crate's refusal of a negative `<inertial>` mass or moment, which
     // MuJoCo raises to its bounds (`D-INERTIAL-NEGATIVE`), on every body the
@@ -335,8 +335,8 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     let automatic = builder.automatic_range_fault();
     let flex_equality = builder.flex_equality_fault.take();
     // Of the flexcomps refused after the keyframes, the first in document
-    // order (flex order), whichever stage found it; a type refused when made
-    // (mesh, gmsh) has been named before any of them.
+    // order (flex order), whichever stage found it; the type refused when made
+    // (gmsh) has been named before any of them.
     let flexcomp_refusal = match (flexcomp_refusal, builder.flexcomp_fault.take()) {
         (Some((a, ea)), Some((b, eb))) => Some(if a <= b { ea } else { eb }),
         (front, built) => front.or(built).map(|(_, e)| e),
@@ -431,9 +431,10 @@ pub struct FrontEnd {
 /// writes it, returned beside it), its frames and composites expanded, its
 /// meshes' written counts checked and its assets named
 /// ([`mesh::name_assets`]), then validated (`validate_resolved`), before the
-/// compiler passes remove any element. The caller has checked the tree's
-/// depth.
-pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
+/// compiler passes remove any element. A mesh flexcomp's file is read as it
+/// is made, from `base_path`, the model's directory, where its path is
+/// relative. The caller has checked the tree's depth.
+pub fn front_end(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<FrontEnd> {
     // A model built in code: a parsed `<size>`'s are refused while parsing.
     crate::validation::check_user_sizes(mjcf)?;
     let mut mjcf = mjcf.clone();
@@ -450,7 +451,7 @@ pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
     // Each body-level flexcomp is made in the same walk, as MuJoCo's reader
     // makes it, and put in its place once the frames are composed.
     let (composite_excludes, made_flexcomps) =
-        composite::expand_composites(&mut mjcf.worldbody, &resolver, &mjcf.compiler)?;
+        composite::expand_composites(&mut mjcf.worldbody, &resolver, &mjcf.compiler, base_path)?;
     mjcf.contact.excludes.extend(composite_excludes);
 
     // Expand <frame> elements: compose transforms into children, lift onto parent bodies.

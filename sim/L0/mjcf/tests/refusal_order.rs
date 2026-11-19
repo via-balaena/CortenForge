@@ -90,7 +90,7 @@
 //! parsing, and Make's when the composites are made, in document order among
 //! them, before every frame's and every later check, as MuJoCo makes a
 //! flexcomp while its reader meets it; two of Make's checks in one flexcomp
-//! are named in Make's order. A type this crate does not make (mesh, gmsh)
+//! are named in Make's order. The type this crate does not make (gmsh)
 //! and a box's count of 1 (where MuJoCo's maker never ends) are refused where
 //! Make reaches the maker; a form MuJoCo loads that this crate makes and
 //! sim-core does not take (a radial or interpolated dof, a vertex body in a

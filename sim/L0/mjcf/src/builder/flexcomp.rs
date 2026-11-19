@@ -2,8 +2,9 @@
 //! (`user_flexcomp.cc:102-653`), where the document writes it.
 //!
 //! Make checks the flexcomp in its order, has its type's maker generate its
-//! points and elements (`MakeGrid`, `MakeBox`, `MakeSquare`, or the written
-//! ones of a direct type), pins its points, places them by its pose, and then
+//! points and elements (`MakeGrid`, `MakeBox`, `MakeSquare`, `MakeMesh` from
+//! a mesh file, or the written ones of a direct type), pins its points, places
+//! them by its pose, and then
 //! makes a body for each point not pinned and the flex itself, in MuJoCo's own
 //! form: a pinned point (every point of a rigid flexcomp) on the body holding
 //! the flexcomp, at its offset there; an unpinned one on its own body, at
@@ -17,7 +18,7 @@
 //! flexcomp the frame's body, not the frame, `xml_native_reader.cc:3622-3625`).
 //! [`place_flexcomps`] then puts each flexcomp's bodies where it is written.
 //!
-//! A type this crate does not make (mesh, gmsh) is refused where Make reaches
+//! The type this crate does not make (gmsh) is refused where Make reaches
 //! its maker, and so is a box, cylinder or ellipsoid with a count of 1 on an
 //! axis, on which MuJoCo's `MakeBox` never ends its loop; a flexcomp made into
 //! nothing would turn every reference to it into another, false refusal. A
@@ -29,6 +30,7 @@
 //! refused where the builder finds them, registry `D-FLEX-VERTEX-BODY`).
 
 use std::f64::consts::PI;
+use std::path::Path;
 
 use nalgebra::{Vector3, Vector4};
 
@@ -39,9 +41,11 @@ use crate::types::{
     MjcfGeomType, MjcfInertial, MjcfItem, MjcfJoint, MjcfJointType, Prefix,
 };
 
+use super::asset::stripped_file;
 use super::geom::resolve_geom_fromto;
 use super::items::{Contents, Element};
 use super::mass::MJ_MINVAL;
+use super::mesh_file::load_flexcomp_mesh;
 use super::orientation::{MJ_EPS, normvec, quat_as_written, rot_vec_quat};
 
 /// MuJoCo's `mjMAXVAL` (`mjmodel.h`), where Make starts its bounding box.
@@ -76,14 +80,16 @@ pub struct PlacedFlexcomps {
 /// `fc`, written in the body `holder`, made as MuJoCo's `Make` makes it: its
 /// checks, in Make's order, refuse it, and so does a type this crate does not
 /// make; a `<plugin>` comes back as the made flexcomp's refusal, for after the
-/// keyframes.
+/// keyframes. A mesh type's file is read as a `<mesh>`'s is, a relative one
+/// from `base_path`, the model's directory.
 pub fn make_flexcomp(
     fc: &MjcfFlexcomp,
     holder: &str,
     resolver: &DefaultResolver,
     compiler: &MjcfCompiler,
+    base_path: Option<&Path>,
 ) -> Result<MadeFlexcomp> {
-    make(fc, holder, resolver, compiler)
+    make(fc, holder, resolver, compiler, base_path)
         .map_err(|e| e.with_location_if_unknown(Location::named(ElementKind::Flex, &fc.name)))
 }
 
@@ -112,6 +118,7 @@ fn make(
     holder: &str,
     resolver: &DefaultResolver,
     compiler: &MjcfCompiler,
+    base_path: Option<&Path>,
 ) -> Result<MadeFlexcomp> {
     let direct = matches!(
         fc.kind,
@@ -168,7 +175,8 @@ fn make(
 
     // `:149-187`: the type's maker, which may set the dim.
     // The makers append to the written `point` and `element`, as MuJoCo's
-    // push onto them (a grid that also writes points keeps them first).
+    // push onto them (a grid that also writes points keeps them first); a
+    // mesh's points take the written ones' place, and in dim 2 its elements.
     let mut dim = fc.dim;
     let mut flat: Vec<f64> = fc.point.clone();
     let mut element: Vec<i32> = fc.element.clone();
@@ -192,11 +200,13 @@ fn make(
             dim = 2;
             make_square(fc, &mut flat, &mut element)?;
         }
-        FlexcompType::Mesh | FlexcompType::Gmsh => {
-            return Err(MjcfError::unsupported(format!(
-                "a flexcomp of type {} (ledger L398, L399)",
-                fc.kind.word()
-            )));
+        FlexcompType::Mesh => {
+            make_mesh(fc, dim, compiler, base_path, &mut flat, &mut element)?;
+        }
+        FlexcompType::Gmsh => {
+            return Err(MjcfError::unsupported(
+                "a flexcomp of type gmsh (ledger L399)",
+            ));
         }
         FlexcompType::Direct => {}
     }
@@ -468,6 +478,84 @@ fn make(
     }
     made.flex = flex;
     Ok(made)
+}
+
+/// `MakeMesh` (`user_flexcomp.cc:1132-1219`): the mesh file's vertices as the
+/// points, in place of the written ones. In dim 2 the file's faces are the
+/// elements, in place of the written ones; in dim 3 `origin` is the first
+/// point, and each face whose tetrahedron with it has a volume of at least
+/// `mjMINVAL` ([`tet_volume6`]) adds that tetrahedron after the written
+/// elements. Checked in MuJoCo's order: a file, once reduced and stripped
+/// ([`stripped_file`]); a dim of at least 2; the file read
+/// ([`load_flexcomp_mesh`]); its vertices and faces.
+///
+/// A face naming a vertex the file does not hold is kept, for Make's element
+/// check to refuse: in dim 2 as MuJoCo's does where the file repeats no
+/// vertex; in dim 3 MuJoCo's volume test reads past its points, so this
+/// crate keeps the tetrahedron untested.
+fn make_mesh(
+    fc: &MjcfFlexcomp,
+    dim: i32,
+    compiler: &MjcfCompiler,
+    base_path: Option<&Path>,
+    points: &mut Vec<f64>,
+    element: &mut Vec<i32>,
+) -> Result<()> {
+    let file = fc.file.as_deref().unwrap_or_default();
+    if stripped_file(file, compiler).is_empty() {
+        return Err(refuse("file", "File is required"));
+    }
+    if dim < 2 {
+        return Err(refuse("dim", "Flex dim must be at least 2 for mesh"));
+    }
+    let (vertices, faces) =
+        load_flexcomp_mesh(file, base_path, compiler).map_err(|reason| refuse("file", reason))?;
+    if vertices.is_empty() || faces.is_empty() {
+        return Err(refuse("file", "Vertex and face data required"));
+    }
+    // MuJoCo holds an id as an int: one beyond an int is held at the nearest,
+    // which Make's element check refuses.
+    let id = |f: i64| i32::try_from(f).unwrap_or(if f < 0 { i32::MIN } else { i32::MAX });
+    let coordinates = vertices.iter().flat_map(|v| [v.x, v.y, v.z]);
+    if dim == 2 {
+        *points = coordinates.collect();
+        *element = faces.into_iter().map(id).collect();
+        return Ok(());
+    }
+    // Required as a dim-3 mesh is read; built in code without it, MuJoCo's
+    // default, 0.
+    let origin = fc.origin.unwrap_or([0.0; 3]);
+    *points = origin.into_iter().chain(coordinates).collect();
+    for face in faces.chunks_exact(3) {
+        let tet = [face[0], face[1], face[2]].map(|f| id(f).saturating_add(1));
+        let corners = tet.map(|t| {
+            usize::try_from(t)
+                .ok()
+                .and_then(|k| points.get(3 * k..3 * k + 3))
+        });
+        if let [Some(a), Some(b), Some(c)] = corners
+            && tet_volume6(origin, a, b, c) < MJ_MINVAL
+        {
+            continue;
+        }
+        element.extend([0, tet[0], tet[1], tet[2]]);
+    }
+    Ok(())
+}
+
+/// `dot(cross(e1, e2), e3)` for the edges `e1`, `e2`, `e3` from `origin` to
+/// `a`, `b` and `c`, in MuJoCo 3.5.0's order of operations (`mjuu_crossvec`,
+/// `mjuu_dot3`, `user_util.cc:360-364`, `:126-128`): six times the signed
+/// volume of their tetrahedron.
+fn tet_volume6(origin: [f64; 3], a: &[f64], b: &[f64], c: &[f64]) -> f64 {
+    let edge = |p: &[f64]| [p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]];
+    let (e1, e2, e3) = (edge(a), edge(b), edge(c));
+    let normal = [
+        e1[1] * e2[2] - e1[2] * e2[1],
+        e1[2] * e2[0] - e1[0] * e2[2],
+        e1[0] * e2[1] - e1[1] * e2[0],
+    ];
+    normal[0] * e3[0] + normal[1] * e3[1] + normal[2] * e3[2]
 }
 
 /// `MakeGrid` (`user_flexcomp.cc:668-798`): a dim-1 line or circle, a dim-2

@@ -106,6 +106,11 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 /// A geom's condim is checked when the model is built
 /// ([`crate::model_from_mjcf`]), not here.
 ///
+/// A mesh flexcomp's file is read here, as the flexcomp is made, with no
+/// model directory: a relative path is read from `meshdir` or `assetdir`,
+/// and refused where neither is written, which [`crate::model_from_mjcf`],
+/// given the directory, reads from it.
+///
 /// # Errors
 ///
 /// Returns an error if validation fails, or if the model is refused before
@@ -113,7 +118,7 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
     crate::stack::on_large_stack(|| {
         check_tree_depth(&model.worldbody)?;
-        crate::builder::front_end(model).map(|front| front.checked)
+        crate::builder::front_end(model, None).map(|front| front.checked)
     })
 }
 
