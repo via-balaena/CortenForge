@@ -30,9 +30,8 @@ const WIDE_MAXOUTSIDE2: f64 = 10.0 * WIDE_MAXOUTSIDE;
 const HASH_FACTOR: i32 = 2;
 
 impl Qhull<'_> {
-    /// `qh_qhull` (`libqhull_r.c:60-119`) for `qhull Qt`: the build, then,
-    /// without `TA`, `qh_check_maxout`. Merging is [`Self::premerge`]'s,
-    /// after each point.
+    /// `qh_qhull` (`libqhull_r.c:60-119`) for `qhull Qt`. Merging is
+    /// [`Self::premerge`]'s, after each point.
     pub(crate) fn qhull(&mut self) -> Result<(), Error> {
         self.initbuild()?;
         self.buildhull()?;
@@ -358,9 +357,9 @@ impl Qhull<'_> {
                 continue;
             }
             if self.NARROWhull {
-                // `notfurthest` is set only under options MuJoCo does not pass
-                // and after a pinched apex, which is refused, so
-                // `qh_furthestout` is never called here.
+                // qhull sets `notfurthest` only under options MuJoCo does not
+                // pass (`libqhull_r.c:197-502`), so `qh_furthestout` is never
+                // called here.
                 // `qh_COMPUTEfurthest` is 0: the stored distance.
                 let dist = self.f(facet).furthestdist;
                 if dist < self.MINoutside {

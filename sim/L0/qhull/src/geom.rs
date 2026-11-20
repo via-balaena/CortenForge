@@ -526,7 +526,10 @@ impl Qhull<'_> {
     /// `maxpoints`, then from every point where those span too little.
     pub(crate) fn maxsimplex(&self, maxpoints: &[PointId]) -> Result<Vec<PointId>, Error> {
         if self.MAXwidth <= 0.0 {
-            return Err(Error::qhull(6421, "qh.MAXwidth required for qh_maxsimplex"));
+            return Err(Error::qhull(
+                6421,
+                "qh.MAXwidth required for qh_maxsimplex.  Used to estimate determinate",
+            ));
         }
         let dim = DIM;
         let mut simplex: Vec<PointId> = Vec::with_capacity(dim + 1);

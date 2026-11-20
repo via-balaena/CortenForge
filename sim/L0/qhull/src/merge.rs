@@ -1,10 +1,13 @@
-// Ported from Qhull, libqhull_r (merge_r.c; poly2_r.c's qh_addfacetvertex and
-// qh_vertexintersect_new; qset_r.c's qh_setequal_except).
+// Ported from Qhull, libqhull_r (merge_r.c and merge_r.h's merge types;
+// poly2_r.c's qh_addfacetvertex and qh_vertexintersect_new; qset_r.c's
+// qh_setequal_except; libqhull_r.h's otherfacet_ and qh_MAXnummerge; geom_r.h's
+// fmin_; user_r.h's constants).
 // Qhull, Copyright (c) 1993-2020 C.B. Barber, Arlington, MA, and The National
 // Science and Technology Research Center for Computation and Visualization of
 // Geometric Structures (The Geometry Center), University of Minnesota.
-// merge_r.c: Copyright (c) 1993-2020 C.B. Barber.
-// poly2_r.c, qset_r.c: Copyright (c) 1993-2020 The Geometry Center.
+// merge_r.c, merge_r.h: Copyright (c) 1993-2020 C.B. Barber.
+// poly2_r.c, qset_r.c, libqhull_r.h, geom_r.h: Copyright (c) 1993-2020 The
+// Geometry Center.
 // Modified 2026-11 by Via Balaena (the CortenForge authors): translated to Rust,
 // keeping only the 3-d path MuJoCo 3.5.0 runs, to give its mesh graph. See
 // COPYING.txt; the original is at www.qhull.org.

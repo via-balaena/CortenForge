@@ -1,9 +1,10 @@
-// Ported from Qhull, libqhull_r (libqhull_r.h, poly_r.c, poly2_r.c, global_r.c).
+// Ported from Qhull, libqhull_r (libqhull_r.h, poly_r.c, poly2_r.c, global_r.c;
+// geom_r.h's fmax_, maximize_ and minimize_; user_r.h's constants).
 // Qhull, Copyright (c) 1993-2020 C.B. Barber, Arlington, MA, and The National
 // Science and Technology Research Center for Computation and Visualization of
 // Geometric Structures (The Geometry Center), University of Minnesota.
-// libqhull_r.h, poly_r.c, poly2_r.c, global_r.c: Copyright (c) 1993-2020 The
-// Geometry Center.
+// libqhull_r.h, poly_r.c, poly2_r.c, global_r.c, geom_r.h: Copyright (c)
+// 1993-2020 The Geometry Center.
 // Modified 2026-11 by Via Balaena (the CortenForge authors): translated to Rust,
 // keeping only the 3-d path MuJoCo 3.5.0 runs, to give its mesh graph. See
 // COPYING.txt; the original is at www.qhull.org.

@@ -54,12 +54,12 @@ anything made with it.
 MUJOCO
 
 cortenforge-geometry, cortenforge-sim-core, cortenforge-sim-mjcf and
-cortenforge-sim-urdf, and in this repository sim-gpu and sim-qhull, include portions ported
-from MuJoCo (https://github.com/google-deepmind/mujoco), translated to Rust and
-changed. MuJoCo's source code is licensed under the Apache License, Version
-2.0, the text in the accompanying LICENSE-APACHE file. The MuJoCo source files
-those portions cite carry these copyright notices, as they stand at MuJoCo
-3.5.0, which has no NOTICE file:
+cortenforge-sim-urdf, and in this repository sim-gpu and sim-qhull, include
+portions ported from MuJoCo (https://github.com/google-deepmind/mujoco),
+translated to Rust and changed. MuJoCo's source code is licensed under the
+Apache License, Version 2.0, the text in the accompanying LICENSE-APACHE file.
+The MuJoCo source files those portions cite carry these copyright notices, as
+they stand at MuJoCo 3.5.0, which has no NOTICE file:
 
     Copyright 2021 DeepMind Technologies Limited
     Copyright 2022 DeepMind Technologies Limited

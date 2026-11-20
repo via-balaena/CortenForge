@@ -15,12 +15,10 @@
 //! [`mesh_graph`] is MuJoCo's `mjCMesh::MakeGraph` (`user_mesh.cc:1861-2042`):
 //! qhull run as `qhull Qt` (and `TA` under a mesh's `maxhullvert`) over a
 //! mesh's vertices, then `qh_triangulate` and `qh_vertexneighbors`, and the
-//! graph read from qhull's lists. The floating point operations qhull's
-//! decisions rest on are made here in qhull's order, and its sets and lists
-//! walked in its order. On every input it was measured on, the graph is
-//! MuJoCo's int for int: the same vertices in the same order, the same
-//! neighbours in the same order, the same triangles; `tests/mesh_graph_golden.rs`
-//! holds MuJoCo's graphs for some of them.
+//! graph read from qhull's lists: the floating point operations qhull's
+//! decisions rest on made in qhull's order, its sets and lists walked in its
+//! order. `tests/mesh_graph_golden.rs` asks it for MuJoCo's own graph, int
+//! for int, of each point set in `tests/data/mesh_graph_golden.txt`.
 //!
 //! # What is ported
 //!
@@ -39,24 +37,14 @@
 //! After the build, `qh_triangulate` splits each merged facet into triangles.
 //!
 //! Where the options allow a routine that no measured input reaches, it
-//! returns [`Error::Unported`] naming the routine instead of going on: a
-//! ridge of more than two new facets (qhull's duplicate ridges and the
-//! pinched vertices they lead to), a cycle of more than one new facet
-//! coplanar with one horizon facet (`qh_mergecycle`), a degenerate merge or
-//! an extra vertex while vertices are reduced, a mirrored pair of triangles
-//! (`qh_triangulate_mirror`), and a coplanar point whose first facet is
-//! flipped and whose neighbours give no distance (`qh_findbestlower`).
+//! returns [`Error::Unported`] naming the routine instead of going on.
 //!
-//! Two of qhull's choices depend on its platform rather than its
-//! arithmetic: the order `qsort` leaves merges of one type at one distance
-//! in, and the order a ridge hash keyed on vertex addresses probes in. Here
-//! they are a stable sort and a hash on vertex ids. The hash, swapped into
-//! qhull, changed no graph on the measured inputs. The sort can change one:
-//! where two such merges are sorted together, macOS's `qsort` can leave
-//! them in the other order, and MuJoCo on macOS then gives another graph
-//! (measured on reorderings of one mesh's vertices; no measured input
-//! itself sorts two such merges together). What MuJoCo gives there on
-//! another platform has not been measured.
+//! qhull leaves equal elements in the order its C library's `qsort` leaves
+//! them, and probes a ridge hash keyed on vertex addresses; here they are a
+//! stable sort and a hash on vertex ids. Where two merges of one type at one
+//! distance are sorted together, macOS's `qsort` can leave them in the other
+//! order, and MuJoCo on macOS then gives another graph (measured on
+//! reorderings of one mesh's vertices).
 //!
 //! # Licence
 //!
@@ -96,10 +84,10 @@ use state::Qhull;
 ///
 /// qhull's hull of them, `None` for fewer than 4 points (MuJoCo makes no
 /// graph). `points` are a mesh's vertices as MuJoCo holds them when it makes
-/// the graph: after its vertices are merged and before its `refpos`,
-/// `refquat` and `scale` are applied (`mjCMesh::Process`,
-/// `user_mesh.cc:1567-1603`), and finite (MuJoCo refuses a vertex that is
-/// not first). The graph of the same points turned can differ.
+/// the graph: before its `refpos`, `refquat` and `scale` are applied
+/// (`mjCMesh::Process`, `user_mesh.cc:1567-1603`), and finite (MuJoCo
+/// refuses a vertex that is not finite before). The graph of the same points
+/// turned can differ.
 ///
 /// `maxhullvert` is the mesh's (`-1` for none): with it qhull stops once the
 /// hull has that many vertices. MuJoCo's reader refuses one from 0 to 3; for

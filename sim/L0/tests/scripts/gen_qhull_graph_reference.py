@@ -23,8 +23,8 @@ axis-aligned lattices (solid and surface), a cube's corners with face centres
 just inside and outside, duplicates, a tetrahedron, an octahedron, and sets
 qhull refuses (coplanar, collinear, three distinct points). Some are repeated
 with `maxhullvert` 4, 8 and 16. Then a few sets of three streams, each set
-chosen because a measured change to the port changes its graph or its refusal
-where no other case does: a fuzz stream (`fuzz_sets`, FUZZ_CHOSEN), degenerate
+chosen because a measured change to the port changes its graph or its
+refusal: a fuzz stream (`fuzz_sets`, FUZZ_CHOSEN), degenerate
 sets in the ways a CAD or scanned mesh is degenerate; a CAD stream (`cad_sets`,
 CAD_CHOSEN), parts of axis-aligned boxes, some corners cut, faces exactly
 coplanar, coordinates a float32 ulp apart; and a grid stream (`grid_sets`,
@@ -196,8 +196,8 @@ def cad_sets(seed, count):
 # The CAD parts the golden takes, by index into cad_sets(2, ...), each chosen by a measured change to the merges that
 # no other case caught (RL-9d2 C2's mutants): 16, a vertex renamed after a merge and its ridges re-oriented; 225, the
 # merged facet's ridges marked untested; 851 and 2500, the merges taken in another order, coplanar merges of
-# untested new facets not put off, and a tie between two facets' distances merged the other way. And three that only
-# a C1 mutant of the build changes (the RL-9d2 review's rerun): 2374, qhull's round-off bound without its 1.01;
+# untested new facets not put off, and a tie between two facets' distances merged the other way. And three that a C1
+# mutant of the build changes, chosen when the golden missed it (the RL-9d2 review's rerun): 2374, qhull's round-off bound without its 1.01;
 # 4005, a horizon facet's distance not checked before merging is skipped (`qh_checkzero`); 4083, a point's best
 # facet switched on an equal distance (`qh_findbest`).
 CAD_CHOSEN = (16, 225, 851, 2374, 2500, 4005, 4083)
