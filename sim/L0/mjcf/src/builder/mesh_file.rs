@@ -93,6 +93,10 @@ pub(super) fn load_mesh_file(
     if left_handed(mjcf_mesh) {
         turn_faces(&mut faces);
     }
+    // An MSH's faces carry their normals' ids, and an OBJ's where it has
+    // normals (`LoadMSH`, `user_mesh.cc:1348-1353`; `LoadOBJ`, `:1113-1116`).
+    let face_normals =
+        !faces.is_empty() && (format == Format::Msh || (format == Format::Obj && normals > 0));
     // MuJoCo's `<mesh>` merges an STL's repeated vertices only.
     let (vertices, faces) =
         process_vertices(&vert, faces, format == Format::Stl).map_err(refuse)?;
@@ -101,6 +105,7 @@ pub(super) fn load_mesh_file(
         faces,
         normals,
         texcoords,
+        face_normals,
         obj: format == Format::Obj,
     })
 }

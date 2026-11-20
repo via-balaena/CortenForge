@@ -10,7 +10,8 @@
 //! (`mjCMesh::TryCompile`, `user_mesh.cc:686-770`), it reads the file. It
 //! takes the mesh's own normals, texture coordinates, faces and vertices
 //! where the file gave none, and refuses them where the file gave some
-//! ("repeated … specification"). Last it checks the whole
+//! ("repeated … specification"), its normals also where the file's faces
+//! carry normals' ids, as an MSH's do. Last it checks the whole
 //! (`CheckInitialMesh`, `:1806-1842`). sim-mjcf checks each in that place
 //! and order.
 //!
@@ -447,6 +448,41 @@ const REFUSED: &[(&str, &str, &str, &str, &str)] = &[
         "mesh 'm': repeated normal specification",
     ),
     (
+        "an MSH with faces and a normal",
+        "",
+        r#"<mesh name="m" file="tet.msh" normal="0 0 1"/>"#,
+        "",
+        "mesh 'm': repeated facenormal specification",
+    ),
+    (
+        "an MSH with faces and a normal of four numbers",
+        "",
+        r#"<mesh name="m" file="tet.msh" normal="0 0 1 0"/>"#,
+        "",
+        "mesh 'm': repeated facenormal specification",
+    ),
+    (
+        "an MSH with texcoords and faces, and a normal",
+        "",
+        r#"<mesh name="m" file="tet_t.msh" normal="0 0 1"/>"#,
+        "",
+        "mesh 'm': repeated facenormal specification",
+    ),
+    (
+        "an MSH with faces, a vertex and a normal",
+        "",
+        r#"<mesh name="m" file="tet.msh" vertex="0 0 0  1 0 0  0 2 0  0 0 3" normal="0 0 1"/>"#,
+        "",
+        "mesh 'm': repeated vertex specification",
+    ),
+    (
+        "an MSH with faces, a face and a normal",
+        "",
+        r#"<mesh name="m" file="tet.msh" face="0 2 1  0 1 3  0 3 2  1 2 3" normal="0 0 1"/>"#,
+        "",
+        "mesh 'm': repeated face specification",
+    ),
+    (
         "an MSH with texcoords and a texcoord",
         "",
         r#"<mesh name="m" file="tet_t.msh" texcoord="0 0  0 0  0 0  0 0"/>"#,
@@ -560,6 +596,12 @@ const LOADS: &[(&str, &str, &str, &str)] = &[
         "an MSH of no faces and a face",
         "",
         r#"<mesh name="m" file="nofaces.msh" face="0 2 1  0 1 3  0 3 2  1 2 3"/>"#,
+        "",
+    ),
+    (
+        "an MSH of no faces, a face and a normal",
+        "",
+        r#"<mesh name="m" file="nofaces.msh" face="0 2 1  0 1 3  0 3 2  1 2 3" normal="0 0 1"/>"#,
         "",
     ),
     (

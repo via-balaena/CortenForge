@@ -245,7 +245,8 @@ impl ModelBuilder {
 /// A mesh's data as MuJoCo 3.5.0 checks it before it processes it
 /// (`mjCMesh::CheckInitialMesh`, `user_mesh.cc:1806-1842`): its vertices,
 /// an STL's merged where repeated; its faces' vertex ids, three to a face,
-/// signed; how many normal and texture-coordinate numbers it holds; and
+/// signed; how many normal and texture-coordinate numbers it holds; whether
+/// its file gave each face its normals' ids (MuJoCo's `facenormal_`); and
 /// whether it is an OBJ (`IsObj`). Each is its file's ([`load_mesh_file`]),
 /// or its own where the file gave none or it names no file
 /// ([`take_written`]).
@@ -255,6 +256,7 @@ pub(super) struct InitialMesh {
     pub(super) faces: Vec<i64>,
     pub(super) normals: usize,
     pub(super) texcoords: usize,
+    pub(super) face_normals: bool,
     pub(super) obj: bool,
 }
 
@@ -461,14 +463,15 @@ pub fn convert_mjcf_mesh(
 
 /// The mesh's data: its file's, with its own normals, texture coordinates,
 /// faces and vertices taken where the file gave none, as MuJoCo 3.5.0 takes
-/// them (`mjCMesh::TryCompile`, `user_mesh.cc:731-760`), in that order; its
+/// them (`mjCMesh::TryCompile`, `user_mesh.cc:731-760`), in that order, then
+/// its own normals refused beside the file's face normals (`:752-753`); its
 /// own alone where it names no file. It is an OBJ where its file is one or,
 /// with no file, where its `content_type` is written `model/obj` (`IsObj`,
 /// `:631-633`, the type as the mesh holds it).
 ///
 /// # Errors
 ///
-/// MuJoCo's words for the first of the four that the file and the mesh both
+/// MuJoCo's words for the first of the five that the file and the mesh both
 /// give.
 fn take_written(
     file: Option<InitialMesh>,
@@ -479,6 +482,7 @@ fn take_written(
         faces: Vec::new(),
         normals: 0,
         texcoords: 0,
+        face_normals: false,
         obj: mjcf_mesh.content_type.as_deref() == Some("model/obj"),
     });
     let normals = mjcf_mesh.normal.as_ref().map_or(0, Vec::len);
@@ -511,6 +515,9 @@ fn take_written(
             .chunks_exact(3)
             .map(|c| Point3::new(c[0], c[1], c[2]))
             .collect();
+    }
+    if mesh.face_normals && normals > 0 {
+        return Err("repeated facenormal specification".to_owned());
     }
     Ok(mesh)
 }
