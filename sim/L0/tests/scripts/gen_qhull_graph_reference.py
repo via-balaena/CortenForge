@@ -25,7 +25,9 @@ qhull refuses (coplanar, collinear, three distinct points). Some are repeated
 with `maxhullvert` 4, 8 and 16. Then a few of a fuzz stream (`fuzz_sets`):
 degenerate sets in the ways a CAD or scanned mesh is degenerate, each chosen
 because a measured change to the order of qhull's arithmetic changes its graph
-(FUZZ_CHOSEN).
+(FUZZ_CHOSEN). Then a few of a CAD stream (`cad_sets`): parts as an STL export
+gives them, faces exactly coplanar, coordinates a float32 ulp apart, each chosen
+because a measured change to the merges changes its graph (CAD_CHOSEN).
 
 With --only, the golden holds only the cases the file names, one per line.
 
@@ -136,7 +138,66 @@ def fuzz_sets(seed, count):
 # no other case caught (RL-9d2 C1's mutants, over the stream): 616, 1009, 1345, whose graph changes when qhull's
 # point-plane distance is summed in another order; 1049, 1896, 2774, which qhull refuses (a wide max_outside) when a
 # facet's plane is taken from its determinants where they come out near zero, not from Gaussian elimination.
-FUZZ_CHOSEN = (616, 1009, 1049, 1345, 1896, 2774)
+FUZZ_CHOSEN = (571, 616, 1009, 1049, 1345, 1896, 2774)
+# 571 (RL-9d2 C2): its graph changes when qhull's merge count is not kept (qh_USEfindbestnew reads it).
+
+
+def cad_sets(seed, count):
+    """The CAD stream: `count` float32 parts as an STL export gives them, from one generator seeded `seed`: one to
+    three axis-aligned boxes, some with a corner cut by a slanted plane, points along their edges and on their faces,
+    scaled to metres, some turned a quarter turn about an axis; then a random share of coordinates moved by one ulp,
+    zeros made 1e-10-sized, some vertices duplicated. Yields (index, points), the index counting every part made."""
+    r = np.random.default_rng(seed)
+
+    def box(lo, hi):
+        return np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])],
+                        dtype=np.float64)
+
+    def part():
+        pts = []
+        for _ in range(int(r.integers(1, 4))):
+            lo = r.uniform(-1, 0.5, 3)
+            hi = lo + r.uniform(0.1, 1.5, 3)
+            b = box(lo, hi)
+            if r.random() < 0.5:
+                n = r.normal(size=3)
+                n /= np.linalg.norm(n)
+                c = b.mean(0) + n * r.uniform(0.2, 0.6) * (hi - lo).max()
+                keep = [p for p in b if (p - c) @ n <= 0]
+                for i in range(len(b)):
+                    for j in range(i + 1, len(b)):
+                        a, e = b[i], b[j]
+                        da, de = (a - c) @ n, (e - c) @ n
+                        if da * de < 0 and np.count_nonzero(a != e) == 1:
+                            keep.append(a + (e - a) * (da / (da - de)))
+                b = np.array(keep) if len(keep) >= 4 else b
+            pts.append(b)
+            for _ in range(int(r.integers(0, 6))):
+                i, j = r.integers(0, len(b), 2)
+                t = r.choice([0.25, 0.5, 0.75, r.random()])
+                pts.append([b[i] + (b[j] - b[i]) * t])
+        p = np.vstack(pts) * 10.0 ** r.integers(-2, 0) + (r.uniform(-0.1, 0.1, 3) if r.random() < 0.5 else 0)
+        if r.random() < 0.3:
+            k = int(r.integers(0, 3))
+            p[:, [(k + 1) % 3, (k + 2) % 3]] = p[:, [(k + 2) % 3, (k + 1) % 3]] * [1, -1]
+        q = p.astype(np.float32)
+        m = r.random(q.shape) < r.uniform(0, 0.3)
+        q[m] = np.nextafter(q[m], np.where(r.random(q.shape) < 0.5, np.float32(np.inf), np.float32(-np.inf))[m])
+        z = (q == 0) & (r.random(q.shape) < 0.5)
+        q[z] = np.float32(1.16415322e-10) * r.choice([-1, 1, 4, 8], size=q.shape)[z]
+        if r.random() < 0.3:
+            q = np.vstack([q, q[r.integers(0, len(q), int(r.integers(1, 4)))]])
+        return q
+
+    for i in range(count):
+        yield i, part()
+
+
+# The CAD parts the golden takes, by index into cad_sets(2, ...), each chosen by a measured change to the merges that
+# no other case caught (RL-9d2 C2's mutants): 16, a vertex renamed after a merge and its ridges re-oriented; 225, the
+# merged facet's ridges marked untested; 851 and 2500, the merges taken in another order, and coplanar merges of
+# untested new facets not put off.
+CAD_CHOSEN = (16, 225, 851, 2500)
 
 
 def cases():
@@ -195,6 +256,9 @@ def cases():
     for kind, i, pts in fuzz_sets(1, max(FUZZ_CHOSEN) + 1):
         if i in FUZZ_CHOSEN:
             add(f'fuzz_{kind}_{i:05d}', pts)
+    for i, pts in cad_sets(2, max(CAD_CHOSEN) + 1):
+        if i in CAD_CHOSEN:
+            add(f'cad_{i:05d}', pts)
     return out
 
 

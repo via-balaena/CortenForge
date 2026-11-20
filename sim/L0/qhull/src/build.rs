@@ -313,7 +313,7 @@ impl Qhull<'_> {
         }
         if let Some(b) = bestfacet {
             self.removefacet(b);
-            self.prependfacet_to_facet_next(b);
+            self.prependfacet(b, crate::state::ListHead::FacetNext);
         }
     }
 
@@ -383,7 +383,10 @@ impl Qhull<'_> {
         self.retry_addpoint = 0;
         let apexpointid = self.pointid(apex);
         self.findbestnew = false;
-        self.premerge(apexpointid)?;
+        let _ = apexpointid;
+        self.facet_mergeset.clear();
+        self.degen_mergeset.clear();
+        self.premerge()?;
         if self.use_findbestnew() {
             self.findbestnew = true;
         } else {
@@ -475,6 +478,10 @@ impl Qhull<'_> {
         let apex = self.newvertex(Some(point));
         self.appendvertex(apex);
         self.visit_id += 1;
+        // Declared outside the loop, as qhull declares them: a visible facet
+        // whose cone gives no new facet keeps the previous one's.
+        let mut newfacet: Option<FacetId> = None;
+        let mut newfacet2: Option<FacetId> = None;
         let mut cur = self.visible_list;
         while let Some(visible) = cur {
             if !self.f(visible).visible {
@@ -485,18 +492,16 @@ impl Qhull<'_> {
                 i += 1;
                 self.fm(neighbor).seen = false;
             }
-            // `qh_makenew_nonsimplicial` (`poly_r.c:600-720`), for a visible
-            // facet with ridges, which only a merge gives.
             if self.f(visible).ridges.is_some() {
-                return Err(Error::Unported {
-                    routine: "qh_makenew_nonsimplicial",
-                });
+                self.fm(visible).visitid = self.visit_id;
+                newfacet2 = self.makenew_nonsimplicial(visible, apex)?;
             }
-            let newfacet = if self.f(visible).simplicial {
-                self.makenew_simplicial(visible, apex)
-            } else {
-                None
-            };
+            if self.f(visible).simplicial {
+                newfacet = self.makenew_simplicial(visible, apex);
+            }
+            if newfacet2.is_some() {
+                newfacet = newfacet2;
+            }
             if let Some(n) = newfacet {
                 self.fm(visible).f = Some(n);
             }
@@ -567,7 +572,7 @@ impl Qhull<'_> {
     /// `qh_makenewfacet` (`poly_r.c:531-549`): its vertices moved to the end
     /// of the vertex list where not new already, the facet appended with its
     /// horizon facet as its first neighbour.
-    fn makenewfacet(
+    pub(crate) fn makenewfacet(
         &mut self,
         vertices: Vec<VertexId>,
         toporient: bool,
@@ -591,7 +596,7 @@ impl Qhull<'_> {
 
     /// `qh_matchnewfacets` (`poly_r.c:937-1030`): each new facet's other
     /// neighbours, by hashing its ridges.
-    fn matchnewfacets(&mut self) -> Result<(), Error> {
+    pub(crate) fn matchnewfacets(&mut self) -> Result<(), Error> {
         let mut numnew = 0;
         for newfacet in self.facets_from(self.newfacet_list) {
             numnew += 1;
@@ -800,7 +805,7 @@ impl Qhull<'_> {
     }
 
     /// `qh_getreplacement` (`poly_r.c:505-515`).
-    fn getreplacement(&self, visible: FacetId) -> Option<FacetId> {
+    pub(crate) fn getreplacement(&self, visible: FacetId) -> Option<FacetId> {
         let mut result = Some(visible);
         while let Some(r) = result {
             if !self.f(r).visible {
@@ -1013,20 +1018,9 @@ impl Qhull<'_> {
         Ok(())
     }
 
-    /// `qh_premerge` (`merge_r.c:75-99`): nothing where `qh_checkzero` finds
-    /// every new facet clearly convex.
-    fn premerge(&mut self, _apexpointid: i32) -> Result<(), Error> {
-        if self.checkzero() {
-            return Ok(());
-        }
-        Err(Error::Unported {
-            routine: "qh_premerge",
-        })
-    }
-
     /// `qh_checkzero` over the new facets (`merge_r.c:785-861`): whether each
     /// is clearly convex to its neighbours and its horizon.
-    fn checkzero(&mut self) -> bool {
+    pub(crate) fn checkzero(&mut self) -> bool {
         let facetlist = self.newfacet_list;
         for facet in self.facets_from(facetlist) {
             let horizon = self.f(facet).neighbors[0];

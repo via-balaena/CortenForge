@@ -49,6 +49,49 @@ fn find<T: SetElem>(set: &[T], elem: T) -> Option<usize> {
         .position(|&e| e == elem)
 }
 
+/// `qh_setsize`: the set's size, its NULL slots included.
+pub(crate) const fn count<T: SetElem>(set: &[T]) -> usize {
+    set.len()
+}
+
+/// `qh_setin`: whether `elem` comes before any NULL slot.
+pub(crate) fn setin<T: SetElem>(set: &[T], elem: T) -> bool {
+    find(set, elem).is_some()
+}
+
+/// `qh_setdelsorted` (`qset_r.c:506-525`): the first `elem` removed, the rest
+/// shifted down.
+pub(crate) fn setdelsorted<T: SetElem>(set: &mut Vec<T>, elem: T) {
+    if let Some(i) = find(set, elem) {
+        set.remove(i);
+    }
+}
+
+/// `qh_setdelnthsorted` (`qset_r.c:467-486`).
+pub(crate) fn setdelnthsorted<T: SetElem>(set: &mut Vec<T>, nth: usize) {
+    set.remove(nth);
+}
+
+/// `qh_setreplace` (`qset_r.c:1122-1136`): the first `old` becomes `new`.
+pub(crate) fn setreplace<T: SetElem>(set: &mut [T], old: T, new: T) {
+    if let Some(i) = find(set, old) {
+        set[i] = new;
+    }
+}
+
+/// `qh_setcompact` (`qset_r.c:278-295`): the NULL slots dropped, the rest in
+/// order.
+pub(crate) fn setcompact<T: SetElem>(set: &mut Vec<T>) {
+    set.retain(|&e| e != T::NULL);
+}
+
+/// `qh_setunique`: `elem` appended unless already there.
+pub(crate) fn setunique<T: SetElem>(set: &mut Vec<T>, elem: T) {
+    if !setin(set, elem) {
+        set.push(elem);
+    }
+}
+
 /// `qh_setdel` (`qset_r.c:346-366`): the first `elem` replaced by the last
 /// element. Whether it was there.
 pub(crate) fn setdel<T: SetElem>(set: &mut Vec<T>, elem: T) -> bool {

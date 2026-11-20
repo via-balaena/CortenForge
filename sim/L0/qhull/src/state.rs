@@ -21,9 +21,7 @@
 /// Every coordinate, normal and point in the port: 3-d, as MuJoCo calls qhull.
 pub(crate) const DIM: usize = 3;
 
-/// A facet's id: its index in [`Qhull::facets`]. In a facet's `neighbors` a
-/// slot may hold one of the three markers qhull writes there instead of a
-/// facet.
+/// A facet's id: its index in [`Qhull::facets`].
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub(crate) struct FacetId(pub(crate) u32);
 
@@ -31,31 +29,9 @@ impl FacetId {
     /// An empty slot (qhull's NULL), as `qh_matchnewfacets` clears a new
     /// facet's neighbours before matching them.
     pub(crate) const NULL: Self = Self(u32::MAX);
-    /// `qh_DUPLICATEridge`: a ridge shared by more than two new facets.
-    #[expect(
-        dead_code,
-        reason = "read by the merge routines, Rigid-loading PR RL-9d2 C2"
-    )]
-    pub(crate) const DUPLICATE_RIDGE: Self = Self(u32::MAX - 1);
-    /// `qh_MERGEridge`: a duplicate ridge marked for merging.
-    #[expect(
-        dead_code,
-        reason = "read by the merge routines, Rigid-loading PR RL-9d2 C2"
-    )]
-    pub(crate) const MERGE_RIDGE: Self = Self(u32::MAX - 2);
-
     /// The arena index.
     pub(crate) const fn index(self) -> usize {
         self.0 as usize
-    }
-
-    /// Whether the slot holds a facet, not a marker.
-    #[expect(
-        dead_code,
-        reason = "read by the merge routines, Rigid-loading PR RL-9d2 C2"
-    )]
-    pub(crate) const fn is_facet(self) -> bool {
-        self.0 < u32::MAX - 2
     }
 }
 
@@ -82,15 +58,20 @@ impl RidgeId {
     }
 }
 
+/// A list `qh_prependfacet` prepends to.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ListHead {
+    /// `qh.facet_next` (`qh_furthestnext`).
+    FacetNext,
+    /// `qh.visible_list` (`qh_willdelete`).
+    Visible,
+}
+
 /// An input point's index (qhull's `qh_pointid`).
 pub(crate) type PointId = u32;
 
 /// qhull's `facetT`, the fields the 3-d path reads.
 #[derive(Clone, Debug, Default)]
-#[expect(
-    dead_code,
-    reason = "read by the merge routines, Rigid-loading PR RL-9d2 C2"
-)]
 pub(crate) struct Facet {
     /// The furthest outside point's distance (`furthestdist`).
     pub(crate) furthestdist: f64,
@@ -134,7 +115,6 @@ pub(crate) struct Facet {
     pub(crate) toporient: bool,
     pub(crate) simplicial: bool,
     pub(crate) seen: bool,
-    pub(crate) seen2: bool,
     pub(crate) flipped: bool,
     pub(crate) notfurthest: bool,
     pub(crate) good: bool,
@@ -143,7 +123,6 @@ pub(crate) struct Facet {
     pub(crate) mergeridge2: bool,
     pub(crate) coplanarhorizon: bool,
     pub(crate) mergehorizon: bool,
-    pub(crate) cycledone: bool,
     pub(crate) tested: bool,
     pub(crate) keepcentrum: bool,
     pub(crate) newmerge: bool,
@@ -155,10 +134,6 @@ pub(crate) struct Facet {
 
 /// qhull's `vertexT`, the fields the 3-d path reads.
 #[derive(Clone, Debug, Default)]
-#[expect(
-    dead_code,
-    reason = "read by the merge routines, Rigid-loading PR RL-9d2 C2"
-)]
 pub(crate) struct Vertex {
     /// The next vertex in its list, `None` only for the tail sentinel.
     pub(crate) next: Option<VertexId>,
@@ -173,7 +148,6 @@ pub(crate) struct Vertex {
     /// The visit mark (`qh.vertex_visit`).
     pub(crate) visitid: u32,
     pub(crate) seen: bool,
-    pub(crate) seen2: bool,
     /// To be deleted, on `qh.del_vertices`.
     pub(crate) deleted: bool,
     pub(crate) delridge: bool,
@@ -185,22 +159,13 @@ pub(crate) struct Vertex {
 
 /// qhull's `ridgeT`.
 #[derive(Clone, Debug, Default)]
-#[expect(
-    dead_code,
-    reason = "read by the merge routines, Rigid-loading PR RL-9d2 C2"
-)]
 pub(crate) struct Ridge {
     /// Its vertices, decreasing by id.
     pub(crate) vertices: Vec<VertexId>,
     pub(crate) top: Option<FacetId>,
     pub(crate) bottom: Option<FacetId>,
-    /// Its id, which is also its arena index.
-    pub(crate) id: u32,
-    pub(crate) seen: bool,
     pub(crate) tested: bool,
     pub(crate) nonconvex: bool,
-    pub(crate) mergevertex: bool,
-    pub(crate) mergevertex2: bool,
     pub(crate) simplicialtop: bool,
     pub(crate) simplicialbot: bool,
     /// Deleted (`qh_delridge`); qhull frees it.
@@ -261,10 +226,6 @@ pub(crate) struct Qhull<'p> {
     pub(crate) NEWtentative: bool,
     pub(crate) VERTEXneighbors: bool,
     pub(crate) hasTriangulation: bool,
-    #[expect(
-        dead_code,
-        reason = "read by the merge routines, Rigid-loading PR RL-9d2 C2"
-    )]
     pub(crate) POSTmerging: bool,
     pub(crate) DOcheckmax: bool,
 
@@ -302,6 +263,10 @@ pub(crate) struct Qhull<'p> {
     /// `zzval_(Ztotmerge)`: the merge count, which decides
     /// `qh_USEfindbestnew` (`user_r.h:903`).
     pub(crate) Ztotmerge: i32,
+    /// The facet merges to make (`qh.facet_mergeset`), taken from the end.
+    pub(crate) facet_mergeset: Vec<crate::merge::Merge>,
+    /// The degenerate and redundant merges (`qh.degen_mergeset`).
+    pub(crate) degen_mergeset: Vec<crate::merge::Merge>,
 }
 
 /// qhull's `REALmax` (`DBL_MAX`).
@@ -406,6 +371,8 @@ impl<'p> Qhull<'p> {
             centrum_radius: 0.0,
             interior_point: [0.0; DIM],
             Ztotmerge: 0,
+            facet_mergeset: Vec::new(),
+            degen_mergeset: Vec::new(),
         }
     }
 
@@ -445,10 +412,6 @@ impl<'p> Qhull<'p> {
     }
 
     /// A ridge.
-    #[expect(
-        dead_code,
-        reason = "read by the merge routines, Rigid-loading PR RL-9d2 C2"
-    )]
     pub(crate) fn r(&self, id: RidgeId) -> &Ridge {
         &self.ridges[id.index()]
     }
@@ -522,17 +485,11 @@ impl<'p> Qhull<'p> {
     }
 
     /// `qh_newridge` (`poly_r.c:1123-1136`).
-    #[expect(
-        dead_code,
-        reason = "read by the merge routines, Rigid-loading PR RL-9d2 C2"
-    )]
     pub(crate) fn newridge(&mut self) -> RidgeId {
+        // qhull's `ridge->id`: the arena index.
         let id = self.ridge_id;
         self.ridge_id += 1;
-        self.ridges.push(Ridge {
-            id,
-            ..Ridge::default()
-        });
+        self.ridges.push(Ridge::default());
         RidgeId(id)
     }
 
@@ -577,13 +534,17 @@ impl<'p> Qhull<'p> {
         self.num_vertices += 1;
     }
 
-    /// `qh_prependfacet` (`poly2_r.c:3220-3240`) onto the list `qh.facet_next`
-    /// heads, the only list the 3-d path prepends to (`qh_furthestnext`).
-    pub(crate) fn prependfacet_to_facet_next(&mut self, facet: FacetId) {
-        if self.facet_next.is_none() {
-            self.facet_next = self.facet_tail;
-        }
-        let Some(list) = self.facet_next else { return };
+    /// `qh_prependfacet` (`poly2_r.c:3220-3240`): the facet before the head of
+    /// the list `head` names, which becomes it (the tail sentinel where the
+    /// list is empty).
+    pub(crate) fn prependfacet(&mut self, facet: FacetId, head: ListHead) {
+        let current = match head {
+            ListHead::FacetNext => self.facet_next,
+            ListHead::Visible => self.visible_list,
+        };
+        let Some(list) = current.or(self.facet_tail) else {
+            return;
+        };
         let prevfacet = self.f(list).previous;
         self.fm(facet).previous = prevfacet;
         if let Some(p) = prevfacet {
@@ -594,8 +555,13 @@ impl<'p> Qhull<'p> {
         if self.facet_list == Some(list) {
             self.facet_list = Some(facet);
         }
-        // `qh->facet_next == list` holds: the list is `qh.facet_next`.
-        self.facet_next = Some(facet);
+        if self.facet_next == Some(list) {
+            self.facet_next = Some(facet);
+        }
+        match head {
+            ListHead::FacetNext => self.facet_next = Some(facet),
+            ListHead::Visible => self.visible_list = Some(facet),
+        }
         self.num_facets += 1;
     }
 
@@ -668,10 +634,6 @@ impl<'p> Qhull<'p> {
     }
 
     /// `qh_delridge` (`poly2_r.c:1530-1536`).
-    #[expect(
-        dead_code,
-        reason = "read by the merge routines, Rigid-loading PR RL-9d2 C2"
-    )]
     pub(crate) fn delridge(&mut self, ridge: RidgeId) {
         let r = self.rm(ridge);
         r.vertices = Vec::new();

@@ -57,23 +57,6 @@ impl MeshGraph {
 }
 
 impl Qhull<'_> {
-    /// `qh_triangulate` (`poly2_r.c:3482-3826`) where every facet is
-    /// simplicial: nothing to triangulate.
-    pub(crate) fn triangulate(&mut self) -> Result<(), Error> {
-        if self.hasTriangulation {
-            return Ok(());
-        }
-        for facet in self.facets_from(self.facet_list) {
-            if !self.f(facet).visible && !self.f(facet).simplicial {
-                return Err(Error::Unported {
-                    routine: "qh_triangulate",
-                });
-            }
-        }
-        self.hasTriangulation = true;
-        Ok(())
-    }
-
     /// `qh_vertexneighbors` (`poly2_r.c:3910-3930`): each vertex's facets, in
     /// facet-list order, where no merge made them already.
     pub(crate) fn vertexneighbors(&mut self) {

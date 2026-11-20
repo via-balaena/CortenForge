@@ -29,9 +29,20 @@
 //! (`Ztotmerge`), which decides how points are partitioned
 //! (`qh_USEfindbestnew`).
 //!
-//! A routine the options can reach but none of the inputs this port was
-//! measured on does returns [`Error::Unported`] instead of an answer:
-//! never another graph than MuJoCo's, silently.
+//! After each point, the new facets are merged where qhull merges them
+//! (`qh_premerge`): into a coplanar horizon facet, a flipped facet into its
+//! best neighbour, each non-convex ridge's facets into one; then the vertices
+//! the merges left on two facets only are renamed (`qh_reducevertices`).
+//! After the build, `qh_triangulate` splits each merged facet into triangles.
+//!
+//! Where the options allow a routine that no input the port was measured on
+//! reaches, it returns [`Error::Unported`] naming the routine instead of
+//! going on: a ridge of more than two new facets (qhull's dupridges and the
+//! pinched vertices they lead to), a cycle of more than one new facet
+//! coplanar with one horizon facet (`qh_mergecycle`), a degenerate merge or
+//! an extra vertex while vertices are reduced, a mirrored pair of triangles,
+//! a point partitioned below every new facet (`qh_findbestlower`), and a
+//! narrow hull's furthest point recomputed (`qh_furthestout`).
 //!
 //! Two of qhull's choices depend on its platform rather than its
 //! arithmetic: the order `qsort` leaves equal merges in, and the order a
@@ -62,8 +73,10 @@ mod error;
 mod findbest;
 mod geom;
 mod graph;
+mod merge;
 mod set;
 mod state;
+mod triangulate;
 
 pub use error::Error;
 pub use graph::MeshGraph;

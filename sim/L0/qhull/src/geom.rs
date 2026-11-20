@@ -360,6 +360,51 @@ impl Qhull<'_> {
         center
     }
 
+    /// `qh_projectpoint` (`geom_r.c:935-947`).
+    fn projectpoint(&self, point: &[f64; DIM], facet: FacetId, dist: f64) -> [f64; DIM] {
+        let normal = self.normal(facet);
+        let mut p = [0.0; DIM];
+        for k in 0..DIM {
+            p[k] = point[k] - dist * normal[k];
+        }
+        p
+    }
+
+    /// `qh_getcentrum` (`geom_r.c:741-753`): the vertices' mean projected
+    /// onto the hyperplane.
+    pub(crate) fn getcentrum(&self, facet: FacetId) -> [f64; DIM] {
+        let point = self.getcenter(&self.f(facet).vertices);
+        let dist = self.distplane(&point, facet);
+        self.projectpoint(&point, facet, dist)
+    }
+
+    /// `qh_getdistance` (`geom_r.c:769-796`): of `facet`'s vertices not in
+    /// `neighbor`, the larger magnitude of their extreme distances to it, and
+    /// the extremes.
+    pub(crate) fn getdistance(&mut self, facet: FacetId, neighbor: FacetId) -> (f64, f64, f64) {
+        for v in self.f(facet).vertices.clone() {
+            self.vm(v).seen = false;
+        }
+        for v in self.f(neighbor).vertices.clone() {
+            self.vm(v).seen = true;
+        }
+        let mut mind = 0.0;
+        let mut maxd = 0.0;
+        for v in self.f(facet).vertices.clone() {
+            if !self.v(v).seen {
+                let dist = self.distplane(self.vcoords(v), neighbor);
+                if dist < mind {
+                    mind = dist;
+                } else if dist > maxd {
+                    maxd = dist;
+                }
+            }
+        }
+        let (mindist, maxdist) = (mind, maxd);
+        mind = -mind;
+        (if maxd > mind { maxd } else { mind }, mindist, maxdist)
+    }
+
     /// `qh_determinant` for 2 and 3 rows (`geom2_r.c:84-113`), with whether it
     /// is near zero.
     fn determinant(&self, rows: &[[f64; DIM]], dim: usize) -> (f64, bool) {
