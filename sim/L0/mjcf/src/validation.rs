@@ -91,10 +91,11 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 /// - Each `nuser_` size at least -1, after the tree's depth and before the
 ///   rest (a parsed `<size>`'s are refused while parsing)
 /// - No name repeated within a kind (`names::check_names`; a mesh's and a
-///   height field's written names first, `mesh::check_written_names`)
-/// - Each mesh's written vertex and face counts, then the names the meshes
-///   and height fields take from their files, after the other names
-///   (`mesh::name_assets`)
+///   height field's written names first, `mesh::check_written_names`, then
+///   the names the meshes and height fields take from their files,
+///   `mesh::name_assets`, both before the classes are applied)
+/// - Each mesh's written vertex and face counts, after the names
+///   (`mesh::check_written_counts`)
 /// - Each pair's condim one of 1, 3, 4 or 6, then the geoms it names, after
 ///   the assets (a geom named "" only where the model has no unnamed geom)
 /// - Each geom's height field (a height-field geom names one, no other geom

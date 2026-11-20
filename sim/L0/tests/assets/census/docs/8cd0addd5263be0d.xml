@@ -1,0 +1,1 @@
+<mujoco><extension><plugin plugin="mujoco.elasticity.cable"/></extension><asset><mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><composite prefix="c" type="cable" count="4 1 1" size="1"><geom type="capsule" size="0.01"/></composite></worldbody></mujoco>

@@ -23,11 +23,12 @@ use crate::types::{MeshInertia, MjcfCompiler, MjcfHfield, MjcfMesh, MjcfModel};
 
 /// Two meshes, or two height fields, of one written name, refused as MuJoCo
 /// 3.5.0's reader refuses the second as it reads it (`mjs_setName`,
-/// `user_api.cc:1734-1748`). It runs before the model's classes are applied,
-/// where this crate checked every mesh's and height field's name before
-/// Rigid-loading PR RL-9d; MuJoCo's reader meets the repeat in document
-/// order among its other faults (ledger L353). A name a mesh takes from its
-/// file is checked later, by [`name_assets`].
+/// `user_api.cc:1734-1748`), before [`name_assets`] names the unnamed ones.
+/// It runs before the model's classes are applied, where this crate checked
+/// every mesh's and height field's name before Rigid-loading PR RL-9d.
+/// MuJoCo's reader takes `<default>` before `<asset>`
+/// (`xml_native_reader.cc:1018`, `:1034`), so a fault in a class is named
+/// after the repeat here (ledger L353).
 pub fn check_written_names(mjcf: &MjcfModel) -> Result<()> {
     repeated_name(
         ElementKind::Mesh,
@@ -49,22 +50,20 @@ fn repeated_name<'a>(kind: ElementKind, names: impl Iterator<Item = &'a str>) ->
         .map_or(Ok(()), |name| Err(MjcfError::duplicate_name(kind, name)))
 }
 
-/// Checks each mesh's written vertex and face counts
-/// ([`check_written_counts`]), then gives each unnamed mesh and height field
-/// the name MuJoCo 3.5.0 gives it (`mjCMesh::CopyFromSpec`,
-/// `mjCHField::CopyFromSpec`): its `file`'s text past the last `/` or `\`,
-/// cut at the last `.` (`mjuu_strippath`, `mjuu_stripext`,
-/// `user_util.cc:768-829`), an empty one refused as MuJoCo refuses it
-/// ("empty name in mesh", "empty name in height field",
+/// Gives each unnamed mesh and height field the name MuJoCo 3.5.0 gives it
+/// (`mjCMesh::CopyFromSpec`, `mjCHField::CopyFromSpec`): its `file`'s text
+/// past the last `/` or `\`, cut at the last `.` (`mjuu_strippath`,
+/// `mjuu_stripext`, `user_util.cc:768-829`), an empty one refused as
+/// MuJoCo refuses it ("empty name in mesh", "empty name in height field",
 /// `user_model.cc:2034-2041`), and two of one name refused as a repeated
 /// name, as MuJoCo's `ProcessLists` refuses them before any pass drops an
-/// unused mesh (`user_model.cc:4888-4891`). It runs where MuJoCo's
-/// `mjCModel::TryCompile` begins: after the model's classes are applied, its
-/// frames and composites expanded and every written name checked, which
-/// MuJoCo does as it reads the model, and before validation and every
-/// compiler pass, which find assets by name.
+/// unused mesh (`user_model.cc:4888-4891`). It runs on the model before its
+/// classes are applied, where this crate named the assets before
+/// Rigid-loading PR RL-9d, and before validation and every compiler pass,
+/// which find assets by name. MuJoCo names them as its compile begins
+/// (`user_model.cc:4872-4888`), after every fault its reader meets: such a
+/// fault is named after these here (ledger L353).
 pub fn name_assets(mjcf: &mut MjcfModel) -> Result<()> {
-    check_written_counts(&mjcf.meshes)?;
     let named = |name: &str, file: Option<&str>, what: &str| {
         if !name.is_empty() {
             return Ok(name.to_owned());
@@ -97,14 +96,14 @@ pub fn name_assets(mjcf: &mut MjcfModel) -> Result<()> {
 }
 
 /// Each mesh's written vertices and faces as MuJoCo 3.5.0's `CopyFromSpec`
-/// checks them, every mesh in order before any is named
-/// (`mjCModel::TryCompile`, `user_model.cc:4872`; `ProcessVertices`,
-/// `user_mesh.cc:543-561`): the vertex count a multiple of 3, then the face
-/// count, then each vertex finite (a `NaN` or an infinity written in a document
-/// is refused as it is read, registry `D-NONFINITE`; one set in code is
-/// refused here). A mesh is located by its name as written, unnamed where its
-/// file will name it, as MuJoCo names it there.
-fn check_written_counts(meshes: &[MjcfMesh]) -> Result<()> {
+/// checks them (`mjCModel::TryCompile`, `user_model.cc:4872`;
+/// `ProcessVertices`, `user_mesh.cc:543-561`): the vertex count a multiple of
+/// 3, then the face count, then each vertex finite (a `NaN` or an infinity
+/// written in a document is refused as it is read, registry `D-NONFINITE`;
+/// one set in code is refused here). MuJoCo checks them before it names the
+/// meshes and checks their names; this crate checks them since Rigid-loading
+/// PR RL-9d, after every name (ledger L353).
+pub fn check_written_counts(meshes: &[MjcfMesh]) -> Result<()> {
     for (i, mesh) in meshes.iter().enumerate() {
         let vertex = mesh.vertex.as_deref().unwrap_or_default();
         let face = mesh.face.as_deref().unwrap_or_default();
@@ -427,7 +426,7 @@ fn load_hfield_png(
 ///
 /// Its vertices are then moved, turned and scaled as MuJoCo 3.5.0 does
 /// ([`apply_transformations`]); the BVH is built over them. Its written
-/// vertex and face counts were checked before ([`name_assets`]).
+/// vertex and face counts were checked before ([`check_written_counts`]).
 pub fn convert_mjcf_mesh(
     mjcf_mesh: &MjcfMesh,
     base_path: Option<&Path>,
@@ -529,7 +528,7 @@ fn take_written(
 /// waives it too where the faces carry texture-coordinate indices, which
 /// only an OBJ's do); then each face's vertex ids, in order, naming a vertex
 /// the mesh holds. Its vertex and face counts, a file's multiples of 3,
-/// were checked as written before ([`name_assets`]).
+/// were checked as written before ([`check_written_counts`]).
 fn check_initial_mesh(mesh: &InitialMesh) -> std::result::Result<(), String> {
     let nvert = mesh.vertices.len();
     if nvert < 4 {

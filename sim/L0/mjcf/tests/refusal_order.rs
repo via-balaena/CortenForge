@@ -128,9 +128,12 @@
 //! geom's height field is checked as the model is validated, before its
 //! condim and a mesh or SDF geom's mesh, which MuJoCo checks first:
 //! `HFIELD_COSTS`. RL-9d checks each mesh's written vertex and face counts
-//! where MuJoCo begins to compile the model, after every written name: a
-//! `NaN` written in a vertex, refused as it is read, is named before them:
-//! `MESH_DATA_COSTS`. Beside a geom's mesh name that no
+//! after every name, the names the meshes take from their files among them,
+//! which this crate gives before the classes, as it did before RL-9d; MuJoCo
+//! checks the counts first as it begins to compile the model
+//! (`mesh_data_checks.rs`'s `NAMED_OTHERWISE`). A `NaN` written in a vertex,
+//! refused as it is read, is named before them: `MESH_DATA_COSTS`. Beside a
+//! geom's mesh name that no
 //! mesh holds, which MuJoCo names as it indexes the assets, before any geom
 //! compiles, this crate names a `fromto` it refuses as the classes are
 //! applied: `ASSET_COSTS` (ledger L353).
@@ -204,7 +207,12 @@
 //! fourteen in `TWO_FAULTS`, each named as MuJoCo names it: a repeated name
 //! beside a mesh's count or a later class, an SDF geom naming no mesh beside
 //! an earlier fault, a mesh attribute that does not read beside its
-//! `maxhullvert` or `inertia`.
+//! `maxhullvert` or `inertia`. Its fix-diff pass's (measured 2026-11-20) set
+//! twelve more there: an unnamed mesh or height field, or two meshes one file
+//! names, beside a plugin's repeated instance name, a name a flexcomp makes
+//! or a `fromto`, each named as main and MuJoCo name it; an unnamed mesh
+//! before a repeated mesh name; and a mesh's `scale` or `inertia` beside its
+//! `refpos` or `maxhullvert`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -2139,6 +2147,78 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/><geom type="sdf"/></body></worldbody></mujoco>"#,
         "error 'yaxis too small' in inertia alternative",
         "error 'yaxis too small' in inertia alternative (body 'b')",
+    ),
+    (
+        "a plugin's repeated instance name beside an unnamed mesh",
+        r#"<mujoco><extension><plugin plugin="mujoco.elasticity.cable"><instance name="p"/><instance name="p"/></plugin></extension><asset><mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><geom size=".1"/></worldbody></mujoco>"#,
+        "empty name in mesh",
+        "empty name in mesh (mesh #0)",
+    ),
+    (
+        "a plugin's repeated instance name beside an unnamed height field",
+        r#"<mujoco><extension><plugin plugin="mujoco.elasticity.cable"><instance name="p"/><instance name="p"/></plugin></extension><asset><hfield nrow="2" ncol="2" elevation="0 0 0 0" size="1 1 .1 .1"/></asset><worldbody><geom size=".1"/></worldbody></mujoco>"#,
+        "empty name in height field",
+        "empty name in height field (hfield #0)",
+    ),
+    (
+        "two flexcomps of one name beside an unnamed mesh",
+        r#"<mujoco><asset><mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><flexcomp name="f" type="grid" count="2 2 1" spacing=".1 .1 .1" dim="2"><edge equality="false"/></flexcomp><body name="x" pos="1 0 0"><flexcomp name="f" type="grid" count="2 2 1" spacing=".1 .1 .1" dim="2"><edge equality="false"/></flexcomp></body></worldbody></mujoco>"#,
+        "empty name in mesh",
+        "empty name in mesh (mesh #0)",
+    ),
+    (
+        "a body of the name a flexcomp gives its body, beside an unnamed mesh",
+        r#"<mujoco><asset><mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><body name="f_0"/><flexcomp name="f" type="grid" count="2 2 1" spacing=".1 .1 .1" dim="2"><edge equality="false"/></flexcomp></worldbody></mujoco>"#,
+        "empty name in mesh",
+        "empty name in mesh (mesh #0)",
+    ),
+    (
+        "a box's fromto naming a mesh beside an unnamed mesh",
+        r#"<mujoco><asset><mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="box" size=".1" fromto="0 0 0 0 0 1" mesh="nope"/></body></worldbody></mujoco>"#,
+        "empty name in mesh",
+        "empty name in mesh (mesh #0)",
+    ),
+    (
+        "a capsule's fromto of no length beside an unnamed mesh",
+        r#"<mujoco><asset><mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="capsule" size=".1" fromto="0 0 0 0 0 0"/></body></worldbody></mujoco>"#,
+        "empty name in mesh",
+        "empty name in mesh (mesh #0)",
+    ),
+    (
+        "a box's fromto naming a mesh beside two meshes one file names",
+        r#"<mujoco><asset><mesh file="tet.stl"/><mesh file="tet.stl"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="box" size=".1" fromto="0 0 0 0 0 1" mesh="nope"/></body></worldbody></mujoco>"#,
+        "repeated name 'tet' in mesh",
+        "repeated name 'tet' in mesh",
+    ),
+    (
+        "a cable's fromto of no length beside an unnamed mesh",
+        r#"<mujoco><extension><plugin plugin="mujoco.elasticity.cable"/></extension><asset><mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><composite prefix="c" type="cable" count="4 1 1" size="1"><geom type="capsule" size="0.01"/></composite></worldbody></mujoco>"#,
+        "empty name in mesh",
+        "empty name in mesh (mesh #0)",
+    ),
+    (
+        "a plugin's repeated instance name beside two meshes one file names",
+        r#"<mujoco><extension><plugin plugin="mujoco.elasticity.cable"><instance name="p"/><instance name="p"/></plugin></extension><asset><mesh file="tet.stl"/><mesh file="tet.stl"/></asset><worldbody><geom size=".1"/></worldbody></mujoco>"#,
+        "repeated name 'tet' in mesh",
+        "repeated name 'tet' in mesh",
+    ),
+    (
+        "a mesh's scale and refpos that do not read",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3" scale="x 1 1" refpos="y 0 0"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
+        "bad format in attribute 'refpos'",
+        "bad number \"y\" in attribute 'refpos' on <mesh> (line 1: asset > mesh 'm')",
+    ),
+    (
+        "a mesh's inertia keyword and maxhullvert both bad",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3" inertia="nope" maxhullvert="2"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
+        "invalid keyword: 'nope'",
+        "invalid keyword \"nope\" in attribute 'inertia' on <mesh> (line 1: asset > mesh 'm')",
+    ),
+    (
+        "an unnamed mesh, then a repeated mesh name",
+        r#"<mujoco><asset><mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><geom size=".1"/></worldbody></mujoco>"#,
+        "repeated name 'm' in mesh",
+        "repeated name 'm' in mesh",
     ),
 ];
 

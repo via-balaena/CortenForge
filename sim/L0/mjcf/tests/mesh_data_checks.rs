@@ -12,24 +12,27 @@
 //! where the file gave none, and refuses them where the file gave some
 //! ("repeated … specification"), its normals also where the file's faces
 //! carry normals' ids, as an MSH's do. Last it checks the whole
-//! (`CheckInitialMesh`, `:1806-1842`). sim-mjcf checks each in that place
-//! and order.
+//! (`CheckInitialMesh`, `:1806-1842`). sim-mjcf checks each in that order,
+//! but names the meshes, refusing an empty name, before it applies their
+//! classes, and checks the written counts after every name, where it named
+//! and checked them before Rigid-loading PR RL-9d (ledger L353):
+//! `NAMED_OTHERWISE`.
 //!
 //! Every document below was loaded by MuJoCo 3.5.0 on the census's unfused
 //! oracle (2026-11-19), its files the same bytes. It refuses each in
 //! `REFUSED` for the reason that row's error gives, which sim-mjcf states in
 //! its own form: the mesh's name before the reason, or the element after it.
-//! Four MuJoCo refuses for a fault it meets before the mesh's data, as
-//! sim-mjcf does, each in its own words: an unknown class, twice, which
-//! MuJoCo refuses as it reads the model; a geom's missing mesh
+//! Three MuJoCo refuses for a fault it meets before the mesh's data, as
+//! sim-mjcf does, each in its own words: an unknown class, which MuJoCo
+//! refuses as it reads the model; a geom's missing mesh
 //! (`IndexAssets`); and an STL of no faces. MuJoCo loads each in `LOADS`
 //! with four vertices, four faces and a body mass of 999.9999999999999.
 //!
 //! Of two meshes MuJoCo refuses, it names whichever its threads compile
 //! first unless `usethread` is false, when it names the first. sim-mjcf
-//! always names the first. With threads, the first was named in most of 200
-//! loads of each of three such models (measured 2026-11-19; fewer while
-//! another build ran).
+//! always names the first. Measured 2026-11-19, while a build ran: with
+//! threads, the first was named in 111 and in 117 of 200 loads of two such
+//! models; with `usethread="false"`, in 200 of 200.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -124,6 +127,30 @@ fn document(dir: &Path, compiler: &str, assets: &str, world: &str) -> String {
     )
 }
 
+/// `(what, compiler attributes, assets, world, MuJoCo 3.5.0's reason,
+/// sim-mjcf's error)`: two faults, where sim-mjcf names a mesh's empty name,
+/// which it refuses before it applies the classes and checks the written
+/// counts, as it did before Rigid-loading PR RL-9d, and MuJoCo the other
+/// (ledger L353).
+const NAMED_OTHERWISE: &[(&str, &str, &str, &str, &str, &str)] = &[
+    (
+        "an unnamed mesh, then the next mesh's ten vertex numbers",
+        "",
+        r#"<mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><mesh name="m" vertex="0 0 0 1 0 0 0 2 0 0" face="0 1 2"/>"#,
+        "",
+        "vertex data must be a multiple of 3",
+        "empty name in mesh (mesh #0)",
+    ),
+    (
+        "an unnamed mesh's unknown class",
+        "",
+        r#"<mesh class="nope" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/>"#,
+        "",
+        "unknown default class name 'nope'",
+        "empty name in mesh (mesh #0)",
+    ),
+];
+
 /// `(what, compiler attributes, assets, world, sim-mjcf's error)`, each
 /// refused by MuJoCo 3.5.0 for that reason.
 const REFUSED: &[(&str, &str, &str, &str, &str)] = &[
@@ -170,13 +197,6 @@ const REFUSED: &[(&str, &str, &str, &str, &str)] = &[
         "vertex data must be a multiple of 3 (mesh 'm')",
     ),
     (
-        "an unnamed mesh, then the next mesh's ten vertex numbers",
-        "",
-        r#"<mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><mesh name="m" vertex="0 0 0 1 0 0 0 2 0 0" face="0 1 2"/>"#,
-        "",
-        "vertex data must be a multiple of 3 (mesh 'm')",
-    ),
-    (
         "a mesh of 3 vertices, then the next mesh's face of four numbers",
         "",
         r#"<mesh name="m3" vertex="0 0 0  1 0 0  0 2 0"/><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1 3"/>"#,
@@ -202,7 +222,7 @@ const REFUSED: &[(&str, &str, &str, &str, &str)] = &[
         "",
         r#"<mesh file="tet.obj" vertex="0 0 0 1 0 0 0 2 0 0"/>"#,
         r#"<geom type="mesh" mesh="tet"/>"#,
-        "vertex data must be a multiple of 3 (mesh #0)",
+        "vertex data must be a multiple of 3 (mesh 'tet')",
     ),
     (
         "an unknown class before ten vertex numbers",
@@ -210,13 +230,6 @@ const REFUSED: &[(&str, &str, &str, &str, &str)] = &[
         r#"<mesh name="m" vertex="0 0 0 1 0 0 0 2 0 0" face="0 1 2"/>"#,
         r#"<geom class="nope" size="0.1"/><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/></body>"#,
         "unknown default class name 'nope' (geom in body 'world')",
-    ),
-    (
-        "an unnamed mesh's unknown class",
-        "",
-        r#"<mesh class="nope" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/>"#,
-        "",
-        "unknown default class name 'nope' (mesh #0)",
     ),
     (
         "3 vertices and a face",
@@ -758,6 +771,21 @@ fn a_meshs_data_is_refused_where_and_as_mujoco_refuses_it() {
         REFUSED.len(),
         missed.join("\n  ")
     );
+}
+
+#[test]
+fn a_meshs_data_beside_an_empty_mesh_name_is_named_as_ledgered() {
+    let dir = tempfile::tempdir().unwrap();
+    write_files(dir.path());
+    let mut moved = Vec::new();
+    for &(what, compiler, assets, world, _mujoco, ours) in NAMED_OTHERWISE {
+        match load_model(&document(dir.path(), compiler, assets, world)) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
 }
 
 /// Each loads with the tetrahedron, as MuJoCo 3.5.0 loads it: four

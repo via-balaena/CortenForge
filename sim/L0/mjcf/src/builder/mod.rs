@@ -427,12 +427,13 @@ pub struct FrontEnd {
 }
 
 /// The model as the loader checks it: its meshes' and height fields' written
-/// names ([`mesh::check_written_names`]), then a clone of `mjcf` with every
-/// element but its actuators given its class (each actuator's class, as the
-/// actuator writes it, returned beside it), its frames and composites
-/// expanded, every other name checked (`names::check_names`), its meshes'
-/// written counts checked and its assets named ([`mesh::name_assets`]), then
-/// validated (`validate_resolved`), before the compiler passes remove any
+/// names ([`mesh::check_written_names`]), then a clone of `mjcf` with its
+/// meshes and height fields named ([`mesh::name_assets`]), every element but
+/// its actuators given its class (each actuator's class, as the actuator
+/// writes it, returned beside it), its frames and composites expanded, every
+/// other name checked (`names::check_names`), its meshes' written counts
+/// checked ([`mesh::check_written_counts`]), then validated
+/// (`validate_resolved`), before the compiler passes remove any
 /// element. A mesh flexcomp's file is read as it
 /// is made, from `base_path`, the model's directory, where its path is
 /// relative. The caller has checked the tree's depth.
@@ -441,6 +442,9 @@ pub fn front_end(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<FrontEnd>
     crate::validation::check_user_sizes(mjcf)?;
     mesh::check_written_names(mjcf)?;
     let mut mjcf = mjcf.clone();
+    // The meshes' and height fields' names from their files, where this crate
+    // checked them before Rigid-loading PR RL-9d (ledger L353).
+    mesh::name_assets(&mut mjcf)?;
 
     // Each element's class, before frames, composites and the compiler
     // passes move or make elements, as MuJoCo applies it when it reads one.
@@ -471,11 +475,11 @@ pub fn front_end(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<FrontEnd>
     let first_flexcomp = mjcf.flex.len();
     mjcf.flex.extend(placed.flexes);
     crate::validation::check_tree_depth(&mjcf.worldbody)?;
-    // Every written name, composites' and frames' included, as MuJoCo's
-    // reader checks them, before MuJoCo's compile begins: then the meshes'
-    // written counts and the names the assets take from their files.
+    // Every other name, composites' and frames' included, where this crate
+    // checked them before RL-9d; then the meshes' written counts, which it
+    // checks since RL-9d (ledger L353).
     crate::names::check_names(&mjcf, &frame_names)?;
-    mesh::name_assets(&mut mjcf)?;
+    mesh::check_written_counts(&mjcf.meshes)?;
 
     // Every reference and value check, on the model as resolved and
     // expanded, before fusion or discarding hides an element (MuJoCo 3.5.0

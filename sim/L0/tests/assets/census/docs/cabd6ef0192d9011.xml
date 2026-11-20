@@ -1,0 +1,1 @@
+<mujoco><extension><plugin plugin="mujoco.elasticity.cable"><instance name="p"/><instance name="p"/></plugin></extension><asset><mesh file="tet.stl"/><mesh file="tet.stl"/></asset><worldbody><geom size=".1"/></worldbody></mujoco>
