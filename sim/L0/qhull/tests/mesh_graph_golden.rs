@@ -107,3 +107,14 @@ fn fewer_than_four_points_make_no_graph() {
     let points = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
     assert_eq!(mesh_graph(&points, -1), Ok(None));
 }
+
+/// qhull refuses points that are all one point before it builds anything:
+/// they have no width (`qh_maxsimplex`, `geom2_r.c:1238-1241`, QH6421).
+#[test]
+fn points_all_at_one_place_are_refused_for_their_width() {
+    let p = [0.25, -0.5, 1.0];
+    assert!(matches!(
+        mesh_graph(&[p; 4], -1),
+        Err(Error::Qhull { code: 6421, .. })
+    ));
+}

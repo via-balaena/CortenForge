@@ -321,7 +321,7 @@ impl Qhull<'_> {
     /// added, until none is outside or `TA` stops it.
     fn buildhull(&mut self) -> Result<(), Error> {
         self.facet_next = self.facet_list;
-        while let Some((furthest, facet)) = self.nextfurthest()? {
+        while let Some((furthest, facet)) = self.nextfurthest() {
             self.num_outside -= 1;
             // qhull's test as written (`libqhull_r.c:621`).
             #[allow(clippy::int_plus_one)]
@@ -340,10 +340,10 @@ impl Qhull<'_> {
     /// `qh_nextfurthest` without `qh.RANDOMoutside` (`libqhull_r.c:931-1035`):
     /// the last (furthest) point of the first facet from `qh.facet_next`
     /// with a non-empty outside set.
-    fn nextfurthest(&mut self) -> Result<Option<(PointId, FacetId)>, Error> {
+    fn nextfurthest(&mut self) -> Option<(PointId, FacetId)> {
         while let Some(facet) = self.facet_next {
             if Some(facet) == self.facet_tail {
-                return Ok(None);
+                return None;
             }
             let Some(size) = self.f(facet).outsideset.as_ref().map(Vec::len) else {
                 self.facet_next = self.f(facet).next;
@@ -355,11 +355,9 @@ impl Qhull<'_> {
                 continue;
             }
             if self.NARROWhull {
-                if self.f(facet).notfurthest {
-                    return Err(Error::Unported {
-                        routine: "qh_furthestout",
-                    });
-                }
+                // `notfurthest` is set only under options MuJoCo does not pass
+                // and after a pinched apex, which is refused, so
+                // `qh_furthestout` is never called here.
                 // `qh_COMPUTEfurthest` is 0: the stored distance.
                 let dist = self.f(facet).furthestdist;
                 if dist < self.MINoutside {
@@ -368,9 +366,9 @@ impl Qhull<'_> {
                 }
             }
             let point = self.fm(facet).outsideset.as_mut().and_then(Vec::pop);
-            return Ok(point.map(|p| (p, facet)));
+            return point.map(|p| (p, facet));
         }
-        Ok(None)
+        None
     }
 
     /// `qh_addpoint` without `checkdist` (`libqhull_r.c:176-317`).
@@ -378,14 +376,10 @@ impl Qhull<'_> {
         self.maxoutdone = false;
         self.detmaxoutside();
         self.furthest_id = furthest as i32;
-        self.findhorizon(furthest, facet);
-        let apex = self.buildcone(furthest)?;
+        self.findhorizon(furthest, facet)?;
+        self.buildcone(furthest)?;
         self.retry_addpoint = 0;
-        let apexpointid = self.pointid(apex);
         self.findbestnew = false;
-        let _ = apexpointid;
-        self.facet_mergeset.clear();
-        self.degen_mergeset.clear();
         self.premerge()?;
         if self.use_findbestnew() {
             self.findbestnew = true;
@@ -400,17 +394,21 @@ impl Qhull<'_> {
         self.partitionvisible()?;
         self.findbestnew = false;
         self.findbest_notsharp = false;
-        self.deletevisible();
+        self.deletevisible()?;
         self.NEWfacets = false;
         self.resetlists(true);
         // `qh_all_vertexmerges`: no vertex merge is ever queued on this path.
+        // `qh_freemergesets` stops qhull where a merge is left (QH6389).
+        if !self.facet_mergeset.is_empty() || !self.degen_mergeset.is_empty() {
+            return Err(Error::qhull(6389, "expecting empty mergesets"));
+        }
         Ok(())
     }
 
     /// `qh_findhorizon` (`libqhull_r.c:803-890`): the facets visible from
     /// `point`, from `facet` across neighbours, moved to the end of the
     /// facet list as `qh.visible_list`; the rest met are the horizon.
-    fn findhorizon(&mut self, point: PointId, facet: FacetId) {
+    fn findhorizon(&mut self, point: PointId, facet: FacetId) -> Result<(), Error> {
         let p = *self.point(point);
         self.removefacet(facet);
         self.appendfacet(facet);
@@ -420,6 +418,7 @@ impl Qhull<'_> {
         self.fm(facet).f = None;
         self.visit_id += 1;
         let visit = self.visit_id;
+        let mut numhorizon = 0;
         let mut cur = self.visible_list;
         while let Some(visible) = cur {
             if !self.f(visible).visible {
@@ -441,6 +440,7 @@ impl Qhull<'_> {
                     self.fm(neighbor).f = None;
                     self.num_visible += 1;
                 } else if dist >= -self.MAXcoplanar {
+                    numhorizon += 1;
                     self.fm(neighbor).coplanarhorizon = true;
                     if dist > 0.0 {
                         maximize_(&mut self.max_outside, dist);
@@ -450,11 +450,19 @@ impl Qhull<'_> {
                         minimize_(&mut self.min_vertex, dist);
                     }
                 } else {
+                    numhorizon += 1;
                     self.fm(neighbor).coplanarhorizon = false;
                 }
             }
             cur = self.f(visible).next;
         }
+        if numhorizon == 0 {
+            return Err(Error::qhull(
+                6168,
+                "empty horizon.  It was above all facets.",
+            ));
+        }
+        Ok(())
     }
 
     /// `qh_buildcone` without `ONLYgood` or `MERGEpinched`
@@ -618,10 +626,10 @@ impl Qhull<'_> {
                 self.matchneighbor(newfacet, newskip, &mut hash_table, &mut hashcount)?;
             }
         }
+        // `matchneighbor` refuses every duplicate ridge, so what is left
+        // unmatched stops qhull (QH6108).
         if hashcount != 0 {
-            return Err(Error::Unported {
-                routine: "qh_matchdupridge",
-            });
+            return Err(Error::qhull(6108, "neighbors did not match up"));
         }
         Ok(())
     }
@@ -758,7 +766,7 @@ impl Qhull<'_> {
                 break;
             }
             if self.f(visible).outsideset.is_some() || self.f(visible).coplanarset.is_some() {
-                let newfacet = match self.getreplacement(visible) {
+                let newfacet = match self.getreplacement(visible)? {
                     Some(n) => n,
                     None => match self.newfacet_list {
                         Some(n) => n,
@@ -804,20 +812,26 @@ impl Qhull<'_> {
         Ok(())
     }
 
-    /// `qh_getreplacement` (`poly_r.c:505-515`).
-    pub(crate) fn getreplacement(&self, visible: FacetId) -> Option<FacetId> {
+    /// `qh_getreplacement` (`poly_r.c:505-515`): a chain longer than
+    /// `qh.facet_id` stops qhull (`qh_infiniteloop`, QH6149).
+    pub(crate) fn getreplacement(&self, visible: FacetId) -> Result<Option<FacetId>, Error> {
+        let mut count: u32 = 0;
         let mut result = Some(visible);
         while let Some(r) = result {
             if !self.f(r).visible {
                 break;
             }
             result = self.f(r).f;
+            if count > self.facet_id {
+                return Err(Error::qhull(6149, "potential infinite loop detected"));
+            }
+            count += 1;
         }
-        result
+        Ok(result)
     }
 
     /// `qh_deletevisible` (`poly_r.c:323-349`).
-    fn deletevisible(&mut self) {
+    fn deletevisible(&mut self) -> Result<(), Error> {
         let mut cur = self.visible_list;
         while let Some(visible) = cur {
             if !self.f(visible).visible {
@@ -829,8 +843,9 @@ impl Qhull<'_> {
         }
         self.num_visible = 0;
         for vertex in std::mem::take(&mut self.del_vertices) {
-            self.delvertex(vertex);
+            self.delvertex(vertex)?;
         }
+        Ok(())
     }
 
     /// `qh_partitionpoint` (`libqhull_r.c:1326-1418`) with `KEEPnearinside`:
@@ -1225,4 +1240,25 @@ fn matchvertices(a: &[VertexId], skip_a: usize, b: &[VertexId]) -> Option<(usize
     let skip_b = skip_b_plus1.unwrap_or(ib + 1) - 1;
     let same = (skip_a & 0x1) == (skip_b & 0x1);
     Some((skip_b, same))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_chain_of_replacements_that_loops_stops_qhull() {
+        let mut qh = Qhull::new(&[], 0);
+        let (a, b) = (qh.newfacet(), qh.newfacet());
+        for (facet, replace) in [(a, b), (b, a)] {
+            qh.fm(facet).visible = true;
+            qh.fm(facet).f = Some(replace);
+        }
+        assert!(matches!(
+            qh.getreplacement(a),
+            Err(Error::Qhull { code: 6149, .. })
+        ));
+        qh.fm(b).visible = false;
+        assert_eq!(qh.getreplacement(a), Ok(Some(b)));
+    }
 }

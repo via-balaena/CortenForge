@@ -22,6 +22,16 @@ pub enum Error {
         /// Qhull's words, less the numbers it prints into them.
         message: &'static str,
     },
+    /// MuJoCo's own check of qhull's result in `MakeGraph`
+    /// (`user_mesh.cc:1914-2027`) failed. "Qhull did not return triangle",
+    /// "Wrong size in convex hull graph" and "Vertex id not found in convex
+    /// hull" are MuJoCo's `mju_error`; "Could not construct convex hull
+    /// graph" is its `mju_warning` (`:2007`), after which MuJoCo goes on
+    /// with the graph freed, where this port stops.
+    Graph {
+        /// MuJoCo's words.
+        message: &'static str,
+    },
     /// The points reach a routine of qhull's that this port does not hold:
     /// none of the inputs it was measured on reaches one.
     Unported {
@@ -34,6 +44,9 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Qhull { code, message } => write!(f, "qhull error QH{code}: {message}"),
+            Self::Graph { message } => {
+                write!(f, "MuJoCo's check of the convex hull graph: {message}")
+            }
             Self::Unported { routine } => {
                 write!(
                     f,

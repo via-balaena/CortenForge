@@ -235,8 +235,8 @@ impl Qhull<'_> {
                 routine: "qh_triangulate_mirror",
             });
         }
-        set::setreplace(&mut self.fm(facet_b).neighbors, oldfacet_b, facet_a);
-        set::setreplace(&mut self.fm(facet_a).neighbors, oldfacet_a, facet_b);
+        set::setreplace(&mut self.fm(facet_b).neighbors, oldfacet_b, facet_a)?;
+        set::setreplace(&mut self.fm(facet_a).neighbors, oldfacet_a, facet_b)?;
         Ok(())
     }
 
@@ -324,7 +324,7 @@ impl Qhull<'_> {
                     }
                     self.fm(neighbor).neighbors.push(nf);
                 } else {
-                    set::setreplace(&mut self.fm(neighbor).neighbors, visible, nf);
+                    set::setreplace(&mut self.fm(neighbor).neighbors, visible, nf)?;
                 }
                 if self.f(neighbor).simplicial {
                     if let Some(r) = self.fm(neighbor).ridges.as_mut() {

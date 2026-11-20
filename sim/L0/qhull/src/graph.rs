@@ -91,13 +91,14 @@ impl Qhull<'_> {
         let mut vertex_point = Vec::with_capacity(vertices.len());
         let mut vertex_edges = Vec::with_capacity(vertices.len());
         let mut edges: Vec<i32> = Vec::with_capacity(vertices.len() + 3 * facet_list.len());
+        // `ok` (`:1915`): a point id out of range ends the vertex or its
+        // facet's loop and is reported once the faces are filled (`:2000-2008`).
+        let mut ok = true;
         for &vertex in &vertices {
             let pid = self.pointid(vertex);
             if pid < 0 || pid as usize >= numpoints {
-                return Err(Error::Qhull {
-                    code: 0,
-                    message: "Could not construct convex hull graph",
-                });
+                ok = false;
+                break;
             }
             vertex_edges.push(edges.len() as u32);
             vertex_point.push(pid as u32);
@@ -111,13 +112,16 @@ impl Qhull<'_> {
                     j += 1;
                     cnt += 1;
                     let pid1 = self.pointid(vertex1);
+                    if pid1 < 0 || pid1 as usize >= numpoints {
+                        ok = false;
+                        break;
+                    }
                     if pid != pid1 && !edges[start..].contains(&pid1) {
                         edges.push(pid1);
                     }
                 }
                 if cnt != DIM {
-                    return Err(Error::Qhull {
-                        code: 0,
+                    return Err(Error::Graph {
                         message: "Qhull did not return triangle",
                     });
                 }
@@ -125,8 +129,7 @@ impl Qhull<'_> {
             edges.push(-1);
         }
         if edges.len() != vertices.len() + DIM * facet_list.len() {
-            return Err(Error::Qhull {
-                code: 0,
+            return Err(Error::Graph {
                 message: "Wrong size in convex hull graph",
             });
         }
@@ -141,8 +144,7 @@ impl Qhull<'_> {
             let mut ii = 0;
             while let Some(vertex1) = set::get(&self.f(facet).vertices, ii) {
                 if ii >= DIM {
-                    return Err(Error::Qhull {
-                        code: 0,
+                    return Err(Error::Graph {
                         message: "Qhull did not return triangle",
                     });
                 }
@@ -151,12 +153,16 @@ impl Qhull<'_> {
             }
             faces.push(face);
         }
+        if !ok {
+            return Err(Error::Graph {
+                message: "Could not construct convex hull graph",
+            });
+        }
         // Global ids to local ones in the edges.
         for e in &mut edges {
             if *e >= 0 {
                 let Some(local) = vertex_point.iter().position(|&p| p as i32 == *e) else {
-                    return Err(Error::Qhull {
-                        code: 0,
+                    return Err(Error::Graph {
                         message: "Vertex id not found in convex hull",
                     });
                 };

@@ -411,7 +411,7 @@ impl Qhull<'_> {
     /// the merges taken from the end of the sorted set, then the set refilled
     /// from the new facets' ridges, until none is left; then the shared
     /// vertices reduced.
-    fn all_merges(&mut self, mut othermerge: bool) -> Result<(), Error> {
+    fn all_merges(&mut self, othermerge: bool) -> Result<(), Error> {
         let mut wasmerge = false;
         while !self.facet_mergeset.is_empty() || !self.degen_mergeset.is_empty() {
             if !self.degen_mergeset.is_empty() {
@@ -435,14 +435,10 @@ impl Qhull<'_> {
             }
             self.getmergeset(self.newfacet_list)?;
         }
+        // qhull merges again where `qh_reducevertices` merged a degenerate or
+        // redundant facet; here each such case is refused inside it.
         if self.VERTEXneighbors && (wasmerge || othermerge) {
-            othermerge = false;
-            let _ = othermerge;
-            if self.reducevertices()? {
-                return Err(Error::Unported {
-                    routine: "qh_all_merges (a merge after reducing vertices)",
-                });
-            }
+            self.reducevertices()?;
         }
         Ok(())
     }
@@ -598,6 +594,8 @@ impl Qhull<'_> {
             maximize_(&mut mintwisted, self.f(facet1).maxoutside);
             maximize_(&mut mintwisted, self.f(facet2).maxoutside);
             if d.maxdist > mintwisted || -d.mindist > mintwisted {
+                // qhull reports QH6348 instead where `qh_vertex_bestdist`
+                // finds the facet pinched (`merge_r.c:3423-3431`): not ported.
                 return Err(Error::qhull(6347, "wide merge"));
             }
         }
@@ -642,10 +640,10 @@ impl Qhull<'_> {
             for v in self.f(facet2).vertices.clone() {
                 self.vm(v).visitid = vv;
             }
-            self.mergeneighbors(facet1, facet2);
+            self.mergeneighbors(facet1, facet2)?;
             self.mergevertices(facet1, facet2);
             self.mergeridges(facet1, facet2);
-            self.mergevertex_neighbors(facet1, facet2);
+            self.mergevertex_neighbors(facet1, facet2)?;
             if !self.f(facet2).newfacet {
                 self.newvertices(facet2);
             }
@@ -817,7 +815,7 @@ impl Qhull<'_> {
         }
         for vertex in self.f(facet1).vertices.clone() {
             if vertex == opposite && isnew {
-                set::setreplace(&mut self.vm(vertex).neighbors, facet1, facet2);
+                set::setreplace(&mut self.vm(vertex).neighbors, facet1, facet2)?;
             } else {
                 set::setdel(&mut self.vm(vertex).neighbors, facet1);
                 if set::get(&self.v(vertex).neighbors, 1).is_none() {
@@ -861,13 +859,13 @@ impl Qhull<'_> {
                 }
                 if self.f(otherfacet).neighbors.first() == Some(&facet1) {
                     set::setdel(&mut self.fm(otherfacet).neighbors, facet2);
-                    set::setreplace(&mut self.fm(otherfacet).neighbors, facet1, facet2);
+                    set::setreplace(&mut self.fm(otherfacet).neighbors, facet1, facet2)?;
                 } else {
                     set::setdel(&mut self.fm(otherfacet).neighbors, facet1);
                 }
             } else {
                 self.fm(facet2).neighbors.push(otherfacet);
-                set::setreplace(&mut self.fm(otherfacet).neighbors, facet1, facet2);
+                set::setreplace(&mut self.fm(otherfacet).neighbors, facet1, facet2)?;
                 self.fm(otherfacet).visitid = visit;
             }
             let r = self.rm(ridge);
@@ -976,7 +974,7 @@ impl Qhull<'_> {
             self.fm(facet1).degenerate = false;
             self.fm(facet1).redundant = false;
             if mergetype == MergeType::Redundant {
-                let Some(facet3) = self.getreplacement(facet2) else {
+                let Some(facet3) = self.getreplacement(facet2)? else {
                     return Err(Error::qhull(
                         6097,
                         "redundant facet's replacement was deleted",
@@ -1099,7 +1097,7 @@ impl Qhull<'_> {
     /// `qh_reducevertices` in 3-d (`merge_r.c:4279-4338`): each newly merged
     /// facet's extra vertices removed and its shared vertices renamed.
     /// Whether a degenerate or redundant merge followed.
-    fn reducevertices(&mut self) -> Result<bool, Error> {
+    fn reducevertices(&mut self) -> Result<(), Error> {
         if self.merge_degenredundant()? > 0 {
             return Err(Error::Unported {
                 routine: "qh_reducevertices (a degenerate merge first)",
@@ -1138,7 +1136,7 @@ impl Qhull<'_> {
                 self.vm(vertex).delridge = false;
             }
         }
-        Ok(false)
+        Ok(())
     }
 
     /// `qh_remove_extravertices` (`merge_r.c:4403-4436`): whether the facet
@@ -1480,7 +1478,7 @@ impl Qhull<'_> {
     }
 
     /// `qh_mergeneighbors` (`merge_r.c:3622-3648`).
-    fn mergeneighbors(&mut self, facet1: FacetId, facet2: FacetId) {
+    fn mergeneighbors(&mut self, facet1: FacetId, facet2: FacetId) -> Result<(), Error> {
         self.visit_id += 1;
         let visit = self.visit_id;
         let mut i = 0;
@@ -1497,17 +1495,18 @@ impl Qhull<'_> {
                 }
                 if self.f(neighbor).neighbors.first() == Some(&facet1) {
                     set::setdel(&mut self.fm(neighbor).neighbors, facet2);
-                    set::setreplace(&mut self.fm(neighbor).neighbors, facet1, facet2);
+                    set::setreplace(&mut self.fm(neighbor).neighbors, facet1, facet2)?;
                 } else {
                     set::setdel(&mut self.fm(neighbor).neighbors, facet1);
                 }
             } else if neighbor != facet2 {
                 self.fm(facet2).neighbors.push(neighbor);
-                set::setreplace(&mut self.fm(neighbor).neighbors, facet1, facet2);
+                set::setreplace(&mut self.fm(neighbor).neighbors, facet1, facet2)?;
             }
         }
         set::setdel(&mut self.fm(facet1).neighbors, facet2);
         set::setdel(&mut self.fm(facet2).neighbors, facet1);
+        Ok(())
     }
 
     /// `qh_mergevertices` (`merge_r.c:3916-3943`): the two decreasing vertex
@@ -1569,7 +1568,7 @@ impl Qhull<'_> {
     }
 
     /// `qh_mergevertex_neighbors` (`merge_r.c:3878-3899`).
-    fn mergevertex_neighbors(&mut self, facet1: FacetId, facet2: FacetId) {
+    fn mergevertex_neighbors(&mut self, facet1: FacetId, facet2: FacetId) -> Result<(), Error> {
         let vv = self.vertex_visit;
         for vertex in self.f(facet1).vertices.clone() {
             if self.v(vertex).visitid == vv {
@@ -1578,9 +1577,10 @@ impl Qhull<'_> {
                     self.mergevertex_del(vertex, facet2);
                 }
             } else {
-                set::setreplace(&mut self.vm(vertex).neighbors, facet1, facet2);
+                set::setreplace(&mut self.vm(vertex).neighbors, facet1, facet2)?;
             }
         }
+        Ok(())
     }
 }
 

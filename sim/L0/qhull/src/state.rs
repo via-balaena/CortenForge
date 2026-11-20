@@ -18,6 +18,8 @@
 //! sentinel, the vertex list with `vertex_tail`) are the `next`/`previous`
 //! links kept here as ids.
 
+use crate::error::Error;
+
 /// Every coordinate, normal and point in the port: 3-d, as MuJoCo calls qhull.
 pub(crate) const DIM: usize = 3;
 
@@ -116,7 +118,6 @@ pub(crate) struct Facet {
     pub(crate) simplicial: bool,
     pub(crate) seen: bool,
     pub(crate) flipped: bool,
-    pub(crate) notfurthest: bool,
     pub(crate) good: bool,
     pub(crate) dupridge: bool,
     pub(crate) mergeridge: bool,
@@ -625,12 +626,20 @@ impl<'p> Qhull<'p> {
         f.deleted = true;
     }
 
-    /// `qh_delvertex` (`poly2_r.c:1548-1560`).
-    pub(crate) fn delvertex(&mut self, vertex: VertexId) {
+    /// `qh_delvertex` (`poly2_r.c:1548-1560`): qhull stops for a deleted
+    /// vertex that was not partitioned as a coplanar point (QH6395).
+    pub(crate) fn delvertex(&mut self, vertex: VertexId) -> Result<(), Error> {
+        if self.v(vertex).deleted && !self.v(vertex).partitioned {
+            return Err(Error::qhull(
+                6395,
+                "vertex was deleted but it was not partitioned as a coplanar point",
+            ));
+        }
         self.removevertex(vertex);
         let v = self.vm(vertex);
         v.neighbors = Vec::new();
         v.freed = true;
+        Ok(())
     }
 
     /// `qh_delridge` (`poly2_r.c:1530-1536`).
@@ -673,5 +682,21 @@ impl<'p> Qhull<'p> {
     /// `qh_pointid` for a point the hull holds.
     pub(crate) fn pointid(&self, vertex: VertexId) -> i32 {
         self.v(vertex).point.map_or(-1, |p| p as i32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_vertex_deleted_but_not_partitioned_stops_qhull() {
+        let mut qh = Qhull::new(&[], 0);
+        let vertex = qh.newvertex(None);
+        qh.vm(vertex).deleted = true;
+        assert!(matches!(
+            qh.delvertex(vertex),
+            Err(Error::Qhull { code: 6395, .. })
+        ));
     }
 }

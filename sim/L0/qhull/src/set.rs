@@ -12,6 +12,7 @@
 //! set may hold NULL slots, and its `FOREACH` loops and searches stop at the
 //! first: [`SetElem::NULL`] is that slot here, and [`get`] the loops' read.
 
+use crate::error::Error;
 use crate::state::{FacetId, RidgeId, VertexId};
 
 /// An element of a qhull set, with qhull's NULL.
@@ -72,11 +73,14 @@ pub(crate) fn setdelnthsorted<T: SetElem>(set: &mut Vec<T>, nth: usize) {
     set.remove(nth);
 }
 
-/// `qh_setreplace` (`qset_r.c:1122-1136`): the first `old` becomes `new`.
-pub(crate) fn setreplace<T: SetElem>(set: &mut [T], old: T, new: T) {
-    if let Some(i) = find(set, old) {
-        set[i] = new;
-    }
+/// `qh_setreplace` (`qset_r.c:1122-1136`): the first `old` becomes `new`;
+/// qhull stops where the set holds no `old` (QH6177).
+pub(crate) fn setreplace<T: SetElem>(set: &mut [T], old: T, new: T) -> Result<(), Error> {
+    let Some(i) = find(set, old) else {
+        return Err(Error::qhull(6177, "elem not found in set"));
+    };
+    set[i] = new;
+    Ok(())
 }
 
 /// `qh_setcompact` (`qset_r.c:278-295`): the NULL slots dropped, the rest in
@@ -153,6 +157,17 @@ mod tests {
         assert!(!setdel(&mut set, 12));
         assert_eq!(get(&set, 0), Some(10));
         assert_eq!(get(&set, 1), None);
+    }
+
+    #[test]
+    fn a_replace_stops_qhull_where_the_set_holds_no_such_element() {
+        let mut set = vec![10_u32, 11];
+        assert_eq!(setreplace(&mut set, 11, 12), Ok(()));
+        assert_eq!(set, [10, 12]);
+        assert!(matches!(
+            setreplace(&mut set, 13, 14),
+            Err(Error::Qhull { code: 6177, .. })
+        ));
     }
 
     #[test]
