@@ -71,7 +71,7 @@ fn cases() -> Vec<Case> {
 fn the_graph_is_mujocos_on_every_golden_case() {
     let cases = cases();
     // The golden's size, so a truncated or emptied file fails here.
-    assert_eq!(cases.len(), 109, "golden cases");
+    assert_eq!(cases.len(), 114, "golden cases");
     let mut wrong = Vec::new();
     for case in &cases {
         let got = mesh_graph(&case.points, case.maxhullvert);

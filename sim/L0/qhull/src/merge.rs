@@ -75,15 +75,17 @@ impl Qhull<'_> {
         }
         self.centrum_radius = self.premerge_centrum;
         self.cos_max = self.premerge_cos;
-        let facetlist = self.newfacet_list;
-        self.mark_dupridges(facetlist)?;
+        // Each call takes `qh.newfacet_list` as it is then: a merge moves the
+        // facet it merges into to the list's end (`qh_mergefacet`), so the
+        // list's head can change between them.
+        self.mark_dupridges(self.newfacet_list)?;
         let mut othermerge = false;
-        self.mergecycle_all(facetlist, &mut othermerge)?;
+        self.mergecycle_all(self.newfacet_list, &mut othermerge)?;
         // `qh_forcedmerges` (`merge_r.c:1542-1642`) merges only dupridges,
         // which `qh_matchnewfacets` does not let through.
-        self.flippedmerges(facetlist, &mut othermerge)?;
+        self.flippedmerges(self.newfacet_list, &mut othermerge)?;
         self.POSTmerging = false;
-        self.getmergeset_initial(facetlist)?;
+        self.getmergeset_initial(self.newfacet_list)?;
         self.all_merges(othermerge)
     }
 

@@ -55,23 +55,15 @@ impl Qhull<'_> {
                 }
                 let v = &self.f(facet).vertices;
                 if v.first() == v.get(1) {
-                    self.triangulate_null(facet);
+                    self.triangulate_null(facet)?;
                 }
             }
             cur = Some(nextfacet);
         }
         self.visible_list = self.facet_tail;
-        // `qh.degen_mergeset` holds a mirror merge only after
-        // `qh_triangulate_mirror`'s cases, which no measured input reaches.
-        if self
-            .degen_mergeset
-            .iter()
-            .any(|m| m.mergetype != crate::merge::MergeType::Degen)
-        {
-            return Err(Error::Unported {
-                routine: "qh_triangulate_mirror",
-            });
-        }
+        // qhull pops each merge and runs `qh_triangulate_mirror` for a mirror
+        // one only (`:3534-3542`); `triangulate_link` refuses before it would
+        // queue one, so what is left is freed.
         self.degen_mergeset.clear();
         self.newvertex_list = triangulated_vertex_list;
         self.visible_list = None;
@@ -210,23 +202,42 @@ impl Qhull<'_> {
 
     /// `qh_triangulate_null` (`poly2_r.c:3816-3824`): a triangle with a vertex
     /// twice deleted, its two neighbours made each other's.
-    fn triangulate_null(&mut self, facet_a: FacetId) {
+    fn triangulate_null(&mut self, facet_a: FacetId) -> Result<(), Error> {
         let neighbor = self.f(facet_a).neighbors[0];
         let otherfacet = self.f(facet_a).neighbors[1];
-        self.triangulate_link(facet_a, neighbor, facet_a, otherfacet);
+        self.triangulate_link(facet_a, neighbor, facet_a, otherfacet)?;
         self.willdelete(facet_a, None);
+        Ok(())
     }
 
-    /// `qh_triangulate_link` (`poly2_r.c:3745-3769`).
+    /// `qh_triangulate_link` (`poly2_r.c:3745-3769`): `facet_a` and `facet_b`
+    /// made each other's neighbours in place of `oldfacet_a` and `oldfacet_b`.
+    /// Where they are each other's already, qhull queues a mirror merge that
+    /// deletes both (`qh_triangulate_mirror`): not ported. Where one lists
+    /// the other and not the reverse, qhull stops (QH6163).
     fn triangulate_link(
         &mut self,
         oldfacet_a: FacetId,
         facet_a: FacetId,
         oldfacet_b: FacetId,
         facet_b: FacetId,
-    ) {
+    ) -> Result<(), Error> {
+        let a_lists_b = set::setin(&self.f(facet_a).neighbors, facet_b);
+        let b_lists_a = set::setin(&self.f(facet_b).neighbors, facet_a);
+        if a_lists_b != b_lists_a {
+            return Err(Error::qhull(
+                6163,
+                "neighbors do not match for null facet or mirrored facets",
+            ));
+        }
+        if a_lists_b {
+            return Err(Error::Unported {
+                routine: "qh_triangulate_mirror",
+            });
+        }
         set::setreplace(&mut self.fm(facet_b).neighbors, oldfacet_b, facet_a);
         set::setreplace(&mut self.fm(facet_a).neighbors, oldfacet_a, facet_b);
+        Ok(())
     }
 
     /// `qh_update_vertexneighbors` (`poly_r.c:1279-1344`) as `qh_triangulate`
@@ -335,5 +346,51 @@ impl Qhull<'_> {
             self.fm(neighbor).seen = true;
         }
         Ok(newfacet)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Three facets, `null` between `a` and `b`, each listing `null`; `a` and
+    /// `b` listing each other where asked.
+    fn three_facets(a_lists_b: bool, b_lists_a: bool) -> (Qhull<'static>, [FacetId; 3]) {
+        let mut qh = Qhull::new(&[], 0);
+        let [null, a, b] = [qh.newfacet(), qh.newfacet(), qh.newfacet()];
+        qh.fm(null).neighbors = vec![a, b];
+        qh.fm(a).neighbors = if a_lists_b { vec![null, b] } else { vec![null] };
+        qh.fm(b).neighbors = if b_lists_a { vec![null, a] } else { vec![null] };
+        (qh, [null, a, b])
+    }
+
+    #[test]
+    fn a_null_facet_s_neighbours_become_each_other_s() {
+        let (mut qh, [null, a, b]) = three_facets(false, false);
+        assert_eq!(qh.triangulate_link(null, a, null, b), Ok(()));
+        assert_eq!(qh.f(a).neighbors, [b]);
+        assert_eq!(qh.f(b).neighbors, [a]);
+    }
+
+    #[test]
+    fn neighbours_already_each_other_s_are_a_mirror_merge_not_ported() {
+        let (mut qh, [null, a, b]) = three_facets(true, true);
+        assert_eq!(
+            qh.triangulate_link(null, a, null, b),
+            Err(Error::Unported {
+                routine: "qh_triangulate_mirror"
+            })
+        );
+    }
+
+    #[test]
+    fn neighbours_listed_one_way_stop_qhull() {
+        for (a_lists_b, b_lists_a) in [(true, false), (false, true)] {
+            let (mut qh, [null, a, b]) = three_facets(a_lists_b, b_lists_a);
+            assert!(matches!(
+                qh.triangulate_link(null, a, null, b),
+                Err(Error::Qhull { code: 6163, .. })
+            ));
+        }
     }
 }

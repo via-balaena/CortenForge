@@ -4,7 +4,7 @@
 Run it with the oracle's own interpreter (build_mujoco_oracle.sh builds it):
 
     <workdir>/venv/bin/python -I sim/L0/tests/scripts/gen_qhull_graph_reference.py \\
-        sim/L0/qhull/tests/data/mesh_graph_golden.txt [--only <names file>]
+        sim/L0/qhull/tests/data/mesh_graph_golden.txt
 
 It refuses any other interpreter, as gen_census_golden.py does.
 
@@ -22,14 +22,13 @@ cube's surface, cylinders, cones and capped cylinders with many segments,
 axis-aligned lattices (solid and surface), a cube's corners with face centres
 just inside and outside, duplicates, a tetrahedron, an octahedron, and sets
 qhull refuses (coplanar, collinear, three distinct points). Some are repeated
-with `maxhullvert` 4, 8 and 16. Then a few of a fuzz stream (`fuzz_sets`):
-degenerate sets in the ways a CAD or scanned mesh is degenerate, each chosen
-because a measured change to the order of qhull's arithmetic changes its graph
-(FUZZ_CHOSEN). Then a few of a CAD stream (`cad_sets`): parts as an STL export
-gives them, faces exactly coplanar, coordinates a float32 ulp apart, each chosen
-because a measured change to the merges changes its graph (CAD_CHOSEN).
-
-With --only, the golden holds only the cases the file names, one per line.
+with `maxhullvert` 4, 8 and 16. Then a few sets of three streams, each set
+chosen because a measured change to the port changes its graph or its refusal
+where no other case does: a fuzz stream (`fuzz_sets`, FUZZ_CHOSEN), degenerate
+sets in the ways a CAD or scanned mesh is degenerate; a CAD stream (`cad_sets`,
+CAD_CHOSEN), parts of axis-aligned boxes, some corners cut, faces exactly
+coplanar, coordinates a float32 ulp apart; and a grid stream (`grid_sets`,
+GRID_CHOSEN), boxes whose faces are sampled on grids, some turned.
 
 The file is one case per line, '#' lines aside:
 
@@ -40,6 +39,7 @@ The graph is `mesh_graph` from `mesh_graphadr`: numvert, numface,
 vert_edgeadr, vert_globalid, edge_localid, face_globalid.
 """
 
+import math
 import os
 import struct
 import sys
@@ -138,12 +138,12 @@ def fuzz_sets(seed, count):
 # no other case caught (RL-9d2 C1's mutants, over the stream): 616, 1009, 1345, whose graph changes when qhull's
 # point-plane distance is summed in another order; 1049, 1896, 2774, which qhull refuses (a wide max_outside) when a
 # facet's plane is taken from its determinants where they come out near zero, not from Gaussian elimination.
+# 571 (RL-9d2 C2's mutants) changes when qhull's merge count is not kept (qh_USEfindbestnew reads it).
 FUZZ_CHOSEN = (571, 616, 1009, 1049, 1345, 1896, 2774)
-# 571 (RL-9d2 C2): its graph changes when qhull's merge count is not kept (qh_USEfindbestnew reads it).
 
 
 def cad_sets(seed, count):
-    """The CAD stream: `count` float32 parts as an STL export gives them, from one generator seeded `seed`: one to
+    """The CAD stream: `count` float32 parts from one generator seeded `seed`: one to
     three axis-aligned boxes, some with a corner cut by a slanted plane, points along their edges and on their faces,
     scaled to metres, some turned a quarter turn about an axis; then a random share of coordinates moved by one ulp,
     zeros made 1e-10-sized, some vertices duplicated. Yields (index, points), the index counting every part made."""
@@ -195,9 +195,87 @@ def cad_sets(seed, count):
 
 # The CAD parts the golden takes, by index into cad_sets(2, ...), each chosen by a measured change to the merges that
 # no other case caught (RL-9d2 C2's mutants): 16, a vertex renamed after a merge and its ridges re-oriented; 225, the
-# merged facet's ridges marked untested; 851 and 2500, the merges taken in another order, and coplanar merges of
-# untested new facets not put off.
-CAD_CHOSEN = (16, 225, 851, 2500)
+# merged facet's ridges marked untested; 851 and 2500, the merges taken in another order, coplanar merges of
+# untested new facets not put off, and a tie between two facets' distances merged the other way. And three that only
+# a C1 mutant of the build changes (the RL-9d2 review's rerun): 2374, qhull's round-off bound without its 1.01;
+# 4005, a horizon facet's distance not checked before merging is skipped (`qh_checkzero`); 4083, a point's best
+# facet switched on an equal distance (`qh_findbest`).
+CAD_CHOSEN = (16, 225, 851, 2374, 2500, 4005, 4083)
+
+
+def grid_sets(seed, count):
+    """The grid stream: `count` float32 point sets from one xorshift generator seeded `seed`: one to three boxes,
+    each face sampled on a k x k grid (k from 3 to 12), half of the sets turned by a random rotation; each coordinate
+    rounded to float32 and a random share of them moved one ulp; the points shuffled. Yields (index, points), the
+    index counting every set made."""
+    mask = (1 << 64) - 1
+    state = [(seed * 0x9E3779B97F4A7C15) & mask | 1]
+
+    def bits():
+        x = state[0]
+        x ^= (x << 13) & mask
+        x ^= x >> 7
+        x ^= (x << 17) & mask
+        state[0] = x
+        return x
+
+    def unit():
+        return (bits() >> 11) / float(1 << 53)
+
+    def below(lo, hi):
+        return lo + bits() % (hi - lo)
+
+    def turn():
+        a, b, c = unit() * 6.283, unit() * 6.283, unit() * 6.283
+        ca, sa, cb, sb, cc, sc = math.cos(a), math.sin(a), math.cos(b), math.sin(b), math.cos(c), math.sin(c)
+        return [[ca * cb, ca * sb * sc - sa * cc, ca * sb * cc + sa * sc],
+                [sa * cb, sa * sb * sc + ca * cc, sa * sb * cc - ca * sc],
+                [-sb, cb * sc, cb * cc]]
+
+    def boxes():
+        p = []
+        for _ in range(below(1, 4)):
+            lo = [unit() - 0.5, unit() - 0.5, unit() - 0.5]
+            size = [0.1 + unit(), 0.1 + unit(), 0.1 + unit()]
+            k = below(3, 13)
+            for ax in range(3):
+                for side in range(2):
+                    for a in range(k):
+                        for b in range(k):
+                            q = [0.0, 0.0, 0.0]
+                            q[ax] = lo[ax] + side * size[ax]
+                            q[(ax + 1) % 3] = lo[(ax + 1) % 3] + size[(ax + 1) % 3] * a / (k - 1)
+                            q[(ax + 2) % 3] = lo[(ax + 2) % 3] + size[(ax + 2) % 3] * b / (k - 1)
+                            p.append(q)
+        if unit() < 0.5:
+            m = turn()
+            p = [[m[i][0] * q[0] + m[i][1] * q[1] + m[i][2] * q[2] for i in range(3)] for q in p]
+        return p
+
+    for i in range(count):
+        p = boxes()
+        share = unit() * 0.4
+        out = []
+        for q in p:
+            row = []
+            for x in q:
+                f = np.float32(x)
+                if unit() < share and f != 0:
+                    u = int(np.array(f, dtype=np.float32).view(np.uint32))
+                    u = u + 1 if unit() < 0.5 else u - 1
+                    f = np.array(u, dtype=np.uint32).view(np.float32)[()]
+                row.append(f)
+            out.append(row)
+        for j in range(len(out) - 1, 0, -1):
+            k = bits() % (j + 1)
+            out[j], out[k] = out[k], out[j]
+        yield i, np.array(out, dtype=np.float32)
+
+
+# The grid sets the golden takes, (seed, index into grid_sets(seed, ...)), each reaching a merge into the first new
+# facet before the merge set is first filled, so qhull's list of new facets starts elsewhere after it (RL-9d2 review,
+# RB-1): (20, 13) gives another graph and (24, 993) a refusal when the list is read before the merge.
+GRID_CHOSEN = ((20, 13), (24, 993))
 
 
 def cases():
@@ -259,6 +337,10 @@ def cases():
     for i, pts in cad_sets(2, max(CAD_CHOSEN) + 1):
         if i in CAD_CHOSEN:
             add(f'cad_{i:05d}', pts)
+    for seed, index in GRID_CHOSEN:
+        for i, pts in grid_sets(seed, index + 1):
+            if i == index:
+                add(f'grid_{seed}_{i:05d}', pts)
     return out
 
 
@@ -278,17 +360,14 @@ def graph(points, mhv, tmp):
             return None
         raise
     adr = int(m.mesh_graphadr[0])
+    if adr < 0:
+        sys.exit('MuJoCo loaded the mesh with no graph')
     nv, nf = int(m.mesh_graph[adr]), int(m.mesh_graph[adr + 1])
     return [int(x) for x in m.mesh_graph[adr:adr + 2 + 3 * nv + 6 * nf]]
 
 
 def main():
     args = sys.argv[1:]
-    only = None
-    if len(args) == 3 and args[1] == '--only':
-        with open(args[2]) as f:
-            only = {line.strip() for line in f if line.strip()}
-        args = args[:1]
     if len(args) != 1:
         sys.exit(__doc__)
     marker = oracle()
@@ -296,8 +375,6 @@ def main():
              'from sim/L0/tests/scripts/gen_qhull_graph_reference.py']
     with tempfile.TemporaryDirectory() as tmp:
         for name, mhv, pts in cases():
-            if only is not None and name not in only:
-                continue
             g = graph(pts, mhv, tmp)
             hexes = ' '.join(f'{struct.unpack("<I", struct.pack("<f", float(x)))[0]:08x}' for x in pts.reshape(-1))
             tail = 'ERR' if g is None else 'G ' + ' '.join(str(x) for x in g)
