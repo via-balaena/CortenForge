@@ -498,10 +498,10 @@ fn make(
 /// The file's texture coordinates are not taken, as a flex here holds none
 /// (book L47). MuJoCo takes an OBJ's (`user_flexcomp.cc:1183-1186`), and
 /// where Make drops a point it compacts them by each kept point's index
-/// (`:392-420`), past their end for a kept point beyond them (measured on
-/// two such files: of one, MuJoCo was killed by a segmentation fault in 4 of
-/// 5 runs and loaded it in the fifth; of the other, the model it made
-/// differed from run to run).
+/// (`:392-420`), past their end for a kept point beyond them (measured on one
+/// such file: in dim 2, MuJoCo was killed by a segmentation fault in 4 of 5
+/// runs and loaded it in the fifth; in dim 3, the model it made differed from
+/// run to run).
 fn make_mesh(
     fc: &MjcfFlexcomp,
     dim: i32,

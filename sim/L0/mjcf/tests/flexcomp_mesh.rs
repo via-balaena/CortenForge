@@ -392,8 +392,8 @@ fn an_stl_of_more_than_200000_faces_makes_a_flexcomp() {
     );
 }
 
-// Generated from MuJoCo 3.5.0's loads of these documents: each flex's dim, elements, vertex bodies and
-// vertex positions after `mj_forward`.
+// MuJoCo 3.5.0's loads of these documents, printed by a script outside the repository: each flex's dim,
+// elements, vertex bodies and vertex positions after `mj_forward`.
 const LOADS: &[(&str, Parts, Expected)] = &[
     (
         "m01: obj dim2",

@@ -524,10 +524,8 @@ fn check_sizes(model: &MjcfModel) -> Result<()> {
 /// Each mesh or SDF geom names a mesh ([`check_geom_mesh`]), body by body
 /// from the world down: [`validate`]'s, after every other check it makes.
 /// The loader checks a mesh geom's as it builds the geom, where it did before
-/// Rigid-loading PR RL-9d, and an SDF geom's among the checks MuJoCo makes
-/// that it did not make before RL-6a (`builder::body`'s `check_geom`), each
-/// so that a document refused before for another fault is refused for that
-/// one (ledger L353).
+/// Rigid-loading PR RL-9d, and an SDF geom's as it checks each body
+/// (`builder::body`'s `check_geom`), after the geom's condim (ledger L353).
 fn check_geom_meshes(model: &MjcfModel) -> Result<()> {
     for (body_id, first_geom, body) in bodies_in_order(&model.worldbody) {
         for (k, geom) in body.geoms.iter().enumerate() {

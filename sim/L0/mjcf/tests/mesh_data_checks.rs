@@ -819,8 +819,9 @@ fn a_meshs_data_mujoco_loads_loads() {
 /// Two meshes of one STL, the second writing a face, refused as MuJoCo 3.5.0
 /// refuses a mesh it compiles from its file: "repeated face specification".
 /// MuJoCo takes a mesh whose file it has compiled before at the same
-/// `maxhullvert`, `inertia` and `scale` from its mesh cache
-/// (`LoadCachedMesh`, `user_mesh.cc:1136-1167`), so it reads neither the
+/// `maxhullvert`, `inertia` and `scale`, and with a hull where the mesh needs
+/// one, from its mesh cache (`LoadCachedMesh`, `user_mesh.cc:1136-1167`), so
+/// it reads neither the
 /// second mesh's own data nor checks it, and loads this document with
 /// `usethread="false"`; with its cache's capacity set to 0, or with threads,
 /// it refuses it, as here (measured 2026-11-19 on this document; registry

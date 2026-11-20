@@ -531,13 +531,13 @@ impl ModelBuilder {
     }
 
     /// MuJoCo 3.5.0's checks of a geom in `mjCGeom::Compile`'s order: a
-    /// condim other than 1, 3, 4 or 6 (`user_objects.cc:3651-3654`), a plane
+    /// condim other than 1, 3, 4 or 6 (`user_objects.cc:3651-3654`), an SDF
+    /// geom naming no mesh (`:3656-3659`), a plane
     /// only in a static body, one with no joint on it or a body above it
     /// (`:3666-3668`; fusion moves a geom only into a body that moves as its
     /// own does), `shellinertia` on a mesh or SDF geom (`:3744-3746`), then a
     /// negative mass or density
-    /// ([`Self::negative_mass`], `:3805-3807`). The world's geoms can fail
-    /// only their condim and `shellinertia`.
+    /// ([`Self::negative_mass`], `:3805-3807`).
     fn check_geom(&self, geom: usize, moving: bool, at: impl Fn() -> Location) -> Result<()> {
         if !matches!(self.geom_condim[geom], 1 | 3 | 4 | 6) {
             return Err(MjcfError::invalid_model("invalid condim in geom").at(at()));

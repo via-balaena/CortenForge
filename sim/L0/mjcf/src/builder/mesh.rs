@@ -284,7 +284,8 @@ pub fn convert_mjcf_hfield(
 ) -> Result<HeightFieldData> {
     // Resolve data source: file-based or inline
     let (ncol, nrow, elevation) = match (&hfield.file, &hfield.elevation) {
-        // Inline elevation data takes precedence over a file
+        // Inline elevation data is taken over a file here; MuJoCo reads the
+        // file and not `elevation` beside it (ledger L431).
         (_, Some(elev)) => {
             let at = || Location::named(ElementKind::Hfield, &hfield.name);
             let nr = hfield

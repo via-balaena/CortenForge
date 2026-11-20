@@ -4,12 +4,11 @@
 //! or its class names it. MuJoCo checks it geom by geom, after the geom's
 //! condim and directly before its height field. sim-mjcf's loader refuses a
 //! mesh geom's as it builds the geom, where it refused one before
-//! Rigid-loading PR RL-9d in other words, and an SDF geom's among the checks
-//! MuJoCo makes that it did not make before RL-6a, after the geom's condim:
-//! so a document refused before for another fault is refused for that one
-//! (ledger L353). A height field or a size it checks before it builds the
-//! model is named before an SDF geom's, and an SDF geom `discardvisual`
-//! discards is not checked (ledger L336): `NAMED_OTHERWISE`. `validate`
+//! Rigid-loading PR RL-9d in other words, and an SDF geom's as it checks
+//! each body (`check_bodies`), after the geom's condim, as MuJoCo does.
+//! Where it checks another fault first, it names that one, and it does not
+//! check an SDF geom `discardvisual` discards (ledger L336, L353):
+//! `NAMED_OTHERWISE`. `validate`
 //! checks both kinds after its other checks. A named mesh the model lacks
 //! is refused before any body, in both.
 //!
