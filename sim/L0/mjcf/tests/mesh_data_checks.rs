@@ -27,8 +27,9 @@
 //!
 //! Of two meshes MuJoCo refuses, it names whichever its threads compile
 //! first unless `usethread` is false, when it names the first. sim-mjcf
-//! always names the first. With threads, the first was named in 191, 191
-//! and 197 of 200 loads of three such models.
+//! always names the first. With threads, the first was named in most of 200
+//! loads of each of three such models (measured 2026-11-19; fewer while
+//! another build ran).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -761,7 +762,8 @@ fn a_meshs_data_is_refused_where_and_as_mujoco_refuses_it() {
 
 /// Each loads with the tetrahedron, as MuJoCo 3.5.0 loads it: four
 /// vertices, four faces, and the mass MuJoCo gives its body, computed by
-/// `+`, `-`, `*` and `/` alone, whose results IEEE 754 fixes to the bit.
+/// `+`, `-`, `*`, `/` and `sqrt` alone, whose results IEEE 754 fixes to the
+/// bit.
 #[test]
 fn a_meshs_data_mujoco_loads_loads() {
     let dir = tempfile::tempdir().unwrap();

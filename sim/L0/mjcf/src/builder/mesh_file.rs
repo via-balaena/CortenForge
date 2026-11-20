@@ -113,7 +113,8 @@ pub(super) fn load_mesh_file(
 /// A mesh `<flexcomp>`'s file read as MuJoCo 3.5.0's `MakeMesh` reads it
 /// (`user_flexcomp.cc:1148-1173`): refused as a legacy MSH by its path's type
 /// before it is opened (`IsMSH`, `user_mesh.cc:626-629`), then opened from the
-/// type's directory and the model's ([`resolve_asset_path`]), read as a
+/// type's directory and the model's ([`resolve_asset_path`]; an included
+/// file's own directory is not searched, as for a `<mesh>`, ledger L426), read as a
 /// `<mesh>`'s file is ([`read_file`]: this crate's readers' extensions with
 /// them, registry `D-MESH-FORMAT`, `D-STL-ASCII`, `D-STL-FACES`), and its
 /// repeated vertices merged, whatever its format, as a default mesh's

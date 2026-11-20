@@ -139,7 +139,8 @@
 //! - `hfields` (default-on): PNG-source `<asset><hfield file="..."/>` height fields. Pulls
 //!   the `image` crate. Disable via `default-features = false` for embedded / WASM
 //!   builds; inline `elevation="..."` height fields continue to work either way.
-//! - `threemf`: 3MF asset support for `<mesh file="..."/>` (forwards to `mesh-io/threemf`).
+//! - `threemf`: 3MF asset support for `<mesh file="..."/>` and a mesh
+//!   `<flexcomp file="..."/>` (forwards to `mesh-io/threemf`).
 //! - `mjb`: the binary model format above (not MuJoCo's `.mjb`).
 //! - `serde`: derive Serialize/Deserialize on the public types. Deserializing
 //!   a model, in any format, refuses a level of bodies and frames past 4096

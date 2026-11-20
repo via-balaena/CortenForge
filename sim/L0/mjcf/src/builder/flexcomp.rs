@@ -492,7 +492,16 @@ fn make(
 /// A face naming a vertex the file does not hold is kept, for Make's element
 /// check to refuse: in dim 2 as MuJoCo's does where the file repeats no
 /// vertex; in dim 3 MuJoCo's volume test reads past its points, so this
-/// crate keeps the tetrahedron untested.
+/// crate keeps the tetrahedron untested (registry
+/// `D-FLEXCOMP-MESH-UNDEFINED`).
+///
+/// The file's texture coordinates are not taken, as a flex here holds none
+/// (book L47). MuJoCo takes an OBJ's (`user_flexcomp.cc:1183-1186`), and
+/// where Make drops a point it compacts them by each kept point's index
+/// (`:392-420`), past their end for a kept point beyond them (measured on
+/// two such files: of one, MuJoCo was killed by a segmentation fault in 4 of
+/// 5 runs and loaded it in the fifth; of the other, the model it made
+/// differed from run to run).
 fn make_mesh(
     fc: &MjcfFlexcomp,
     dim: i32,
@@ -513,8 +522,9 @@ fn make_mesh(
     if vertices.is_empty() || faces.is_empty() {
         return Err(refuse("file", "Vertex and face data required"));
     }
-    // MuJoCo holds an id as an int: one beyond an int is held at the nearest,
-    // which Make's element check refuses.
+    // MuJoCo holds an id as an int, as its readers read one (an OBJ's past an
+    // int cut to an int's 32 bits, here too); a PLY's or 3MF's past an int is
+    // held here at the nearest, which Make's element check refuses.
     let id = |f: i64| i32::try_from(f).unwrap_or(if f < 0 { i32::MIN } else { i32::MAX });
     let coordinates = vertices.iter().flat_map(|v| [v.x, v.y, v.z]);
     if dim == 2 {
@@ -522,8 +532,9 @@ fn make_mesh(
         *element = faces.into_iter().map(id).collect();
         return Ok(());
     }
-    // Required as a dim-3 mesh is read; built in code without it, MuJoCo's
-    // default, 0.
+    // Required as a dim-3 mesh is read (`xml_native_reader.cc:2736-2739`); one
+    // built in code without it is taken at 0 (MuJoCo makes a flexcomp only as
+    // it reads one).
     let origin = fc.origin.unwrap_or([0.0; 3]);
     *points = origin.into_iter().chain(coordinates).collect();
     for face in faces.chunks_exact(3) {
