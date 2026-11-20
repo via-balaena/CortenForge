@@ -132,7 +132,7 @@ Every open question the 21 research sections raise, deduplicated, with the secti
 | Q61 | contact geom order | A15 Q6; A21 §7.2 | MuJoCo's type order / index order | A15: none; A21: MuJoCo's | (a) | parity rule (A21 R1 = P41); the CCD-port interaction is C10 |
 | Q62 | degenerate pairs (concentric spheres, crossing capsules) | A16 Q2 | match MuJoCo | match | (a) | parity |
 | Q63 | MuJoCo's mesh frame (re-centring at the mesh CoM/principal frame) | A17 Q2; A20 "Open for Jon" 4 | adopt fully in A10's mass commit / give the CCD the CoM only / list as a representation divergence | A17: adopt fully; A20: no owner | **(c)** | no commit owns it (A10 MH1–MH5 do not); changes mesh `geom_pos`/`geom_quat` meaning |
-| Q64 | qhull's hull graph | A17 Q3 | port / limitation | limitation | (a) | 01-decisions: keep our hull order unless Jon wants the port |
+| Q64 | qhull's hull graph | A17 Q3 | port / limitation | port (Jon, 2026-11-19) | (a) | 01-decisions: qhull's 3-d path ported in 0.10 (Rigid-loading PR RL-9d2) |
 | Q65 | mesh polygons + mesh multi-contact in Rigid-physics | A17 Q4 | port / ledger row | port (C3 without it reddens a test) | (b) | — |
 | Q66 | `<flag nativeccd="disable">` | A17 Q5 | refuse / port MPR / silent no-op | refuse | (a) | stated limitation; the rule forbids the silent no-op |
 | Q67 | non-square height-field cells | A17 Q6 | `HeightFieldData` gains x/y spacing / refuse dx ≠ dy | spacing | **(c)** | a public change in a published crate vs a limitation |

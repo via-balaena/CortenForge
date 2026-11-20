@@ -16,7 +16,7 @@ Each line: the call, why, and where the appendix records what would differ if it
 | 11 | `SimulationConfig`, `SolverConfig`, `Gravity` | deleted, with sim-mjcf `config.rs`, `ExtendedSolverConfig`, and sim-mjcf's sim-types dependency; `SimError` deleted if it has no consumer at implementation time (measure) | no functional consumer (A1 §9, A3 §5) |
 | 12 | chaining callbacks | documented clone pattern (freezes the pub `Callback.0`) | A2 §6 |
 | 13 | vertex-only mesh; `.mjb` | convex hull, as MuJoCo; `.mjb` decode size limit → `MjbTooLarge` | A5 §3.8 |
-| 14 | L27 hull order | in scope; flex edges in MuJoCo 3.5.0's order; hull in our own deterministic order (MuJoCo's comes from qhull — listed as a limitation); `clippy::iter_over_hash_type` denied in cf-geometry and sim-mjcf; mesh-io STEP keys sorted too | A6 §1 |
+| 14 | L27 hull order | in scope; flex edges in MuJoCo 3.5.0's order; hull in our own deterministic order (MuJoCo's comes from qhull — listed as a limitation; superseded 2026-11-19: Jon ports qhull's 3-d path, 01-decisions); `clippy::iter_over_hash_type` denied in cf-geometry and sim-mjcf; mesh-io STEP keys sorted too | A6 §1 |
 | 15 | L30 | the corpus covers all 184 example files with MJCF; the Rigid PRs verify them (40-verification); whether CI loads them later stays open (ledger) | A6 §3 |
 | 16 | depth | MuJoCo's limit (self-closing refused at depth 500, open/close at 499); the 6 recursive pub entry points run on a 64 MiB thread; a 4096-deep guard for code-built trees; `all_bodies` iterative | 20.7 MB stack needed at opt-0 (A4 §1.4) |
 | A2-Q1 | FD refusal shape | `StepError::UnsupportedIntegrator{integrator}` | derivative fns already return `StepError` |
