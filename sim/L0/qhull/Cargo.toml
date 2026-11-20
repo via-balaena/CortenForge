@@ -1,0 +1,24 @@
+[package]
+name = "cortenforge-sim-qhull"
+description = "Qhull's 3-d convex hull, ported to Rust as MuJoCo 3.5.0 runs it, giving MuJoCo's mesh graph"
+keywords = ["convex-hull", "qhull", "mujoco", "simulation", "geometry"]
+categories = ["mathematics", "simulation"]
+version.workspace = true
+edition.workspace = true
+# A translation of Qhull (COPYING.txt) and of MuJoCo 3.5.0's MakeGraph, which
+# reads qhull's result (Apache-2.0): their licences, not the workspace's.
+license = "Qhull AND Apache-2.0"
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+# Joins the release set when sim-core depends on it (Rigid-loading PR RL-9d3).
+publish = false
+
+[package.metadata.cortenforge]
+tier = "L0"
+
+[lib]
+name = "sim_qhull"
+
+[lints]
+workspace = true
