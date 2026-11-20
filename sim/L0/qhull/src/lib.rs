@@ -3,6 +3,7 @@
 // Qhull, Copyright (c) 1993-2020 C.B. Barber, Arlington, MA, and The National
 // Science and Technology Research Center for Computation and Visualization of
 // Geometric Structures (The Geometry Center), University of Minnesota.
+// global_r.c: Copyright (c) 1993-2020 The Geometry Center.
 // MuJoCo, Copyright 2021 DeepMind Technologies Limited, Apache-2.0.
 // Modified 2026-11 by Via Balaena (the CortenForge authors): translated to Rust,
 // keeping only the 3-d path MuJoCo 3.5.0 runs, to give its mesh graph. See
@@ -11,13 +12,15 @@
 //! Qhull's 3-d convex hull as MuJoCo 3.5.0 runs it, giving MuJoCo's mesh
 //! graph.
 //!
-//! [`mesh_graph`] is MuJoCo's `mjCMesh::MakeGraph` (`user_mesh.cc:1861-2043`):
+//! [`mesh_graph`] is MuJoCo's `mjCMesh::MakeGraph` (`user_mesh.cc:1861-2042`):
 //! qhull run as `qhull Qt` (and `TA` under a mesh's `maxhullvert`) over a
 //! mesh's vertices, then `qh_triangulate` and `qh_vertexneighbors`, and the
-//! graph read from qhull's lists. Every decision qhull makes from a floating
-//! point comparison is made here from the same operations in the same
-//! order, so the graph is MuJoCo's int for int: the same vertices in the same
-//! order, the same neighbours in the same order, the same triangles.
+//! graph read from qhull's lists. The floating point operations qhull's
+//! decisions rest on are made here in qhull's order, and its sets and lists
+//! walked in its order. On every input it was measured on, the graph is
+//! MuJoCo's int for int: the same vertices in the same order, the same
+//! neighbours in the same order, the same triangles; `tests/mesh_graph_golden.rs`
+//! holds MuJoCo's graphs for some of them.
 //!
 //! # What is ported
 //!
@@ -35,19 +38,25 @@
 //! the merges left on two facets only are renamed (`qh_reducevertices`).
 //! After the build, `qh_triangulate` splits each merged facet into triangles.
 //!
-//! Where the options allow a routine that no input the port was measured on
-//! reaches, it returns [`Error::Unported`] naming the routine instead of
-//! going on: a ridge of more than two new facets (qhull's dupridges and the
+//! Where the options allow a routine that no measured input reaches, it
+//! returns [`Error::Unported`] naming the routine instead of going on: a
+//! ridge of more than two new facets (qhull's duplicate ridges and the
 //! pinched vertices they lead to), a cycle of more than one new facet
 //! coplanar with one horizon facet (`qh_mergecycle`), a degenerate merge or
-//! an extra vertex while vertices are reduced, a mirrored pair of triangles,
-//! a point partitioned below every new facet (`qh_findbestlower`), and a
-//! narrow hull's furthest point recomputed (`qh_furthestout`).
+//! an extra vertex while vertices are reduced, a mirrored pair of triangles
+//! (`qh_triangulate_mirror`), and a coplanar point whose first facet is
+//! flipped and whose neighbours give no distance (`qh_findbestlower`).
 //!
 //! Two of qhull's choices depend on its platform rather than its
-//! arithmetic: the order `qsort` leaves equal merges in, and the order a
-//! ridge hash keyed on vertex addresses probes in. Here they are a stable
-//! sort and a hash on vertex ids.
+//! arithmetic: the order `qsort` leaves merges of one type at one distance
+//! in, and the order a ridge hash keyed on vertex addresses probes in. Here
+//! they are a stable sort and a hash on vertex ids. The hash, swapped into
+//! qhull, changed no graph on the measured inputs. The sort can change one:
+//! where two such merges are sorted together, macOS's `qsort` can leave
+//! them in the other order, and MuJoCo on macOS then gives another graph
+//! (measured on reorderings of one mesh's vertices; no measured input
+//! itself sorts two such merges together). What MuJoCo gives there on
+//! another platform has not been measured.
 //!
 //! # Licence
 //!
@@ -86,21 +95,29 @@ use state::Qhull;
 /// MuJoCo 3.5.0's convex hull graph of `points` (`mjCMesh::MakeGraph`).
 ///
 /// qhull's hull of them, `None` for fewer than 4 points (MuJoCo makes no
-/// graph). `maxhullvert` is the mesh's (`-1` for none): with it qhull stops
-/// once the hull has that many vertices (MuJoCo's reader refuses one below 4,
-/// where qhull would ignore the option).
+/// graph). `points` are a mesh's vertices as MuJoCo holds them when it makes
+/// the graph: after its vertices are merged and before its `refpos`,
+/// `refquat` and `scale` are applied (`mjCMesh::Process`,
+/// `user_mesh.cc:1567-1603`), and finite (MuJoCo refuses a vertex that is
+/// not first). The graph of the same points turned can differ.
+///
+/// `maxhullvert` is the mesh's (`-1` for none): with it qhull stops once the
+/// hull has that many vertices. MuJoCo's reader refuses one from 0 to 3; for
+/// those, qhull's parse of the `TA` it is given reads a pointer it never set
+/// (`global_r.c:1417-1425`), and this port runs as for none.
 ///
 /// # Errors
 ///
 /// [`Error::Qhull`] where qhull stops (flat or degenerate input among them),
-/// which MuJoCo reports as "qhull error"; [`Error::Unported`] where the points
-/// reach a routine this port does not hold.
+/// which MuJoCo reports as "qhull error"; [`Error::Graph`] where MuJoCo's own
+/// check of qhull's result fails; [`Error::Unported`] where the points reach
+/// a routine this port does not hold.
 pub fn mesh_graph(points: &[[f64; 3]], maxhullvert: i32) -> Result<Option<MeshGraph>, Error> {
     if points.len() < 4 {
         return Ok(None);
     }
     // `qhull Qt TA<maxhullvert-4>`: qhull keeps `TA n` as `n + 1`
-    // (`global_r.c:1416-1426`), and ignores a count that is not a digit.
+    // (`global_r.c:1416-1426`); below 4, as for none (above).
     let stop_add = if maxhullvert >= 4 { maxhullvert - 3 } else { 0 };
     let mut qh = Qhull::new(points, stop_add);
     qh.qhull()?;

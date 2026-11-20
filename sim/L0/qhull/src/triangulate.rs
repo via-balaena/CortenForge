@@ -17,9 +17,9 @@ use crate::set;
 use crate::state::{FacetId, Qhull, VertexId};
 
 impl Qhull<'_> {
+    /// `qh_triangulate` (`poly2_r.c:3482-3633`).
     // qhull's routine kept whole, so it reads against its source.
     #[allow(clippy::too_many_lines)]
-    /// `qh_triangulate` (`poly2_r.c:3482-3626`).
     pub(crate) fn triangulate(&mut self) -> Result<(), Error> {
         if self.hasTriangulation {
             return Ok(());
@@ -200,8 +200,8 @@ impl Qhull<'_> {
         Ok(())
     }
 
-    /// `qh_triangulate_null` (`poly2_r.c:3816-3824`): a triangle with a vertex
-    /// twice deleted, its two neighbours made each other's.
+    /// `qh_triangulate_null` (`poly2_r.c:3816-3824`): a triangle that holds its
+    /// apex twice deleted, its two neighbours made each other's.
     fn triangulate_null(&mut self, facet_a: FacetId) -> Result<(), Error> {
         let neighbor = self.f(facet_a).neighbors[0];
         let otherfacet = self.f(facet_a).neighbors[1];

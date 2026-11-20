@@ -2,7 +2,7 @@
 // Qhull, Copyright (c) 1993-2020 C.B. Barber, Arlington, MA, and The National
 // Science and Technology Research Center for Computation and Visualization of
 // Geometric Structures (The Geometry Center), University of Minnesota.
-// qset_r.c: Copyright (c) 1993-2020 The Geometry Center.
+// qset_r.c, qset_r.h: Copyright (c) 1993-2020 The Geometry Center.
 // Modified 2026-11 by Via Balaena (the CortenForge authors): translated to Rust,
 // keeping only the 3-d path MuJoCo 3.5.0 runs, to give its mesh graph. See
 // COPYING.txt; the original is at www.qhull.org.
@@ -30,7 +30,7 @@ impl SetElem for VertexId {
 }
 
 impl SetElem for RidgeId {
-    const NULL: Self = Self(u32::MAX);
+    const NULL: Self = Self::NULL;
 }
 
 impl SetElem for u32 {
@@ -125,7 +125,9 @@ pub(crate) fn setappend2ndlast<T: SetElem>(set: &mut Vec<T>, elem: T) {
 }
 
 /// `qh_setnew_delnthsorted` (`qset_r.c:1009-1079`): a copy without its `nth`
-/// element, `prepend` slots (NULL here) before it.
+/// element, `prepend` slots (NULL here) before it. Of a non-empty set, as
+/// every caller gives it, and the whole set, as qhull's `size` is at every
+/// call.
 pub(crate) fn setnew_delnthsorted<T: SetElem>(set: &[T], nth: usize, prepend: usize) -> Vec<T> {
     let mut out = Vec::with_capacity(set.len() - 1 + prepend);
     out.extend(std::iter::repeat_n(T::NULL, prepend));

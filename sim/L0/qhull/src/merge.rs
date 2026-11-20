@@ -12,9 +12,10 @@
 //! Merging after each point (`qh_premerge`, qhull's `C-0`): the new facets
 //! coplanar with their horizon merged into it, flipped facets into their best
 //! neighbour, and each non-convex ridge's facets into one, then the vertices
-//! the merges left shared renamed. Vertex merges for pinched vertices, merge
-//! cycles of more than one facet, twisted and mirror merges are not reached by
-//! any measured input and return [`Error::Unported`].
+//! the merges left shared renamed. Vertex merges for pinched vertices and
+//! merge cycles of more than one facet are not reached by any measured input
+//! and return [`Error::Unported`]. A twisted merge cannot arise in 3-d:
+//! `qh_test_appendmerge` tests a centrum there (`merge_r.c:4857-4858`).
 
 use crate::error::Error;
 use crate::set;
@@ -228,7 +229,7 @@ impl Qhull<'_> {
             }
             self.fm(facet).tested = true;
             for ridge in self.f(facet).ridges.clone().unwrap_or_default() {
-                if ridge == <RidgeId as set::SetElem>::NULL {
+                if ridge == RidgeId::NULL {
                     break;
                 }
                 self.rm(ridge).tested = true;
@@ -286,8 +287,8 @@ impl Qhull<'_> {
     /// `qsort` by `qh_compare_facetmerge` (`merge_r.c:895-903`), made stable:
     /// a higher merge type first, then a larger distance first, so
     /// `qh_all_merges`, taking from the end, merges the lowest type and the
-    /// flattest first. Equal merges keep their order (MEASURED: macOS's
-    /// `qsort` leaves every graph so over 7,167 inputs).
+    /// flattest first. Merges of one type at one distance keep their order,
+    /// where macOS's `qsort` can leave them in another (the crate's docs).
     fn sort_mergeset(&mut self) {
         self.facet_mergeset.sort_by(|a, b| {
             b.mergetype.cmp(&a.mergetype).then_with(|| {
@@ -675,7 +676,7 @@ impl Qhull<'_> {
             self.fm(neighbor).seen = false;
         }
         for ridge in self.f(facet).ridges.clone().unwrap_or_default() {
-            if ridge == <RidgeId as set::SetElem>::NULL {
+            if ridge == RidgeId::NULL {
                 break;
             }
             if let Some(o) = self.otherfacet(ridge, facet) {
@@ -733,7 +734,7 @@ impl Qhull<'_> {
     fn updatetested(&mut self, facet1: FacetId, facet2: FacetId) {
         self.fm(facet2).tested = false;
         for ridge in self.f(facet1).ridges.clone().unwrap_or_default() {
-            if ridge == <RidgeId as set::SetElem>::NULL {
+            if ridge == RidgeId::NULL {
                 break;
             }
             self.rm(ridge).tested = false;
@@ -752,7 +753,7 @@ impl Qhull<'_> {
         if !self.f(facet2).keepcentrum {
             self.fm(facet2).center = None;
             for ridge in self.f(facet2).ridges.clone().unwrap_or_default() {
-                if ridge == <RidgeId as set::SetElem>::NULL {
+                if ridge == RidgeId::NULL {
                     break;
                 }
                 self.rm(ridge).tested = false;
@@ -760,10 +761,10 @@ impl Qhull<'_> {
         }
     }
 
-    // qhull's routine kept whole, so it reads against its source.
-    #[allow(clippy::too_many_lines)]
     /// `qh_mergesimplex` (`merge_r.c:3738-3840`): a simplicial `facet1`
     /// merged into `facet2`, its vertex opposite `facet2` added to it.
+    // qhull's routine kept whole, so it reads against its source.
+    #[allow(clippy::too_many_lines)]
     fn mergesimplex(
         &mut self,
         facet1: FacetId,
@@ -953,7 +954,7 @@ impl Qhull<'_> {
         if let Some(r) = f.ridges.as_mut()
             && let Some(first) = r.first_mut()
         {
-            *first = <RidgeId as set::SetElem>::NULL;
+            *first = RidgeId::NULL;
         }
         if let Some(first) = f.neighbors.first_mut() {
             *first = FacetId::NULL;
@@ -1149,7 +1150,7 @@ impl Qhull<'_> {
             self.vm(v).seen = false;
         }
         for ridge in self.f(facet).ridges.clone().unwrap_or_default() {
-            if ridge == <RidgeId as set::SetElem>::NULL {
+            if ridge == RidgeId::NULL {
                 break;
             }
             for v in self.r(ridge).vertices.clone() {
@@ -1272,7 +1273,7 @@ impl Qhull<'_> {
         // `qsort` by `qh_comparevisit` (`merge_r.c:910-918`), made stable.
         vertices.sort_by_key(|&v| self.v(v).visitid);
         let hashsize = newhashtable(ridges.len());
-        let mut hash_table: Vec<RidgeId> = vec![<RidgeId as set::SetElem>::NULL; hashsize];
+        let mut hash_table: Vec<RidgeId> = vec![RidgeId::NULL; hashsize];
         for &ridge in ridges {
             self.hashridge(&mut hash_table, ridge, oldvertex);
         }
@@ -1294,7 +1295,7 @@ impl Qhull<'_> {
         let mut hash = gethash_vertices(hashsize, &self.r(ridge).vertices, oldvertex);
         loop {
             let ridge_a = hash_table[hash];
-            if ridge_a == <RidgeId as set::SetElem>::NULL {
+            if ridge_a == RidgeId::NULL {
                 hash_table[hash] = ridge;
                 break;
             } else if ridge_a == ridge {
@@ -1320,7 +1321,7 @@ impl Qhull<'_> {
         let mut hash = gethash_vertices(hashsize, &self.r(ridge).vertices, vertex);
         loop {
             let ridge_a = hash_table[hash];
-            if ridge_a == <RidgeId as set::SetElem>::NULL {
+            if ridge_a == RidgeId::NULL {
                 return false;
             }
             if ridge_a != ridge
@@ -1549,7 +1550,7 @@ impl Qhull<'_> {
             }
         }
         for ridge in self.f(facet1).ridges.clone().unwrap_or_default() {
-            if ridge == <RidgeId as set::SetElem>::NULL {
+            if ridge == RidgeId::NULL {
                 break;
             }
             let r = self.rm(ridge);

@@ -1,9 +1,10 @@
 // Ported from Qhull, libqhull_r (libqhull_r.c, poly_r.c, poly2_r.c, merge_r.c's
-// qh_checkzero).
+// qh_checkzero, user_r.h's constants, geom_r.h's fmin_).
 // Qhull, Copyright (c) 1993-2020 C.B. Barber, Arlington, MA, and The National
 // Science and Technology Research Center for Computation and Visualization of
 // Geometric Structures (The Geometry Center), University of Minnesota.
-// libqhull_r.c, poly_r.c, poly2_r.c: Copyright (c) 1993-2020 The Geometry Center.
+// libqhull_r.c, poly_r.c, poly2_r.c, geom_r.h: Copyright (c) 1993-2020 The
+// Geometry Center.
 // merge_r.c: Copyright (c) 1993-2020 C.B. Barber.
 // Modified 2026-11 by Via Balaena (the CortenForge authors): translated to Rust,
 // keeping only the 3-d path MuJoCo 3.5.0 runs, to give its mesh graph. See
@@ -29,9 +30,9 @@ const WIDE_MAXOUTSIDE2: f64 = 10.0 * WIDE_MAXOUTSIDE;
 const HASH_FACTOR: i32 = 2;
 
 impl Qhull<'_> {
-    /// `qh_qhull` (`libqhull_r.c:60-119`) for `qhull Qt`: the build, then, where
-    /// no `TA` stopped it, `qh_check_maxout`. Merging is
-    /// [`Self::premerge`]'s, after each point.
+    /// `qh_qhull` (`libqhull_r.c:60-119`) for `qhull Qt`: the build, then,
+    /// without `TA`, `qh_check_maxout`. Merging is [`Self::premerge`]'s,
+    /// after each point.
     pub(crate) fn qhull(&mut self) -> Result<(), Error> {
         self.initbuild()?;
         self.buildhull()?;
@@ -189,7 +190,9 @@ impl Qhull<'_> {
     /// What `qh_checkpolygon` (`poly2_r.c:1200-1400`) leaves on the initial
     /// simplex besides its checks, which cannot fail on it: every vertex
     /// seen, its visit mark its count of facets, and `qh.vertex_visit`
-    /// advanced past them.
+    /// advanced past them. The increments of `qh.visit_id` and
+    /// `qh.vertex_visit` its `qh_checklists` makes first (`poly2_r.c:1053`,
+    /// `:1128`) are not made, so both counters run one below qhull's.
     fn checkpolygon_marks(&mut self) {
         let vertices = self.vertices_from(self.vertex_list);
         for &v in &vertices {
@@ -516,7 +519,7 @@ impl Qhull<'_> {
             if let Some(ridges) = self.fm(visible).ridges.as_mut()
                 && let Some(first) = ridges.first_mut()
             {
-                *first = <crate::state::RidgeId as set::SetElem>::NULL;
+                *first = crate::state::RidgeId::NULL;
             }
             if let Some(first) = self.fm(visible).neighbors.first_mut() {
                 *first = FacetId::NULL;

@@ -10,7 +10,9 @@ This NOTICE accompanies the Apache-2.0 option. The portions ported from MuJoCo
 and OpenSim, named under MUJOCO and OPENSIM below, are licensed under the
 Apache License, Version 2.0, whichever license a recipient takes for the rest;
 for the rest, recipients who take the software under the MIT license instead
-are bound only by that license's terms.
+are bound only by that license's terms. sim-qhull, named under QHULL below, is
+under neither choice: Qhull's licence for its Qhull portions, and the Apache
+License, Version 2.0, for its MuJoCo portion.
 
 ------------------------------------------------------------------------------
 DISCLAIMER
@@ -52,7 +54,7 @@ anything made with it.
 MUJOCO
 
 cortenforge-geometry, cortenforge-sim-core, cortenforge-sim-mjcf and
-cortenforge-sim-urdf, and in this repository sim-gpu, include portions ported
+cortenforge-sim-urdf, and in this repository sim-gpu and sim-qhull, include portions ported
 from MuJoCo (https://github.com/google-deepmind/mujoco), translated to Rust and
 changed. MuJoCo's source code is licensed under the Apache License, Version
 2.0, the text in the accompanying LICENSE-APACHE file. The MuJoCo source files
@@ -139,6 +141,25 @@ which carries this notice and licence:
 
 CortenForge is not affiliated with, sponsored by, or endorsed by Syoyo Fujita,
 the tinyobjloader project or W. Randolph Franklin.
+
+------------------------------------------------------------------------------
+QHULL
+
+sim-qhull (sim/L0/qhull), in this repository, is a port of Qhull
+(http://www.qhull.org), translated to Rust and changed: the 3-d convex hull as
+MuJoCo 3.5.0 runs it, at the commit MuJoCo 3.5.0 builds with (62ccc56a). Its
+Qhull portions are licensed under Qhull's licence, the text in
+sim/L0/qhull/COPYING.txt, not under the choice of licences above; the crate's
+README.md carries the notice of its modification. Qhull's COPYING.txt carries
+this notice:
+
+    Qhull, Copyright (c) 1993-2020 C.B. Barber, Arlington, MA, and The
+    National Science and Technology Research Center for Computation and
+    Visualization of Geometric Structures (The Geometry Center), University
+    of Minnesota.
+
+CortenForge is not affiliated with, sponsored by, or endorsed by C.B. Barber,
+The Geometry Center or the Qhull project.
 
 ------------------------------------------------------------------------------
 THIRD-PARTY DATA

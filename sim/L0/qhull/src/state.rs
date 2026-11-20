@@ -54,6 +54,8 @@ impl VertexId {
 pub(crate) struct RidgeId(pub(crate) u32);
 
 impl RidgeId {
+    /// An empty slot (qhull's NULL).
+    pub(crate) const NULL: Self = Self(u32::MAX);
     /// The arena index.
     pub(crate) const fn index(self) -> usize {
         self.0 as usize
@@ -96,7 +98,8 @@ pub(crate) struct Facet {
     pub(crate) next: Option<FacetId>,
     /// Its vertices, decreasing by id; a simplicial facet's first is its apex.
     pub(crate) vertices: Vec<VertexId>,
-    /// Its ridges, `None` until `qh_makeridges` (qhull's NULL set).
+    /// Its ridges, `None` (qhull's NULL set) until `qh_makeridges` or
+    /// `qh_makenew_nonsimplicial` makes the set.
     pub(crate) ridges: Option<Vec<RidgeId>>,
     /// Its neighbours; a simplicial facet's `k`th lies opposite its `k`th
     /// vertex.
@@ -679,9 +682,9 @@ impl<'p> Qhull<'p> {
         self.NEWtentative = false;
     }
 
-    /// `qh_pointid` for a point the hull holds.
+    /// `qh_pointid` of a vertex's point: `qh_IDnone` (-3) for none.
     pub(crate) fn pointid(&self, vertex: VertexId) -> i32 {
-        self.v(vertex).point.map_or(-1, |p| p as i32)
+        self.v(vertex).point.map_or(-3, |p| p as i32)
     }
 }
 

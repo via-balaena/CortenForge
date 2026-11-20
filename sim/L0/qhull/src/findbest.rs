@@ -13,6 +13,7 @@
 //! the coplanar facets around a best one (`qh_findbesthorizon`).
 
 use crate::error::Error;
+use crate::set;
 use crate::state::{FacetId, PointId, Qhull, REAL_MAX, fmax_, minimize_};
 
 /// The facet a point is best placed above, with its distance and whether it
@@ -75,7 +76,7 @@ impl Qhull<'_> {
         while let Some(cur) = facet {
             let mut switched: Option<FacetId> = None;
             let mut i = 0;
-            while let Some(&neighbor) = self.f(cur).neighbors.get(i) {
+            while let Some(neighbor) = set::get(&self.f(cur).neighbors, i) {
                 i += 1;
                 if !self.f(neighbor).newfacet && isnewfacets {
                     continue;
@@ -179,7 +180,7 @@ impl Qhull<'_> {
             let is_5x_minsearch =
                 ischeckmax && self.f(facet).nummerge > 10 && self.f(facet).neighbors.len() > 100;
             let mut i = 0;
-            while let Some(&neighbor) = self.f(facet).neighbors.get(i) {
+            while let Some(neighbor) = set::get(&self.f(facet).neighbors, i) {
                 i += 1;
                 if self.f(neighbor).visitid == visitid {
                     continue;

@@ -1,5 +1,5 @@
-// Ported from Qhull, libqhull_r (poly2_r.c's qh_vertexneighbors and
-// qh_triangulate's entry), and from MuJoCo 3.5.0's mjCMesh::MakeGraph
+// Ported from Qhull, libqhull_r (poly2_r.c's qh_vertexneighbors), and from
+// MuJoCo 3.5.0's mjCMesh::MakeGraph
 // (src/user/user_mesh.cc, Apache-2.0, Copyright 2021 DeepMind Technologies
 // Limited), which builds its graph from qhull's lists.
 // Qhull, Copyright (c) 1993-2020 C.B. Barber, Arlington, MA, and The National
@@ -11,7 +11,8 @@
 // COPYING.txt; the original is at www.qhull.org.
 
 //! The hull as MuJoCo stores it: `MakeGraph`'s four arrays read from qhull's
-//! vertex and facet lists once `qh_triangulate` and `qh_vertexneighbors` ran.
+//! vertex and facet lists once `qh_triangulate` and `qh_vertexneighbors` ran;
+//! and `qh_vertexneighbors`, which the merges call too.
 
 use crate::error::Error;
 use crate::set;
@@ -32,8 +33,9 @@ pub struct MeshGraph {
     /// Each hull vertex's neighbours by hull-vertex index, in the order its
     /// facets meet them, each list ended by -1 (`edge_localid`).
     pub edges: Vec<i32>,
-    /// Each triangle's points, by index among the points, wound outward
-    /// (`face_globalid`).
+    /// Each triangle's points, by index among the points, as `MakeGraph`
+    /// orders them: a facet's vertices, the first two swapped where qhull's
+    /// facet is top-oriented (`face_globalid`).
     pub faces: Vec<[u32; DIM]>,
 }
 
@@ -80,7 +82,7 @@ impl Qhull<'_> {
         self.VERTEXneighbors = true;
     }
 
-    /// MuJoCo's `MakeGraph` after qhull returns (`user_mesh.cc:1898-2016`):
+    /// MuJoCo's `MakeGraph` after qhull returns (`user_mesh.cc:1898-2027`):
     /// for each vertex its neighbour facets' other vertices, first
     /// appearances, then -1; for each facet its vertices, the first two
     /// swapped where it is top-oriented.
