@@ -426,17 +426,20 @@ pub struct FrontEnd {
     pub flexcomp_refusal: Option<(usize, MjcfError)>,
 }
 
-/// The model as the loader checks it: a clone of `mjcf` with every element
-/// but its actuators given its class (each actuator's class, as the actuator
-/// writes it, returned beside it), its frames and composites expanded, its
-/// meshes' written counts checked and its assets named
-/// ([`mesh::name_assets`]), then validated (`validate_resolved`), before the
-/// compiler passes remove any element. A mesh flexcomp's file is read as it
+/// The model as the loader checks it: its meshes' and height fields' written
+/// names ([`mesh::check_written_names`]), then a clone of `mjcf` with every
+/// element but its actuators given its class (each actuator's class, as the
+/// actuator writes it, returned beside it), its frames and composites
+/// expanded, every other name checked (`names::check_names`), its meshes'
+/// written counts checked and its assets named ([`mesh::name_assets`]), then
+/// validated (`validate_resolved`), before the compiler passes remove any
+/// element. A mesh flexcomp's file is read as it
 /// is made, from `base_path`, the model's directory, where its path is
 /// relative. The caller has checked the tree's depth.
 pub fn front_end(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<FrontEnd> {
     // A model built in code: a parsed `<size>`'s are refused while parsing.
     crate::validation::check_user_sizes(mjcf)?;
+    mesh::check_written_names(mjcf)?;
     let mut mjcf = mjcf.clone();
 
     // Each element's class, before frames, composites and the compiler
@@ -468,12 +471,16 @@ pub fn front_end(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<FrontEnd>
     let first_flexcomp = mjcf.flex.len();
     mjcf.flex.extend(placed.flexes);
     crate::validation::check_tree_depth(&mjcf.worldbody)?;
+    // Every written name, composites' and frames' included, as MuJoCo's
+    // reader checks them, before MuJoCo's compile begins: then the meshes'
+    // written counts and the names the assets take from their files.
+    crate::names::check_names(&mjcf, &frame_names)?;
     mesh::name_assets(&mut mjcf)?;
 
-    // Every name, reference and value check, on the model as resolved and
+    // Every reference and value check, on the model as resolved and
     // expanded, before fusion or discarding hides an element (MuJoCo 3.5.0
     // checks names before either, measured).
-    let checked = crate::validation::validate_resolved(&mjcf, &frame_names)?;
+    let checked = crate::validation::validate_resolved(&mjcf)?;
     Ok(FrontEnd {
         mjcf,
         resolver,
@@ -638,6 +645,9 @@ pub struct ModelBuilder {
     /// Whether each geom is a mesh or SDF geom with `shellinertia`, which
     /// `check_bodies` refuses in MuJoCo's order.
     pub(crate) geom_shellinertia_on_mesh: Vec<bool>,
+    /// Whether each geom is an SDF geom that names no mesh, which
+    /// `check_bodies` refuses in MuJoCo's order.
+    pub(crate) geom_sdf_names_no_mesh: Vec<bool>,
     pub(crate) geom_contype: Vec<u32>,
     pub(crate) geom_conaffinity: Vec<u32>,
     pub(crate) geom_name: Vec<Option<String>>,

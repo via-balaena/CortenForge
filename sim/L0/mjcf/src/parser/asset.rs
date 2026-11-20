@@ -59,30 +59,28 @@ pub(super) fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
     mesh.file = a.string("file");
     mesh.content_type = a.string("content_type");
 
-    mesh.scale = a.vec3("scale")?;
+    // In MuJoCo 3.5.0's `OneMesh` order (`xml_native_reader.cc:1568-1619`),
+    // so of two attributes that do not read, the one it names is named:
+    // the transform, the inertia mode, `maxhullvert`, then the written data.
     if let Some(refpos) = a.vec3("refpos")? {
         mesh.refpos = refpos;
     }
     if let Some(refquat) = a.array::<4>("refquat")? {
         mesh.refquat = refquat;
     }
-
-    // The written vertices, normals, texture coordinates and faces, as
-    // MuJoCo's `OneMesh` reads them (`xml_native_reader.cc`), each checked
-    // when the mesh is built: a face's vertex index, negative or not, then
-    // too (`CheckInitialMesh`, `user_mesh.cc:1835-1841`).
-    mesh.vertex = a.vector("vertex")?;
-    mesh.normal = a.vector("normal")?;
-    mesh.texcoord = a.vector("texcoord")?;
-    let face = a.int_vector("face")?;
-
-    // Parse maxhullvert (maximum convex hull vertices)
+    mesh.scale = a.vec3("scale")?;
+    mesh.inertia = a.keyword("inertia", keywords::mesh_inertia)?;
     if let Some(n) = a.int("maxhullvert")? {
         mesh.maxhullvert = parse_maxhullvert(n)?;
     }
 
-    // Parse mesh inertia mode
-    mesh.inertia = a.keyword("inertia", keywords::mesh_inertia)?;
+    // The written vertices, normals, texture coordinates and faces, each
+    // checked when the mesh is built: a face's vertex index, negative or
+    // not, then too (`CheckInitialMesh`, `user_mesh.cc:1835-1841`).
+    mesh.vertex = a.vector("vertex")?;
+    mesh.normal = a.vector("normal")?;
+    mesh.texcoord = a.vector("texcoord")?;
+    let face = a.int_vector("face")?;
 
     let made_faces = match a.keyword("builtin", MeshBuiltin::from_keyword)? {
         Some(builtin) => make_builtin(&mut mesh, builtin, &a)?,

@@ -90,7 +90,11 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 /// This checks:
 /// - Each `nuser_` size at least -1, after the tree's depth and before the
 ///   rest (a parsed `<size>`'s are refused while parsing)
-/// - No name repeated within a kind (`names::check_names`)
+/// - No name repeated within a kind (`names::check_names`; a mesh's and a
+///   height field's written names first, `mesh::check_written_names`)
+/// - Each mesh's written vertex and face counts, then the names the meshes
+///   and height fields take from their files, after the other names
+///   (`mesh::name_assets`)
 /// - Each pair's condim one of 1, 3, 4 or 6, then the geoms it names, after
 ///   the assets (a geom named "" only where the model has no unnamed geom)
 /// - Each geom's height field (a height-field geom names one, no other geom
@@ -102,14 +106,17 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 /// - Valid simulation options
 /// - Tendons reference valid joints, sites and geoms, with valid parameters
 /// - A body and frame tree no deeper than the loader takes
+/// - Each mesh or SDF geom names a mesh, after the rest (the loader checks
+///   it as it builds the model)
 ///
 /// A geom's condim is checked when the model is built
 /// ([`crate::model_from_mjcf`]), not here.
 ///
 /// A mesh flexcomp's file is read here, as the flexcomp is made, with no
-/// model directory: a relative path is read from `meshdir` or `assetdir`,
-/// and refused where neither is written, which [`crate::model_from_mjcf`],
-/// given the directory, reads from it.
+/// model directory: a relative path is read from `meshdir` or `assetdir`
+/// (from the process's working directory where that directory is relative
+/// too), and refused where neither is written, which
+/// [`crate::model_from_mjcf`], given the model's directory, reads from it.
 ///
 /// # Errors
 ///
@@ -118,20 +125,17 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
     crate::stack::on_large_stack(|| {
         check_tree_depth(&model.worldbody)?;
-        crate::builder::front_end(model, None).map(|front| front.checked)
+        let front = crate::builder::front_end(model, None)?;
+        check_geom_meshes(&front.mjcf)?;
+        Ok(front.checked)
     })
 }
 
-/// [`validate`]'s checks, on a model whose classes are applied and whose
-/// frames and composites are expanded (`builder::front_end`); `frames` are
-/// the frames' names, collected before they were expanded.
-pub fn validate_resolved(
-    model: &MjcfModel,
-    frames: &[crate::names::FrameName],
-) -> Result<ValidationResult> {
-    // Every name, composites' and frames' included; then the options, whose
-    // checks MuJoCo does not make.
-    crate::names::check_names(model, frames)?;
+/// [`validate`]'s checks after the names, on a model whose classes are
+/// applied, whose frames and composites are expanded and whose names are
+/// checked (`builder::front_end`).
+pub fn validate_resolved(model: &MjcfModel) -> Result<ValidationResult> {
+    // The options first, whose checks MuJoCo does not make.
     validate_option(&model.option)?;
     let mut joint_names = HashSet::new();
 
@@ -498,7 +502,6 @@ fn check_sizes(model: &MjcfModel) -> Result<()> {
     for (body_id, first_geom, body) in bodies_in_order(&model.worldbody) {
         for (k, geom) in body.geoms.iter().enumerate() {
             let at = || geom_at(geom, first_geom + k, body, body_id);
-            check_geom_mesh(geom, at)?;
             check_geom_hfield(geom, at)?;
             check_geom_size(geom, model.compiler.fitaabb, at)?;
         }
@@ -517,10 +520,26 @@ fn check_sizes(model: &MjcfModel) -> Result<()> {
     Ok(())
 }
 
-/// A mesh or SDF geom's mesh as MuJoCo 3.5.0 checks it, directly before its
-/// height field: the geom names one (`mjCGeom::Compile`,
-/// `user_objects.cc:3656-3659`; an empty name names none). A named mesh the
-/// model lacks was refused before ([`check_geom_assets`]).
+/// Each mesh or SDF geom names a mesh ([`check_geom_mesh`]), body by body
+/// from the world down: [`validate`]'s, after every other check it makes.
+/// The loader checks a mesh geom's as it builds the geom, where it did before
+/// Rigid-loading PR RL-9d, and an SDF geom's among the checks MuJoCo makes
+/// that it did not make before RL-6a (`builder::body`'s `check_geom`), each
+/// so that a document refused before for another fault is refused for that
+/// one (ledger L353).
+fn check_geom_meshes(model: &MjcfModel) -> Result<()> {
+    for (body_id, first_geom, body) in bodies_in_order(&model.worldbody) {
+        for (k, geom) in body.geoms.iter().enumerate() {
+            check_geom_mesh(geom, || geom_at(geom, first_geom + k, body, body_id))?;
+        }
+    }
+    Ok(())
+}
+
+/// A mesh or SDF geom's mesh as MuJoCo 3.5.0 checks it: the geom names one
+/// (`mjCGeom::Compile`, `user_objects.cc:3656-3659`; an empty name names
+/// none). A named mesh the model lacks was refused before
+/// ([`check_geom_assets`]).
 fn check_geom_mesh(geom: &MjcfGeom, at: impl Fn() -> Location) -> Result<()> {
     let needs_one = matches!(geom.geom_type, Some(MjcfGeomType::Mesh | MjcfGeomType::Sdf));
     let names_one = geom.mesh.as_deref().is_some_and(|m| !m.is_empty());
@@ -533,10 +552,11 @@ fn check_geom_mesh(geom: &MjcfGeom, at: impl Fn() -> Location) -> Result<()> {
 /// A geom's height field as MuJoCo 3.5.0 checks it, before the geom's
 /// size: a height-field geom names one and no other geom does
 /// (`mjCGeom::Compile`, `user_objects.cc:3661-3664`; an empty name names
-/// none). MuJoCo checks a geom's condim first (`:3651-3654`); sim-mjcf
-/// checks it later (`builder::body::check_bodies`), so a geom with that
-/// fault and this one is refused for this one, where MuJoCo names the
-/// condim (`refusal_order.rs` `HFIELD_COSTS`); the resolve pass refuses a
+/// none). MuJoCo checks a geom's condim and a mesh or SDF geom's mesh first
+/// (`:3651-3659`); sim-mjcf checks them later (`builder::body::check_bodies`,
+/// the builder's `resolve_geom_asset_links`), so a geom with one of those
+/// faults and this one is refused for this one, where MuJoCo names the
+/// other (`refusal_order.rs` `HFIELD_COSTS`); the resolve pass refuses a
 /// `fromto` before this, and the parser a size that is not finite, both of
 /// which MuJoCo checks after this (ledger L353).
 fn check_geom_hfield(geom: &MjcfGeom, at: impl Fn() -> Location) -> Result<()> {

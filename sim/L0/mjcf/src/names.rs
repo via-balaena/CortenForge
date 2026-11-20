@@ -28,10 +28,10 @@
 //!
 //! This crate does not read a camera, light, material, texture or `<custom>`
 //! element, so their names are not checked (ledger L376). A mesh's and a
-//! height field's are checked by `builder::mesh::name_assets` before any
-//! other name, where it names the unnamed ones by their files: it stays
-//! where this crate checked them, though MuJoCo checks a name it takes from
-//! a file only when it compiles (L353).
+//! height field's written names are checked before any other, before the
+//! classes are applied (`builder::mesh::check_written_names`); a name one
+//! takes from its file after every written name and the meshes' written
+//! counts, where MuJoCo's compile gives it (`builder::mesh::name_assets`).
 
 use std::collections::{HashMap, HashSet};
 

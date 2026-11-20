@@ -21,6 +21,34 @@ use super::orientation::{mulvecmat, mulvecmat_t, normvec, quat2mat};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{MeshInertia, MjcfCompiler, MjcfHfield, MjcfMesh, MjcfModel};
 
+/// Two meshes, or two height fields, of one written name, refused as MuJoCo
+/// 3.5.0's reader refuses the second as it reads it (`mjs_setName`,
+/// `user_api.cc:1734-1748`). It runs before the model's classes are applied,
+/// where this crate checked every mesh's and height field's name before
+/// Rigid-loading PR RL-9d; MuJoCo's reader meets the repeat in document
+/// order among its other faults (ledger L353). A name a mesh takes from its
+/// file is checked later, by [`name_assets`].
+pub fn check_written_names(mjcf: &MjcfModel) -> Result<()> {
+    repeated_name(
+        ElementKind::Mesh,
+        mjcf.meshes.iter().map(|m| m.name.as_str()),
+    )?;
+    repeated_name(
+        ElementKind::Hfield,
+        mjcf.hfields.iter().map(|h| h.name.as_str()),
+    )
+}
+
+/// The first name of `names` met twice, refused as repeated; an empty name
+/// is no name.
+fn repeated_name<'a>(kind: ElementKind, names: impl Iterator<Item = &'a str>) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    names
+        .filter(|name| !name.is_empty())
+        .find(|name| !seen.insert(*name))
+        .map_or(Ok(()), |name| Err(MjcfError::duplicate_name(kind, name)))
+}
+
 /// Checks each mesh's written vertex and face counts
 /// ([`check_written_counts`]), then gives each unnamed mesh and height field
 /// the name MuJoCo 3.5.0 gives it (`mjCMesh::CopyFromSpec`,
@@ -31,10 +59,10 @@ use crate::types::{MeshInertia, MjcfCompiler, MjcfHfield, MjcfMesh, MjcfModel};
 /// `user_model.cc:2034-2041`), and two of one name refused as a repeated
 /// name, as MuJoCo's `ProcessLists` refuses them before any pass drops an
 /// unused mesh (`user_model.cc:4888-4891`). It runs where MuJoCo's
-/// `mjCModel::TryCompile` begins: after the model's classes are applied and
-/// its frames and composites expanded, which MuJoCo does as it reads the
-/// model, and before validation and every compiler pass, which find assets
-/// by name.
+/// `mjCModel::TryCompile` begins: after the model's classes are applied, its
+/// frames and composites expanded and every written name checked, which
+/// MuJoCo does as it reads the model, and before validation and every
+/// compiler pass, which find assets by name.
 pub fn name_assets(mjcf: &mut MjcfModel) -> Result<()> {
     check_written_counts(&mjcf.meshes)?;
     let named = |name: &str, file: Option<&str>, what: &str| {
@@ -58,22 +86,14 @@ pub fn name_assets(mjcf: &mut MjcfModel) -> Result<()> {
         hfield.name = named(&hfield.name, hfield.file.as_deref(), "height field")
             .map_err(|e| e.at(Location::nth(ElementKind::Hfield, None, i)))?;
     }
-    let repeated = |kind: ElementKind, names: Vec<&str>| {
-        let mut seen = std::collections::HashSet::new();
-        names
-            .into_iter()
-            .find(|name| !seen.insert(*name))
-            .map_or(Ok(()), |name| Err(MjcfError::duplicate_name(kind, name)))
-    };
-    repeated(
+    repeated_name(
         ElementKind::Mesh,
-        mjcf.meshes.iter().map(|m| m.name.as_str()).collect(),
+        mjcf.meshes.iter().map(|m| m.name.as_str()),
     )?;
-    repeated(
+    repeated_name(
         ElementKind::Hfield,
-        mjcf.hfields.iter().map(|h| h.name.as_str()).collect(),
-    )?;
-    Ok(())
+        mjcf.hfields.iter().map(|h| h.name.as_str()),
+    )
 }
 
 /// Each mesh's written vertices and faces as MuJoCo 3.5.0's `CopyFromSpec`

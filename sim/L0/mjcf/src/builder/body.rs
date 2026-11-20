@@ -542,6 +542,11 @@ impl ModelBuilder {
         if !matches!(self.geom_condim[geom], 1 | 3 | 4 | 6) {
             return Err(MjcfError::invalid_model("invalid condim in geom").at(at()));
         }
+        // MuJoCo checks a mesh geom's mesh here too (`user_objects.cc:3657`);
+        // this crate refuses one as it builds the geom (ledger L353).
+        if self.geom_sdf_names_no_mesh[geom] {
+            return Err(MjcfError::invalid_model("mesh geom must have valid meshid").at(at()));
+        }
         if moving && self.geom_type[geom] == GeomType::Plane {
             return Err(MjcfError::invalid_model("plane only allowed in static bodies").at(at()));
         }
