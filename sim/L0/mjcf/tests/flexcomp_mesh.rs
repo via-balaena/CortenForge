@@ -335,9 +335,11 @@ fn a_ply_or_an_ascii_stl_flexcomp_is_made_as_its_twin_mujoco_loads() {
 }
 
 /// A dim-3 face naming a vertex the file does not hold. MuJoCo's volume test
-/// reads past its points there, so MuJoCo was not run on it. This crate keeps
-/// the tetrahedron untested, and Make's element check refuses it: the first
-/// face's tetrahedron is kept, the second names point 9 of 5.
+/// reads past its points there, which C++ leaves undefined: on this document
+/// MuJoCo 3.5.0 drops the face and loads, in each of 5 runs (measured
+/// 2026-11-19). This crate keeps the tetrahedron untested, and Make's element
+/// check refuses it (registry `D-FLEXCOMP-MESH-UNDEFINED`): the first face's
+/// tetrahedron is kept, the second names point 9 of 5.
 #[test]
 fn a_dim_3_face_naming_no_vertex_is_refused_by_makes_element_check() {
     let dir = with_files();
@@ -897,6 +899,18 @@ const LOADS: &[(&str, Parts, Expected)] = &[
 ];
 
 const REFUSED: &[(&str, Parts, &str, &str)] = &[
+    (
+        "o01: no file at dim 1",
+        ("<compiler />", r#"dim="1""#, ""),
+        "file",
+        "File is required",
+    ),
+    (
+        "o02: an MSH file at dim 1",
+        ("<compiler />", r#"file="assets/tet.msh" dim="1""#, ""),
+        "dim",
+        "Flex dim must be at least 2 for mesh",
+    ),
     (
         "m07: empty obj",
         ("<compiler />", r#"file="assets/empty.obj" dim="2""#, ""),

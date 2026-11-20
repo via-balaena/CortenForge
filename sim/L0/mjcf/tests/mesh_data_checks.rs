@@ -78,13 +78,14 @@ fn write_files(dir: &Path) {
         .flatten()
         .map(|&i| i32::try_from(i).unwrap())
         .collect();
-    let files: [(&str, Vec<u8>); 17] = [
+    let files: [(&str, Vec<u8>); 18] = [
         ("tet.stl", stl(&TET_FACES.map(|f| f.map(|i| TET[i])))),
         ("tri.stl", stl(&[[TET[0], TET[1], TET[2]]])),
         ("zero.stl", stl(&[])),
         ("tet.obj", TET_OBJ.as_bytes().to_vec()),
         ("tet_vn.obj", with("vn 0 0 1\n")),
         ("tet_vt.obj", with("vt 0 0\n")),
+        ("tet_vn_vt.obj", with("vn 0 0 1\nvt 0 0\n")),
         ("tet_vn_bare.obj", with("vn\n")),
         ("tet_vn_space.obj", with("vn \n")),
         ("tet_vnx.obj", with("vnx 1 2 3\n")),
@@ -129,6 +130,13 @@ const REFUSED: &[(&str, &str, &str, &str, &str)] = &[
         "ten vertex numbers",
         "",
         r#"<mesh name="m" vertex="0 0 0 1 0 0 0 2 0 0" face="0 1 2"/>"#,
+        "",
+        "vertex data must be a multiple of 3 (mesh 'm')",
+    ),
+    (
+        "ten vertex numbers and four face numbers",
+        "",
+        r#"<mesh name="m" vertex="0 0 0 1 0 0 0 2 0 0" face="0 1 2 3"/>"#,
         "",
         "vertex data must be a multiple of 3 (mesh 'm')",
     ),
@@ -292,6 +300,34 @@ const REFUSED: &[(&str, &str, &str, &str, &str)] = &[
         r#"<mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 9" texcoord="0 0 1 1"/>"#,
         "",
         "mesh 'm': texcoord must be 2*nv if face texcoord indices are not provided in an OBJ file",
+    ),
+    (
+        "a face naming the vertex count",
+        "",
+        r#"<mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 4  0 1 3  0 3 2  1 2 3"/>"#,
+        "",
+        "mesh 'm': in face 0, vertex index 4 does not exist",
+    ),
+    (
+        "3 vertices and a normal of two numbers",
+        "",
+        r#"<mesh name="m" vertex="0 0 0  1 0 0  0 2 0" face="0 1 2" normal="0 0"/>"#,
+        "",
+        "mesh 'm': at least 4 vertices required",
+    ),
+    (
+        "an OBJ with texcoords, a texcoord and a face",
+        "",
+        r#"<mesh name="m" file="tet_vt.obj" texcoord="0 0" face="0 2 1  0 1 3  0 3 2  1 2 3"/>"#,
+        "",
+        "mesh 'm': repeated texcoord specification",
+    ),
+    (
+        "an OBJ with normals and texcoords, a normal and a texcoord",
+        "",
+        r#"<mesh name="m" file="tet_vn_vt.obj" normal="0 0 1" texcoord="0 0"/>"#,
+        "",
+        "mesh 'm': repeated normal specification",
     ),
     (
         "a missing vertex in the last face",
@@ -750,6 +786,27 @@ fn a_meshs_data_mujoco_loads_loads() {
     assert!(missed.is_empty(), "{}", missed.join("\n"));
 }
 
+/// Two meshes of one STL, the second writing a face, refused as MuJoCo 3.5.0
+/// refuses a mesh it compiles from its file: "repeated face specification".
+/// MuJoCo takes a mesh whose file it has compiled before at the same
+/// `maxhullvert`, `inertia` and `scale` from its mesh cache
+/// (`LoadCachedMesh`, `user_mesh.cc:1136-1167`), so it reads neither the
+/// second mesh's own data nor checks it, and loads this document with
+/// `usethread="false"`; with its cache's capacity set to 0, or with threads,
+/// it refuses it, as here (measured 2026-11-19 on this document; registry
+/// `D-MESH-CACHE`).
+#[test]
+fn a_second_mesh_of_one_file_is_checked_as_a_first_is() {
+    let dir = tempfile::tempdir().unwrap();
+    write_files(dir.path());
+    let assets = r#"<mesh name="m" file="tet.stl"/><mesh name="m2" file="tet.stl" face="0 2 1  0 1 3  0 3 2  1 2 3"/>"#;
+    let world = r#"<body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/><geom type="mesh" mesh="m2"/></body>"#;
+    let err = load_model(&document(dir.path(), r#"usethread="false""#, assets, world))
+        .unwrap_err()
+        .to_string();
+    assert_eq!(err, "mesh 'm2': repeated face specification");
+}
+
 /// A mesh's `normal` and `texcoord` are read as MuJoCo 3.5.0 reads them, as
 /// floats: one past a float's range, either way, is refused, where MuJoCo
 /// refuses it ("number is too large"); one that is not a number is refused
@@ -775,7 +832,10 @@ fn a_meshs_normal_and_texcoord_are_read_as_floats() {
             r#"texcoord="1e-40 0  0 0  0 0  0 0""#,
             r#"number "1e-40" is out of range in attribute 'texcoord' on <mesh>"#,
         ),
-        (r#"normal="0 0 x""#, "attribute 'normal' on <mesh>"),
+        (
+            r#"normal="0 0 x""#,
+            "bad number \"x\" in attribute 'normal' on <mesh>",
+        ),
         (r#"normal="0 0 nan""#, "normal on <mesh> is not finite"),
     ];
     for (attr, want) in refused {
