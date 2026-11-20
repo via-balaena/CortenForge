@@ -693,13 +693,9 @@ fn a_mesh_whose_principal_moments_break_the_triangle_inequality_is_refused() {
 }
 
 #[test]
-fn shellinertia_on_an_sdf_geom_naming_no_mesh_is_refused() {
-    // MuJoCo 3.5.0 refuses this SDF for naming no mesh ("must have valid
-    // meshid"), which this crate loads (ledger L357); it is refused here for
-    // its `shellinertia`.
+fn shellinertia_on_an_sdf_geom_naming_no_mesh_is_refused_for_its_mesh() {
+    // MuJoCo 3.5.0 checks a geom's mesh before its `shellinertia`
+    // (`user_objects.cc:3656-3659`, `:3744-3746`).
     let err = load_model(r#"<mujoco><worldbody><body><freejoint/><geom type="sdf" shellinertia="true"/><geom size=".1"/></body></worldbody></mujoco>"#).unwrap_err().to_string();
-    assert!(
-        err.contains("for mesh geoms, inertia should be specified in the mesh asset"),
-        "{err}"
-    );
+    assert!(err.contains("mesh geom must have valid meshid"), "{err}");
 }

@@ -59,41 +59,35 @@ pub(super) fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
     mesh.file = a.string("file");
     mesh.content_type = a.string("content_type");
 
-    mesh.scale = a.vec3("scale")?;
+    // In MuJoCo 3.5.0's `OneMesh` order (`xml_native_reader.cc:1568-1619`),
+    // so of two attributes that do not read, the one it names is named:
+    // the transform, the inertia mode, `maxhullvert`, then the written data.
     if let Some(refpos) = a.vec3("refpos")? {
         mesh.refpos = refpos;
     }
     if let Some(refquat) = a.array::<4>("refquat")? {
         mesh.refquat = refquat;
     }
-
-    // Parse embedded vertex data
-    mesh.vertex = a.vector("vertex")?;
-
-    // Parse embedded face data: vertex indices, integers, their signs
-    // checked last, as MuJoCo checks them only when it compiles the mesh:
-    // a built-in mesh's faces replace them unchecked.
-    let face = a.int_vector("face")?;
-
-    // Parse maxhullvert (maximum convex hull vertices)
+    mesh.scale = a.vec3("scale")?;
+    mesh.inertia = a.keyword("inertia", keywords::mesh_inertia)?;
     if let Some(n) = a.int("maxhullvert")? {
         mesh.maxhullvert = parse_maxhullvert(n)?;
     }
 
-    // Parse mesh inertia mode
-    mesh.inertia = a.keyword("inertia", keywords::mesh_inertia)?;
+    // The written vertices, normals, texture coordinates and faces, each
+    // checked when the mesh is built: a face's vertex index, negative or
+    // not, then too (`CheckInitialMesh`, `user_mesh.cc:1835-1841`).
+    mesh.vertex = a.vector("vertex")?;
+    mesh.normal = a.vector("normal")?;
+    mesh.texcoord = a.vector("texcoord")?;
+    let face = a.int_vector("face")?;
 
     let made_faces = match a.keyword("builtin", MeshBuiltin::from_keyword)? {
         Some(builtin) => make_builtin(&mut mesh, builtin, &a)?,
         None => false,
     };
-    if let (false, Some(face)) = (made_faces, face) {
-        let indices = face
-            .iter()
-            .map(|&i| u32::try_from(i))
-            .collect::<std::result::Result<Vec<u32>, _>>()
-            .map_err(|_| MjcfError::invalid_value("mesh", "face", "a vertex index is negative"))?;
-        mesh.face = Some(indices);
+    if !made_faces {
+        mesh.face = face;
     }
 
     Ok(mesh)
@@ -131,6 +125,10 @@ fn make_builtin(mesh: &mut MjcfMesh, builtin: MeshBuiltin, a: &Attrs) -> Result<
         (!made.vertex.is_empty()).then(|| made.vertex.into_iter().map(f64::from).collect());
     let made_faces = made.face.is_some();
     if let Some(face) = made.face {
+        // MuJoCo's `userface` holds ints; the generator's size check keeps
+        // each id below `i32::MAX`.
+        #[allow(clippy::cast_possible_wrap)]
+        let face: Vec<i32> = face.into_iter().map(|id| id as i32).collect();
         mesh.face = (!face.is_empty()).then_some(face);
     }
     if made.inertia.is_some() {

@@ -557,23 +557,17 @@ fn a_body_named_as_a_vertex_body_is_a_repeated_name_unless_the_point_is_pinned()
     load_model(&pinned).unwrap();
 }
 
-/// The types this crate does not make, refused where Make reaches their
-/// maker, with the reason. MuJoCo 3.5.0 loads each with a real file
-/// (measured by review RL-8b's RB, a mesh and one of MuJoCo's gmsh files);
-/// these documents name none, which this crate refuses before reading it.
+/// The type this crate does not make (gmsh), refused where Make reaches its
+/// maker, with the reason. MuJoCo 3.5.0 loads it with a real file (measured
+/// by review RL-8b's RB, one of MuJoCo's gmsh files); this document names
+/// none, which this crate refuses before reading it. A mesh type is made
+/// (`flexcomp_mesh.rs`).
 fn refused_when_made() -> Vec<(&'static str, String, &'static str)> {
-    vec![
-        (
-            "mesh",
-            world(r#"<flexcomp name="f" type="mesh" file="tet.obj" dim="2"/>"#),
-            "a flexcomp of type mesh",
-        ),
-        (
-            "gmsh",
-            world(r#"<flexcomp name="f" type="gmsh" file="tet.msh" dim="3"/>"#),
-            "a flexcomp of type gmsh",
-        ),
-    ]
+    vec![(
+        "gmsh",
+        world(r#"<flexcomp name="f" type="gmsh" file="tet.msh" dim="3"/>"#),
+        "a flexcomp of type gmsh",
+    )]
 }
 
 /// The forms MuJoCo 3.5.0 loads (measured) that this crate makes and refuses

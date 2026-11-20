@@ -8,6 +8,7 @@
 
 use nalgebra::{Rotation3, UnitQuaternion, Vector3};
 use std::f64::consts::PI;
+use std::path::Path;
 
 use super::flexcomp::{MadeFlexcomp, make_flexcomp};
 use super::geom::resolve_geom_fromto;
@@ -26,17 +27,20 @@ use crate::types::{
 /// both where it meets them; a flexcomp stays in its place, for
 /// `flexcomp::place_flexcomps` once the frames are composed. Returns the
 /// composites' contact exclude pairs and the made flexcomps, or the first
-/// error either makes.
+/// error either makes. A mesh flexcomp's file is read from `base_path`, the
+/// model's directory, where its path is relative.
 pub fn expand_composites(
     body: &mut MjcfBody,
     resolver: &DefaultResolver,
     compiler: &MjcfCompiler,
+    base_path: Option<&Path>,
 ) -> Result<(Vec<MjcfContactExclude>, Vec<MadeFlexcomp>)> {
     let mut made = Made {
         excludes: Vec::new(),
         flexcomps: Vec::new(),
         resolver,
         compiler,
+        base_path,
     };
     expand_composites_recursive(body, &mut made)?;
     Ok((made.excludes, made.flexcomps))
@@ -48,6 +52,7 @@ struct Made<'a> {
     flexcomps: Vec<MadeFlexcomp>,
     resolver: &'a DefaultResolver,
     compiler: &'a MjcfCompiler,
+    base_path: Option<&'a Path>,
 }
 
 /// `body`'s geoms a composite made, each `fromto` made into its pose: every
@@ -104,7 +109,13 @@ fn make_in_place(contents: Contents, holder: &str, made: &mut Made<'_>) -> Resul
                 placed.push(Element::Frame(frame));
             }
             Element::Flexcomp(flexcomp) => {
-                let one = make_flexcomp(&flexcomp, holder, made.resolver, made.compiler)?;
+                let one = make_flexcomp(
+                    &flexcomp,
+                    holder,
+                    made.resolver,
+                    made.compiler,
+                    made.base_path,
+                )?;
                 made.flexcomps.push(one);
                 placed.push(Element::Flexcomp(flexcomp));
             }
@@ -773,7 +784,7 @@ mod tests {
             site: None,
         });
         let resolver = DefaultResolver::from_model(&crate::types::MjcfModel::default()).unwrap();
-        let result = expand_composites(&mut body, &resolver, &MjcfCompiler::default());
+        let result = expand_composites(&mut body, &resolver, &MjcfCompiler::default(), None);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("rope"));

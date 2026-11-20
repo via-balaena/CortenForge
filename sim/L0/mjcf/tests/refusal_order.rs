@@ -90,7 +90,7 @@
 //! parsing, and Make's when the composites are made, in document order among
 //! them, before every frame's and every later check, as MuJoCo makes a
 //! flexcomp while its reader meets it; two of Make's checks in one flexcomp
-//! are named in Make's order. A type this crate does not make (mesh, gmsh)
+//! are named in Make's order. The type this crate does not make (gmsh)
 //! and a box's count of 1 (where MuJoCo's maker never ends) are refused where
 //! Make reaches the maker; a form MuJoCo loads that this crate makes and
 //! sim-core does not take (a radial or interpolated dof, a vertex body in a
@@ -127,7 +127,16 @@
 //! the build (`check_bodies`) that MuJoCo meets first: `FIT_FIRST_COSTS`. A
 //! geom's height field is checked as the model is validated, before its
 //! condim and a mesh or SDF geom's mesh, which MuJoCo checks first:
-//! `HFIELD_COSTS`.
+//! `HFIELD_COSTS`. RL-9d checks each mesh's written vertex and face counts
+//! after every name, the names the meshes take from their files among them,
+//! which this crate gives before the classes, as it did before RL-9d; MuJoCo
+//! checks the counts first as it begins to compile the model
+//! (`mesh_data_checks.rs`'s `NAMED_OTHERWISE`). A `NaN` written in a vertex,
+//! refused as it is read, is named before them: `MESH_DATA_COSTS`. Beside a
+//! geom's mesh name that no
+//! mesh holds, which MuJoCo names as it indexes the assets, before any geom
+//! compiles, this crate names a `fromto` it refuses as the classes are
+//! applied: `ASSET_COSTS` (ledger L353).
 //!
 //! Every document below was refused by MuJoCo 3.5.0, on the census's unfused
 //! oracle, with the reason its row gives as MuJoCo's (RL-6a's measured
@@ -189,11 +198,21 @@
 //! `FIT_COSTS`. Its review's first round's (2026-11-14) set a fitted size
 //! beside a fault checked after the build, seven in `FIT_FIRST_COSTS`, and a
 //! height field beside a condim or a mesh geom's missing mesh, two in
-//! `HFIELD_COSTS`. RL-9c3, which checks a written face's sign after the
-//! mesh's other attributes, as MuJoCo does when it compiles the mesh: its
-//! review's (measured 2026-11-19, RW's documents) set a negative face id
-//! beside a bad `maxhullvert` or `inertia`, which MuJoCo names: two in
-//! `TWO_FAULTS`.
+//! `HFIELD_COSTS`. RL-9c3's review's (measured 2026-11-19, RW's documents)
+//! set a negative face id beside a bad `maxhullvert` or `inertia`, which
+//! MuJoCo names: two in `TWO_FAULTS`. RL-9d's (measured 2026-11-19) set a
+//! mesh's written counts beside a vertex's `NaN`: one in `MESH_DATA_COSTS`;
+//! and a box's `fromto` beside a mesh name no mesh holds: one in
+//! `ASSET_COSTS`. Its review's first round's (measured 2026-11-19) set
+//! fourteen in `TWO_FAULTS`, each named as MuJoCo names it: a repeated name
+//! beside a mesh's count or a later class, an SDF geom naming no mesh beside
+//! an earlier fault, a mesh attribute that does not read beside its
+//! `maxhullvert` or `inertia`. Its fix-diff pass's (measured 2026-11-20) set
+//! twelve more there: an unnamed mesh or height field, or two meshes one file
+//! names, beside a plugin's repeated instance name, a name a flexcomp makes
+//! or a `fromto`, each named as main and MuJoCo name it; an unnamed mesh
+//! before a repeated mesh name; and a mesh's `scale` or `inertia` beside its
+//! `refpos` or `maxhullvert`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -2045,6 +2064,162 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "invalid keyword: 'bogus'",
         "invalid keyword \"bogus\" in attribute 'inertia' on <mesh> (line 1: asset > mesh 'm')",
     ),
+    (
+        "a repeated mesh name, then the second mesh's face of four numbers",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1 3"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
+        "repeated name 'm' in mesh",
+        "repeated name 'm' in mesh",
+    ),
+    (
+        "an SDF geom naming no mesh with a condim of 2",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><body name="b"><freejoint/><geom type="sdf" condim="2"/><geom size=".1"/></body></worldbody></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom #0 in body 'b')",
+    ),
+    (
+        "a mesh too small in volume, then an SDF geom naming no mesh",
+        r#"<mujoco><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 2 0 1 2 0 1 2"/></asset><worldbody><body name="b"><freejoint/><geom type="sdf"/><geom size=".1"/></body></worldbody></mujoco>"#,
+        "mesh volume is too small: flat . Try setting inertia to shell",
+        "mesh 'flat': mesh volume is too small. Try setting inertia to shell",
+    ),
+    (
+        "a repeated mesh name, then a geom of an unknown class",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/></body><geom class="nope" size=".1"/></worldbody></mujoco>"#,
+        "repeated name 'm' in mesh",
+        "repeated name 'm' in mesh",
+    ),
+    (
+        "a repeated height-field name, then a geom of an unknown class",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><hfield name="h" nrow="2" ncol="2" elevation="0 0 0 0" size="1 1 .1 .1"/><hfield name="h" nrow="2" ncol="2" elevation="0 0 0 0" size="1 1 .1 .1"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/></body><geom class="nope" size=".1"/></worldbody></mujoco>"#,
+        "repeated name 'h' in hfield",
+        "repeated name 'h' in hfield",
+    ),
+    (
+        "a mesh's vertex count, then a repeated geom name",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3 5" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom name="g" type="mesh" mesh="m"/><geom name="g" size=".1"/></body></worldbody></mujoco>"#,
+        "repeated name 'g' in geom",
+        "repeated name 'g' in geom (geom 'g' in body 'b')",
+    ),
+    (
+        "a normal that does not read beside a maxhullvert of 2",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3" normal="x" maxhullvert="2"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
+        "maxhullvert must be larger than 3",
+        "invalid maxhullvert on <mesh>: maxhullvert must be larger than 3 (line 1: asset > mesh 'm')",
+    ),
+    (
+        "a texcoord that does not read beside a maxhullvert of 2",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3" texcoord="x" maxhullvert="2"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
+        "maxhullvert must be larger than 3",
+        "invalid maxhullvert on <mesh>: maxhullvert must be larger than 3 (line 1: asset > mesh 'm')",
+    ),
+    (
+        "a normal that does not read beside an unknown inertia keyword",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3" normal="x" inertia="nope"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
+        "invalid keyword: 'nope'",
+        "invalid keyword \"nope\" in attribute 'inertia' on <mesh> (line 1: asset > mesh 'm')",
+    ),
+    (
+        "a face number that does not read beside a maxhullvert of 2",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 x" maxhullvert="2"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
+        "maxhullvert must be larger than 3",
+        "invalid maxhullvert on <mesh>: maxhullvert must be larger than 3 (line 1: asset > mesh 'm')",
+    ),
+    (
+        "a vertex number that does not read beside an unknown inertia keyword",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 a  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3" inertia="bogus"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
+        "invalid keyword: 'bogus'",
+        "invalid keyword \"bogus\" in attribute 'inertia' on <mesh> (line 1: asset > mesh 'm')",
+    ),
+    (
+        "a body's user data beside its SDF geom naming no mesh",
+        r#"<mujoco><size nuser_body="1"/><worldbody><body name="b" pos="0 0 1" user="1 2"><freejoint/><geom type="sdf"/></body></worldbody></mujoco>"#,
+        "user has more values than nuser_body in body",
+        "invalid user on <body>: user data exceeds nuser_body=1",
+    ),
+    (
+        "a joint's zero axis, then a later body's SDF geom naming no mesh",
+        r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint type="hinge" axis="0 0 0"/><geom size=".1"/></body><body name="b" pos="1 0 1"><freejoint/><geom type="sdf"/></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint 'a_joint0' in body 'a')",
+    ),
+    (
+        "an inertial's degenerate xyaxes beside an SDF geom naming no mesh",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" xyaxes="1 0 0 1 0 0"/><geom type="sdf"/></body></worldbody></mujoco>"#,
+        "error 'yaxis too small' in inertia alternative",
+        "error 'yaxis too small' in inertia alternative (body 'b')",
+    ),
+    (
+        "a plugin's repeated instance name beside an unnamed mesh",
+        r#"<mujoco><extension><plugin plugin="mujoco.elasticity.cable"><instance name="p"/><instance name="p"/></plugin></extension><asset><mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><geom size=".1"/></worldbody></mujoco>"#,
+        "empty name in mesh",
+        "empty name in mesh (mesh #0)",
+    ),
+    (
+        "a plugin's repeated instance name beside an unnamed height field",
+        r#"<mujoco><extension><plugin plugin="mujoco.elasticity.cable"><instance name="p"/><instance name="p"/></plugin></extension><asset><hfield nrow="2" ncol="2" elevation="0 0 0 0" size="1 1 .1 .1"/></asset><worldbody><geom size=".1"/></worldbody></mujoco>"#,
+        "empty name in height field",
+        "empty name in height field (hfield #0)",
+    ),
+    (
+        "two flexcomps of one name beside an unnamed mesh",
+        r#"<mujoco><asset><mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><flexcomp name="f" type="grid" count="2 2 1" spacing=".1 .1 .1" dim="2"><edge equality="false"/></flexcomp><body name="x" pos="1 0 0"><flexcomp name="f" type="grid" count="2 2 1" spacing=".1 .1 .1" dim="2"><edge equality="false"/></flexcomp></body></worldbody></mujoco>"#,
+        "empty name in mesh",
+        "empty name in mesh (mesh #0)",
+    ),
+    (
+        "a body of the name a flexcomp gives its body, beside an unnamed mesh",
+        r#"<mujoco><asset><mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><body name="f_0"/><flexcomp name="f" type="grid" count="2 2 1" spacing=".1 .1 .1" dim="2"><edge equality="false"/></flexcomp></worldbody></mujoco>"#,
+        "empty name in mesh",
+        "empty name in mesh (mesh #0)",
+    ),
+    (
+        "a box's fromto naming a mesh beside an unnamed mesh",
+        r#"<mujoco><asset><mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="box" size=".1" fromto="0 0 0 0 0 1" mesh="nope"/></body></worldbody></mujoco>"#,
+        "empty name in mesh",
+        "empty name in mesh (mesh #0)",
+    ),
+    (
+        "a capsule's fromto of no length beside an unnamed mesh",
+        r#"<mujoco><asset><mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="capsule" size=".1" fromto="0 0 0 0 0 0"/></body></worldbody></mujoco>"#,
+        "empty name in mesh",
+        "empty name in mesh (mesh #0)",
+    ),
+    (
+        "a box's fromto naming a mesh beside two meshes one file names",
+        r#"<mujoco><asset><mesh file="tet.stl"/><mesh file="tet.stl"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="box" size=".1" fromto="0 0 0 0 0 1" mesh="nope"/></body></worldbody></mujoco>"#,
+        "repeated name 'tet' in mesh",
+        "repeated name 'tet' in mesh",
+    ),
+    (
+        "a cable's fromto of no length beside an unnamed mesh",
+        r#"<mujoco><extension><plugin plugin="mujoco.elasticity.cable"/></extension><asset><mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><composite prefix="c" type="cable" count="4 1 1" size="1"><geom type="capsule" size="0.01"/></composite></worldbody></mujoco>"#,
+        "empty name in mesh",
+        "empty name in mesh (mesh #0)",
+    ),
+    (
+        "a plugin's repeated instance name beside two meshes one file names",
+        r#"<mujoco><extension><plugin plugin="mujoco.elasticity.cable"><instance name="p"/><instance name="p"/></plugin></extension><asset><mesh file="tet.stl"/><mesh file="tet.stl"/></asset><worldbody><geom size=".1"/></worldbody></mujoco>"#,
+        "repeated name 'tet' in mesh",
+        "repeated name 'tet' in mesh",
+    ),
+    (
+        "a mesh's scale and refpos that do not read",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3" scale="x 1 1" refpos="y 0 0"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
+        "bad format in attribute 'refpos'",
+        "bad number \"y\" in attribute 'refpos' on <mesh> (line 1: asset > mesh 'm')",
+    ),
+    (
+        "a mesh's inertia keyword and maxhullvert both bad",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3" inertia="nope" maxhullvert="2"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
+        "invalid keyword: 'nope'",
+        "invalid keyword \"nope\" in attribute 'inertia' on <mesh> (line 1: asset > mesh 'm')",
+    ),
+    (
+        "an unnamed mesh, then a repeated mesh name",
+        r#"<mujoco><asset><mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><geom size=".1"/></worldbody></mujoco>"#,
+        "repeated name 'm' in mesh",
+        "repeated name 'm' in mesh",
+    ),
 ];
 
 #[test]
@@ -2207,8 +2382,9 @@ fn a_nuser_below_minus_1_set_in_code_is_refused_first() {
 /// are applied, a height field written without `elevation` while parsing
 /// (ledger L359), a body's orientation when the tree is built, and a pair
 /// with no `geom1` while parsing (registry `D-PAIR-NO-GEOM`); MuJoCo 3.5.0
-/// checks each condim and pair before these (ledger L353). `(what, document, MuJoCo's reason, this crate's
-/// error)`, measured 2026-11-04 (the last five: review round 1's).
+/// checks each condim and pair before these (ledger L353). `(what, document,
+/// MuJoCo's reason, this crate's error)`, measured 2026-11-04 (the last five:
+/// review round 1's).
 const CONDIM_COSTS: &[(&str, &str, &str, &str)] = &[
     (
         "condim then its size",
@@ -3014,8 +3190,9 @@ fn an_inertia_fault_beside_another_is_named_as_ledgered() {
 /// Two faults, one a mesh MuJoCo 3.5.0 refuses as it builds the meshes, before
 /// the bodies (its volume, an exact mesh's orientation), one a geom's this
 /// crate checks before it builds the meshes (a size, a `fromto`), where this
-/// crate names the geom's, as it did before RL-9b: ledger L353 holds each. `(what, document, MuJoCo 3.5.0's reason,
-/// this crate's error)`, measured 2026-11-10 (RL-9b's review, RB's documents).
+/// crate names the geom's, as it did before RL-9b: ledger L353 holds each.
+/// `(what, document, MuJoCo 3.5.0's reason, this crate's error)`, measured
+/// 2026-11-10 (RL-9b's review, RB's documents).
 const MESH_COSTS: &[(&str, &str, &str, &str)] = &[
     (
         "a mesh too small in volume, then a sphere of size 0",
@@ -3089,6 +3266,32 @@ const MESH_COSTS: &[(&str, &str, &str, &str)] = &[
 fn a_mesh_refusal_beside_a_geoms_fault_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in MESH_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, one a mesh's written vertex or face count, which MuJoCo
+/// 3.5.0 checks as it begins to compile the model, where this crate names
+/// the other: a `NaN` written in a vertex, which this crate refuses as it
+/// reads it and MuJoCo after the counts (registry `D-NONFINITE`). `(what,
+/// document, MuJoCo's reason, this crate's error)`, measured 2026-11-19
+/// (RL-9d).
+const MESH_DATA_COSTS: &[(&str, &str, &str, &str)] = &[(
+    "a vertex's NaN and a face of four numbers",
+    r#"<mujoco><asset><mesh name="m" vertex="nan 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1 3"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
+    "face data must be a multiple of 3",
+    "vertex on <mesh> is not finite (NaN) (line 1: asset > mesh 'm')",
+)];
+
+#[test]
+fn a_meshs_written_count_beside_another_fault_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in MESH_DATA_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),
@@ -3297,6 +3500,33 @@ const HFIELD_COSTS: &[(&str, &str, &str, &str)] = &[
 fn a_height_field_beside_a_geoms_earlier_fault_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in HFIELD_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults in one geom, a mesh name that no mesh holds and a `fromto`,
+/// which MuJoCo 3.5.0 refuses beside any mesh as it compiles the geom
+/// (`user_objects.cc:3727-3730`), after it indexes the assets and names the
+/// missing mesh (`IndexAssets`, `user_model.cc:1889-1899`). This crate refuses
+/// the `fromto` as the classes are applied, before it checks the names, and
+/// names it: ledger L353. `(what, document, MuJoCo 3.5.0's reason, this
+/// crate's error)`, measured 2026-11-19 (RL-9d's start set, `a04`).
+const ASSET_COSTS: &[(&str, &str, &str, &str)] = &[(
+    "a box's fromto naming a mesh no mesh holds",
+    r#"<mujoco><asset><mesh name="m" vertex="0 0 0  1 0 0  0 1 0  0 0 1" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="box" size=".1" fromto="0 0 0 0 0 1" mesh="nope"/></body></worldbody></mujoco>"#,
+    "mesh 'nope' not found in geom 0",
+    "invalid fromto on <geom>: fromto cannot be used with mesh geom (geom in body 'b')",
+)];
+
+#[test]
+fn a_fromto_beside_a_missing_mesh_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in ASSET_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),

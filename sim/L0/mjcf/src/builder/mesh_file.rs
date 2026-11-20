@@ -16,8 +16,8 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::asset::{AssetKind, resolve_asset_path};
-use super::mesh::RawMesh;
+use super::asset::{AssetKind, in_type_dir, resolve_asset_path, stripped_file};
+use super::mesh::InitialMesh;
 use super::obj::read_obj;
 use crate::error::{ElementKind, MjcfError, Result};
 use crate::types::{MjcfCompiler, MjcfMesh};
@@ -38,14 +38,24 @@ const STL_MAX_FACES: u32 = 200_000;
 /// (`user_mesh.cc:1259`).
 const STL_MAX_COORD: f64 = 1_073_741_824.0;
 
-/// A file's vertices, three floats each, and its faces' vertex ids, three
-/// to a face, signed as MuJoCo 3.5.0 holds them (`face_`, ints): an MSH
-/// file's or an OBJ's may be negative, refused only after its vertices are checked
-/// (`CheckInitialMesh`, `user_mesh.cc:1835-1841`).
-type FileMesh = (Vec<f32>, Vec<i64>);
+/// A file's data as MuJoCo 3.5.0's loaders hand it on: its vertices, three
+/// floats each; its faces' vertex ids, three to a face, signed as MuJoCo
+/// holds them (`face_`, ints: an MSH file's or an OBJ's may be negative,
+/// refused when the mesh is checked, `CheckInitialMesh`,
+/// `user_mesh.cc:1835-1841`); and how many normal and texture-coordinate
+/// numbers it gives (`normal_`, `texcoord_`), which the mesh's own may not
+/// repeat (`TryCompile`, `:731-740`). An STL gives none.
+#[derive(Debug, Default)]
+pub(super) struct FileMesh {
+    pub(super) vert: Vec<f32>,
+    pub(super) faces: Vec<i64>,
+    pub(super) normals: usize,
+    pub(super) texcoords: usize,
+}
 
-/// Load a mesh file's vertices and faces as MuJoCo 3.5.0 hands them to its
-/// mesh compiler (`mjCMesh::TryCompile`, `user_mesh.cc:692-729`).
+/// Load a mesh file's data as MuJoCo 3.5.0 hands it to its mesh compiler
+/// (`mjCMesh::TryCompile`, `user_mesh.cc:692-729`), before the mesh's own
+/// data is taken where the file gave none and the whole is checked.
 ///
 /// Its format is its `content_type`'s, else its extension's ([`file_format`]).
 /// An STL, an MSH or an OBJ is read as MuJoCo's `LoadSTL`, `LoadMSH` or
@@ -62,65 +72,114 @@ type FileMesh = (Vec<f32>, Vec<i64>);
 /// Returns an [`MjcfError::Asset`] naming the mesh if its path does not
 /// resolve ([`resolve_asset_path`]), if the file cannot be read or is not
 /// one of its format, in MuJoCo's words where MuJoCo reads the format, or
-/// if it holds a coordinate that is not finite, no vertex or no face, or a
-/// face naming a vertex it does not hold.
-pub fn load_mesh_file(
+/// if it holds a coordinate that is not finite.
+pub(super) fn load_mesh_file(
     file_path: &str,
     base_path: Option<&Path>,
     compiler: &MjcfCompiler,
     mjcf_mesh: &MjcfMesh,
-) -> Result<RawMesh> {
+) -> Result<InitialMesh> {
     let refuse = |reason: String| MjcfError::asset(ElementKind::Mesh, &mjcf_mesh.name, reason);
     let resolved_path =
         resolve_asset_path(file_path, base_path, compiler, AssetKind::Mesh).map_err(refuse)?;
-
-    let read = |what: &str| {
-        std::fs::read(&resolved_path)
-            .map_err(|e| refuse(format!("could not read {what} file '{file_path}': {e}")))
-    };
     let format = file_format(&resolved_path, mjcf_mesh.content_type.as_deref(), file_path)
         .map_err(refuse)?;
-    let failed = |e: mesh_io::IoError| refuse(format!("failed to load '{file_path}': {e}"));
-    let ((vert, mut faces), merge) = match format {
-        Format::Stl => (read_stl(&read("STL")?, file_path).map_err(refuse)?, true),
-        Format::Msh => (read_msh(&read("MSH")?, file_path).map_err(refuse)?, false),
-        Format::Obj => (read_obj(&read("OBJ")?, file_path).map_err(refuse)?, false),
-        Format::Ply => {
-            let mesh = mesh_io::load_ply(&resolved_path).map_err(failed)?;
-            (mesh_io_file(&mesh.vertices, &mesh.faces), false)
-        }
-        #[cfg(feature = "threemf")]
-        Format::ThreeMf => {
-            let mesh = mesh_io::load_3mf(&resolved_path).map_err(failed)?;
-            (mesh_io_file(&mesh.vertices, &mesh.faces), false)
-        }
-    };
+    let FileMesh {
+        vert,
+        mut faces,
+        normals,
+        texcoords,
+    } = read_file(&resolved_path, format, file_path).map_err(refuse)?;
     if left_handed(mjcf_mesh) {
         turn_faces(&mut faces);
     }
-    let (vertices, indices) = process_vertices(&vert, faces, merge).map_err(refuse)?;
+    // An MSH's faces carry their normals' ids, and an OBJ's where it has
+    // normals (`LoadMSH`, `user_mesh.cc:1348-1353`; `LoadOBJ`, `:1113-1116`).
+    let face_normals =
+        !faces.is_empty() && (format == Format::Msh || (format == Format::Obj && normals > 0));
+    // MuJoCo's `<mesh>` merges an STL's repeated vertices only.
+    let (vertices, faces) =
+        process_vertices(&vert, faces, format == Format::Stl).map_err(refuse)?;
+    Ok(InitialMesh {
+        vertices,
+        faces,
+        normals,
+        texcoords,
+        face_normals,
+        obj: format == Format::Obj,
+    })
+}
 
-    if vertices.is_empty() {
-        return Err(refuse(format!("file '{file_path}' contains no vertices")));
+/// A mesh `<flexcomp>`'s file read as MuJoCo 3.5.0's `MakeMesh` reads it
+/// (`user_flexcomp.cc:1148-1173`): refused as a legacy MSH by its path's type
+/// before it is opened (`IsMSH`, `user_mesh.cc:626-629`), then opened from the
+/// type's directory and the model's ([`resolve_asset_path`]; an included
+/// file's own directory is not searched, as for a `<mesh>`, ledger L426), read as a
+/// `<mesh>`'s file is ([`read_file`]: this crate's readers' extensions with
+/// them, registry `D-MESH-FORMAT`, `D-STL-ASCII`, `D-STL-FACES`), and its
+/// repeated vertices merged, whatever its format, as a default mesh's
+/// `LoadFromResource` with `remove_repeated` merges them
+/// (`user_flexcomp.cc:1168`). A default mesh's scale turns no face. Its
+/// vertices and its faces' vertex ids.
+///
+/// # Errors
+///
+/// Why, as [`load_mesh_file`] words it for a `<mesh>`, or MuJoCo's words for
+/// a legacy MSH file.
+pub(super) fn load_flexcomp_mesh(
+    file_path: &str,
+    base_path: Option<&Path>,
+    compiler: &MjcfCompiler,
+) -> std::result::Result<(Vec<Point3<f64>>, Vec<i64>), String> {
+    let written = in_type_dir(
+        &stripped_file(file_path, compiler),
+        compiler,
+        AssetKind::Mesh,
+    );
+    if matches!(
+        file_format(Path::new(&written), None, file_path),
+        Ok(Format::Msh)
+    ) {
+        return Err("legacy MSH files are not supported in flexcomp".to_owned());
     }
-    if indices.is_empty() {
-        return Err(refuse(format!("file '{file_path}' contains no faces")));
+    let resolved_path = resolve_asset_path(file_path, base_path, compiler, AssetKind::Mesh)?;
+    let format = file_format(&resolved_path, None, file_path)?;
+    let file = read_file(&resolved_path, format, file_path)?;
+    process_vertices(&file.vert, file.faces, true)
+}
+
+/// The file at `path`, of `format`, read by that format's reader: an STL, an
+/// MSH or an OBJ as MuJoCo 3.5.0's `LoadSTL`, `LoadMSH` or `LoadOBJ` reads one
+/// ([`read_stl`], [`read_msh`], [`read_obj`]); PLY and, with the `threemf`
+/// feature, 3MF by mesh-io ([`mesh_io_file`]).
+///
+/// # Errors
+///
+/// Why the file cannot be read or is not one of its format, naming it as
+/// written (`file_path`), in MuJoCo's words where MuJoCo reads the format.
+fn read_file(
+    path: &Path,
+    format: Format,
+    file_path: &str,
+) -> std::result::Result<FileMesh, String> {
+    let read = |what: &str| {
+        std::fs::read(path).map_err(|e| format!("could not read {what} file '{file_path}': {e}"))
+    };
+    let failed = |e: mesh_io::IoError| format!("failed to load '{file_path}': {e}");
+    match format {
+        Format::Stl => read_stl(&read("STL")?, file_path),
+        Format::Msh => read_msh(&read("MSH")?, file_path),
+        Format::Obj => read_obj(&read("OBJ")?, file_path),
+        Format::Ply => {
+            let mesh = mesh_io::load_ply(path).map_err(failed)?;
+            Ok(mesh_io_file(&mesh.vertices, &mesh.faces))
+        }
+        #[cfg(feature = "threemf")]
+        Format::ThreeMf => {
+            let mesh = mesh_io::load_3mf(path).map_err(failed)?;
+            Ok(mesh_io_file(&mesh.vertices, &mesh.faces))
+        }
     }
-    // Each face's vertices exist (`CheckInitialMesh`, `user_mesh.cc:1835-
-    // 1841`), in MuJoCo's words.
-    let in_range = |index: &i64| usize::try_from(*index).is_ok_and(|i| i < vertices.len());
-    if let Some(i) = indices.iter().position(|index| !in_range(index)) {
-        return Err(refuse(format!(
-            "in face {}, vertex index {} does not exist",
-            i / 3,
-            indices[i]
-        )));
-    }
-    let indices = indices
-        .into_iter()
-        .filter_map(|i| usize::try_from(i).ok())
-        .collect();
-    Ok((vertices, indices))
 }
 
 /// A PLY's or 3MF's vertices and faces as mesh-io read them, each
@@ -134,7 +193,11 @@ fn mesh_io_file(vertices: &[Point3<f64>], faces: &[[u32; 3]]) -> FileMesh {
         .flat_map(|v| [v.x as f32, v.y as f32, v.z as f32])
         .collect();
     let faces = faces.iter().flatten().map(|&i| i64::from(i)).collect();
-    (vert, faces)
+    FileMesh {
+        vert,
+        faces,
+        ..FileMesh::default()
+    }
 }
 
 /// A mesh file's format: MuJoCo 3.5.0's three, and the two this crate reads
@@ -273,7 +336,7 @@ fn read_stl(bytes: &[u8], file: &str) -> std::result::Result<FileMesh, String> {
         && let Ok(text) = std::str::from_utf8(bytes)
     {
         let ascii = read_ascii_stl(text, file)?;
-        if !ascii.0.is_empty() {
+        if !ascii.vert.is_empty() {
             return Ok(ascii);
         }
     }
@@ -304,7 +367,8 @@ fn read_stl(bytes: &[u8], file: &str) -> std::result::Result<FileMesh, String> {
 
 /// An STL's vertices, three to a face in the file's order, as MuJoCo
 /// 3.5.0's `LoadSTL` gathers them (`user_mesh.cc:1252-1274`): one whose
-/// coordinate is above 2^30 in magnitude refused, each vertex its own id.
+/// coordinate is above 2^30 in magnitude refused, each vertex its own id;
+/// no normal or texture coordinate, as `LoadSTL` keeps none.
 fn stl_soup(
     vertices: impl Iterator<Item = [f32; 3]>,
     file: &str,
@@ -317,7 +381,11 @@ fn stl_soup(
         vert.extend_from_slice(&v);
     }
     let faces = (0..).take(vert.len() / 3).collect();
-    Ok((vert, faces))
+    Ok(FileMesh {
+        vert,
+        faces,
+        ..FileMesh::default()
+    })
 }
 
 /// Whether a file begins, past any whitespace, with `solid`, the word an
@@ -375,7 +443,7 @@ fn read_ascii_stl(text: &str, file: &str) -> std::result::Result<FileMesh, Strin
 /// An MSH file's vertices and faces, as MuJoCo 3.5.0's `LoadMSH` reads
 /// them (`user_mesh.cc:1282-1368`): four 32-bit counts (vertices, normals,
 /// texture coordinates, faces), then the vertices' floats, the normals' and
-/// the texture coordinates' (not read here), and the faces' vertex ids.
+/// the texture coordinates' (counted, not read), and the faces' vertex ids.
 ///
 /// # Errors
 ///
@@ -406,20 +474,27 @@ fn read_msh(bytes: &[u8], file: &str) -> std::result::Result<FileMesh, String> {
         return Err(format!("unexpected file size in MSH file '{file}'"));
     }
     // Every count is checked non-negative and bounded above.
-    let [nv, nf, faces_at] = [nv, nf, faces_at].map(|n| usize::try_from(n).unwrap_or_default());
+    let [nv, nn, nt, nf, faces_at] =
+        [nv, nn, nt, nf, faces_at].map(|n| usize::try_from(n).unwrap_or_default());
     let vert = (0..3 * nv)
         .map(|k| f32::from_le_bytes(word(16 + 4 * k)))
         .collect();
     let faces = (0..3 * nf)
         .map(|k| i64::from(int(faces_at + 4 * k)))
         .collect();
-    Ok((vert, faces))
+    Ok(FileMesh {
+        vert,
+        faces,
+        normals: 3 * nn,
+        texcoords: 2 * nt,
+    })
 }
 
 /// A file's vertices (`vert`, three floats each) and its faces' vertex ids,
 /// as MuJoCo 3.5.0's `ProcessVertices` passes them on
 /// (`user_mesh.cc:543-614`): each in double precision, a coordinate that is
-/// not finite refused. Where `merge` (an STL: `remove_repeated`, `:1276`), vertices
+/// not finite refused. Where `merge` (`remove_repeated`: a `<mesh>`'s STL,
+/// `:1276`; a flexcomp's file, `user_flexcomp.cc:1168`), vertices
 /// equal as floats, `-0` and `0` among them, are made one: numbered in the
 /// order they first appear, each keeping its first appearance's value, the
 /// faces renumbered.
@@ -463,7 +538,8 @@ fn process_vertices(
         renumber.push(id);
     }
     for f in &mut faces {
-        // An STL's faces name its vertices in the order read ([`stl_soup`]).
+        // A face names a vertex by its place among those read (an STL's in
+        // the order read, [`stl_soup`]); an id past them is kept.
         if let Some(&id) = usize::try_from(*f).ok().and_then(|k| renumber.get(k)) {
             *f = id;
         }
@@ -510,15 +586,15 @@ pub mod tests {
         let mesh_path = temp_dir.path().join("test.stl");
         create_test_stl(&mesh_path);
 
-        let (vertices, indices) = load_mesh_file(
+        let mesh = load_mesh_file(
             &mesh_path.to_string_lossy(),
             None,
             &MjcfCompiler::default(),
             &named("test_mesh"),
         )
         .unwrap();
-        assert_eq!(vertices.len(), 4);
-        assert_eq!(indices.len(), 12);
+        assert_eq!(mesh.vertices.len(), 4);
+        assert_eq!(mesh.faces.len(), 12);
     }
 
     /// Of vertices equal as floats the first is kept, as MuJoCo 3.5.0's map

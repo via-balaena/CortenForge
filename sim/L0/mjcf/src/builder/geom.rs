@@ -128,11 +128,15 @@ impl ModelBuilder {
         self.geom_condim.push(geom.condim.unwrap_or(3));
         // A mesh or SDF geom's inertia is its mesh's: `shellinertia` on one
         // is refused once every geom is built (`check_bodies`), where MuJoCo
-        // 3.5.0 refuses it (and an SDF that names no mesh, which MuJoCo
-        // refuses for that, ledger L357).
+        // 3.5.0 refuses it.
         self.geom_shellinertia_on_mesh.push(
             geom.shellinertia == Some(true) && matches!(geom_type, GeomType::Mesh | GeomType::Sdf),
         );
+        // An SDF geom that names no mesh is refused once every geom is built
+        // (`check_bodies`), after its condim, as MuJoCo 3.5.0 refuses it
+        // (ledger L357); a mesh geom's is refused as its mesh is looked up.
+        self.geom_sdf_names_no_mesh
+            .push(geom_type == GeomType::Sdf && geom.mesh.as_deref().is_none_or(str::is_empty));
         // `contype`/`conaffinity` are MuJoCo bitmask attributes accepted as
         // i32 from XML but always non-negative by spec.
         #[allow(clippy::cast_sign_loss)]
@@ -242,7 +246,11 @@ impl ModelBuilder {
         geom_type: GeomType,
     ) -> Result<(Option<usize>, Option<usize>)> {
         let geom_mesh_ref = match geom_type {
-            GeomType::Mesh => match &geom.mesh {
+            // A mesh geom that names no mesh, refused as MuJoCo 3.5.0 refuses
+            // it (`mjCGeom::Compile`, `user_objects.cc:3656-3659`; an empty
+            // name names none), where this crate refused it before
+            // Rigid-loading PR RL-9d, in other words (ledger L353, L357).
+            GeomType::Mesh => match geom.mesh.as_deref().filter(|m| !m.is_empty()) {
                 Some(mesh_name) => {
                     let mesh_id = self
                         .mesh_name_to_id
@@ -251,12 +259,11 @@ impl ModelBuilder {
                     Some(*mesh_id)
                 }
                 None => {
-                    return Err(MjcfError::missing_attribute("geom", "mesh"));
+                    return Err(MjcfError::invalid_model("mesh geom must have valid meshid"));
                 }
             },
             // An SDF geom's mesh, as MuJoCo's `geom_dataid` holds it: its
-            // bounds are its mesh's. One that names none has none (ledger
-            // L357).
+            // bounds are its mesh's.
             GeomType::Sdf => geom_mesh_id(geom, &self.mesh_name_to_id),
             _ => None,
         };
@@ -549,8 +556,7 @@ pub(super) fn geom_volume(
         MjcfGeomType::Ellipsoid => 4.0 * PI * size[0] * size[1] * size[2] / 3.0,
         MjcfGeomType::Box | MjcfGeomType::Hfield => size[0] * size[1] * size[2] * 8.0,
         MjcfGeomType::Mesh => mesh_props.map_or(0.001, |props| props.volume),
-        // Its mesh's, as a mesh geom's (`GetVolume`'s first arm); an SDF
-        // with no mesh keeps 0.001 (ledger L357).
+        // Its mesh's, as a mesh geom's (`GetVolume`'s first arm).
         MjcfGeomType::Sdf => mesh_props.map_or(0.001, |props| props.volume),
         MjcfGeomType::Plane => 0.0,
     }
@@ -650,8 +656,7 @@ pub fn compute_geom_inertia(
             ))
         }
         // MuJoCo's mesh arm, an SDF's too: the box of the mesh's volume and
-        // principal moments, along the mesh's principal axes. An SDF with no
-        // mesh keeps 0.001 (ledger L357).
+        // principal moments, along the mesh's principal axes.
         MjcfGeomType::Mesh | MjcfGeomType::Sdf => match mesh_props {
             Some(props) => {
                 let [b00, b11, b22] = props.boxsz.map(|b| b * b);

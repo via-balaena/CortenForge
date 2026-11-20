@@ -175,12 +175,14 @@ fn character_reference(after_amp: &str) -> Reference {
 /// (element, attribute): each number is read as `strtof` reads it
 /// (`user_util.cc` `StringToVector<float>`), rounded to a float, and one
 /// past a float's range is "number is too large" (measured on each).
-const SINGLE_PRECISION: [(&str, &str); 12] = [
+const SINGLE_PRECISION: [(&str, &str); 14] = [
     ("geom", "rgba"),
     ("site", "rgba"),
     ("tendon", "rgba"),
     ("spatial", "rgba"),
     ("mesh", "vertex"),
+    ("mesh", "normal"),
+    ("mesh", "texcoord"),
     ("hfield", "elevation"),
     ("composite", "vertex"),
     ("skin", "rgba"),

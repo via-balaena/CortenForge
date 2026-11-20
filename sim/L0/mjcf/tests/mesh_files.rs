@@ -475,6 +475,43 @@ fn a_3mf_file_loads_by_its_extension_or_its_type() {
     );
 }
 
+/// A mesh flexcomp's 3MF file is read with the `threemf` feature, which
+/// MuJoCo does not read (`D-MESH-FORMAT`), and made as the tetrahedron's OBJ
+/// is: the same points, elements and vertex positions.
+#[cfg(feature = "threemf")]
+#[test]
+fn a_3mf_mesh_flexcomp_is_made_as_its_obj_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut tet = mesh_types::IndexedMesh::new();
+    for [x, y, z] in [
+        [0.1, 0.2, 0.3],
+        [1.1, 0.2, 0.3],
+        [0.1, 2.2, 0.3],
+        [0.1, 0.2, 3.3],
+    ] {
+        tet.vertices.push(mesh_types::Point3::new(x, y, z));
+    }
+    tet.faces
+        .extend([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]);
+    mesh_io::save_3mf(&tet, dir.path().join("tet.3mf")).unwrap();
+    std::fs::write(dir.path().join("tet.obj"), TET_OBJ).unwrap();
+    let flex = |file: &str| {
+        let model = load_model(&format!(
+            r#"<mujoco><compiler meshdir="{}"/><worldbody><body name="h" pos="0 0 1"><flexcomp name="f" type="mesh" file="{file}" dim="2"><edge equality="false"/></flexcomp></body></worldbody></mujoco>"#,
+            dir.path().display()
+        ))
+        .unwrap();
+        let mut data = model.make_data();
+        data.forward(&model).unwrap();
+        let elements = model.flexelem_data.clone();
+        let positions: Vec<[f64; 3]> = data.flexvert_xpos.iter().map(|&p| p.into()).collect();
+        (model.flex_vertnum[0], elements, positions)
+    };
+    let made = flex("tet.3mf");
+    assert_eq!(made.0, 4);
+    assert_eq!(made, flex("tet.obj"));
+}
+
 /// Without the `threemf` feature a `.3mf` file is refused as MuJoCo refuses
 /// one, as of no type.
 #[cfg(not(feature = "threemf"))]

@@ -226,7 +226,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         actuators,
         flexcomp_refusal,
         ..
-    } = front_end(mjcf)?;
+    } = front_end(mjcf, base_path)?;
 
     // This crate's refusal of a negative `<inertial>` mass or moment, which
     // MuJoCo raises to its bounds (`D-INERTIAL-NEGATIVE`), on every body the
@@ -335,8 +335,8 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     let automatic = builder.automatic_range_fault();
     let flex_equality = builder.flex_equality_fault.take();
     // Of the flexcomps refused after the keyframes, the first in document
-    // order (flex order), whichever stage found it; a type refused when made
-    // (mesh, gmsh) has been named before any of them.
+    // order (flex order), whichever stage found it; the type refused when made
+    // (gmsh) has been named before any of them.
     let flexcomp_refusal = match (flexcomp_refusal, builder.flexcomp_fault.take()) {
         (Some((a, ea)), Some((b, eb))) => Some(if a <= b { ea } else { eb }),
         (front, built) => front.or(built).map(|(_, e)| e),
@@ -412,8 +412,8 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
 
 /// The model as the loader checks it ([`front_end`]).
 pub struct FrontEnd {
-    /// A clone of the model with its assets named, every element but its
-    /// actuators given its class, its frames and composites expanded.
+    /// A clone of the model with every element but its actuators given its
+    /// class, its frames and composites expanded, its assets named.
     pub mjcf: MjcfModel,
     /// Its classes.
     pub resolver: DefaultResolver,
@@ -426,15 +426,24 @@ pub struct FrontEnd {
     pub flexcomp_refusal: Option<(usize, MjcfError)>,
 }
 
-/// The model as the loader checks it: a clone of `mjcf` with its assets
-/// named, every element but its actuators given its class (each actuator's
-/// class, as the actuator writes it, returned beside it), its frames and
-/// composites expanded, then validated (`validate_resolved`), before the compiler passes remove any
-/// element. The caller has checked the tree's depth.
-pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
+/// The model as the loader checks it: its meshes' and height fields' written
+/// names ([`mesh::check_written_names`]), then a clone of `mjcf` with its
+/// meshes and height fields named ([`mesh::name_assets`]), every element but
+/// its actuators given its class (each actuator's class, as the actuator
+/// writes it, returned beside it), its frames and composites expanded, every
+/// other name checked (`names::check_names`), its meshes' written counts
+/// checked ([`mesh::check_written_counts`]), then validated
+/// (`validate_resolved`), before the compiler passes remove any
+/// element. A mesh flexcomp's file is read as it
+/// is made, from `base_path`, the model's directory, where its path is
+/// relative. The caller has checked the tree's depth.
+pub fn front_end(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<FrontEnd> {
     // A model built in code: a parsed `<size>`'s are refused while parsing.
     crate::validation::check_user_sizes(mjcf)?;
+    mesh::check_written_names(mjcf)?;
     let mut mjcf = mjcf.clone();
+    // The meshes' and height fields' names from their files, where this crate
+    // checked them before Rigid-loading PR RL-9d (ledger L353).
     mesh::name_assets(&mut mjcf)?;
 
     // Each element's class, before frames, composites and the compiler
@@ -449,7 +458,7 @@ pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
     // Each body-level flexcomp is made in the same walk, as MuJoCo's reader
     // makes it, and put in its place once the frames are composed.
     let (composite_excludes, made_flexcomps) =
-        composite::expand_composites(&mut mjcf.worldbody, &resolver, &mjcf.compiler)?;
+        composite::expand_composites(&mut mjcf.worldbody, &resolver, &mjcf.compiler, base_path)?;
     mjcf.contact.excludes.extend(composite_excludes);
 
     // Expand <frame> elements: compose transforms into children, lift onto parent bodies.
@@ -466,11 +475,16 @@ pub fn front_end(mjcf: &MjcfModel) -> Result<FrontEnd> {
     let first_flexcomp = mjcf.flex.len();
     mjcf.flex.extend(placed.flexes);
     crate::validation::check_tree_depth(&mjcf.worldbody)?;
+    // Every other name, composites' and frames' included, where this crate
+    // checked them before RL-9d; then the meshes' written counts, which it
+    // checks since RL-9d (ledger L353).
+    crate::names::check_names(&mjcf, &frame_names)?;
+    mesh::check_written_counts(&mjcf.meshes)?;
 
-    // Every name, reference and value check, on the model as resolved and
+    // Every reference and value check, on the model as resolved and
     // expanded, before fusion or discarding hides an element (MuJoCo 3.5.0
     // checks names before either, measured).
-    let checked = crate::validation::validate_resolved(&mjcf, &frame_names)?;
+    let checked = crate::validation::validate_resolved(&mjcf)?;
     Ok(FrontEnd {
         mjcf,
         resolver,
@@ -635,6 +649,9 @@ pub struct ModelBuilder {
     /// Whether each geom is a mesh or SDF geom with `shellinertia`, which
     /// `check_bodies` refuses in MuJoCo's order.
     pub(crate) geom_shellinertia_on_mesh: Vec<bool>,
+    /// Whether each geom is an SDF geom that names no mesh, which
+    /// `check_bodies` refuses in MuJoCo's order.
+    pub(crate) geom_sdf_names_no_mesh: Vec<bool>,
     pub(crate) geom_contype: Vec<u32>,
     pub(crate) geom_conaffinity: Vec<u32>,
     pub(crate) geom_name: Vec<Option<String>>,

@@ -1,0 +1,1 @@
+<mujoco><asset><mesh vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><flexcomp name="f" type="grid" count="2 2 1" spacing=".1 .1 .1" dim="2"><edge equality="false"/></flexcomp><body name="x" pos="1 0 0"><flexcomp name="f" type="grid" count="2 2 1" spacing=".1 .1 .1" dim="2"><edge equality="false"/></flexcomp></body></worldbody></mujoco>

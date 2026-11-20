@@ -968,12 +968,23 @@ pub struct MjcfMesh {
     /// unwritten: its vertices are turned by its inverse, made unit as MuJoCo
     /// makes it, after `refpos` and before `scale`.
     pub refquat: [f64; 4],
-    /// Embedded vertex data (if not loading from file).
-    /// Format: flat array of xyz coordinates.
+    /// The written vertices (`vertex`), three numbers each, as written: a
+    /// count that is not a multiple of 3 is refused when the model is
+    /// built, as MuJoCo 3.5.0 refuses it. Taken where the mesh's file gives
+    /// none; refused beside a file that gives some.
     pub vertex: Option<Vec<f64>>,
-    /// Embedded face data (if not loading from file).
-    /// Format: flat array of vertex indices (triangles).
-    pub face: Option<Vec<u32>>,
+    /// The written vertex normals (`normal`), three numbers each, as
+    /// written. MuJoCo 3.5.0 checks their count and refuses them beside a
+    /// file that gives normals; this crate checks them as it does and does
+    /// not use them otherwise.
+    pub normal: Option<Vec<f64>>,
+    /// The written texture coordinates (`texcoord`), two numbers each, as
+    /// written; checked as MuJoCo 3.5.0 checks them and not used otherwise.
+    pub texcoord: Option<Vec<f64>>,
+    /// The written faces (`face`), three vertex indices each, as written:
+    /// a negative or missing index is refused when the model is built, as
+    /// MuJoCo 3.5.0 refuses it. Taken where the mesh's file gives none.
+    pub face: Option<Vec<i32>>,
     /// Maximum convex hull vertices. `None` = no limit (default).
     /// `Some(n)` where n >= 4 = limit hull to n vertices.
     /// MuJoCo: `maxhullvert` attribute, default -1 (no limit), min 4.
@@ -994,6 +1005,8 @@ impl Default for MjcfMesh {
             refpos: Vector3::zeros(),
             refquat: [1.0, 0.0, 0.0, 0.0],
             vertex: None,
+            normal: None,
+            texcoord: None,
             face: None,
             maxhullvert: None,
             inertia: None,

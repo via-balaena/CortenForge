@@ -1,0 +1,1 @@
+<mujoco><asset><mesh file="tet.stl"/><mesh file="tet.stl"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="box" size=".1" fromto="0 0 0 0 0 1" mesh="nope"/></body></worldbody></mujoco>

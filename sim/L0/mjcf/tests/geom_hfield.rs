@@ -4,8 +4,8 @@
 //! none), whether the geom or its class names it. MuJoCo checks it geom by
 //! geom, after a geom's condim and a mesh geom's mesh (`:3651-3659`) and
 //! before the rest of the geom: its fit to a mesh, its size, a plane in a
-//! moving body. sim-mjcf checks the condim and the mesh later, and its
-//! parser refuses a size that is not finite before any check (ledger L353).
+//! moving body. sim-mjcf checks the condim later, and its parser refuses a
+//! size that is not finite before any check (ledger L353).
 //! MuJoCo checks a visual geom that `discardvisual` discards too, as it
 //! discards one only after (the closing `IndexAssets`, `user_model.cc:4976`).
 //!

@@ -45,8 +45,8 @@ pub fn apply_defaults(
     resolver: &DefaultResolver,
 ) -> Result<Vec<ActuatorSpec>> {
     apply_to_body_tree(&mut mjcf.worldbody, resolver)?;
-    for mesh in &mut mjcf.meshes {
-        let at = Location::named(ElementKind::Mesh, &mesh.name);
+    for (i, mesh) in mjcf.meshes.iter_mut().enumerate() {
+        let at = Location::nth(ElementKind::Mesh, Some(&mesh.name), i);
         *mesh = resolver.apply_to_mesh(mesh).map_err(|e| e.at(at))?;
     }
     let mut actuators = Vec::with_capacity(mjcf.actuators.len());
