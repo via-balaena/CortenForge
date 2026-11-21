@@ -39,13 +39,14 @@
 //! Where the options allow a routine that no measured input reaches, it
 //! returns [`Error::Unported`] naming the routine instead of going on.
 //!
-//! qhull sorts with its C library's `qsort`, and its comparators never
-//! return equal, so two elements one cannot order are left where that
-//! `qsort` leaves them. Here the sort is macOS's `qsort`, ported
-//! (`qsort.rs`); `tests/data/qsort_orders.txt` holds the orders macOS's own
-//! `qsort` and `heapsort` left arrays in. What MuJoCo gives with another C
-//! library's `qsort` has not been measured. qhull also probes a ridge hash
-//! keyed on vertex addresses; here the hash is on vertex ids.
+//! qhull sorts its merges, and the vertices `qh_find_newvertex` chooses
+//! from, with its C library's `qsort`, and neither comparator returns
+//! equal, so two elements one cannot order are left where that `qsort`
+//! leaves them. Here the sort is macOS's `qsort`, ported (`qsort.rs`);
+//! `tests/data/qsort_orders.txt` holds the orders macOS's own `qsort` and
+//! `heapsort` left arrays in. What MuJoCo gives with another C library's
+//! `qsort` has not been measured. qhull also probes a ridge hash keyed on
+//! vertex addresses; here the hash is on vertex ids.
 //!
 //! # Licence
 //!

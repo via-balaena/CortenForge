@@ -74,6 +74,37 @@ pub(crate) struct MergeDist {
     pub(crate) maxdist: f64,
 }
 
+/// `qh_compare_facetmerge` (`merge_r.c:895-904`), the comparator qhull sorts
+/// its merges with: a higher merge type first, then a larger distance first.
+/// It never returns equal: of two merges of one type with neither distance
+/// below the other, either is "less" than the other. `MRGanglecoplanar`'s
+/// branch is not ported: no merge here has that type.
+pub(crate) fn compare_facetmerge(a: &Merge, b: &Merge) -> Ordering {
+    if a.mergetype != b.mergetype {
+        // `a->mergetype < b->mergetype ? 1 : -1`
+        if a.mergetype < b.mergetype {
+            Ordering::Greater
+        } else {
+            Ordering::Less
+        }
+    } else if a.distance < b.distance {
+        // `a->distance < b->distance ? 1 : -1`
+        Ordering::Greater
+    } else {
+        Ordering::Less
+    }
+}
+
+/// `qh_comparevisit` (`merge_r.c:915-921`) on two vertices' visit ids:
+/// `a->visitid > b->visitid ? 1 : -1`, so it never returns equal.
+pub(crate) const fn compare_visit(a: u32, b: u32) -> Ordering {
+    if a > b {
+        Ordering::Greater
+    } else {
+        Ordering::Less
+    }
+}
+
 impl Qhull<'_> {
     /// `qh_premerge` (`merge_r.c:75-99`).
     pub(crate) fn premerge(&mut self) -> Result<(), Error> {
@@ -290,29 +321,12 @@ impl Qhull<'_> {
         Ok(())
     }
 
-    /// `qsort` by `qh_compare_facetmerge` (`merge_r.c:895-903`): a higher
-    /// merge type first, then a larger distance first, so `qh_all_merges`,
-    /// taking from the end, merges the lowest type and the flattest first.
-    /// The comparator never returns equal, so two merges it cannot order, of
-    /// one type with neither distance below the other, are left where macOS's
-    /// `qsort` leaves them ([`qsort`]). `MRGanglecoplanar`'s branch is not
-    /// ported: no merge here has that type.
+    /// `qsort` by `qh_compare_facetmerge` ([`compare_facetmerge`]), so
+    /// `qh_all_merges`, taking from the end, merges the lowest type and the
+    /// flattest first. Two merges the comparator cannot order are left where
+    /// macOS's `qsort` leaves them ([`qsort`]).
     fn sort_mergeset(&mut self) {
-        qsort(&mut self.facet_mergeset, &mut |a: &Merge, b: &Merge| {
-            if a.mergetype != b.mergetype {
-                // `a->mergetype < b->mergetype ? 1 : -1`
-                if a.mergetype < b.mergetype {
-                    Ordering::Greater
-                } else {
-                    Ordering::Less
-                }
-            } else if a.distance < b.distance {
-                // `a->distance < b->distance ? 1 : -1`
-                Ordering::Greater
-            } else {
-                Ordering::Less
-            }
-        });
+        qsort(&mut self.facet_mergeset, &mut compare_facetmerge);
     }
 
     /// `qh_test_appendmerge` (`merge_r.c:4839-4861`) without an angle
@@ -1285,14 +1299,9 @@ impl Qhull<'_> {
         if vertices.is_empty() {
             return None;
         }
-        // `qsort` by `qh_comparevisit` (`merge_r.c:910-918`):
-        // `a->visitid > b->visitid ? 1 : -1`.
+        // `qsort` by `qh_comparevisit` (`compare_visit`).
         qsort(vertices, &mut |&a: &VertexId, &b: &VertexId| {
-            if self.v(a).visitid > self.v(b).visitid {
-                Ordering::Greater
-            } else {
-                Ordering::Less
-            }
+            compare_visit(self.v(a).visitid, self.v(b).visitid)
         });
         let hashsize = newhashtable(ridges.len());
         let mut hash_table: Vec<RidgeId> = vec![RidgeId::NULL; hashsize];

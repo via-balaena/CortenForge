@@ -66,11 +66,11 @@
 //! `qh_find_newvertex` chooses from: a quicksort on a median of three (of nine
 //! past 40 elements), insertion sort for short or unswapped runs, and
 //! `heapsort` past a depth limit.
-//! qhull's comparators never return equal, so where two elements tie the
-//! order they are left in is this algorithm's, and the port makes the same
-//! comparisons in the same order. An index stands for a pointer, and `cmp`
-//! for C's comparator: [`Ordering::Less`] for a negative return,
-//! [`Ordering::Greater`] for a positive one.
+//! Neither comparator qhull calls it with here returns equal, so where two
+//! elements tie the order they are left in is this algorithm's, and the port
+//! makes the same comparisons in the same order. An index stands for a
+//! pointer, and `cmp` for C's comparator: [`Ordering::Less`] for a negative
+//! return, [`Ordering::Greater`] for a positive one.
 
 use std::cmp::Ordering;
 
@@ -311,21 +311,36 @@ fn heap_select<T: Copy>(v: &mut [T], nmemb: usize, k: T, cmp: &mut impl FnMut(&T
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::merge::{Merge, MergeType, compare_facetmerge, compare_visit};
+    use crate::state::FacetId;
 
-    /// One of `tests/data/qsort_orders.txt`'s comparators: `F` qhull's
-    /// `qh_compare_facetmerge` over a merge type and a distance, `V` its
-    /// `qh_comparevisit` over a visit id, `T` a three-way comparison.
+    /// One of `tests/data/qsort_orders.txt`'s comparators: `F` and `V` the two
+    /// `merge.rs` sorts with, `compare_facetmerge` over a merge of the
+    /// recorded type and distance and `compare_visit` over a visit id; `T` a
+    /// three-way comparison.
     fn compare(form: &str, a: (u32, f64), b: (u32, f64)) -> Ordering {
-        let greater = match form {
-            "F" if a.0 != b.0 => a.0 < b.0,
-            "F" => a.1 < b.1,
-            "V" => a.0 > b.0,
-            _ => return a.0.cmp(&b.0),
-        };
-        if greater {
-            Ordering::Greater
-        } else {
-            Ordering::Less
+        match form {
+            "F" => compare_facetmerge(&merge(a), &merge(b)),
+            "V" => compare_visit(a.0, b.0),
+            _ => a.0.cmp(&b.0),
+        }
+    }
+
+    /// A merge of a recorded type (1, 2 or 3, taken in `MergeType`'s order)
+    /// and distance.
+    fn merge((t, distance): (u32, f64)) -> Merge {
+        let mergetype = match t {
+            1 => Some(MergeType::Coplanar),
+            2 => Some(MergeType::Concave),
+            3 => Some(MergeType::ConcaveCoplanar),
+            _ => None,
+        }
+        .expect("a merge type of 1 to 3");
+        Merge {
+            facet1: FacetId::NULL,
+            facet2: FacetId::NULL,
+            mergetype,
+            distance,
         }
     }
 
@@ -363,6 +378,6 @@ mod tests {
             assert_eq!(got, want, "{line}");
             cases[usize::from(by_heapsort)] += 1;
         }
-        assert_eq!(cases, [800, 200], "recorded cases");
+        assert_eq!(cases, [802, 200], "recorded cases");
     }
 }
