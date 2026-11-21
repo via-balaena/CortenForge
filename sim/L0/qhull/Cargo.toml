@@ -5,9 +5,10 @@ keywords = ["convex-hull", "qhull", "mujoco", "simulation", "geometry"]
 categories = ["mathematics", "simulation"]
 version.workspace = true
 edition.workspace = true
-# A translation of Qhull (COPYING.txt) and of MuJoCo 3.5.0's MakeGraph, which
-# reads qhull's result (Apache-2.0): their licences, not the workspace's.
-license = "Qhull AND Apache-2.0"
+# A translation of Qhull (COPYING.txt), of MuJoCo 3.5.0's MakeGraph, which
+# reads qhull's result (Apache-2.0), and of the qsort qhull calls on macOS
+# (Apple's Libc, BSD-3-Clause): their licences, not the workspace's.
+license = "Qhull AND Apache-2.0 AND BSD-3-Clause"
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true

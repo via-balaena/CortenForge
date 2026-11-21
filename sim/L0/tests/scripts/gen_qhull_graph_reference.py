@@ -272,10 +272,13 @@ def grid_sets(seed, count):
         yield i, np.array(out, dtype=np.float32)
 
 
-# The grid sets the golden takes, (seed, index into grid_sets(seed, ...)), each reaching a merge into the first new
-# facet before the merge set is first filled, so qhull's list of new facets starts elsewhere after it (RL-9d2 review,
-# RB-1): (20, 13) gives another graph and (24, 993) a refusal when the list is read before the merge.
-GRID_CHOSEN = ((20, 13), (24, 993))
+# The grid sets the golden takes, (seed, index into grid_sets(seed, ...)). (20, 13) and (24, 993) reach a merge into
+# the first new facet before the merge set is first filled, so qhull's list of new facets starts elsewhere after it
+# (RL-9d2 review, RB-1): (20, 13) gives another graph and (24, 993) a refusal when the list is read before the merge.
+# (2, 8687), (31, 1070) and (56, 2967) give another graph when the merges `qh_compare_facetmerge` cannot order are
+# left in their order rather than where macOS's `qsort` leaves them (ledger L434): three of the 36 of 1,000,000 grid
+# sets (seeds 1 to 100, 10,000 sets each) on which the two orders give different graphs.
+GRID_CHOSEN = ((20, 13), (24, 993), (2, 8687), (31, 1070), (56, 2967))
 
 
 def cases():

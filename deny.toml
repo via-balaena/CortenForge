@@ -67,11 +67,10 @@ name = "webpki"
 expression = "ISC"
 license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
 
-# sim-qhull is a translation of Qhull (and of MuJoCo's MakeGraph, Apache-2.0):
-# it carries Qhull's licence, which no other crate here may take. Qhull's
-# conditions (notices kept, COPYING.txt shipped, a modification notice, where
-# the original is) are met in the crate itself: COPYING.txt, its file headers
-# and its README.
+# sim-qhull is a translation of Qhull: it carries Qhull's licence, which no
+# other crate here may take. Qhull's conditions (notices kept, COPYING.txt
+# shipped, a modification notice, where the original is) are met in the crate
+# itself: COPYING.txt, its file headers and its README.
 [[licenses.exceptions]]
 name = "cortenforge-sim-qhull"
 allow = ["Qhull"]

@@ -12,4 +12,6 @@ Qhull, Copyright (c) 1993-2020 C.B. Barber, Arlington, MA, and The National Scie
 
 The part that reads MuJoCo's graph from qhull's result is ported from [MuJoCo](https://github.com/google-deepmind/mujoco) (Copyright 2021 DeepMind Technologies Limited) and licensed under the Apache License, Version 2.0.
 
-There is no warranty: Qhull is provided "as is" (`COPYING.txt`, condition 5), and so is this port. CortenForge is not affiliated with or endorsed by C.B. Barber, The Geometry Center, the Qhull project or Google DeepMind.
+The sort (`src/qsort.rs`) is the `qsort` and `heapsort` of Apple's Libc (`stdlib/FreeBSD/qsort.c` and `heapsort.c`; Copyright (c) 1992, 1993 and 1991, 1993 The Regents of the University of California), the sort qhull calls on macOS, ported so that qhull's merges are left in the order they are left in there. It is licensed under the 3-clause BSD licence, which its header carries.
+
+There is no warranty: Qhull is provided "as is" (`COPYING.txt`, condition 5), and so is this port. CortenForge is not affiliated with or endorsed by C.B. Barber, The Geometry Center, the Qhull project, Google DeepMind, the University of California or Apple.
