@@ -182,9 +182,12 @@ impl ModelBuilder {
         // Convert MJCF mesh to TriangleMeshData
         let mut mesh_data = convert_mjcf_mesh(mjcf_mesh, base_path, &self.compiler)?;
 
-        // Compute convex hull at build time (matching MuJoCo's MakeGraph())
-        let max_hull_vert = mjcf_mesh.maxhullvert;
-        mesh_data.compute_convex_hull(max_hull_vert);
+        // Its convex hull (qhull's, as MuJoCo's `MakeGraph` makes it) of its
+        // vertices as transformed; where qhull makes none, none, and its
+        // polygons from its own faces.
+        if mesh_data.compute_hull(mjcf_mesh.maxhullvert).is_err() {
+            mesh_data.make_polygons();
+        }
 
         let props = mesh_mass_properties(&mesh_data, mjcf_mesh.inertia.unwrap_or_default())
             .map_err(|reason| MjcfError::asset(ElementKind::Mesh, &mjcf_mesh.name, reason))?;
@@ -713,8 +716,9 @@ fn to_principal_frame(vertices: &[Point3<f64>], props: &MeshProps) -> Vec<Point3
 ///   an absolute 1e-9 (`:1653-1662`), and the half sizes of the box with
 ///   that volume and those moments (`:1664-1668`).
 ///
-/// Under `convex` its faces are this crate's hull's (`D-MESH-CONVEX-MASS`):
-/// MuJoCo's to rounding where the two hulls are one set, not where they part.
+/// Under `convex` its faces are its hull's, qhull's as MuJoCo makes it, but
+/// made of its vertices as transformed, where MuJoCo makes it of them as
+/// written (`D-MESH-CONVEX-MASS`).
 ///
 /// # Errors
 ///
@@ -732,14 +736,13 @@ pub fn mesh_mass_properties(
         .collect();
     // The faces the volume and the inertia are summed over: the hull's under
     // `convex` (MuJoCo's `GraphFaces`), the mesh's otherwise, and the mesh's
-    // too where this crate's hull builder makes no hull (it finds a mesh flat
-    // within 1e-10 of its bounding diagonal), which are MuJoCo's hull's where
-    // the mesh is closed and convex (`D-MESH-CONVEX-MASS`).
-    let solid: Vec<[[f64; 3]; 3]> = match (mode, mesh.convex_hull()) {
+    // too where qhull made no hull, which are MuJoCo's hull's where the mesh
+    // is closed and convex (`D-MESH-CONVEX-MASS`).
+    let solid: Vec<[[f64; 3]; 3]> = match (mode, mesh.hull()) {
         (MeshInertia::Convex, Some(hull)) => hull
             .faces
             .iter()
-            .map(|face| face.map(|v| at(&hull.vertices[v as usize])))
+            .map(|face| face.map(|v| at(&vertices[v as usize])))
             .collect(),
         _ => faces.clone(),
     };

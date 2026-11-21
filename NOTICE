@@ -54,8 +54,9 @@ anything made with it.
 ------------------------------------------------------------------------------
 MUJOCO
 
-cortenforge-geometry, cortenforge-sim-core, cortenforge-sim-mjcf and
-cortenforge-sim-urdf, and in this repository sim-gpu and sim-qhull, include
+cortenforge-geometry, cortenforge-sim-core, cortenforge-sim-mjcf,
+cortenforge-sim-qhull and cortenforge-sim-urdf, and in this repository sim-gpu,
+include
 portions ported from MuJoCo (https://github.com/google-deepmind/mujoco),
 translated to Rust and changed. MuJoCo's source code is licensed under the
 Apache License, Version 2.0, the text in the accompanying LICENSE-APACHE file.
@@ -146,7 +147,7 @@ the tinyobjloader project or W. Randolph Franklin.
 ------------------------------------------------------------------------------
 QHULL
 
-sim-qhull (sim/L0/qhull), in this repository, is a port of Qhull
+cortenforge-sim-qhull (sim/L0/qhull) is a port of Qhull
 (http://www.qhull.org), translated to Rust and changed: the 3-d convex hull as
 MuJoCo 3.5.0 runs it, at the commit MuJoCo 3.5.0 builds with (62ccc56a). Its
 Qhull portions are licensed under Qhull's licence, the text in
@@ -165,10 +166,10 @@ The Geometry Center or the Qhull project.
 ------------------------------------------------------------------------------
 QSORT
 
-sim-qhull's sort (sim/L0/qhull/src/qsort.rs) is a port of the qsort and
-heapsort of Apple's Libc (stdlib/FreeBSD/qsort.c and heapsort.c), translated
-to Rust and changed to sort a slice through a Rust comparator, so that
-qhull's merges are left in the order macOS's qsort leaves them. It is
+cortenforge-sim-qhull's sort (sim/L0/qhull/src/qsort.rs) is a port of the
+qsort and heapsort of Apple's Libc (stdlib/FreeBSD/qsort.c and heapsort.c),
+translated to Rust and changed to sort a slice through a Rust comparator, so
+that qhull's merges are left in the order macOS's qsort leaves them. It is
 licensed under the 3-clause BSD licence, not under the choice of licences
 above. The two files carry these notices:
 

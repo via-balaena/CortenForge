@@ -21,6 +21,8 @@ name = "sim_core"
 cf-geometry = { workspace = true }
 # Foundation types: BodyId, Pose, SimConfig
 sim-types = { workspace = true }
+# A mesh's convex hull as MuJoCo 3.5.0's qhull makes it (`mesh.rs`)
+sim-qhull = { workspace = true }
 # Model / Data matrices, spatial algebra, collision primitives
 nalgebra = { workspace = true }
 # Derive macros for solver / collision error enums

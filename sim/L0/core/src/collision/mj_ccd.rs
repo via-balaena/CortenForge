@@ -2312,8 +2312,8 @@ fn multicontact(pt: &Polytope, f: usize, status: &mut CcdStatus, o1: &CcdObj<'_>
 
 impl<'a> CcdObj<'a> {
     /// `mjc_initCCDObj` for geom `g` of `model` at `pos`, turned by `mat`:
-    /// a mesh with its vertices, its hull's graph where every hull vertex is
-    /// one of its vertices, and its polygons.
+    /// a mesh with its vertices, its hull's graph where it has a hull, and its
+    /// polygons.
     pub(super) fn of_geom(
         model: &'a Model,
         g: usize,
@@ -2325,13 +2325,10 @@ impl<'a> CcdObj<'a> {
             let data = &*model.mesh_data[id];
             CcdMesh {
                 verts: data.vertices(),
-                hull: data
-                    .convex_hull()
-                    .filter(|_| !data.hull_vertex().is_empty())
-                    .map(|hull| HullGraph {
-                        vertex: data.hull_vertex(),
-                        neighbours: &hull.adjacency,
-                    }),
+                hull: data.hull().map(|hull| HullGraph {
+                    vertex: &hull.vertex,
+                    neighbours: &hull.neighbours,
+                }),
                 polygons: data.polygons(),
             }
         });
@@ -2387,7 +2384,8 @@ fn ccd_iteration(
 /// margin; 8 for two boxes; 4 for two boxes or meshes under MULTICCD; else 1.
 /// A mesh without polygons gives the multi-contact no faces to clip, so its
 /// pair takes 1 (MuJoCo's compiler merges polygons for every mesh; here a
-/// `TriangleMeshData` never given `compute_convex_hull` has none).
+/// `TriangleMeshData` given neither `compute_hull` nor `make_polygons` has
+/// none).
 fn max_contacts(model: &Model, o1: &CcdObj<'_>, o2: &CcdObj<'_>) -> usize {
     if o1.margin > 0.0 || o2.margin > 0.0 {
         return 1;

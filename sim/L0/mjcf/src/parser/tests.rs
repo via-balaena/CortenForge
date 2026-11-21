@@ -1140,7 +1140,7 @@ fn test_hull_available_after_build() {
         "#;
     let model = crate::load_model(xml).expect("should build");
     assert!(
-        model.mesh_data[0].convex_hull().is_some(),
+        model.mesh_data[0].hull().is_some(),
         "hull should be computed at build time"
     );
 }

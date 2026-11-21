@@ -12,8 +12,6 @@ license = "Qhull AND Apache-2.0 AND BSD-3-Clause"
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-# Joins the release set when sim-core depends on it (Rigid-loading PR RL-9d3).
-publish = false
 
 [package.metadata.cortenforge]
 tier = "L0"

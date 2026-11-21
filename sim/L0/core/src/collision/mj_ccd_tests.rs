@@ -91,7 +91,7 @@ fn is_rotation(a: &[usize], b: &[usize]) -> bool {
 /// faces instead would show).
 fn mesh_data(verts: Vec<Point3<f64>>) -> TriangleMeshData {
     let mut data = TriangleMeshData::from_faces(verts, vec![[0, 1, 2]]);
-    data.compute_convex_hull(None);
+    data.compute_hull(None).expect("qhull makes the hull");
     data
 }
 
@@ -138,14 +138,6 @@ fn meshes(doc: &Value) -> HashMap<String, Mesh> {
         );
         let mujocos = mujoco_polygons(m);
         let data = mesh_data(verts);
-        assert_eq!(
-            data.hull_vertex().len(),
-            data.convex_hull()
-                .expect("the mesh has a hull")
-                .vertices
-                .len(),
-            "mesh {name}: a hull vertex that is not a mesh vertex"
-        );
         let started_as_ours = MeshPolygons {
             paths: mujocos
                 .paths
@@ -215,14 +207,6 @@ fn graph_meshes(doc: &Value) -> HashMap<String, GraphMesh> {
             })
             .collect();
         let ours = mesh_data(verts.clone());
-        assert_eq!(
-            ours.hull_vertex().len(),
-            ours.convex_hull()
-                .expect("the mesh has a hull")
-                .vertices
-                .len(),
-            "mesh {name}: a hull vertex that is not a mesh vertex"
-        );
         out.insert(
             name.clone(),
             GraphMesh {
@@ -273,9 +257,10 @@ fn object<'a>(v: &Value, meshes: &'a Meshes, polygons: Polygons) -> CcdObj<'a> {
     let mesh = v["mesh"].as_str().map(|name| {
         if let Some(g) = meshes.on_mujocos_graph.get(name) {
             let hull = if meshes.our_graph {
+                let ours = g.ours.hull().expect("the mesh has a hull");
                 HullGraph {
-                    vertex: g.ours.hull_vertex(),
-                    neighbours: &g.ours.convex_hull().expect("the mesh has a hull").adjacency,
+                    vertex: &ours.vertex,
+                    neighbours: &ours.neighbours,
                 }
             } else {
                 HullGraph {
@@ -290,12 +275,12 @@ fn object<'a>(v: &Value, meshes: &'a Meshes, polygons: Polygons) -> CcdObj<'a> {
             };
         }
         let m = &meshes.ours[name];
-        let hull = m.data.convex_hull().expect("the mesh has a hull");
+        let hull = m.data.hull().expect("the mesh has a hull");
         CcdMesh {
             verts: m.data.vertices(),
             hull: Some(HullGraph {
-                vertex: m.data.hull_vertex(),
-                neighbours: &hull.adjacency,
+                vertex: &hull.vertex,
+                neighbours: &hull.neighbours,
             }),
             polygons: match polygons {
                 Polygons::Mujocos => &m.mujocos,
@@ -767,10 +752,13 @@ fn plane_run(
                 vertex: &m.vertex,
                 neighbours: &m.neighbours,
             }),
-            PlaneGraph::Ours => Some(HullGraph {
-                vertex: m.ours.hull_vertex(),
-                neighbours: &m.ours.convex_hull().expect("the mesh has a hull").adjacency,
-            }),
+            PlaneGraph::Ours => {
+                let hull = m.ours.hull().expect("the mesh has a hull");
+                Some(HullGraph {
+                    vertex: &hull.vertex,
+                    neighbours: &hull.neighbours,
+                })
+            }
             PlaneGraph::None => None,
         },
         polygons: &none,
@@ -850,14 +838,15 @@ fn plane_convex_matches_mujoco_bitwise() {
     assert_eq!(total, 711, "plane cases");
 }
 
-/// On our hull's graph (registry D-HULL-ORDER) a plane–mesh contact after
-/// the first can be at another vertex: `mjc_PlaneConvex` takes the first
+/// On a hull's graph other than MuJoCo's a plane–mesh contact after the
+/// first can be at another vertex: `mjc_PlaneConvex` takes the first
 /// vertex's neighbours within the margin in the graph's order, up to two,
-/// and where a face lies on the plane its corners tie for the first. On the
-/// golden's 168 `mesh` cases: 47 differ from MuJoCo's (4 in count; positions
-/// up to 0.14 apart and distances up to 2.7e-2, measured); the first contact
-/// is listed whenever MuJoCo's is, at its distance within 1e-16 (measured
-/// 8.3e-17), on 15 face-down poses at another of the tied corners.
+/// and where a face lies on the plane its corners tie for the first. The
+/// graph here is qhull's of each mesh's `mesh_vert`, which MuJoCo turned,
+/// moved and rounded after it made its own of the vertices as written
+/// (registry D-HULL-ORDER). On the golden's 168 `mesh` cases: 48 differ from
+/// MuJoCo's (4 in count, measured); the first contact is listed whenever
+/// MuJoCo's is, at its distance within 1.2e-16 (measured 1.1e-16, on 2).
 #[test]
 fn plane_mesh_contacts_part_from_mujocos_by_the_hulls_order() {
     let doc = golden();
@@ -873,14 +862,14 @@ fn plane_mesh_contacts_part_from_mujocos_by_the_hulls_order() {
         if let (Some(c), Some(w)) = (ours.first(), want.first()) {
             let dist = number(&w["dist"]);
             assert!(
-                (c.dist - dist).abs() <= 1e-16,
+                (c.dist - dist).abs() <= 1.2e-16,
                 "{name}: first dist {}, MuJoCo {dist}",
                 c.dist
             );
         }
         differ += usize::from(!contacts_match(&ours, &case["contacts"]));
     }
-    assert_eq!(differ, 47, "plane-mesh cases our hull's graph changes");
+    assert_eq!(differ, 48, "plane-mesh cases a graph of mesh_vert changes");
 }
 
 /// A height field of the golden (`hfield_fields`) as sim-core holds it:

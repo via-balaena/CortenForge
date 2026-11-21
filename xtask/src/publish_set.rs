@@ -44,8 +44,13 @@ closure over normal and build dependencies (optional ones included):
     to the root's file, which cargo packages as the file itself. Every crate
     but the facade has exactly the README its name, library name, description
     and the upstream projects it ports code from give; the failure prints it;
+  - a crate on `OWN_LICENCE`, under its upstream's licence rather than the
+    workspace's, ships none of the root's files it names as not its own (for
+    sim-qhull `LICENSE-MIT`), ships each of its upstream's licence files it
+    names, and has a README of its own that names each of them, in place of
+    the README the rule above gives;
   - for each upstream project the set ports code from (MuJoCo, OpenSim,
-    tinyobjloader), every
+    tinyobjloader, Qhull, Apple's Libc qsort), every
     crate inside it whose `src` cites the project is on one of two closed
     lists: the crates holding code ported from it, each named in the first
     paragraph of the project's section of the root NOTICE and each README
@@ -55,7 +60,9 @@ closure over normal and build dependencies (optional ones included):
     a section that carries no `Copyright` line. A citation is what the
     project's `cited_by` in `UPSTREAMS` matches (for MuJoCo a source file
     named with its extension, for OpenSim a path into its source tree or its
-    repository's name, for tinyobjloader its header's name), in a regular
+    repository's name, for tinyobjloader its header's name, for Qhull a
+    `libqhull_r` file named with its extension, for the qsort its two files'
+    names), in a regular
     UTF-8 file under `src`; the tests,
     examples and benches cargo also packages are not read.
     This sees citations, not derivation: a port that cites nothing in those
@@ -86,6 +93,28 @@ const README: &str = "README.md";
 /// What every crate in the set but the facade is named with.
 const PREFIX: &str = "cortenforge-";
 
+/// A crate in the set under its upstream's licence, not the workspace's choice
+/// of Apache-2.0 or MIT (ledger L433 (b); Jon, 2026-11-21: a named exception,
+/// its licence text as written, read with ledger L401's).
+struct OwnLicence {
+    /// The crate.
+    name: &'static str,
+    /// The root's files ([`ROOT_FILES`]) whose licence is not the crate's,
+    /// which it must not ship.
+    not_its_own: &'static [&'static str],
+    /// Its upstream's licence files, which it ships and its README names.
+    ships: &'static [&'static str],
+}
+
+/// The crates under their upstream's licence: sim-qhull, a port of Qhull
+/// (`COPYING.txt`), with MuJoCo's `MakeGraph` (Apache-2.0) and Apple's Libc
+/// `qsort` (BSD-3-Clause, in its header and the NOTICE).
+const OWN_LICENCE: [OwnLicence; 1] = [OwnLicence {
+    name: "cortenforge-sim-qhull",
+    not_its_own: &["LICENSE-MIT"],
+    ships: &["COPYING.txt"],
+}];
+
 /// A project the set ports code from, under that project's own licence
 /// (ledger L401, L402): each crate holding its code says so in its README, and
 /// the root NOTICE names the crate in the project's section.
@@ -111,7 +140,7 @@ struct Upstream {
 /// The upstream projects, each with its two closed lists: every crate in the
 /// set whose `src` matches `cited_by` is on `ports` or `cites`, and every crate
 /// on either matches it.
-const UPSTREAMS: [Upstream; 3] = [
+const UPSTREAMS: [Upstream; 5] = [
     Upstream {
         name: "MuJoCo",
         url: "https://github.com/google-deepmind/mujoco",
@@ -128,6 +157,7 @@ const UPSTREAMS: [Upstream; 3] = [
             "cortenforge-geometry",
             "cortenforge-sim-core",
             "cortenforge-sim-mjcf",
+            "cortenforge-sim-qhull",
             "cortenforge-sim-urdf",
         ],
         // mesh-io: a doc comment in `stl.rs` citing `user_mesh.cc`.
@@ -162,6 +192,30 @@ const UPSTREAMS: [Upstream; 3] = [
         cited_by: r"\btiny_obj_loader\.h\b",
         // `builder/obj.rs`: its `LoadObj` as MuJoCo 3.5.0's `LoadOBJ` calls it.
         ports: &["cortenforge-sim-mjcf"],
+        cites: &[],
+    },
+    Upstream {
+        name: "Qhull",
+        url: "http://www.qhull.org",
+        not_affiliated_with: "C.B. Barber, The Geometry Center or the Qhull project",
+        licence: "Qhull's licence (`COPYING.txt`)",
+        section: "QHULL",
+        // A file of `libqhull_r` named with its extension (`poly2_r.c`,
+        // `user_r.h`), as a port cites it. The name qhull alone is no
+        // citation: sim-core and sim-mjcf say it of the hull they ask for.
+        cited_by: r"\b[a-z0-9]+_r\.[ch]\b",
+        ports: &["cortenforge-sim-qhull"],
+        cites: &[],
+    },
+    Upstream {
+        name: "the qsort of Apple's Libc",
+        url: "https://github.com/apple-oss-distributions/Libc",
+        not_affiliated_with: "the University of California or Apple",
+        licence: "the 3-clause BSD licence",
+        section: "QSORT",
+        // Its two files named, as the port cites them (`qsort.c:265`).
+        cited_by: r"\b(?:qsort|heapsort)\.c\b",
+        ports: &["cortenforge-sim-qhull"],
         cites: &[],
     },
 ];
@@ -491,6 +545,8 @@ struct Packaging {
     /// For each of [`UPSTREAMS`], in order, the first citation of it in the
     /// crate's `src` ([`upstream_citations`]).
     citations: Vec<Option<String>>,
+    /// The names of the files at the top of the crate's directory.
+    files: BTreeSet<String>,
 }
 
 /// Read a crate's packaging from its directory `dir`, against the workspace
@@ -547,6 +603,13 @@ fn packaging(root: &Path, dir: &Path) -> Result<Packaging> {
         Some(toml::Value::String(path)) if path == README => None,
         Some(other) => Some(other.to_string()),
     };
+    let mut files = BTreeSet::new();
+    for entry in std::fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("read {}", dir.display()))?;
+        if entry.path().is_file() {
+            files.insert(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
     Ok(Packaging {
         root_files,
         readme,
@@ -554,6 +617,7 @@ fn packaging(root: &Path, dir: &Path) -> Result<Packaging> {
         unreadable,
         exclude,
         citations: upstream_citations(&dir.join("src"))?,
+        files,
     })
 }
 
@@ -643,7 +707,8 @@ struct NoticeSection {
     /// The words of its first paragraph, split at anything but letters,
     /// digits, `-` and `_`, so a crate it names is one of them.
     names: BTreeSet<String>,
-    /// Whether any of its lines starts with `Copyright`.
+    /// Whether any of its lines starts with `Copyright`, or gives it after
+    /// a name and a comma, as Qhull's notice does (`Qhull, Copyright (c)`).
     copyright: bool,
 }
 
@@ -661,9 +726,10 @@ fn notice_section(notice: &str, section: &str) -> Option<NoticeSection> {
         .filter(|word| !word.is_empty())
         .map(str::to_owned)
         .collect();
-    let copyright = body
-        .iter()
-        .any(|line| line.trim_start().starts_with("Copyright"));
+    let copyright = body.iter().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("Copyright") || line.contains(", Copyright ")
+    });
     Some(NoticeSection { names, copyright })
 }
 
@@ -724,7 +790,16 @@ fn packaging_problems(
     packaging: &Packaging,
 ) -> Vec<String> {
     let mut found = Vec::new();
+    let own = OWN_LICENCE.iter().find(|own| own.name == name);
     for (file, held) in &packaging.root_files {
+        if own.is_some_and(|own| own.not_its_own.contains(file)) {
+            if *held != Held::Missing {
+                found.push(format!(
+                    "`{name}` ships `{file}`, whose licence is not its own: remove it"
+                ));
+            }
+            continue;
+        }
         match held {
             Held::Missing => found.push(format!(
                 "`{name}` has no `{file}`: add a symlink to the workspace root's"
@@ -755,7 +830,10 @@ fn packaging_problems(
             ));
         } else if path.is_empty() || path == "." {
             found.push(format!("`{name}` excludes `{entry}`, the whole crate"));
-        } else if ROOT_FILES.contains(&path) || path == README {
+        } else if ROOT_FILES.contains(&path)
+            || path == README
+            || own.is_some_and(|own| own.ships.contains(&path))
+        {
             found.push(format!(
                 "`{name}` excludes `{entry}`, which every crate in the set ships"
             ));
@@ -771,6 +849,21 @@ fn packaging_problems(
         return found;
     };
     if name == FACADE {
+        return found;
+    }
+    if let Some(own) = own {
+        for file in own.ships {
+            if !packaging.files.contains(*file) {
+                found.push(format!(
+                    "`{name}` has no `{file}`, its upstream's licence, which it must ship"
+                ));
+            }
+            if !readme.contains(&format!("`{file}`")) {
+                found.push(format!(
+                    "`{name}`'s {README} does not name `{file}`, its upstream's licence"
+                ));
+            }
+        }
         return found;
     }
     let Some(description) = description else {
@@ -1195,7 +1288,64 @@ mod tests {
             unreadable: Vec::new(),
             exclude: vec!["COMPLETION.md".to_owned(), "docs/".to_owned()],
             citations: vec![None; UPSTREAMS.len()],
+            files: BTreeSet::new(),
         }
+    }
+
+    /// A crate under its upstream's licence (`OWN_LICENCE`) is held to its own
+    /// files: it ships its upstream's licence and no root file whose licence
+    /// is not its own, and its own README names that licence; any README of
+    /// its own passes the template rule.
+    #[test]
+    fn a_crate_under_its_upstreams_licence_ships_that_licence() {
+        let name = OWN_LICENCE[0].name;
+        let mut packaging = packaged(name);
+        packaging.root_files = ROOT_FILES
+            .iter()
+            .map(|file| {
+                let held = if *file == "LICENSE-MIT" {
+                    Held::Missing
+                } else {
+                    Held::Same
+                };
+                (*file, held)
+            })
+            .collect();
+        packaging.files = ["COPYING.txt".to_owned()].into();
+        packaging.readme = Some("# Its own\n\nUnder Qhull's licence, `COPYING.txt`.\n".to_owned());
+        assert_eq!(packaging_found(name, &packaging), Vec::<String>::new());
+
+        packaging.root_files[1].1 = Held::Same;
+        assert_eq!(
+            packaging_found(name, &packaging),
+            [format!(
+                "`{name}` ships `LICENSE-MIT`, whose licence is not its own: remove it"
+            )]
+        );
+        packaging.root_files[1].1 = Held::Missing;
+        packaging.files.clear();
+        packaging.readme = Some("# Its own\n".to_owned());
+        packaging.exclude.push("COPYING.txt".to_owned());
+        let found = packaging_found(name, &packaging);
+        assert_eq!(found.len(), 3, "{found:?}");
+        assert!(
+            found[0].contains("excludes `COPYING.txt`, which every crate"),
+            "{found:?}"
+        );
+        assert!(found[1].contains("has no `COPYING.txt`"), "{found:?}");
+        assert!(
+            found[2].contains("does not name `COPYING.txt`"),
+            "{found:?}"
+        );
+
+        let mut without_mit = packaged("a");
+        without_mit.root_files[1].1 = Held::Missing;
+        without_mit.files = ["COPYING.txt".to_owned()].into();
+        assert_eq!(
+            packaging_found("a", &without_mit),
+            ["`a` has no `LICENSE-MIT`: add a symlink to the workspace root's"],
+            "the exception is the named crate's alone"
+        );
     }
 
     fn packaging_found(name: &str, packaging: &Packaging) -> Vec<String> {
@@ -1541,13 +1691,21 @@ mod tests {
             );
         }
         assert_eq!(notice_problems("no sections\n"), Vec::<String>::new());
+        let named = notice.replacen(line, "    Qhull, Copyright (c) 1993 A\n", 1);
+        assert_eq!(
+            notice_problems(&named),
+            Vec::<String>::new(),
+            "after a name"
+        );
+        let word = notice.replacen(line, "    not a Copyright line\n", 1);
+        assert_eq!(notice_problems(&word).len(), 1, "the word alone is none");
     }
 
     /// Each upstream's `cited_by` finds every form its comment names, and none
     /// of the others listed with it.
     #[test]
     fn each_upstreams_pattern_finds_its_citation_forms() {
-        let cases: [(&str, &[&str], &[&str]); 3] = [
+        let cases: [(&str, &[&str], &[&str]); 5] = [
             (
                 "MuJoCo",
                 &[
@@ -1598,6 +1756,22 @@ mod tests {
                     "tiny_obj_loader.hpp",
                 ],
             ),
+            (
+                "Qhull",
+                &["poly2_r.c", "merge_r.c:1739", "libqhull_r.h", "user_r.h"],
+                &[
+                    "qhull",
+                    "libqhull_r",
+                    "user_mesh.cc",
+                    "merge.rs",
+                    "poly2_r.cc",
+                ],
+            ),
+            (
+                "the qsort of Apple's Libc",
+                &["qsort.c", "qsort.c:265", "heapsort.c"],
+                &["qsort", "qsort_r.c", "qsort.rs", "psort.c"],
+            ),
         ];
         for (name, seen, unseen) in cases {
             let upstream = UPSTREAMS.iter().find(|u| u.name == name).expect(name);
@@ -1637,6 +1811,10 @@ mod tests {
         std::fs::write(src.join("b/d.bin"), bytes).expect("write");
         write("notes.md", "OpenSim/Actuators\n");
         write("z.rs", "// user_mesh.cc\n");
+        write(
+            "q.rs",
+            "// qhull's `poly2_r.c:3910`, sorted as `qsort.c:265` sorts\n",
+        );
 
         let read = upstream_citations(&src);
         let missing = upstream_citations(&root.join("missing"));
@@ -1647,11 +1825,13 @@ mod tests {
             [
                 Some("src/s.wgsl: `engine_forward.c`".to_owned()),
                 Some("src/notes.md: `OpenSim/Actuators`".to_owned()),
-                Some("src/c.rs: `tiny_obj_loader.h`".to_owned())
+                Some("src/c.rs: `tiny_obj_loader.h`".to_owned()),
+                Some("src/q.rs: `poly2_r.c`".to_owned()),
+                Some("src/q.rs: `qsort.c`".to_owned())
             ]
         );
-        assert_eq!(missing.expect("no src"), [None, None, None]);
-        assert_eq!(empty.expect("an empty src"), [None, None, None]);
+        assert_eq!(missing.expect("no src"), [None, None, None, None, None]);
+        assert_eq!(empty.expect("an empty src"), [None, None, None, None, None]);
     }
 
     /// A crate's README carries a paragraph for each upstream it ports code

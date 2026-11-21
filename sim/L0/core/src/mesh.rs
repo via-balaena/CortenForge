@@ -47,10 +47,7 @@
 use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
 
-use cf_geometry::{
-    Aabb, Bounded, Bvh, ConvexHull, IndexedMesh, bvh_from_mesh, closest_point_on_triangle,
-    convex_hull,
-};
+use cf_geometry::{Aabb, Bounded, Bvh, IndexedMesh, bvh_from_mesh, closest_point_on_triangle};
 
 use crate::mesh_polygons::{MeshPolygons, make_polygons};
 
@@ -98,12 +95,10 @@ pub struct TriangleMeshData {
     /// Skipped during serialization, rebuilt on demand.
     #[cfg_attr(feature = "serde", serde(skip))]
     bvh: Option<Bvh>,
-    /// Convex hull for collision (computed at build time via Quickhull).
-    /// Serialized (unlike BVH) because hull computation is expensive.
-    convex_hull: Option<ConvexHull>,
-    /// Each hull vertex's index among the mesh's vertices (MuJoCo's
-    /// `vert_globalid`), with the hull.
-    hull_vertex: Vec<usize>,
+    /// Its convex hull as MuJoCo 3.5.0 holds it ([`MeshHull`]), where one
+    /// was made ([`Self::compute_hull`]). Serialized (unlike BVH) because
+    /// hull computation is expensive.
+    hull: Option<MeshHull>,
     /// The polygons MuJoCo merges from the hull's faces, or from the mesh's
     /// own without a hull (`mjCMesh::MakePolygons`), with the hull.
     polygons: MeshPolygons,
@@ -121,6 +116,51 @@ impl PartialEq for TriangleMeshData {
         self.mesh.vertices == other.mesh.vertices
             && self.mesh.faces == other.mesh.faces
             && self.unrounded_vertices() == other.unrounded_vertices()
+    }
+}
+
+/// Why [`TriangleMeshData::compute_hull`] made no hull: qhull's reason or
+/// MuJoCo's ([`sim_qhull::Error`]).
+pub use sim_qhull::Error as HullError;
+
+/// A mesh's convex hull as MuJoCo 3.5.0's `mesh_graph` holds it.
+///
+/// `mjCMesh::MakeGraph` (`user_mesh.cc:1861-2042`) reads it from qhull:
+/// qhull's vertices in its vertex-list order, each with its neighbours, and
+/// its triangles in its facet-list order. It names the mesh's vertices by
+/// index and holds none, so it is kept as they are moved, turned, scaled or
+/// rounded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MeshHull {
+    /// Each hull vertex's index among the mesh's vertices (`vert_globalid`).
+    pub vertex: Vec<usize>,
+    /// Each hull vertex's neighbours by hull-vertex index, in the order its
+    /// facets meet them (`edge_localid`, without its -1s).
+    pub neighbours: Vec<Vec<u32>>,
+    /// Each triangle's vertices by index among the mesh's vertices, wound
+    /// outward from the vertices as the hull was made of them
+    /// (`face_globalid`).
+    pub faces: Vec<[u32; 3]>,
+}
+
+impl From<sim_qhull::MeshGraph> for MeshHull {
+    fn from(graph: sim_qhull::MeshGraph) -> Self {
+        let neighbours = (0..graph.vertex_point.len())
+            .map(|i| {
+                let start = graph.vertex_edges[i] as usize;
+                graph.edges[start..]
+                    .iter()
+                    .take_while(|&&e| e >= 0)
+                    .map(|&e| e.unsigned_abs())
+                    .collect()
+            })
+            .collect();
+        Self {
+            vertex: graph.vertex_point.iter().map(|&p| p as usize).collect(),
+            neighbours,
+            faces: graph.faces,
+        }
     }
 }
 
@@ -167,8 +207,7 @@ impl TriangleMeshData {
             mesh,
             aabb,
             bvh,
-            convex_hull: None,
-            hull_vertex: Vec::new(),
+            hull: None,
             polygons: MeshPolygons::default(),
             unrounded: Vec::new(),
         }
@@ -201,8 +240,7 @@ impl TriangleMeshData {
             mesh,
             aabb,
             bvh,
-            convex_hull: None,
-            hull_vertex: Vec::new(),
+            hull: None,
             polygons: MeshPolygons::default(),
             unrounded: Vec::new(),
         }
@@ -273,52 +311,77 @@ impl TriangleMeshData {
         })
     }
 
-    /// Compute and store the convex hull of this mesh's vertices.
-    /// If the mesh has fewer than 4 vertices or all points are degenerate,
-    /// `convex_hull` remains `None`. With it, each hull vertex's index among
-    /// the mesh's vertices (the first of equal ones), and the mesh's polygons
-    /// from the hull's faces, or from its own where it has no hull.
-    pub fn compute_convex_hull(&mut self, max_vertices: Option<usize>) {
-        self.convex_hull = convex_hull(self.vertices(), max_vertices);
-        let mut first = std::collections::HashMap::new();
-        for (i, v) in self.mesh.vertices.iter().enumerate() {
-            first.entry(v.coords.map(f64::to_bits)).or_insert(i);
+    /// Make its convex hull of its vertices as they are, as MuJoCo 3.5.0's
+    /// `mjCMesh::MakeGraph` makes it (`user_mesh.cc:1861-2042`), with qhull
+    /// ([`sim_qhull::mesh_graph`]): none below 4 vertices. `maxhullvert`
+    /// is the mesh's (`None` for none). Then, as `mjCMesh::Process` goes on
+    /// (`user_mesh.cc:1571-1598`): where it has no faces, its faces become
+    /// the hull's (`CopyGraph`, `:2047-2068`); and its polygons are merged
+    /// from the hull's faces ([`Self::make_polygons`]).
+    ///
+    /// MuJoCo makes the hull of a mesh's vertices as written, before its
+    /// `refpos`, `refquat` and `scale` (`:1567-1603`); a hull made of the
+    /// same vertices turned can differ.
+    ///
+    /// # Errors
+    ///
+    /// qhull's or MuJoCo's reason for making no hull ([`HullError`]), the
+    /// mesh unchanged.
+    pub fn compute_hull(&mut self, maxhullvert: Option<usize>) -> Result<(), HullError> {
+        let points: Vec<[f64; 3]> = self.mesh.vertices.iter().map(|v| [v.x, v.y, v.z]).collect();
+        // MuJoCo's `-1` for no limit; a limit past `i32::MAX` is none.
+        let limit = maxhullvert.map_or(-1, |n| i32::try_from(n).unwrap_or(-1));
+        self.hull = sim_qhull::mesh_graph(&points, limit)?.map(MeshHull::from);
+        if let Some(hull) = self.hull.as_ref().filter(|_| self.mesh.faces.is_empty()) {
+            self.mesh.faces.clone_from(&hull.faces);
+            self.bvh = Some(bvh_from_mesh(&self.mesh));
         }
-        let hull_vertex: Option<Vec<usize>> = self.convex_hull.as_ref().and_then(|hull| {
-            hull.vertices
-                .iter()
-                .map(|v| first.get(&v.coords.map(f64::to_bits)).copied())
-                .collect()
-        });
-        self.hull_vertex = hull_vertex.unwrap_or_default();
-        let faces: Vec<[usize; 3]> = match &self.convex_hull {
-            Some(hull) if !self.hull_vertex.is_empty() => hull
-                .faces
-                .iter()
-                .map(|f| f.map(|i| self.hull_vertex[i as usize]))
-                .collect(),
-            _ => self
-                .mesh
-                .faces
-                .iter()
-                .map(|f| f.map(|i| i as usize))
-                .collect(),
-        };
+        self.make_polygons();
+        Ok(())
+    }
+
+    /// Merge its polygons as MuJoCo 3.5.0's `mjCMesh::MakePolygons` does
+    /// (`user_mesh.cc:2949-3005`): from its hull's faces where it has a hull
+    /// ([`Self::compute_hull`]), from its own otherwise, over its vertices as
+    /// they are, each polygon's normal made from its first three.
+    pub fn make_polygons(&mut self) {
+        let faces = self
+            .hull
+            .as_ref()
+            .map_or(&self.mesh.faces, |hull| &hull.faces);
+        let faces: Vec<[usize; 3]> = faces.iter().map(|f| f.map(|i| i as usize)).collect();
         self.polygons = make_polygons(&self.mesh.vertices, &faces);
+    }
+
+    /// Replace its vertices, one for one, by `vertices`, as MuJoCo 3.5.0's
+    /// `mjCMesh::ApplyTransformations` moves, turns and scales a mesh's
+    /// (`user_mesh.cc:1440-1505`), after its hull and polygons were made:
+    /// its faces, its hull and its polygons are kept, its box and hierarchy
+    /// made again; nothing is rounded.
+    ///
+    /// # Panics
+    ///
+    /// If `vertices` does not hold one vertex for each of its own.
+    pub fn move_vertices(&mut self, vertices: Vec<Point3<f64>>) {
+        assert_eq!(
+            vertices.len(),
+            self.mesh.vertices.len(),
+            "a mesh's vertices are moved one for one"
+        );
+        self.mesh.vertices = vertices;
+        self.aabb = Bounded::aabb(&self.mesh);
+        self.bvh = Some(bvh_from_mesh(&self.mesh));
     }
 
     /// Replace its vertices, one for one, by `vertices`, as a model's
     /// compiler moves a mesh into the frame it keeps it in (MuJoCo's
     /// `mjCMesh::Process`, `user_mesh.cc:1676-1686`), and hold each rounded
     /// to single precision, as MuJoCo keeps them (`mesh_vert`, `CopyVert`,
-    /// `:892-896`). Its faces, its hull's faces and adjacency and its
-    /// polygons' paths are kept. Its box (as MuJoCo's compiler takes it) and
+    /// `:892-896`). Its faces, its hull and its polygons' paths are kept. Its box (as MuJoCo's compiler takes it) and
     /// its polygons' normals (`MakePolygonNormals`, `:2722-2731`) are made
     /// from `vertices` as given, which [`Self::unrounded_vertices`] keeps, as
-    /// MuJoCo's compiler makes them before it rounds; its own hierarchy and
-    /// its hull's vertices and normals from the rounded ones. For vertices
-    /// moved together by a rotation and a translation, which keeps the hull
-    /// convex and its faces' winding outward.
+    /// MuJoCo's compiler makes them before it rounds; its own hierarchy from
+    /// the rounded ones.
     ///
     /// # Panics
     ///
@@ -334,38 +397,18 @@ impl TriangleMeshData {
         self.mesh.vertices = rounded.collect();
         self.aabb = compiled_box(&vertices);
         self.bvh = Some(bvh_from_mesh(&self.mesh));
-        // A hull is kept where each of its vertices was found among the
-        // mesh's (`hull_vertex`), as `compute_convex_hull` finds them.
-        self.convex_hull = self
-            .convex_hull
-            .take()
-            .filter(|hull| self.hull_vertex.len() == hull.vertices.len())
-            .map(|hull| {
-                let moved = self
-                    .hull_vertex
-                    .iter()
-                    .map(|&v| self.mesh.vertices[v])
-                    .collect();
-                hull.with_vertices(moved)
-            });
         self.polygons.remake_normals(&vertices);
         self.unrounded = vertices;
     }
 
-    /// Returns the convex hull if computed.
+    /// Its convex hull, where one was made ([`Self::compute_hull`]).
     #[must_use]
-    pub fn convex_hull(&self) -> Option<&ConvexHull> {
-        self.convex_hull.as_ref()
+    pub const fn hull(&self) -> Option<&MeshHull> {
+        self.hull.as_ref()
     }
 
-    /// Each hull vertex's index among the mesh's vertices; empty without a
-    /// hull.
-    pub(crate) fn hull_vertex(&self) -> &[usize] {
-        &self.hull_vertex
-    }
-
-    /// The mesh's polygons (MuJoCo's `MakePolygons`); empty until the hull is
-    /// computed.
+    /// The mesh's polygons (MuJoCo's `MakePolygons`); empty until
+    /// [`Self::compute_hull`] or [`Self::make_polygons`] made them.
     pub(crate) const fn polygons(&self) -> &MeshPolygons {
         &self.polygons
     }
@@ -1217,14 +1260,14 @@ mod tests {
     }
 
     /// Its vertices replaced by themselves turned and shifted: held in single
-    /// precision, kept unrounded; the mesh's faces, its hull's faces and
-    /// adjacency and its polygons' paths kept; its box and its polygons'
-    /// normals made from the unrounded vertices, its hull's vertices the
-    /// rounded ones.
+    /// precision, kept unrounded; the mesh's faces, its hull and its
+    /// polygons' paths kept; its box and its polygons' normals made from the
+    /// unrounded vertices.
     #[test]
     fn replacing_a_meshs_vertices_rounds_them_and_moves_its_box_hull_and_polygons() {
         let mut mesh = create_cube();
-        mesh.compute_convex_hull(None);
+        mesh.compute_hull(None)
+            .expect("qhull makes the cube's hull");
         let before = mesh.clone();
         let turn = nalgebra::UnitQuaternion::from_euler_angles(0.4, -0.2, 0.9);
         let shift = Vector3::new(1.0, -2.0, 0.5);
@@ -1246,10 +1289,8 @@ mod tests {
             assert_eq!(lo[axis], along.clone().fold(f64::INFINITY, f64::min));
             assert_eq!(hi[axis], along.fold(f64::NEG_INFINITY, f64::max));
         }
-        let (hull, old) = (mesh.convex_hull().unwrap(), before.convex_hull().unwrap());
-        let found: Vec<Point3<f64>> = mesh.hull_vertex().iter().map(|&v| rounded[v]).collect();
-        assert_eq!(hull.vertices, found);
-        assert_eq!((&hull.faces, &hull.adjacency), (&old.faces, &old.adjacency));
+        assert!(mesh.hull().is_some());
+        assert_eq!(mesh.hull(), before.hull());
         let polygons = mesh.polygons();
         assert_eq!(polygons.paths, before.polygons().paths);
         for (n, path) in polygons.normals.iter().zip(&polygons.paths) {
