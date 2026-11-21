@@ -39,18 +39,20 @@
 //! Where the options allow a routine that no measured input reaches, it
 //! returns [`Error::Unported`] naming the routine instead of going on.
 //!
-//! qhull leaves equal elements in the order its C library's `qsort` leaves
-//! them, and probes a ridge hash keyed on vertex addresses; here they are a
-//! stable sort and a hash on vertex ids. Where two merges of one type at one
-//! distance are sorted together, macOS's `qsort` can leave them in the other
-//! order, and MuJoCo on macOS then gives another graph (measured on
-//! reorderings of one mesh's vertices).
+//! qhull sorts with its C library's `qsort`, and its comparators never
+//! return equal, so two elements one cannot order are left where that
+//! `qsort` leaves them. Here the sort is macOS's `qsort`, ported
+//! (`qsort.rs`); `tests/data/qsort_orders.txt` holds the orders macOS's own
+//! `qsort` and `heapsort` left arrays in. What MuJoCo gives with another C
+//! library's `qsort` has not been measured. qhull also probes a ridge hash
+//! keyed on vertex addresses; here the hash is on vertex ids.
 //!
 //! # Licence
 //!
 //! Qhull's licence (`COPYING.txt`, shipped with this crate) for the qhull
-//! port; Apache-2.0 for the part that reads MuJoCo's graph from it. The
-//! original qhull is at www.qhull.org.
+//! port; Apache-2.0 for the part that reads MuJoCo's graph from it; the
+//! 3-clause BSD licence, in its header, for `qsort.rs`, ported from Apple's
+//! Libc. The original qhull is at www.qhull.org.
 
 // Items are crate-visible in private modules: `pub(crate)` says so.
 #![allow(clippy::redundant_pub_crate)]
@@ -71,6 +73,7 @@ mod findbest;
 mod geom;
 mod graph;
 mod merge;
+mod qsort;
 mod set;
 mod state;
 mod triangulate;
