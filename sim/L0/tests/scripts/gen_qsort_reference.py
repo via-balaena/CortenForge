@@ -10,18 +10,18 @@ It refuses any other platform.
 Each case is an array of element indices 0..n with a key per element, sorted
 by libSystem's `qsort` through `ctypes` under one of three comparators, and
 the order `qsort` leaves the indices in; then cases sorted by libSystem's
-`heapsort`, which `qsort` falls back to past its depth limit. Two comparators
-are qhull's, which never return equal: `F`, `qh_compare_facetmerge` over a
+`heapsort`, which `qsort` falls back to past its depth limit. Two are the
+comparators qhull sorts with here, and neither returns equal: `F`,
+`qh_compare_facetmerge` over a
 merge type and a distance (`a.type < b.type ? 1 : -1` where the types differ,
 else `a.dist < b.dist ? 1 : -1`), and `V`, `qh_comparevisit` over a visit id
 (`a > b ? 1 : -1`). `T` is a three-way comparison of a key, so that the
-branches for an equal return are taken too. The arrays come from one fixed
-xorshift stream: random keys, or those keys sorted, reversed, all equal, in an
-organ pipe or a sawtooth. Last come chosen cases of a second stream
-(`deep_case`): 41 to 400 elements whose keys are drawn from one, two, three
-or five values (an `F` key's distance; its type is one of up to three), each
-chosen because a change to the port that the cases before it miss leaves it
-in another order (`DEEP_CHOSEN`).
+branches for an equal return are taken too. The first 1,000 arrays come from
+one fixed xorshift stream: random keys, or those keys sorted, reversed, all
+equal, in an organ pipe or a sawtooth. Last come chosen cases of a second
+stream (`deep_case`): 41 to 400 elements whose keys are drawn from one, two,
+three or five values (an `F` key's distance; its type is one of up to three),
+chosen as `DEEP_CHOSEN` says.
 
 The file is one case per line, '#' lines aside:
 
@@ -39,10 +39,11 @@ import sys
 
 COUNT = 800
 HEAP_COUNT = 200
-# The second stream's cases the file takes, by index into deep_case(Stream(2)): 929 and 1151, the first `F` and the
-# first `V` case of the stream that the port leaves in another order when its right-hand recursion is given one depth
-# less (RL-9d2b review, RB-1), a change the cases above miss.
-DEEP_CHOSEN = (929, 1151)
+# The second stream's cases the file takes, by index into deep_case(Stream(2)) (RL-9d2b review RB-1 and fix-diff F1-1):
+# 488, the one case of the stream's first 1,200 in which `qsort` falls back to `heapsort` inside its right-hand
+# recursion; 929 and 1151, the first `F` and the first `V` case of the stream that the port leaves in another order
+# when its right-hand recursion is given one depth less.
+DEEP_CHOSEN = (488, 929, 1151)
 
 
 class Stream:

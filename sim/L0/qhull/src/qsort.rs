@@ -378,6 +378,6 @@ mod tests {
             assert_eq!(got, want, "{line}");
             cases[usize::from(by_heapsort)] += 1;
         }
-        assert_eq!(cases, [802, 200], "recorded cases");
+        assert_eq!(cases, [803, 200], "recorded cases");
     }
 }
