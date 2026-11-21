@@ -1005,7 +1005,14 @@ jobs:
   cross-os:
     name: Cross-OS Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # 75, not 45: a run whose Cargo.lock differs from the cache's restores it as
+    # a partial match, and rust-cache then deletes every artifact older than a
+    # week (its cleanup.ts, `ONE_WEEK`). On #1082 (a new crate in Cargo.lock,
+    # main's cache 7 days old) Windows rebuilt 623 crates: the tests took 13.6
+    # min and the Cendrillon build was cancelled at 45 on its last crate. Only
+    # main and develop save a cache (`save-if`), so until one such run finishes,
+    # every run after a lockfile change rebuilds from cold.
+    timeout-minutes: 75
     # PR-scoped to the affected crates; always runs (never a skipped required
     # check), full on non-PR / needs_full / affected-failed. A Cargo.lock change
     # trips the full-fallback valve → needs_full → the Cendrillon pin guard
