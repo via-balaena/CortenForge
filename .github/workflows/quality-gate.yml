@@ -647,7 +647,7 @@ jobs:
           # ✅ Measured (`e0935ea0`): 17.5 min at 34 crates — 13.3 compile, 4.2
           # execute. The "cheap per crate" expectation held.
           - id: 3
-            crates: cortenforge-sim-soft cortenforge-sim-core cortenforge-sim-mjcf cortenforge-sim-urdf sim-gpu cortenforge-sim-types
+            crates: cortenforge-sim-soft cortenforge-sim-core cortenforge-sim-mjcf cortenforge-sim-urdf sim-gpu cortenforge-sim-types cortenforge-sim-qhull
               sim-truss sim-gpu-benches cortenforge-sim-soft-explicit sim-wgsl-gen
               cortenforge-sim-therm-env cortenforge-design cf-design-tests cf-fsu-geometry cf-routing cf-routing-tests cf-cast-cli cortenforge-sim
               pbit-analyze pbit-fw-core
@@ -987,7 +987,7 @@ jobs:
   # cross-OS concerns (FP determinism, mmap behavior, file-path handling).
   # ubuntu coverage is provided by the `tests-debug` + `tests-release` jobs;
   # this matrix adds macOS + Windows for the crates where it actually matters —
-  # the four enumerated below (this line said "three" while listing four).
+  # the five enumerated below.
   #
   # Selection rationale:
   # - sim-core: physics integration, FP determinism is load-bearing
@@ -999,10 +999,20 @@ jobs:
   #   divergent hard-fails (different `pairs_count` on Windows or
   #   scanline parity flips on macOS) that single-OS coverage would miss.
   #   Per v0.8 fix arc spec §10.4.1.
+  # - sim-qhull: its golden test holds integer graphs that floating point
+  #   comparisons decide, recorded from MuJoCo on macOS arm64; this matrix
+  #   runs it on macOS and Windows (RL-9d2).
   cross-os:
     name: Cross-OS Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # 75, not 45: a run whose Cargo.lock differs from the cache's restores it as
+    # a partial match, and rust-cache then deletes every artifact older than a
+    # week (its cleanup.ts, `ONE_WEEK`). On #1082 (a new crate in Cargo.lock,
+    # main's cache 7 days old) Windows rebuilt 623 crates: the tests took 13.6
+    # min and the Cendrillon build was cancelled at 45 on its last crate. Only
+    # main and develop save a cache (`save-if`), so until one such run finishes,
+    # every run after a lockfile change rebuilds from cold.
+    timeout-minutes: 75
     # PR-scoped to the affected crates; always runs (never a skipped required
     # check), full on non-PR / needs_full / affected-failed. A Cargo.lock change
     # trips the full-fallback valve → needs_full → the Cendrillon pin guard
@@ -1031,7 +1041,7 @@ jobs:
           AFFECTED_CRATES: ${{ needs.affected.outputs.crates }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          PKGS=$(bash .github/scripts/affected-packages.sh "cortenforge-sim-core cortenforge-sim-mjcf cortenforge-mesh-io cortenforge-mesh-printability")
+          PKGS=$(bash .github/scripts/affected-packages.sh "cortenforge-sim-core cortenforge-sim-mjcf cortenforge-mesh-io cortenforge-mesh-printability cortenforge-sim-qhull")
           echo "PKGS=$PKGS" >> "$GITHUB_ENV"
           GUI_PKGS=$(bash .github/scripts/affected-packages.sh "cf-studio-gui")
           echo "GUI_PKGS=$GUI_PKGS" >> "$GITHUB_ENV"

@@ -501,6 +501,7 @@ members = [
     "sim/L0/core-benches",
     "sim/L0/mjcf",
     "sim/L0/urdf",
+    "sim/L0/qhull",
     "sim/L0/tests",
     "sim/L0/gpu",
     "sim/L0/gpu-benches",
@@ -847,6 +848,7 @@ sim-core = { path = "sim/L0/core", version = "=0.9.0", package = "cortenforge-si
 sim-core-benches = { path = "sim/L0/core-benches" }
 sim-mjcf = { path = "sim/L0/mjcf", version = "=0.9.0", package = "cortenforge-sim-mjcf" }
 sim-urdf = { path = "sim/L0/urdf", version = "=0.9.0", package = "cortenforge-sim-urdf" }
+sim-qhull = { path = "sim/L0/qhull", package = "cortenforge-sim-qhull" }
 sim-gpu = { path = "sim/L0/gpu" }
 sim-gpu-benches = { path = "sim/L0/gpu-benches" }
 sim-ml-chassis = { path = "sim/L0/ml-chassis", version = "=0.9.0", package = "cortenforge-sim-ml-chassis" }
