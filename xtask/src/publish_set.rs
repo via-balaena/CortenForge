@@ -48,8 +48,9 @@ closure over normal and build dependencies (optional ones included):
     workspace's, ships none of the root's files it names as not its own (for
     sim-qhull `LICENSE-MIT`), ships each of its upstream's licence files it
     names, and has a README of its own, in place of the README the rule above
-    gives, that names each of them and, for each upstream whose `ports` it is
-    on, links the project and names its licence;
+    gives, that names each of them and holds, for each upstream whose `ports`
+    it is on, a Markdown link to its URL and its licence's words as `UPSTREAMS`
+    gives them, each anywhere in the README;
   - for each upstream project the set ports code from (MuJoCo, OpenSim,
     tinyobjloader, Qhull, Apple's Libc qsort), every
     crate inside it whose `src` cites the project is on one of two closed
@@ -199,7 +200,7 @@ const UPSTREAMS: [Upstream; 5] = [
         name: "Qhull",
         url: "http://www.qhull.org",
         not_affiliated_with: "C.B. Barber, The Geometry Center or the Qhull project",
-        licence: "Qhull's licence (`COPYING.txt`)",
+        licence: "Qhull's licence",
         section: "QHULL",
         // A file of `libqhull_r` named with its extension (`poly2_r.c`,
         // `user_r.h`), as a port cites it. The name qhull alone is no
@@ -835,7 +836,10 @@ fn packaging_problems(
             found.push(format!(
                 "`{name}` excludes `{entry}`, its upstream's licence, which it must ship"
             ));
-        } else if ROOT_FILES.contains(&path) || path == README {
+        } else if (ROOT_FILES.contains(&path)
+            && !own.is_some_and(|own| own.not_its_own.contains(&path)))
+            || path == README
+        {
             found.push(format!(
                 "`{name}` excludes `{entry}`, which every crate in the set ships"
             ));
@@ -867,13 +871,17 @@ fn packaging_problems(
             }
         }
         for upstream in UPSTREAMS.iter().filter(|u| u.ports.contains(&name)) {
-            for (what, text) in [("link", upstream.url), ("licence", upstream.licence)] {
-                if !readme.contains(text) {
-                    found.push(format!(
-                        "`{name}`'s {README} does not give {}'s {what}, {text}",
-                        upstream.name
-                    ));
-                }
+            if !readme.contains(&format!("]({})", upstream.url)) {
+                found.push(format!(
+                    "`{name}`'s {README} does not link {}: {}",
+                    upstream.name, upstream.url
+                ));
+            }
+            if !readme.contains(upstream.licence) {
+                found.push(format!(
+                    "`{name}`'s {README} does not give the licence of {}: {}",
+                    upstream.name, upstream.licence
+                ));
             }
         }
         return found;
@@ -1306,8 +1314,9 @@ mod tests {
 
     /// A crate under its upstream's licence (`OWN_LICENCE`) is held to its own
     /// files: it ships its upstream's licence and no root file whose licence
-    /// is not its own, and its own README names that licence; any README of
-    /// its own passes the template rule.
+    /// is not its own (excluding that file is no problem), and its own README,
+    /// which the template rule does not ask for, names that licence's file and
+    /// links each upstream it ports and gives its licence.
     #[test]
     fn a_crate_under_its_upstreams_licence_ships_that_licence() {
         let name = OWN_LICENCE[0].name;
@@ -1324,8 +1333,13 @@ mod tests {
             })
             .collect();
         packaging.files = ["COPYING.txt".to_owned()].into();
+        let ported: Vec<_> = UPSTREAMS
+            .iter()
+            .filter(|u| u.ports.contains(&name))
+            .collect();
+        assert_eq!(ported.len(), 3, "MuJoCo's, Qhull's and the qsort's");
         let mut readme = "# Its own\n\nShips `COPYING.txt`.\n".to_owned();
-        for upstream in UPSTREAMS.iter().filter(|u| u.ports.contains(&name)) {
+        for upstream in &ported {
             readme.push_str(&format!(
                 "[{}]({}), under {}.\n",
                 upstream.name, upstream.url, upstream.licence
@@ -1333,19 +1347,44 @@ mod tests {
         }
         packaging.readme = Some(readme.clone());
         assert_eq!(packaging_found(name, &packaging), Vec::<String>::new());
-        let qsort = UPSTREAMS
-            .iter()
-            .find(|u| u.section == "QSORT")
-            .expect("the qsort's entry");
-        packaging.readme = Some(readme.replace(qsort.url, ""));
+        for upstream in &ported {
+            let link = format!("[{}]({})", upstream.name, upstream.url);
+            let unlinked = format!(
+                "`{name}`'s {README} does not link {}: {}",
+                upstream.name, upstream.url
+            );
+            for (how, text) in [
+                ("as plain text", upstream.url.to_owned()),
+                ("in code", format!("`{}`", upstream.url)),
+                (
+                    "to a longer URL",
+                    format!("[{}]({}_more)", upstream.name, upstream.url),
+                ),
+            ] {
+                packaging.readme = Some(readme.replace(&link, &text));
+                assert_eq!(
+                    packaging_found(name, &packaging),
+                    std::slice::from_ref(&unlinked),
+                    "{how}"
+                );
+            }
+            packaging.readme = Some(readme.replace(upstream.licence, "another licence"));
+            assert_eq!(
+                packaging_found(name, &packaging),
+                [format!(
+                    "`{name}`'s {README} does not give the licence of {}: {}",
+                    upstream.name, upstream.licence
+                )]
+            );
+        }
+        packaging.readme = Some(readme.clone());
+        packaging.exclude.push("LICENSE-MIT".to_owned());
         assert_eq!(
             packaging_found(name, &packaging),
-            [format!(
-                "`{name}`'s {README} does not give {}'s link, {}",
-                qsort.name, qsort.url
-            )]
+            Vec::<String>::new(),
+            "excluding a root file whose licence is not its own"
         );
-        packaging.readme = Some(readme.clone());
+        packaging.exclude.pop();
 
         packaging.root_files[1].1 = Held::Same;
         assert_eq!(
@@ -1359,7 +1398,7 @@ mod tests {
         packaging.readme = Some(readme.replace("`COPYING.txt`", ""));
         packaging.exclude.push("COPYING.txt".to_owned());
         let found = packaging_found(name, &packaging);
-        assert_eq!(found.len(), 4, "{found:?}");
+        assert_eq!(found.len(), 3, "{found:?}");
         assert!(
             found[0].contains("excludes `COPYING.txt`, its upstream's licence, which it must ship"),
             "{found:?}"
@@ -1367,10 +1406,6 @@ mod tests {
         assert!(found[1].contains("has no `COPYING.txt`"), "{found:?}");
         assert!(
             found[2].contains("does not name `COPYING.txt`"),
-            "{found:?}"
-        );
-        assert!(
-            found[3].contains("does not give Qhull's licence"),
             "{found:?}"
         );
 
@@ -1650,6 +1685,7 @@ mod tests {
                 qsort.then(|| "src/qsort.rs: `qsort.c`".to_owned()),
             ]
         };
+        assert_eq!(qhull(true).len(), UPSTREAMS.len(), "every upstream");
         let none = Vec::<String>::new();
         assert_eq!(
             upstream_problems("cortenforge-sim-core", &cited(true, true), &notice),
