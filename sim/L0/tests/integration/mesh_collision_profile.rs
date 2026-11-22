@@ -217,7 +217,7 @@ fn dt179_mesh_plane_collision_profile() {
 
         // Report mesh info
         for (i, md) in m_mp.mesh_data.iter().enumerate() {
-            let hull = md.convex_hull().map_or(0, |h| h.vertices.len());
+            let hull = md.hull().map_or(0, |h| h.vertex.len());
             eprintln!(
                 "  mesh {i}: {} verts, {} tris, hull={hull} verts",
                 md.vertex_count(),

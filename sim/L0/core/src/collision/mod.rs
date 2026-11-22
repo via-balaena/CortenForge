@@ -1324,7 +1324,8 @@ mod spec_d_tests {
             1,5,6, 1,6,2, // +X face
         ];
         let mut mesh = TriangleMeshData::new(vertices, indices);
-        mesh.compute_convex_hull(None);
+        mesh.compute_hull(None)
+            .expect("qhull makes the cube's hull");
         Arc::new(mesh)
     }
 
@@ -1584,8 +1585,8 @@ mod spec_d_tests {
             1,5,6, 1,6,2,
         ];
         let mesh = TriangleMeshData::new(vertices, indices);
-        // Deliberately NOT calling mesh.compute_convex_hull()
-        assert!(mesh.convex_hull().is_none(), "precondition: no hull");
+        // Deliberately NOT calling mesh.compute_hull()
+        assert!(mesh.hull().is_none(), "precondition: no hull");
 
         let mut model = make_model(
             GeomType::Mesh,
@@ -1778,7 +1779,7 @@ mod spec_d_tests {
     }
 
     /// A box, and a mesh with polygons, resting on a mesh whose polygons were
-    /// never merged (no `compute_convex_hull`) under MULTICCD, the unmerged
+    /// never merged (no `compute_hull`) under MULTICCD, the unmerged
     /// mesh the second object of the pair and then the first: the
     /// multi-contact has no faces to clip, so each pair takes one contact per
     /// pass: the first, and those MULTICCD's four turned passes add (all four

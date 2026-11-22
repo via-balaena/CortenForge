@@ -157,7 +157,7 @@ impl Qhull<'_> {
         }
         if !ok {
             return Err(Error::Graph {
-                message: "Could not construct convex hull graph",
+                message: Error::GRAPH_WARNING,
             });
         }
         // Global ids to local ones in the edges.

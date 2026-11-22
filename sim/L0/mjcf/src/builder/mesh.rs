@@ -7,7 +7,8 @@
 
 use nalgebra::{Point3, Vector3};
 use sim_core::HeightFieldData;
-use sim_core::mesh::TriangleMeshData;
+use sim_core::mesh::{HullError, TriangleMeshData};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use tracing::warn;
@@ -19,7 +20,9 @@ use super::mass::MJ_MINVAL;
 use super::mesh_file::load_mesh_file;
 use super::orientation::{mulvecmat, mulvecmat_t, normvec, quat2mat};
 use crate::error::{ElementKind, Location, MjcfError, Result};
-use crate::types::{MeshInertia, MjcfCompiler, MjcfHfield, MjcfMesh, MjcfModel};
+use crate::types::{
+    MeshInertia, MjcfBody, MjcfCompiler, MjcfGeomType, MjcfHfield, MjcfMesh, MjcfModel,
+};
 
 /// Two meshes, or two height fields, of one written name, refused as MuJoCo
 /// 3.5.0's reader refuses the second as it reads it (`mjs_setName`,
@@ -128,6 +131,54 @@ pub fn check_written_counts(meshes: &[MjcfMesh]) -> Result<()> {
     Ok(())
 }
 
+/// The meshes MuJoCo 3.5.0 makes a convex hull of (`mjCModel::TryCompile`,
+/// `user_model.cc:4906-4923`): each that a mesh or SDF geom names where the
+/// geom's `contype` or `conaffinity` is not 0 or a `<pair>` names the geom,
+/// and each `convex` mesh. MuJoCo marks a `convex` mesh only where a mesh or
+/// SDF geom names it, and crashes on one that none names, reading the hull it
+/// did not make (registry `D-MESH-CONVEX-UNNAMED`); this crate makes the hull
+/// of every `convex` mesh. Read on the model after this crate's
+/// `discardvisual` has dropped its geoms, where MuJoCo marks the meshes
+/// before it discards any (`user_model.cc:4906-4923`, `:4976`): a geom it
+/// discards is visual and in no `<pair>`, so it marks a mesh only through
+/// `convex`, which this set holds anyway, but for a `<pair>` naming a
+/// discarded geom, refused here (ledger L342), and a mesh only discarded
+/// geoms name, dropped here before its hull is made (ledger L336).
+pub fn meshes_needing_a_hull(mjcf: &MjcfModel) -> HashSet<String> {
+    let paired: HashSet<&str> = mjcf
+        .contact
+        .pairs
+        .iter()
+        .flat_map(|pair| [pair.geom1.as_str(), pair.geom2.as_str()])
+        .collect();
+    let mut needed: HashSet<String> = mjcf
+        .meshes
+        .iter()
+        .filter(|mesh| mesh.inertia.unwrap_or_default() == MeshInertia::Convex)
+        .map(|mesh| mesh.name.clone())
+        .collect();
+    let mut bodies: Vec<&MjcfBody> = vec![&mjcf.worldbody];
+    while let Some(body) = bodies.pop() {
+        for geom in &body.geoms {
+            let shaped = matches!(geom.geom_type, Some(MjcfGeomType::Mesh | MjcfGeomType::Sdf));
+            let collides = geom.contype.unwrap_or(1) != 0
+                || geom.conaffinity.unwrap_or(1) != 0
+                || geom
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| paired.contains(name));
+            if shaped
+                && collides
+                && let Some(mesh) = &geom.mesh
+            {
+                needed.insert(mesh.clone());
+            }
+        }
+        bodies.extend(&body.children);
+    }
+    needed
+}
+
 /// A mesh's mass properties as MuJoCo 3.5.0's `mjCMesh::Process` leaves
 /// them (`user_mesh.cc:1605-1668`), from its vertices as transformed
 /// ([`apply_transformations`]): computed once per mesh by
@@ -160,6 +211,9 @@ impl ModelBuilder {
     ///
     /// * `mjcf_mesh` - The MJCF mesh definition
     /// * `base_path` - Base directory for resolving relative mesh file paths
+    /// * `needhull` - Whether its convex hull is made for its geoms
+    ///   ([`meshes_needing_a_hull`]); a mesh with no faces gets one whatever
+    ///   this says
     ///
     /// # Errors
     ///
@@ -170,6 +224,7 @@ impl ModelBuilder {
         &mut self,
         mjcf_mesh: &MjcfMesh,
         base_path: Option<&Path>,
+        needhull: bool,
     ) -> Result<()> {
         // Check for duplicate mesh names
         if self.mesh_name_to_id.contains_key(&mjcf_mesh.name) {
@@ -180,12 +235,7 @@ impl ModelBuilder {
         }
 
         // Convert MJCF mesh to TriangleMeshData
-        let mut mesh_data = convert_mjcf_mesh(mjcf_mesh, base_path, &self.compiler)?;
-
-        // Compute convex hull at build time (matching MuJoCo's MakeGraph())
-        let max_hull_vert = mjcf_mesh.maxhullvert;
-        mesh_data.compute_convex_hull(max_hull_vert);
-
+        let mut mesh_data = convert_mjcf_mesh(mjcf_mesh, base_path, &self.compiler, needhull)?;
         let props = mesh_mass_properties(&mesh_data, mjcf_mesh.inertia.unwrap_or_default())
             .map_err(|reason| MjcfError::asset(ElementKind::Mesh, &mjcf_mesh.name, reason))?;
         mesh_data.replace_vertices(to_principal_frame(mesh_data.vertices(), &props));
@@ -421,17 +471,20 @@ fn load_hfield_png(
 /// 2. its own normals, texture coordinates, faces and vertices taken where
 ///    the file gave none, and refused where it gave some ([`take_written`]);
 /// 3. the whole checked ([`check_initial_mesh`]);
-/// 4. a mesh with no faces refused, whose faces MuJoCo makes from its convex
-///    hull, which this crate does not (ledger L405);
-/// 5. an `exact` mesh's face orientation checked ([`check_face_orientation`]).
+/// 4. an `exact` mesh's face orientation checked ([`check_face_orientation`]);
 ///
-/// Its vertices are then moved, turned and scaled as MuJoCo 3.5.0 does
+/// then, as `mjCMesh::Process` goes on (`user_mesh.cc:1567-1603`), on its
+/// vertices as written: its convex hull made where `needhull` or it has no
+/// faces ([`make_graph`]), a mesh with no faces given the hull's; its
+/// polygons merged, from the hull's faces where it has a hull. Its vertices
+/// are then moved, turned and scaled as MuJoCo 3.5.0 does
 /// ([`apply_transformations`]); the BVH is built over them. Its written
 /// vertex and face counts were checked before ([`check_written_counts`]).
 pub fn convert_mjcf_mesh(
     mjcf_mesh: &MjcfMesh,
     base_path: Option<&Path>,
     compiler: &MjcfCompiler,
+    needhull: bool,
 ) -> Result<TriangleMeshData> {
     let refuse = |reason: String| MjcfError::asset(ElementKind::Mesh, &mjcf_mesh.name, reason);
     let file = match &mjcf_mesh.file {
@@ -440,16 +493,8 @@ pub fn convert_mjcf_mesh(
     };
     let mesh = take_written(file, mjcf_mesh).map_err(refuse)?;
     check_initial_mesh(&mesh).map_err(refuse)?;
-    if mesh.faces.is_empty() {
-        return Err(refuse(match &mjcf_mesh.file {
-            Some(file) => format!("file '{file}' contains no faces"),
-            None => "embedded vertex data requires face data".to_owned(),
-        }));
-    }
     let InitialMesh {
-        mut vertices,
-        faces,
-        ..
+        vertices, faces, ..
     } = mesh;
     // Each id names a vertex the mesh holds (`check_initial_mesh`).
     let indices: Vec<usize> = faces
@@ -457,8 +502,55 @@ pub fn convert_mjcf_mesh(
         .filter_map(|id| usize::try_from(id).ok())
         .collect();
     check_face_orientation(&vertices, &indices, mjcf_mesh)?;
-    apply_transformations(&mut vertices, mjcf_mesh);
-    Ok(TriangleMeshData::new(vertices, indices))
+    let faceless = indices.is_empty();
+    let mut mesh = TriangleMeshData::new(vertices, indices);
+    if needhull || faceless {
+        make_graph(&mut mesh, mjcf_mesh, faceless)?;
+    } else {
+        mesh.make_polygons();
+    }
+    let mut moved = mesh.vertices().to_vec();
+    apply_transformations(&mut moved, mjcf_mesh);
+    mesh.move_vertices(moved);
+    Ok(mesh)
+}
+
+/// The mesh's convex hull as MuJoCo 3.5.0's `mjCMesh::MakeGraph` makes it
+/// (`user_mesh.cc:1861-2042`), of its vertices as they are, with the faces
+/// and polygons [`TriangleMeshData::compute_hull`] gives a mesh; where none
+/// is made, the mesh is refused or goes on as [`hull_refusal`] says.
+fn make_graph(mesh: &mut TriangleMeshData, mjcf_mesh: &MjcfMesh, faceless: bool) -> Result<()> {
+    // MuJoCo's -1, written or not, for no limit.
+    let limit = mjcf_mesh.maxhullvert.and_then(|n| usize::try_from(n).ok());
+    let Err(err) = mesh.compute_hull(limit) else {
+        return Ok(());
+    };
+    if let Some(reason) = hull_refusal(&err, faceless) {
+        return Err(MjcfError::asset(ElementKind::Mesh, &mjcf_mesh.name, reason));
+    }
+    warn!(mesh = %mjcf_mesh.name, "Could not construct convex hull graph");
+    mesh.make_polygons();
+    Ok(())
+}
+
+/// Why a mesh is refused where no hull was made (`err`), in MuJoCo 3.5.0's
+/// words: "qhull error" where qhull stops, MuJoCo's own where its check of
+/// qhull's result fails (`MakeGraph`, `user_mesh.cc:1914-2027`). `None` for
+/// MuJoCo's warning ([`HullError::GRAPH_WARNING`]), after which a mesh with
+/// faces goes on with no hull; one with none (`faceless`), whose
+/// faces MuJoCo's `CopyGraph` then reads through the graph pointer
+/// `MakeGraph` set to null as it warned (`user_mesh.cc:2003-2007`, `:2054`;
+/// read, not run), is refused in those words. Where the vertices reach a
+/// routine of qhull's that sim-qhull does not hold, this crate's words naming
+/// it (registry `D-QHULL-UNPORTED`). No input is known to reach any but the
+/// first.
+fn hull_refusal(err: &HullError, faceless: bool) -> Option<String> {
+    match err {
+        HullError::Qhull { .. } => Some("qhull error".to_owned()),
+        HullError::Graph { .. } if err.is_mujocos_warning() && !faceless => None,
+        HullError::Graph { message } => Some((*message).to_owned()),
+        HullError::Unported { .. } => Some(err.to_string()),
+    }
 }
 
 /// The mesh's data: its file's, with its own normals, texture coordinates,
@@ -713,8 +805,8 @@ fn to_principal_frame(vertices: &[Point3<f64>], props: &MeshProps) -> Vec<Point3
 ///   an absolute 1e-9 (`:1653-1662`), and the half sizes of the box with
 ///   that volume and those moments (`:1664-1668`).
 ///
-/// Under `convex` its faces are this crate's hull's (`D-MESH-CONVEX-MASS`):
-/// MuJoCo's to rounding where the two hulls are one set, not where they part.
+/// Under `convex` its faces are its hull's, made of its vertices as written,
+/// as MuJoCo makes it ([`make_graph`]).
 ///
 /// # Errors
 ///
@@ -732,14 +824,14 @@ pub fn mesh_mass_properties(
         .collect();
     // The faces the volume and the inertia are summed over: the hull's under
     // `convex` (MuJoCo's `GraphFaces`), the mesh's otherwise, and the mesh's
-    // too where this crate's hull builder makes no hull (it finds a mesh flat
-    // within 1e-10 of its bounding diagonal), which are MuJoCo's hull's where
-    // the mesh is closed and convex (`D-MESH-CONVEX-MASS`).
-    let solid: Vec<[[f64; 3]; 3]> = match (mode, mesh.convex_hull()) {
+    // too where it has no hull: after MuJoCo's warning that it could not
+    // construct one, where MuJoCo reads the graph through the pointer it set
+    // to null (registry `D-MESH-HULL-WARNING`).
+    let solid: Vec<[[f64; 3]; 3]> = match (mode, mesh.hull()) {
         (MeshInertia::Convex, Some(hull)) => hull
             .faces
             .iter()
-            .map(|face| face.map(|v| at(&hull.vertices[v as usize])))
+            .map(|face| face.map(|v| at(&vertices[v as usize])))
             .collect(),
         _ => faces.clone(),
     };
@@ -877,11 +969,11 @@ pub fn mesh_mass_properties(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
-    use super::convert_mjcf_mesh;
+    use super::{convert_mjcf_mesh, hull_refusal, mesh_mass_properties};
     use crate::builder::mesh_file::tests::create_test_stl;
-    use crate::types::{MjcfCompiler, MjcfMesh};
+    use crate::types::{MeshInertia, MjcfCompiler, MjcfMesh};
     use nalgebra::Vector3;
-    use sim_core::mesh::TriangleMeshData;
+    use sim_core::mesh::{HullError, TriangleMeshData};
 
     /// The file's mesh, loaded by `convert_mjcf_mesh` with `scale`.
     fn file_mesh(path: &std::path::Path, scale: Vector3<f64>) -> TriangleMeshData {
@@ -891,7 +983,7 @@ mod tests {
             scale: Some(scale),
             ..MjcfMesh::default()
         };
-        convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default()).unwrap()
+        convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default(), false).unwrap()
     }
 
     /// A file mesh's `scale` multiplies its vertices.
@@ -963,7 +1055,7 @@ mod tests {
             ..MjcfMesh::default()
         };
 
-        let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
+        let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default(), false);
         assert!(result.is_ok());
         let mesh_data = result.unwrap();
         assert!(!mesh_data.vertices().is_empty());
@@ -988,7 +1080,12 @@ mod tests {
             ..MjcfMesh::default()
         };
 
-        let result = convert_mjcf_mesh(&mjcf_mesh, Some(temp_dir.path()), &MjcfCompiler::default());
+        let result = convert_mjcf_mesh(
+            &mjcf_mesh,
+            Some(temp_dir.path()),
+            &MjcfCompiler::default(),
+            false,
+        );
         assert!(result.is_ok());
     }
 
@@ -1014,7 +1111,7 @@ mod tests {
             ..MjcfMesh::default()
         };
 
-        let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
+        let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default(), false);
         assert!(result.is_ok());
         let mesh_data = result.unwrap();
         assert_eq!(mesh_data.vertices().len(), 4);
@@ -1034,10 +1131,81 @@ mod tests {
             ..MjcfMesh::default()
         };
 
-        let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
+        let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default(), false);
         assert_eq!(
             result.unwrap_err().to_string(),
             "mesh 'empty': at least 4 vertices required"
         );
+    }
+
+    /// Under `convex`, a mesh with no hull (after MuJoCo's warning, which no
+    /// known input reaches) is summed over its own faces, as under `exact`:
+    /// registry `D-MESH-HULL-WARNING`. The L-prism is not convex, so a hull
+    /// made of it would give another volume.
+    #[test]
+    fn a_convex_mesh_with_no_hull_is_summed_over_its_own_faces() {
+        let corners = [
+            [0, 0, 0],
+            [2, 0, 0],
+            [2, 1, 0],
+            [1, 1, 0],
+            [1, 2, 0],
+            [0, 2, 0],
+            [0, 0, 1],
+            [2, 0, 1],
+            [2, 1, 1],
+            [1, 1, 1],
+            [1, 2, 1],
+            [0, 2, 1],
+        ];
+        let vertices = corners
+            .iter()
+            .map(|c| nalgebra::Point3::from(c.map(f64::from)))
+            .collect();
+        let faces = vec![
+            0, 2, 1, 0, 3, 2, 0, 4, 3, 0, 5, 4, 6, 7, 8, 6, 8, 9, 6, 9, 10, 6, 10, 11, 0, 1, 7, 0,
+            7, 6, 1, 2, 8, 1, 8, 7, 2, 3, 9, 2, 9, 8, 3, 4, 10, 3, 10, 9, 4, 5, 11, 4, 11, 10, 5,
+            0, 6, 5, 6, 11,
+        ];
+        let mesh = TriangleMeshData::new(vertices, faces);
+        assert!(mesh.hull().is_none());
+        let convex = mesh_mass_properties(&mesh, MeshInertia::Convex).expect("summed");
+        let exact = mesh_mass_properties(&mesh, MeshInertia::Exact).expect("summed");
+        assert_eq!(convex, exact);
+    }
+
+    /// Each reason for no hull, as the loader takes it: qhull's in MuJoCo's
+    /// words; MuJoCo's warning as going on where the mesh has faces and as a
+    /// refusal in its words where it has none; MuJoCo's other checks in its
+    /// words; a routine sim-qhull does not hold named in this crate's
+    /// (registry `D-QHULL-UNPORTED`). No known input reaches any but the
+    /// first, so each is made here.
+    #[test]
+    fn a_mesh_with_no_hull_is_refused_in_mujocos_words() {
+        let qhull = HullError::Qhull {
+            code: 6154,
+            message: "initial simplex is flat",
+        };
+        let warning = HullError::Graph {
+            message: HullError::GRAPH_WARNING,
+        };
+        let check = HullError::Graph {
+            message: "Vertex id not found in convex hull",
+        };
+        let unported = HullError::Unported {
+            routine: "qh_mergecycle",
+        };
+        assert_eq!(hull_refusal(&qhull, false).as_deref(), Some("qhull error"));
+        assert_eq!(hull_refusal(&warning, false), None);
+        assert_eq!(
+            hull_refusal(&warning, true).as_deref(),
+            Some(HullError::GRAPH_WARNING)
+        );
+        assert_eq!(
+            hull_refusal(&check, false).as_deref(),
+            Some("Vertex id not found in convex hull")
+        );
+        let words = hull_refusal(&unported, false).expect("refused");
+        assert!(words.contains("qh_mergecycle"), "{words}");
     }
 }

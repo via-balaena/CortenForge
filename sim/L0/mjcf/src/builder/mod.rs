@@ -253,9 +253,11 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Set global options
     builder.set_options(&mjcf.option);
 
-    // Process mesh assets FIRST (before geoms can reference them)
+    // Process mesh assets FIRST (before geoms can reference them), each with
+    // its convex hull where MuJoCo makes one.
+    let needhull = mesh::meshes_needing_a_hull(&mjcf);
     for mesh in &mjcf.meshes {
-        builder.process_mesh(mesh, base_path)?;
+        builder.process_mesh(mesh, base_path, needhull.contains(&mesh.name))?;
     }
 
     // Process hfield assets (before geoms can reference them)

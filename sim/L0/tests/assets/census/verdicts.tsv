@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1980
+# agree_floor 1987
 001bc4149d608b24	agree
 002cac6fc120ff66	both-refuse
 00308b83da9d8bab	agree
@@ -332,6 +332,7 @@
 16b7f780332e005f	agree
 16d2d8a2d345cce3	agree
 16df4527d81d9b21	both-refuse
+16ec96d01bb62a70	agree
 16f4a00ceeef988d	both-refuse
 170505a6093ace05	agree
 171f11fe84f080e6	both-refuse
@@ -385,7 +386,7 @@
 1a756fb81ba661cf	ours-refused	divergence=D-NONFINITE
 1a85f40910ee3ece	ours-refused	divergence=D-AUTO-RANGE
 1a9ef847caeebca5	both-refuse
-1aab796f3649ca89	e1:t0:con_pos	divergence=D-HULL-ORDER
+1aab796f3649ca89	agree
 1abf80643fbc72d2	both-refuse
 1ac6a23f3bc92c4c	both-refuse
 1acbae24764c8790	agree
@@ -515,6 +516,7 @@
 23aedd9966baffc1	both-refuse
 23b8afa68cced2d7	both-refuse
 23bf9637cee97943	both-refuse
+23c6de3584cec9af	agree
 23d4f34ed7c99846	agree
 23e9a5933a608c2a	agree
 2419e4571dbe2984	both-refuse
@@ -997,7 +999,7 @@
 4316844350ba3ccb	both-refuse
 4365c4e26ae92516	both-refuse
 43a7692b34966690	agree
-43f75958c991d5ec	ours-refused	known=mjcf-D1
+43f75958c991d5ec	agree
 440d94b651e29e78	both-refuse
 4435e41e249cf1c1	agree
 443824badf5c9947	agree
@@ -1936,6 +1938,7 @@
 85351e930f995a08	agree
 85766904c1bb4ce9	agree
 85804ad330ace3c1	agree
+858f806f87281815	both-refuse
 85aa274b03f04557	both-refuse
 85ae9390faa29d6b	agree
 85ca63c1de6d2d0a	both-refuse
@@ -2015,7 +2018,7 @@
 8b43156eea691599	agree
 8b432f6879ddbbd0	both-refuse
 8b6e8933d5016641	agree
-8b802de5bc4da52c	mj-refuses
+8b802de5bc4da52c	both-refuse
 8b84e591ce56de4e	agree
 8b8730dfd74b609e	ours-refused	divergence=D-INERTIAL-NEGATIVE
 8bca682b2861d996	agree
@@ -2748,7 +2751,7 @@ c0ee04647909b5e0	both-refuse
 c10039bb1a6ec24b	both-refuse
 c10b50f7458fbc2c	agree
 c11abee16822de24	agree
-c11fdf6346a72751	ours-refused	known=mjcf-D1
+c11fdf6346a72751	agree
 c12e67997b699d32	agree
 c13540bd62abbc68	both-refuse
 c15620089f2b4f9f	agree
@@ -3185,7 +3188,7 @@ df010504e2e9dd67	both-refuse
 df164deaf48ff2c7	both-refuse
 df24fe35dd3f6322	both-refuse
 df3b463e73a774c3	agree
-df3f9d1d983fedbc	ours-refused	known=mjcf-D1
+df3f9d1d983fedbc	agree
 df5a40252fb7f350	agree
 df5e053b64aeead9	agree
 df5f1717e3747617	agree
@@ -3326,7 +3329,7 @@ e8e1a40d5c2d2b19	both-refuse
 e8ed413c1250b3c9	both-refuse
 e900aff16c405f74	mj-refuses
 e913446988ab4acd	agree
-e94d7c1b19633405	ours-refused	known=mjcf-D1
+e94d7c1b19633405	agree
 e964e88f30b49a41	both-refuse
 e96920f453ac2bc1	agree
 e99f88b316a8bdf0	both-refuse

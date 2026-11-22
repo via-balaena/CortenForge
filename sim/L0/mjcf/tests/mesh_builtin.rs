@@ -359,9 +359,9 @@ const BUILTIN_LOADS: [(&str, &str, Body, (usize, usize)); 14] = [
 ];
 
 // A plate's points are coplanar, so MuJoCo's qhull refuses its hull, which
-// MuJoCo builds for a mesh geom that can collide (`user_model.cc:4905-4922`).
-// This crate builds no hull for it (ledger L43 (h)), so the plates here are
-// on geoms that cannot collide.
+// MuJoCo builds for a mesh geom that can collide (`user_model.cc:4906-4923`),
+// and so does this crate's ("qhull error"), so the plates here are on geoms
+// that cannot collide.
 
 /// `MakeRect` makes a plate a shell, whatever `inertia` is written on it or
 /// on its class: MuJoCo reads `inertia` before `builtin`
@@ -465,16 +465,16 @@ fn a_written_face_is_kept_by_a_cone_and_replaced_by_a_sphere_or_a_plate() {
 }
 
 /// A built-in mesh that makes no faces, or no vertices, is a mesh written
-/// without them: a plate one point wide replaces a written face with none
-/// and is refused as a mesh with no faces, which MuJoCo refuses for its hull
-/// ("qhull error"); a cone of no edges is refused as MuJoCo refuses it, for
-/// its count of vertices.
+/// without them: a plate one point wide replaces a written face with none,
+/// and its hull is made for the faces, which qhull refuses for its flatness
+/// as MuJoCo refuses it ("qhull error"); a cone of no edges is refused as
+/// MuJoCo refuses it, for its count of vertices.
 #[test]
 fn a_builtin_mesh_that_makes_no_faces_or_no_vertices_is_one_written_without_them() {
     for (mesh, refusal) in [
         (
             r#"builtin="plate" params="1 4" face="0 1 2""#,
-            "embedded vertex data requires face data",
+            "mesh 'm': qhull error",
         ),
         (
             r#"builtin="cone" params="0 0.5""#,

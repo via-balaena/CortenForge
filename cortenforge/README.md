@@ -63,3 +63,12 @@ names those crates in its MUJOCO, OPENSIM and TINYOBJLOADER sections and carries
 the projects' copyright notices. CortenForge is not affiliated with or endorsed
 by Google DeepMind, Stanford University, the OpenSim project, Syoyo Fujita, the
 tinyobjloader project or W. Randolph Franklin.
+
+One crate this one brings in is not under the choice above:
+cortenforge-sim-qhull, a port of [Qhull](http://www.qhull.org), is licensed
+under Qhull's license (its `COPYING.txt`), for the part ported from MuJoCo the
+Apache License, Version 2.0, and for its sort, ported from Apple's Libc, the
+3-clause BSD license. The `NOTICE` that ships with this crate carries their
+copyright notices in its QHULL and QSORT sections. CortenForge is not
+affiliated with or endorsed by C.B. Barber, The Geometry Center, the Qhull
+project, the University of California or Apple.

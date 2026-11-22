@@ -1103,6 +1103,43 @@ fn test_parse_maxhullvert() {
     assert_eq!(model.meshes[0].maxhullvert, Some(10));
 }
 
+/// A `maxhullvert="-1"` written on a mesh is kept over its class's limit, and
+/// one written on a child class over its parent's, as MuJoCo keeps them (its
+/// reader stores the -1, `xml_native_reader.cc:1584-1586`); a mesh that
+/// writes none takes its class's.
+#[test]
+fn a_written_maxhullvert_of_minus_one_is_kept_over_a_classs() {
+    let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <default class="six"><mesh maxhullvert="6"/>
+                        <default class="unlimited"><mesh maxhullvert="-1"/></default>
+                    </default>
+                </default>
+                <asset>
+                    <mesh name="a" class="six" maxhullvert="-1" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+                    <mesh name="b" class="unlimited" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+                    <mesh name="c" class="six" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+    let model = parse_mjcf_str(xml).expect("should parse");
+    let resolver =
+        crate::defaults::DefaultResolver::from_model(&model).expect("its classes resolve");
+    let limits: Vec<Option<i32>> = model
+        .meshes
+        .iter()
+        .map(|m| {
+            resolver
+                .apply_to_mesh(m)
+                .expect("its class resolves")
+                .maxhullvert
+        })
+        .collect();
+    assert_eq!(limits, [Some(-1), Some(-1), Some(6)]);
+}
+
 // T10: maxhullvert validation error → AC10
 #[test]
 fn test_parse_maxhullvert_invalid() {
@@ -1140,7 +1177,7 @@ fn test_hull_available_after_build() {
         "#;
     let model = crate::load_model(xml).expect("should build");
     assert!(
-        model.mesh_data[0].convex_hull().is_some(),
+        model.mesh_data[0].hull().is_some(),
         "hull should be computed at build time"
     );
 }
@@ -1158,8 +1195,9 @@ fn test_parse_maxhullvert_minus_one() {
         "#;
     let model = parse_mjcf_str(xml).expect("should parse");
     assert_eq!(
-        model.meshes[0].maxhullvert, None,
-        "maxhullvert=-1 should map to None"
+        model.meshes[0].maxhullvert,
+        Some(-1),
+        "maxhullvert=-1 is kept as written"
     );
 }
 

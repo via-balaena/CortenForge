@@ -88,14 +88,13 @@ notices. CortenForge is not affiliated with or endorsed by Google DeepMind,
 Stanford University, the OpenSim project, Syoyo Fujita, the tinyobjloader
 project or W. Randolph Franklin.
 
-One crate in this repository is not under the choice above: sim-qhull
-(`sim/L0/qhull`, not published), a port of [Qhull](http://www.qhull.org), is
-licensed under Qhull's license (`sim/L0/qhull/COPYING.txt`), for the part ported
-from MuJoCo the Apache License, Version 2.0, and for its sort, ported from
-Apple's Libc, the 3-clause BSD license. [NOTICE](./NOTICE)'s QHULL and QSORT
-sections carry their copyright notices. CortenForge is not affiliated with or
-endorsed by C.B. Barber, The Geometry Center, the Qhull project, the University
-of California or Apple.
+One crate is not under the choice above: cortenforge-sim-qhull (`sim/L0/qhull`),
+a port of [Qhull](http://www.qhull.org), is licensed under Qhull's license
+(`sim/L0/qhull/COPYING.txt`), for the part ported from MuJoCo the Apache
+License, Version 2.0, and for its sort, ported from Apple's Libc, the 3-clause
+BSD license. [NOTICE](./NOTICE)'s QHULL and QSORT sections carry their copyright
+notices. CortenForge is not affiliated with or endorsed by C.B. Barber, The
+Geometry Center, the Qhull project, the University of California or Apple.
 
 ### Contribution
 

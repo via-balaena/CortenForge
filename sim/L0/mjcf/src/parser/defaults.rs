@@ -258,7 +258,7 @@ pub(super) fn parse_mesh_defaults(e: &BytesStart) -> Result<MjcfMeshDefaults> {
     defaults.scale = a.vec3("scale")?;
 
     if let Some(n) = a.int("maxhullvert")? {
-        defaults.maxhullvert = parse_maxhullvert(n)?;
+        defaults.maxhullvert = Some(parse_maxhullvert(n)?);
     }
 
     defaults.inertia = a.keyword("inertia", keywords::mesh_inertia)?;

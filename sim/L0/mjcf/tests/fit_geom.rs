@@ -847,10 +847,9 @@ const LOADS: &[Loads] = &[
     },
 ];
 
-/// A box fitted to a convex mesh a mesh geom names too. Under `convex` this
-/// crate sums a mesh's mass properties over its own hull, MuJoCo over qhull's
-/// (ledger L408, registry `D-MESH-CONVEX-MASS`), so the fit, from the hull's
-/// inertia box, is MuJoCo's to [`HULL_ROUNDING`] and not to the bit.
+/// A box fitted to a convex mesh a mesh geom names too: under `convex` the
+/// mesh's mass properties are summed over its hull, qhull's as MuJoCo makes
+/// it, and the fit is from the hull's inertia box.
 const CONVEX: Loads = Loads {
     what: "a box fitted to a convex mesh a mesh geom names too",
     xml: r#"<mujoco><compiler /><asset><mesh name="m" inertia="convex" vertex="0 0 0  2 0 0  2 1 0  1 1 0  1 2 0  0 2 0  0 0 1  2 0 1  2 1 1  1 1 1  1 2 1  0 2 1" face="0 2 1  0 3 2  0 4 3  0 5 4  6 7 8  6 8 9  6 9 10  6 10 11  0 1 7  0 7 6  1 2 8  1 8 7  2 3 9  2 9 8  3 4 10  3 10 9  4 5 11  4 11 10  5 0 6  5 6 11"/></asset><worldbody><body pos="0 0 1"><freejoint/><geom type="box" mesh="m" pos="0.1 0.2 0.3" quat="0.9 0.1 -0.2 0.3"/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
@@ -912,11 +911,6 @@ const CONVEX: Loads = Loads {
     }],
 };
 
-/// The most a value of [`CONVEX`] may be from MuJoCo's, times the larger of 1
-/// and MuJoCo's magnitude: the largest measured, 8.3e-16 (the body's second
-/// principal moment), 2026-11-14.
-const HULL_ROUNDING: f64 = 1e-14;
-
 /// `(what, document, MuJoCo's reason)`: a fitted geom's mass is checked on
 /// its fitted volume, which a written mass's sign decides
 /// (`user_objects.cc:3780-3807`, after the fit).
@@ -975,98 +969,6 @@ const REFUSED: &[(&str, &str, &str)] = &[
 
 fn bits<const N: usize>(values: [f64; N]) -> [u64; N] {
     values.map(f64::to_bits)
-}
-
-/// Each of `ours` within [`HULL_ROUNDING`] of MuJoCo's `want`, scaled by the
-/// larger of 1 and its magnitude (a `NaN` is not).
-fn within<const N: usize>(ours: [f64; N], want: [f64; N]) -> bool {
-    ours.iter()
-        .zip(want)
-        .all(|(&a, b)| (a - b).abs() <= HULL_ROUNDING * b.abs().max(1.0))
-}
-
-/// Each field of `model`'s geoms that is not within [`HULL_ROUNDING`] of
-/// MuJoCo's; the type and mesh exactly.
-fn geom_distances(model: &Model, geoms: &[Geom]) -> Vec<String> {
-    let mut wrong = Vec::new();
-    let mut check = |field: String, same: bool| {
-        if !same {
-            wrong.push(field);
-        }
-    };
-    check(format!("ngeom {}", model.ngeom), model.ngeom == geoms.len());
-    for (g, want) in geoms.iter().enumerate().take(model.ngeom) {
-        let q = model.geom_quat[g];
-        check(
-            format!("geom {g} type {:?}", model.geom_type[g]),
-            model.geom_type[g] == want.kind,
-        );
-        check(
-            format!("geom {g} mesh {:?}", model.geom_mesh[g]),
-            model.geom_mesh[g] == want.mesh,
-        );
-        check(
-            format!("geom {g} pos {:?}", model.geom_pos[g]),
-            within(model.geom_pos[g].into(), want.pos),
-        );
-        check(
-            format!("geom {g} quat {q:?}"),
-            within([q.w, q.i, q.j, q.k], want.quat),
-        );
-        check(
-            format!("geom {g} size {:?}", model.geom_size[g]),
-            within(model.geom_size[g].into(), want.size),
-        );
-        check(
-            format!("geom {g} aabb {:?}", model.geom_aabb[g]),
-            within(model.geom_aabb[g], want.aabb),
-        );
-        check(
-            format!("geom {g} rbound {}", model.geom_rbound[g]),
-            within([model.geom_rbound[g]], [want.rbound]),
-        );
-    }
-    wrong
-}
-
-/// Each field of `model`'s bodies after the world that is not within
-/// [`HULL_ROUNDING`] of MuJoCo's.
-fn body_distances(model: &Model, bodies: &[Body]) -> Vec<String> {
-    let mut wrong = Vec::new();
-    let mut check = |field: String, same: bool| {
-        if !same {
-            wrong.push(field);
-        }
-    };
-    check(
-        format!("nbody {}", model.nbody),
-        model.nbody == bodies.len() + 1,
-    );
-    for (k, want) in bodies
-        .iter()
-        .enumerate()
-        .take(model.nbody.saturating_sub(1))
-    {
-        let b = k + 1;
-        let q = model.body_iquat[b];
-        check(
-            format!("body {b} mass {}", model.body_mass[b]),
-            within([model.body_mass[b]], [want.mass]),
-        );
-        check(
-            format!("body {b} inertia {:?}", model.body_inertia[b]),
-            within(model.body_inertia[b].into(), want.inertia),
-        );
-        check(
-            format!("body {b} ipos {:?}", model.body_ipos[b]),
-            within(model.body_ipos[b].into(), want.ipos),
-        );
-        check(
-            format!("body {b} iquat {q:?}"),
-            within([q.w, q.i, q.j, q.k], want.iquat),
-        );
-    }
-    wrong
 }
 
 /// Each field of `model`'s geoms that is not MuJoCo's, bit for bit.
@@ -1272,12 +1174,12 @@ fn a_fitted_ellipsoid_meets_a_plane_as_the_ellipsoid_it_was_fitted_to() {
 }
 
 /// A box fitted to a convex mesh, from the mesh's hull: MuJoCo's geoms and
-/// body to the hulls' rounding.
+/// body.
 #[test]
 fn a_box_fitted_to_a_convex_mesh_is_fitted_from_its_hull() {
     let model = load_model(CONVEX.xml).unwrap();
-    let mut wrong = geom_distances(&model, CONVEX.geoms);
-    wrong.extend(body_distances(&model, CONVEX.bodies));
+    let mut wrong = geom_differences(&model, CONVEX.geoms);
+    wrong.extend(body_differences(&model, CONVEX.bodies));
     if model.nmesh != CONVEX.nmesh {
         wrong.push(format!("nmesh {}", model.nmesh));
     }
@@ -1295,7 +1197,7 @@ fn a_convex_mesh_only_a_fitted_geom_names_fits_as_beside_a_mesh_geom() {
     assert_eq!(CONVEX.xml.matches(mesh_geom).count(), 1, "one mesh geom");
     let model = load_model(&CONVEX.xml.replace(mesh_geom, "")).unwrap();
     // The fitted geom only: the body's mass is that geom's alone here.
-    let wrong = geom_distances(&model, &CONVEX.geoms[..1]);
+    let wrong = geom_differences(&model, &CONVEX.geoms[..1]);
     assert!(wrong.is_empty(), "{}", wrong.join("; "));
 }
 

@@ -350,9 +350,12 @@ fn ac6_com_offset_parallel_axis() {
 // ============================================================================
 
 /// AC7: A flat mesh is refused. MuJoCo 3.5.0 refuses this document: its
-/// schema has no `exactmeshinertia`, without that the flat mesh's hull fails
-/// in qhull, and with no collision its volume is too small. This crate
-/// refuses it for its volume (`mjCMesh::Process`, book Rigid-loading L35).
+/// schema has no `exactmeshinertia`, and without that the flat mesh's hull,
+/// which its colliding geom needs, fails in qhull ("qhull error"). This crate
+/// refuses it as MuJoCo does without `exactmeshinertia` (`mjCMesh::MakeGraph`).
+/// Where the geom does not collide no hull is made, and the mesh is refused
+/// for its volume as MuJoCo refuses it (`mjCMesh::Process`, book
+/// Rigid-loading L35).
 #[test]
 fn ac7_zero_volume_degenerate_mesh_is_refused() {
     let mjcf = r#"
@@ -371,6 +374,22 @@ fn ac7_zero_volume_degenerate_mesh_is_refused() {
     "#;
 
     let err = load_model(mjcf).unwrap_err().to_string();
+    assert!(err.contains("mesh 'flat': qhull error"), "{err}");
+
+    let no_collision = r#"
+        <mujoco>
+          <asset>
+            <mesh name="flat" vertex="0 0 0  1 0 0  1 1 0  0 1 0"
+                  face="0 1 2  0 2 3"/>
+          </asset>
+          <worldbody>
+            <body name="flat_body">
+              <geom type="mesh" mesh="flat" density="1000" contype="0" conaffinity="0"/>
+            </body>
+          </worldbody>
+        </mujoco>
+    "#;
+    let err = load_model(no_collision).unwrap_err().to_string();
     assert!(
         err.contains("mesh volume is too small. Try setting inertia to shell"),
         "{err}"

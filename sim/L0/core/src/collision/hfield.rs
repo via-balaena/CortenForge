@@ -229,8 +229,8 @@ mod tests {
             1,5,6, 1,6,2, // +X face
         ];
         let mut mesh = TriangleMeshData::new(verts, indices);
-        mesh.compute_convex_hull(None);
-        assert!(mesh.convex_hull().is_some(), "Hull should be computed");
+        mesh.compute_hull(None).expect("qhull makes the hull");
+        assert!(mesh.hull().is_some(), "Hull should be computed");
 
         // 5×5 flat hfield at z=0.0
         let mut model = flat_hfield_model(

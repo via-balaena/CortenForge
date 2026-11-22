@@ -28,7 +28,7 @@ each contact midway between its vertex and the plane: up to three contacts.
 **Mesh against a primitive or a mesh** (sphere, capsule, box, cylinder, ellipsoid,
 mesh): MuJoCo's native convex collision, `mjc_convex()` in `mj_ccd.rs` (GJK,
 EPA and MuJoCo's multi-contact). The mesh collides as the convex hull of its
-vertices; a mesh with no hull computed is searched vertex by vertex.
+vertices.
 
 MULTICCD (`<flag multiccd="enable"/>`) adds contacts:
 

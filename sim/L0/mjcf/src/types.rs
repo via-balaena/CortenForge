@@ -928,8 +928,9 @@ pub struct MjcfSensorDefaults {
 pub struct MjcfMeshDefaults {
     /// Mesh scale factors [x, y, z].
     pub scale: Option<Vector3<f64>>,
-    /// Maximum convex hull vertices. `None` = no limit (default).
-    pub maxhullvert: Option<usize>,
+    /// Maximum convex hull vertices, as written: `-1` for no limit, or at
+    /// least 4. `None` where the class does not write it.
+    pub maxhullvert: Option<i32>,
     /// Default mesh inertia mode from `<default><mesh inertia="..."/>`.
     pub inertia: Option<MeshInertia>,
 }
@@ -985,10 +986,11 @@ pub struct MjcfMesh {
     /// a negative or missing index is refused when the model is built, as
     /// MuJoCo 3.5.0 refuses it. Taken where the mesh's file gives none.
     pub face: Option<Vec<i32>>,
-    /// Maximum convex hull vertices. `None` = no limit (default).
-    /// `Some(n)` where n >= 4 = limit hull to n vertices.
-    /// MuJoCo: `maxhullvert` attribute, default -1 (no limit), min 4.
-    pub maxhullvert: Option<usize>,
+    /// Maximum convex hull vertices, as written (MuJoCo's `maxhullvert`):
+    /// `-1` for no limit, or at least 4; a `-1` written here is kept over a
+    /// class's limit, as MuJoCo keeps it. `None` where neither the mesh nor
+    /// its class writes it (MuJoCo's default, `-1`).
+    pub maxhullvert: Option<i32>,
     /// Mesh inertia computation mode. `None` = not specified in XML
     /// (MuJoCo's default, `Legacy`, at build time).
     pub inertia: Option<MeshInertia>,

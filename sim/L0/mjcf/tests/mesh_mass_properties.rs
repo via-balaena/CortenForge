@@ -316,11 +316,8 @@ fn shell_mode_is_mujocos() {
 }
 
 #[test]
-fn convex_mode_is_mujocos_to_rounding() {
-    // Over the hull's faces: on this L-shape this crate's hull is MuJoCo's as
-    // a set, not in order or triangulation (`D-MESH-CONVEX-MASS`), so not bit
-    // for bit. A guard: this crate's arithmetic before MuJoCo's was within it
-    // too.
+fn convex_mode_is_mujocos() {
+    // Over the faces of qhull's hull, as MuJoCo makes it.
     assert_body(
         &l_shape(r#"inertia="convex""#),
         (
@@ -334,7 +331,7 @@ fn convex_mode_is_mujocos_to_rounding() {
             ],
             [9039.682539682539, 6666.666666666664, 3539.6825396825384],
         ),
-        1e-14,
+        0.0,
     );
 }
 
@@ -642,9 +639,8 @@ f 4 1 99";
 }
 
 #[test]
-fn a_convex_mesh_too_thin_for_this_crates_hull_is_summed_over_its_faces() {
-    // A 1e-10-thick plate: MuJoCo's qhull makes its hull, this crate's hull
-    // builder makes none, and the plate's faces are its hull's.
+fn a_convex_plate_1e_10_thick_has_a_hull_and_mujocos_mass() {
+    // A 1e-10-thick plate: qhull makes its hull, as MuJoCo's does.
     assert_body(
         r#"<mujoco><asset><mesh name="m" inertia="convex" vertex="-0.5 -0.5 -5e-11  0.5 -0.5 -5e-11  0.5 0.5 -5e-11  -0.5 0.5 -5e-11  -0.5 -0.5 5e-11  0.5 -0.5 5e-11  0.5 0.5 5e-11  -0.5 0.5 5e-11" face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/></asset><worldbody><body><freejoint/><geom type="mesh" mesh="m"/></body></worldbody></mujoco>"#,
         (
