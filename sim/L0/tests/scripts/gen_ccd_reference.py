@@ -66,7 +66,8 @@ authored, rounded to floats), MuJoCo's hull faces (its graph's
 
 The groups after `merge` each draw from their own generator, so that the
 groups before them are as they were. `graph_meshes`: meshes whose cases are
-compared on MuJoCo's own hull graph, each with its vertices as MuJoCo
+compared on MuJoCo's own hull graph (the loader's, as mj_ccd_tests.rs's
+`each_meshs_graph_is_mujocos` asserts), each with its vertices as MuJoCo
 compiled them, as authored rounded to floats, whether it hill-climbs, its
 graph (`vert_globalid` and each hull vertex's neighbours, as
 `mjc_hillclimbSupport` walks them), its hull faces in qhull's order and its
@@ -115,7 +116,8 @@ and makes fewer contacts; it refuses a case of another count.
 `plane_meshes` and `plane_convex` hold MuJoCo's mjc_PlaneConvex
 (engine_collision_convex.c:1042-1138), called on a plane (geom 0) and an
 ellipsoid or a mesh (geom 1) at poses set in mjData: `plane_meshes` each mesh
-above and a tetrahedron as MuJoCo compiles them (their vertices; their hull
+above and a tetrahedron as MuJoCo compiles them (their vertices, and as
+authored rounded to floats; their hull
 graphs where the geom collides, `vert_globalid` and each hull vertex's
 neighbours; their radii, `geom_rbound`), `plane_convex` the cases, each with
 the plane's pose, the geom's type, size, mesh and pose, the margin and the
@@ -1576,7 +1578,8 @@ def plane_mesh_model(name, faces=None):
 
 
 def plane_meshes():
-    """Each of `PLANE_MESHES` as MuJoCo compiles it: its vertices, its hull graph where its geom
+    """Each of `PLANE_MESHES` as MuJoCo compiles it: its vertices (and as authored, rounded to
+    floats), its hull graph where its geom
     collides (`vert_globalid` and each hull vertex's neighbours, as `mjccd_support` and
     `mjc_PlaneConvex` walk them), its hull's faces (in the authored vertices' numbering) and its
     bounding radius (`geom_rbound`, in its mesh frame). Given those faces and not colliding, it
@@ -1612,6 +1615,7 @@ def plane_meshes():
                 k += 1
             neighbours.append(around)
         out[name] = {"vert": [float(x) for x in verts.ravel()],
+                     "authored": [float(np.float32(x)) for x in ALL_PLANE_MESHES[name].ravel()],
                      "graph": {"vertex": globalid, "neighbours": neighbours}, "faces": faces,
                      "rbound": float(m.geom_rbound[1])}
     return out

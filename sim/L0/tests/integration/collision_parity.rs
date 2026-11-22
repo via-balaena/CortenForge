@@ -699,11 +699,12 @@ fn a_mesh_apex_on_a_plane_is_listed_as_mujoco() {
 /// `addplanemesh` skips a vertex nearer the first contact than 0.3 of
 /// `geom_rbound` (`engine_collision_convex.c:1018`; ledger L176): each
 /// mesh's radius MuJoCo's bit for bit, its contacts the same count and geoms
-/// as MuJoCo's, each distance within 1e-13 and each height within 1e-15,
-/// midway between its corner and the plane (`mjc_PlaneConvex`). Which
-/// corners is not compared: the corners tie for the deepest, and the first
-/// corner's neighbours are taken in the hull graph's order, ours and
-/// MuJoCo's (registry D-HULL-ORDER).
+/// as MuJoCo's, each distance within 1e-13 and each position within 1e-15
+/// of MuJoCo's size (or of 1), midway between its corner and the plane
+/// (`mjc_PlaneConvex`), at MuJoCo's corners: they tie for the deepest, and
+/// `mjc_PlaneConvex` takes the first corner's neighbours in the hull graph's
+/// order, which the loader makes as MuJoCo makes it (measured: each to the
+/// bit on macOS arm64).
 #[test]
 fn plane_mesh_contacts_are_spaced_as_mujoco() {
     let cases = golden()["plane_mesh"].clone();
@@ -737,11 +738,11 @@ fn plane_mesh_contacts_are_spaced_as_mujoco() {
                 "{name} contact {k}: depth {}, MuJoCo's dist {dist}",
                 c.depth
             );
-            let height = floats(&w["pos"])[2];
+            let pos = floats(&w["pos"]);
             assert!(
-                (c.pos.z - height).abs() <= 1e-15,
-                "{name} contact {k}: height {}, MuJoCo's {height}",
-                c.pos.z
+                (0..3).all(|i| (c.pos[i] - pos[i]).abs() <= 1e-15 * pos[i].abs().max(1.0)),
+                "{name} contact {k}: pos {:?}, MuJoCo's {pos:?}",
+                c.pos
             );
         }
         compared.push(name.as_str());
@@ -775,19 +776,15 @@ fn primitive_bounding_radii_are_mujocos_bit_for_bit() {
     );
 }
 
-/// Our geom-distance sensors against MuJoCo's: each value within `bound`
-/// of MuJoCo's for the distance (every tenth, from the first) and `rest`
-/// for the normal and fromto, and where a bound is 0, MuJoCo's bit for bit.
-fn sensors_as_mujoco(name: &str, ours: &[f64], want: &[f64], bound: f64, rest: f64) {
+/// Our geom-distance sensors (distance, normal, fromto) against MuJoCo's,
+/// bit for bit.
+fn sensors_as_mujoco(name: &str, ours: &[f64], want: &[f64]) {
     assert_eq!(ours.len(), want.len(), "{name}: sensordata");
     for (k, (a, b)) in ours.iter().zip(want).enumerate() {
-        let bound = if k % 10 == 0 { bound } else { rest };
-        let within = if bound == 0.0 {
-            a.to_bits() == b.to_bits()
-        } else {
-            (a - b).abs() <= bound
-        };
-        assert!(within, "{name}: sensordata[{k}] {a}, MuJoCo {b}");
+        assert!(
+            a.to_bits() == b.to_bits(),
+            "{name}: sensordata[{k}] {a}, MuJoCo {b}"
+        );
     }
 }
 
@@ -803,7 +800,7 @@ fn geom_distance_sensors_of_overlapping_boxes_as_mujoco() {
         data.forward(&model).expect("forward");
         let want = floats(&case["sensordata"]);
         let ours: Vec<f64> = data.sensordata.iter().copied().collect();
-        sensors_as_mujoco(name, &ours, &want, 0.0, 0.0);
+        sensors_as_mujoco(name, &ours, &want);
     }
 }
 
@@ -823,7 +820,7 @@ fn geom_distance_sensors_of_separated_pairs_as_mujoco() {
         data.forward(&model).expect("forward");
         let want = floats(&case["sensordata"]);
         let ours: Vec<f64> = data.sensordata.iter().copied().collect();
-        sensors_as_mujoco(name, &ours, &want, 0.0, 0.0);
+        sensors_as_mujoco(name, &ours, &want);
     }
 }
 
@@ -848,7 +845,7 @@ fn geom_distance_sensors_of_random_separated_pairs_as_mujoco() {
     let cases = golden()["geom_distance_random"].clone();
     for (name, case) in cases.as_object().expect("cases") {
         let want = floats(&case["sensordata"]);
-        sensors_as_mujoco(name, &sensordata_at(case), &want, 0.0, 0.0);
+        sensors_as_mujoco(name, &sensordata_at(case), &want);
     }
 }
 
@@ -1707,18 +1704,6 @@ fn plane_cylinder_contacts_as_mujoco() {
     assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
 }
 
-/// Where ours may part from MuJoCo's sensors on a route pair: the distance,
-/// and the normal and fromto. A box's or mesh's pair with the mesh: where
-/// two hull vertices tie exactly along a support direction, sim-core's hill
-/// climb and MuJoCo's return different ones; their hull graphs differ, and
-/// with MuJoCo's `mesh_graph` given, measured, bit for bit (ledger L268).
-fn route_bounds(pair: &str) -> (f64, f64) {
-    match pair {
-        "box_mesh" | "mesh_mesh" => (1e-16, 1e-14),
-        _ => (0.0, 0.0),
-    }
-}
-
 /// The geom-distance sensors through each route of MuJoCo's
 /// `mj_geomDistance`, as MuJoCo's: every pair of a sphere, capsule,
 /// ellipsoid, cylinder, box and mesh, and each under a plane, at 12 seeded
@@ -1729,7 +1714,7 @@ fn route_bounds(pair: &str) -> (f64, f64) {
 /// `mjc_BoxBox` collides through `mjc_ccd`, and every other through its
 /// collision function at the cutoff as its margin; a plane's pairs also
 /// under a plane turned off the axes, and under it off the origin. MuJoCo's
-/// bit for bit but as `route_bounds` says.
+/// bit for bit, a mesh's pairs on the loader's hull graph (MuJoCo's).
 #[test]
 fn geom_distance_sensors_route_as_mujoco() {
     let golden = golden();
@@ -1749,8 +1734,7 @@ fn geom_distance_sensors_route_as_mujoco() {
             let ours: Vec<f64> = data.sensordata.iter().copied().collect();
             let want = floats(&case["sensordata"]);
             let name = format!("{pair} {i}");
-            let (bound, rest) = route_bounds(pair);
-            sensors_as_mujoco(&name, &ours, &want, bound, rest);
+            sensors_as_mujoco(&name, &ours, &want);
         }
     }
 }
@@ -1777,7 +1761,7 @@ fn geom_distance_sensors_near_touching_as_mujoco() {
             );
             continue;
         }
-        sensors_as_mujoco(name, &ours, &want, 0.0, 0.0);
+        sensors_as_mujoco(name, &ours, &want);
     }
 }
 
@@ -1809,7 +1793,7 @@ fn geom_distance_special_cases_as_mujoco() {
     for name in ["coincident_spheres", "concentric_box_ellipsoid"] {
         let case = &special[name];
         let want = floats(&case["sensordata"]);
-        sensors_as_mujoco(name, &sensordata_at(case), &want, 0.0, 0.0);
+        sensors_as_mujoco(name, &sensordata_at(case), &want);
     }
     for (name, case) in special["margins"]
         .as_object()
@@ -1819,25 +1803,19 @@ fn geom_distance_special_cases_as_mujoco() {
         .chain(special["witnessless"].as_object().expect("witnessless"))
     {
         let want = floats(&case["sensordata"]);
-        sensors_as_mujoco(name, &sensordata_at(case), &want, 0.0, 0.0);
+        sensors_as_mujoco(name, &sensordata_at(case), &want);
     }
     let case = &special["planes"];
     let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
     let ours: Vec<f64> = data.sensordata.iter().copied().collect();
-    sensors_as_mujoco("planes", &ours, &floats(&case["sensordata"]), 0.0, 0.0);
+    sensors_as_mujoco("planes", &ours, &floats(&case["sensordata"]));
 
     for tag in ["into", "above"] {
         let case = &special["hfield"][tag];
         let want = floats(&case["sensordata"]);
-        sensors_as_mujoco(
-            &format!("hfield {tag}"),
-            &sensordata_at(case),
-            &want,
-            0.0,
-            0.0,
-        );
+        sensors_as_mujoco(&format!("hfield {tag}"), &sensordata_at(case), &want);
     }
 }
 

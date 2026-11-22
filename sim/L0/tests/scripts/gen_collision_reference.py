@@ -192,8 +192,8 @@ pairs under `ccd_iterations` 12 and `ccd_tolerance` 1e-3, both as
 and the mesh and itself, apart where MuJoCo's distance sensor reads 0, with
 its reading with the second body moved 1e-9 (registry D-GJK-S3D).
 `hull_order` holds geoms resting 0.001 into the chamfer mesh's top face
-under MULTICCD (registry D-HULL-ORDER). `bumpy` holds a sphere, a capsule,
-an ellipsoid, a cylinder and a box, each turned by its body's frame,
+under MULTICCD, on its hull graph and polygons. `bumpy` holds a sphere,
+a capsule, an ellipsoid, a cylinder and a box, each turned by its body's frame,
 dropped from rest at two spots of a 9 x 9 bumpy height field whose data
 sim-mjcf loads as MuJoCo compiles it (elevations multiples of 1/8 from 0 to
 1, rows symmetric): the free joint's height after every 50th of 1000 steps.
@@ -2374,8 +2374,7 @@ CONVEX_TABLE = [("sphere", "ellipsoid"), ("sphere", "mesh"), ("capsule", "ellips
 # MULTICCD reaches the pairs without a sphere or ellipsoid: two boxes or
 # meshes through the native multi-contact (at a margin, through the extra
 # passes), the others through the extra passes. The random poses are turned,
-# so a box's or mesh's faces seldom align and the clip, whose mesh faces are
-# our hull's (registry D-HULL-ORDER), seldom runs.
+# so a box's or mesh's faces seldom align and the clip seldom runs.
 MULTICCD_TABLE = [("capsule", "cylinder"), ("capsule", "mesh"), ("cylinder", "cylinder"),
                   ("cylinder", "box"), ("cylinder", "mesh"), ("box", "mesh"), ("mesh", "mesh")]
 
@@ -2431,8 +2430,8 @@ def convex_random_poses(rng, pair, n):
     """`n` (first position, quat, second position, quat): the second geom's
     centre off the first's by 0.2 to 1.05 of the sum of their reaches, in a
     random direction, both turned at random; a sixth unturned, offset along
-    one axis, but for a mesh, whose hill climb can end on another of tied
-    vertices there (registry D-HULL-ORDER)."""
+    one axis, but for a mesh: chosen while this crate's hull graph was not
+    MuJoCo's, when a hill climb could end there on another of tied vertices."""
     reach = CONVEX_REACH[pair[0]] + CONVEX_REACH[pair[1]]
     out = []
     for k in range(n):
@@ -2668,10 +2667,9 @@ def s3d_mesh_sensor_cases():
 
 def hull_order_cases():
     """Geoms resting 0.001 into the chamfer mesh's top face (z 0.125) under MULTICCD, whose
-    contacts take the mesh's polygons and hill climb from its hull (registry
-    D-HULL-ORDER): a box on the mesh's top face, turned 0.3 rad about the
-    vertical; a cylinder lying on it along x and standing on it; the mesh on
-    itself, at margins 0 and 0.01. Each with MuJoCo's contacts after
+    contacts take the mesh's polygons and hill climb from its hull: a box on the mesh's top
+    face, turned 0.3 rad about the vertical; a cylinder lying on it along x and standing on
+    it; the mesh on itself, at margins 0 and 0.01. Each with MuJoCo's contacts after
     mj_forward."""
     z_turn = list(axis_angle([0, 0, 1], 0.3))
     out = {}
