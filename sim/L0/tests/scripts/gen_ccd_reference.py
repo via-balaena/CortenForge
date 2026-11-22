@@ -117,9 +117,9 @@ and makes fewer contacts; it refuses a case of another count.
 (engine_collision_convex.c:1042-1138), called on a plane (geom 0) and an
 ellipsoid or a mesh (geom 1) at poses set in mjData: `plane_meshes` each mesh
 above and a tetrahedron as MuJoCo compiles them (their vertices, and as
-authored rounded to floats; their hull
-graphs where the geom collides, `vert_globalid` and each hull vertex's
-neighbours; their radii, `geom_rbound`), `plane_convex` the cases, each with
+authored rounded to floats; their hull graphs where the geom collides,
+`vert_globalid` and each hull vertex's neighbours; their radii,
+`geom_rbound`), `plane_convex` the cases, each with
 the plane's pose, the geom's type, size, mesh and pose, the margin and the
 contacts listed (`dist`, `pos`, the frame's normal): `ellipsoid`, ellipsoids
 of random sizes and turns within 0.05 of planes of random poses, at margins
@@ -1579,8 +1579,8 @@ def plane_mesh_model(name, faces=None):
 
 def plane_meshes():
     """Each of `PLANE_MESHES` as MuJoCo compiles it: its vertices (and as authored, rounded to
-    floats), its hull graph where its geom
-    collides (`vert_globalid` and each hull vertex's neighbours, as `mjccd_support` and
+    floats), its hull graph where its geom collides (`vert_globalid` and each hull vertex's
+    neighbours, as `mjccd_support` and
     `mjc_PlaneConvex` walk them), its hull's faces (in the authored vertices' numbering) and its
     bounding radius (`geom_rbound`, in its mesh frame). Given those faces and not colliding, it
     compiles to the same vertices and radius and no graph."""

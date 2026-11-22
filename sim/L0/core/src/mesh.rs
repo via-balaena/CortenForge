@@ -101,7 +101,7 @@ pub struct TriangleMeshData {
     /// hull computation is expensive.
     hull: Option<MeshHull>,
     /// The polygons MuJoCo merges from the hull's faces, or from the mesh's
-    /// own without a hull (`mjCMesh::MakePolygons`), with the hull.
+    /// own where it has no hull (`mjCMesh::MakePolygons`).
     polygons: MeshPolygons,
     /// Its vertices before they were rounded to single precision
     /// ([`Self::replace_vertices`]); empty where its vertices were never
@@ -316,9 +316,14 @@ impl TriangleMeshData {
     /// `mjCMesh::MakeGraph` makes it (`user_mesh.cc:1861-2042`), with qhull
     /// ([`sim_qhull::mesh_graph`]): none below 4 vertices. `maxhullvert`
     /// is the mesh's (`None` for none). Then, as `mjCMesh::Process` goes on
-    /// (`user_mesh.cc:1571-1598`): where it has no faces, its faces become
+    /// (`user_mesh.cc:1571-1600`): where it has no faces, its faces become
     /// the hull's (`CopyGraph`, `:2047-2068`); and its polygons are merged
     /// from the hull's faces ([`Self::make_polygons`]).
+    ///
+    /// Its vertices are to be finite and `maxhullvert` at least 4, as
+    /// [`sim_qhull::mesh_graph`] asks; MuJoCo's reader refuses either first,
+    /// and so does this crate's loader. A `maxhullvert` below 4 or past
+    /// `i32::MAX` is taken as none. Given a vertex that is not finite it gives qhull's error or a graph of no meaning (measured on a cube with one coordinate NaN or infinite: six of seven an error, one a graph).
     ///
     /// MuJoCo makes the hull of a mesh's vertices as written, before its
     /// `refpos`, `refquat` and `scale` (`:1567-1603`); a hull made of the
@@ -358,7 +363,8 @@ impl TriangleMeshData {
     /// `mjCMesh::ApplyTransformations` moves, turns and scales a mesh's
     /// (`user_mesh.cc:1440-1505`), after its hull and polygons were made:
     /// its faces, its hull and its polygons are kept, its box and hierarchy
-    /// made again; nothing is rounded.
+    /// made again; nothing is rounded, and vertices rounded before
+    /// ([`Self::replace_vertices`]) are held unrounded no longer.
     ///
     /// # Panics
     ///
@@ -370,6 +376,7 @@ impl TriangleMeshData {
             "a mesh's vertices are moved one for one"
         );
         self.mesh.vertices = vertices;
+        self.unrounded.clear();
         self.aabb = Bounded::aabb(&self.mesh);
         self.bvh = Some(bvh_from_mesh(&self.mesh));
     }
@@ -378,8 +385,9 @@ impl TriangleMeshData {
     /// compiler moves a mesh into the frame it keeps it in (MuJoCo's
     /// `mjCMesh::Process`, `user_mesh.cc:1676-1686`), and hold each rounded
     /// to single precision, as MuJoCo keeps them (`mesh_vert`, `CopyVert`,
-    /// `:892-896`). Its faces, its hull and its polygons' paths are kept. Its box (as MuJoCo's compiler takes it) and
-    /// its polygons' normals (`MakePolygonNormals`, `:2722-2731`) are made
+    /// `:892-896`). Its faces, its hull and its polygons' paths are kept.
+    /// Its box (as MuJoCo's compiler takes it) and its polygons' normals
+    /// (`MakePolygonNormals`, `:2722-2731`) are made
     /// from `vertices` as given, which [`Self::unrounded_vertices`] keeps, as
     /// MuJoCo's compiler makes them before it rounds; its own hierarchy from
     /// the rounded ones.
@@ -1261,12 +1269,44 @@ mod tests {
         TriangleMeshData::new(vertices, indices)
     }
 
+    /// Its vertices moved after they were rounded: held unrounded no longer,
+    /// so its box is over the vertices it now holds.
+    #[test]
+    fn moving_a_meshs_rounded_vertices_holds_them_unrounded_no_longer() {
+        let mut mesh = create_cube();
+        let thirds: Vec<Point3<f64>> = mesh
+            .vertices()
+            .iter()
+            .map(|v| Point3::from(v.coords / 3.0))
+            .collect();
+        mesh.replace_vertices(thirds);
+        assert_ne!(
+            mesh.unrounded_vertices(),
+            mesh.vertices(),
+            "the fixture's thirds are not all singles"
+        );
+        let moved: Vec<Point3<f64>> = mesh
+            .vertices()
+            .iter()
+            .map(|v| v + Vector3::new(2.0, 0.0, 0.0))
+            .collect();
+        mesh.move_vertices(moved.clone());
+        assert_eq!(mesh.vertices(), moved.as_slice());
+        assert_eq!(mesh.unrounded_vertices(), moved.as_slice());
+        let (lo, hi) = mesh.aabb();
+        for axis in 0..3 {
+            let along = moved.iter().map(|v| v[axis]);
+            assert_eq!(lo[axis], along.clone().fold(f64::INFINITY, f64::min));
+            assert_eq!(hi[axis], along.fold(f64::NEG_INFINITY, f64::max));
+        }
+    }
+
     /// Its vertices replaced by themselves turned and shifted: held in single
     /// precision, kept unrounded; the mesh's faces, its hull and its
     /// polygons' paths kept; its box and its polygons' normals made from the
     /// unrounded vertices.
     #[test]
-    fn replacing_a_meshs_vertices_rounds_them_and_moves_its_box_hull_and_polygons() {
+    fn replacing_a_meshs_vertices_rounds_them_keeps_its_hull_and_remakes_its_box_and_normals() {
         let mut mesh = create_cube();
         mesh.compute_hull(None)
             .expect("qhull makes the cube's hull");

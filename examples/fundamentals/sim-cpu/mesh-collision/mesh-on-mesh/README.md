@@ -15,9 +15,10 @@ of its vertices.
 
 ## Physics
 
-At load time each mesh's convex hull is computed (`compute_convex_hull()`
-needs at least 4 non-coplanar vertices; a mesh without a hull is searched
-vertex by vertex). At collision time GJK tests the two hulls for overlap and
+At load time each mesh gets its convex hull as MuJoCo 3.5.0 makes it, qhull's
+graph of the vertices as written (`TriangleMeshData::compute_hull`); a
+colliding mesh whose vertices all lie in a plane is refused ("qhull error"),
+as MuJoCo refuses it. At collision time GJK tests the two hulls for overlap and
 EPA finds its depth; under MULTICCD, with no margin on either mesh, one pass
 of MuJoCo's multi-contact clips the touching faces and keeps up to four
 contacts.

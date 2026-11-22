@@ -359,9 +359,9 @@ const BUILTIN_LOADS: [(&str, &str, Body, (usize, usize)); 14] = [
 ];
 
 // A plate's points are coplanar, so MuJoCo's qhull refuses its hull, which
-// MuJoCo builds for a mesh geom that can collide (`user_model.cc:4905-4922`).
-// This crate builds no hull for it (ledger L43 (h)), so the plates here are
-// on geoms that cannot collide.
+// MuJoCo builds for a mesh geom that can collide (`user_model.cc:4906-4923`),
+// and so does this crate's ("qhull error"), so the plates here are on geoms
+// that cannot collide.
 
 /// `MakeRect` makes a plate a shell, whatever `inertia` is written on it or
 /// on its class: MuJoCo reads `inertia` before `builtin`

@@ -1,0 +1,13 @@
+<mujoco model="test">
+                <default>
+                    <default class="six"><mesh maxhullvert="6"/>
+                        <default class="unlimited"><mesh maxhullvert="-1"/></default>
+                    </default>
+                </default>
+                <asset>
+                    <mesh name="a" class="six" maxhullvert="-1" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+                    <mesh name="b" class="unlimited" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+                    <mesh name="c" class="six" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+                </asset>
+                <worldbody/>
+            </mujoco>

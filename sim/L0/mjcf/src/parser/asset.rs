@@ -71,7 +71,7 @@ pub(super) fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
     mesh.scale = a.vec3("scale")?;
     mesh.inertia = a.keyword("inertia", keywords::mesh_inertia)?;
     if let Some(n) = a.int("maxhullvert")? {
-        mesh.maxhullvert = parse_maxhullvert(n)?;
+        mesh.maxhullvert = Some(parse_maxhullvert(n)?);
     }
 
     // The written vertices, normals, texture coordinates and faces, each

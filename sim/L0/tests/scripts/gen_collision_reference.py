@@ -192,8 +192,8 @@ pairs under `ccd_iterations` 12 and `ccd_tolerance` 1e-3, both as
 and the mesh and itself, apart where MuJoCo's distance sensor reads 0, with
 its reading with the second body moved 1e-9 (registry D-GJK-S3D).
 `hull_order` holds geoms resting 0.001 into the chamfer mesh's top face
-under MULTICCD, on its hull graph and polygons. `bumpy` holds a sphere,
-a capsule, an ellipsoid, a cylinder and a box, each turned by its body's frame,
+under MULTICCD, on its hull graph and polygons. `bumpy` holds a sphere, a
+capsule, an ellipsoid, a cylinder and a box, each turned by its body's frame,
 dropped from rest at two spots of a 9 x 9 bumpy height field whose data
 sim-mjcf loads as MuJoCo compiles it (elevations multiples of 1/8 from 0 to
 1, rows symmetric): the free joint's height after every 50th of 1000 steps.

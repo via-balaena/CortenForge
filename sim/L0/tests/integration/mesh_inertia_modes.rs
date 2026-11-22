@@ -229,15 +229,27 @@ fn t9_convex_mode_non_convex_mesh() {
 </mujoco>"#
     );
     let model = load_model(&mjcf).unwrap();
-    // Convex hull of L-shape is a pentagonal prism, volume = 7.0
-    // mass = density × hull_volume = 1000 × 7.0 = 7000
-    assert_relative_eq!(model.body_mass[1], 7000.0, epsilon = 1.0);
-    // MuJoCo 3.5.0's principal moments, in its order (`eig3`, decreasing),
-    // printed by the census's unfused oracle; this crate's to the bit, over
-    // qhull's hull as MuJoCo makes it.
+    // MuJoCo 3.5.0's mass (density × the hull's volume, a pentagonal prism
+    // of 7.0) and its principal moments, in its order (`eig3`, decreasing),
+    // printed by the census's unfused oracle on macOS arm64: this crate's to
+    // the bit there, over qhull's hull as MuJoCo makes it, and within 1e-12
+    // of their size elsewhere.
+    let bitwise = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let same = |ours: f64, mujoco: f64| {
+        if bitwise {
+            !ours.is_nan() && ours.to_bits() == mujoco.to_bits()
+        } else {
+            (ours - mujoco).abs() <= 1e-12 * mujoco.abs()
+        }
+    };
+    assert!(
+        same(model.body_mass[1], 7000.0),
+        "mass {}",
+        model.body_mass[1]
+    );
     let mujoco: [f64; 3] = [9039.682539682539, 6666.666666666664, 3539.6825396825384];
     for (ours, mujoco) in model.body_inertia[1].iter().zip(mujoco) {
-        assert_eq!(ours.to_bits(), mujoco.to_bits(), "{ours} / {mujoco}");
+        assert!(same(*ours, mujoco), "{ours} / {mujoco}");
     }
 }
 

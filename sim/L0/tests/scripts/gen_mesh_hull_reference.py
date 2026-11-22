@@ -13,7 +13,8 @@ built-in), on a free body, which MuJoCo loads from its text with
 MjModel.from_xml_string: its convex hull graph (`mesh_graph`), faces,
 polygons and body 1's mass, or its refusal. The cases: convex meshes moved,
 turned and scaled (MuJoCo makes the hull of the vertices as written),
-`maxhullvert`, meshes written without faces (MuJoCo gives them the hull's),
+`maxhullvert` (a mesh's, a class's, and a -1 written over a class's),
+meshes written without faces (MuJoCo gives them the hull's),
 each way a mesh comes to need a hull (a mesh or SDF geom naming it that
 collides or is in a pair, in a body, a frame or the world, its type written
 or a class's; a convex mesh) and each way it does not, and flat meshes qhull
@@ -91,6 +92,8 @@ def doc(asset, geoms, extra="", top=""):
 
 
 G = '<geom type="mesh" mesh="m"{}/>'
+SIX = ('<default><default class="six"><mesh maxhullvert="6"/>'
+       '<default class="unlimited"><mesh maxhullvert="-1"/></default></default></default>')
 PAIR = '<contact><pair geom1="g" geom2="s"/></contact>'
 SPHERE = '<geom name="s" type="sphere" size="0.1" pos="0 0 2"' + NOCOL + '/>'
 CASES = {
@@ -109,6 +112,10 @@ CASES = {
     "ico_legacy_maxhullvert6_turned": doc(mesh(ICO, ICO_F, ' maxhullvert="6"' + TURN), G.format("")),
     "lprism_convex_maxhullvert5_and_a_fitted_box": doc(mesh(L_V, L_F, ' maxhullvert="5" inertia="convex"'),
                                                         G.format("") + '<geom type="box" mesh="m"/>'),
+    "ico_no_faces_class_maxhullvert6": doc(mesh(ICO, None, ' class="six"'), G.format(""), top=SIX),
+    "ico_no_faces_class_maxhullvert6_mesh_minus_one": doc(mesh(ICO, None, ' class="six" maxhullvert="-1"'), G.format(""),
+                                                           top=SIX),
+    "ico_no_faces_child_class_minus_one": doc(mesh(ICO, None, ' class="unlimited"'), G.format(""), top=SIX),
     "tet_no_faces": doc(mesh(TET), G.format("")),
     "box_no_faces": doc(mesh(BOX), G.format("")),
     "box_and_an_inner_vertex_no_faces": doc(mesh(BOX + [(0.5, 1, 1.5)]), G.format("")),

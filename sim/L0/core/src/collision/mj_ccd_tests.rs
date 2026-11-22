@@ -417,11 +417,21 @@ fn each_meshs_graph_is_mujocos() {
     let mut of_compiled = 0;
     for group in ["graph_meshes", "plane_meshes"] {
         for (name, m) in doc[group].as_object().expect("a group of meshes") {
-            let hull = loaded(m);
-            let hull = hull.hull().expect("the mesh has a hull");
+            let mesh = loaded(m);
+            let hull = mesh.hull().expect("the mesh has a hull");
             let (vertex, neighbours) = mujocos_graph(m);
             assert_eq!(hull.vertex, vertex, "{group}/{name}: vert_globalid");
             assert_eq!(hull.neighbours, neighbours, "{group}/{name}: neighbours");
+            let faces: Vec<[u32; 3]> = m["faces"]
+                .as_array()
+                .expect("the hull's faces")
+                .iter()
+                .map(|f| match counts(f)[..] {
+                    [a, b, c] => [a, b, c].map(|i| u32::try_from(i).expect("a vertex")),
+                    _ => panic!("{group}/{name}: a face of three vertices"),
+                })
+                .collect();
+            assert_eq!(hull.faces, faces, "{group}/{name}: face_globalid");
             compared += 1;
             if group == "graph_meshes" {
                 let mut compiled = TriangleMeshData::new(points(&m["vert"]), Vec::new());
@@ -515,12 +525,14 @@ fn polygon_merge_is_mujocos_from_its_hull_faces() {
     assert!(differ.is_empty(), "polygons not MuJoCo's: {differ:?}");
 }
 
-/// A box on a mesh and two meshes under MULTICCD, end to end on the
-/// loader's meshes and polygons, with `S3D`'s fourth weight as MuJoCo keeps
-/// it (registry `D-GJK-S3D`): every case is MuJoCo's to the bit. The
-/// multi-contact clips the polygons, keeps a face's first corners from its
-/// path's start and prunes a clipped face to four corners from it; the
-/// golden holds cases of four contacts.
+/// A box on a mesh and two meshes under MULTICCD, on the loader's meshes and
+/// polygons as the golden lets the test make them (their normals from
+/// MuJoCo's rounded vertices, the only ones it holds; `sim-mjcf`'s
+/// `tests/mesh_hull.rs` compares the loader's own), with `S3D`'s fourth
+/// weight as MuJoCo keeps it (registry `D-GJK-S3D`): every case is MuJoCo's
+/// to the bit. The multi-contact clips the polygons, keeps a face's first
+/// corners from its path's start and prunes a clipped face to four corners
+/// from it; the golden holds cases of four contacts.
 #[test]
 fn box_on_mesh_multiccd_as_mujoco() {
     let doc = golden();

@@ -498,15 +498,11 @@ impl Attrs {
     }
 }
 
-/// Parse `maxhullvert` value: -1 → None (no limit), >= 4 → Some(n), else error.
-/// MuJoCo ref: `xml_native_reader.cc` validates `n != -1 && n < 4` → error.
-pub(super) fn parse_maxhullvert(n: i32) -> Result<Option<usize>> {
-    if n == -1 {
-        Ok(None)
-    } else if n >= 4 {
-        // `n >= 4` from the branch guard.
-        #[allow(clippy::cast_sign_loss)]
-        Ok(Some(n as usize))
+/// A `maxhullvert` as MuJoCo's reader takes it (`xml_native_reader.cc:1584-1587`):
+/// `-1` (no limit) or at least 4, kept as written; any other value an error.
+pub(super) fn parse_maxhullvert(n: i32) -> Result<i32> {
+    if n == -1 || n >= 4 {
+        Ok(n)
     } else {
         Err(MjcfError::invalid_value(
             "mesh",

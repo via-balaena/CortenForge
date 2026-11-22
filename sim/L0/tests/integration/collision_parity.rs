@@ -777,7 +777,8 @@ fn primitive_bounding_radii_are_mujocos_bit_for_bit() {
 }
 
 /// Our geom-distance sensors (distance, normal, fromto) against MuJoCo's,
-/// bit for bit.
+/// bit for bit on every platform: the routes take no libm function but
+/// `sqrt`, which every platform rounds alike, and pose by quaternion.
 fn sensors_as_mujoco(name: &str, ours: &[f64], want: &[f64]) {
     assert_eq!(ours.len(), want.len(), "{name}: sensordata");
     for (k, (a, b)) in ours.iter().zip(want).enumerate() {
@@ -1842,7 +1843,7 @@ fn ccd_options_reach_the_convex_solver_as_mujoco() {
 /// Registry `D-GJK-S3D` in the sensor: a box against a mesh and two meshes,
 /// apart, at the golden's poses where MuJoCo's distance sensor reads 0. Ours
 /// reads within 3e-9 of MuJoCo's distance with the second body moved 1e-9
-/// along x (where MuJoCo's reads the pair apart). Measured: 6.0e-10 at most.
+/// along x (where MuJoCo's reads the pair apart).
 #[test]
 fn mesh_pairs_read_apart_where_mujocos_sensor_reads_0() {
     let cases = golden()["s3d_mesh_sensors"].clone();

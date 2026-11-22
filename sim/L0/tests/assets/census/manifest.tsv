@@ -3760,3 +3760,4 @@ cabd6ef0192d9011	sim/L0/mjcf/tests/refusal_order.rs:2201
 fb68de099bbb81fc	sim/L0/mjcf/tests/refusal_order.rs:2177
 23c6de3584cec9af	sim/L0/tests/integration/mesh_inertia_modes.rs:367
 858f806f87281815	sim/L0/tests/integration/exactmeshinertia.rs:379
+16ec96d01bb62a70	sim/L0/mjcf/src/parser/tests.rs:1112

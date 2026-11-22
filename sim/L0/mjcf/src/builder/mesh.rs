@@ -137,8 +137,13 @@ pub fn check_written_counts(meshes: &[MjcfMesh]) -> Result<()> {
 /// and each `convex` mesh. MuJoCo marks a `convex` mesh only where a mesh or
 /// SDF geom names it, and crashes on one that none names, reading the hull it
 /// did not make (registry `D-MESH-CONVEX-UNNAMED`); this crate makes the hull
-/// of every `convex` mesh. Read on the model as compiled, after
-/// `discardvisual` has dropped its geoms.
+/// of every `convex` mesh. Read on the model after this crate's
+/// `discardvisual` has dropped its geoms, where MuJoCo marks the meshes
+/// before it discards any (`user_model.cc:4906-4923`, `:4976`): a geom it
+/// discards is visual and in no `<pair>`, so it marks a mesh only through
+/// `convex`, which this set holds anyway, but for a `<pair>` naming a
+/// discarded geom, refused here (ledger L342), and a mesh only discarded
+/// geoms name, dropped here before its hull is made (ledger L336).
 pub fn meshes_needing_a_hull(mjcf: &MjcfModel) -> HashSet<String> {
     let paired: HashSet<&str> = mjcf
         .contact
@@ -162,7 +167,10 @@ pub fn meshes_needing_a_hull(mjcf: &MjcfModel) -> HashSet<String> {
                     .name
                     .as_deref()
                     .is_some_and(|name| paired.contains(name));
-            if let (true, true, Some(mesh)) = (shaped, collides, &geom.mesh) {
+            if shaped
+                && collides
+                && let Some(mesh) = &geom.mesh
+            {
                 needed.insert(mesh.clone());
             }
         }
@@ -203,8 +211,9 @@ impl ModelBuilder {
     ///
     /// * `mjcf_mesh` - The MJCF mesh definition
     /// * `base_path` - Base directory for resolving relative mesh file paths
-    /// * `needhull` - Whether MuJoCo makes its convex hull
-    ///   ([`meshes_needing_a_hull`])
+    /// * `needhull` - Whether its convex hull is made for its geoms
+    ///   ([`meshes_needing_a_hull`]); a mesh with no faces gets one whatever
+    ///   this says
     ///
     /// # Errors
     ///
@@ -511,7 +520,9 @@ pub fn convert_mjcf_mesh(
 /// and polygons [`TriangleMeshData::compute_hull`] gives a mesh; where none
 /// is made, the mesh is refused or goes on as [`hull_refusal`] says.
 fn make_graph(mesh: &mut TriangleMeshData, mjcf_mesh: &MjcfMesh, faceless: bool) -> Result<()> {
-    let Err(err) = mesh.compute_hull(mjcf_mesh.maxhullvert) else {
+    // MuJoCo's -1, written or not, for no limit.
+    let limit = mjcf_mesh.maxhullvert.and_then(|n| usize::try_from(n).ok());
+    let Err(err) = mesh.compute_hull(limit) else {
         return Ok(());
     };
     if let Some(reason) = hull_refusal(&err, faceless) {
@@ -525,8 +536,8 @@ fn make_graph(mesh: &mut TriangleMeshData, mjcf_mesh: &MjcfMesh, faceless: bool)
 /// Why a mesh is refused where no hull was made (`err`), in MuJoCo 3.5.0's
 /// words: "qhull error" where qhull stops, MuJoCo's own where its check of
 /// qhull's result fails (`MakeGraph`, `user_mesh.cc:1914-2027`). `None` for
-/// "Could not construct convex hull graph", MuJoCo's warning, after which a
-/// mesh with faces goes on with no hull; one with none (`faceless`), whose
+/// MuJoCo's warning ([`HullError::GRAPH_WARNING`]), after which a mesh with
+/// faces goes on with no hull; one with none (`faceless`), whose
 /// faces MuJoCo's `CopyGraph` then reads through the graph pointer
 /// `MakeGraph` set to null as it warned (`user_mesh.cc:2003-2007`, `:2054`;
 /// read, not run), is refused in those words. Where the vertices reach a
@@ -536,11 +547,7 @@ fn make_graph(mesh: &mut TriangleMeshData, mjcf_mesh: &MjcfMesh, faceless: bool)
 fn hull_refusal(err: &HullError, faceless: bool) -> Option<String> {
     match err {
         HullError::Qhull { .. } => Some("qhull error".to_owned()),
-        HullError::Graph { message }
-            if *message == "Could not construct convex hull graph" && !faceless =>
-        {
-            None
-        }
+        HullError::Graph { .. } if err.is_mujocos_warning() && !faceless => None,
         HullError::Graph { message } => Some((*message).to_owned()),
         HullError::Unported { .. } => Some(err.to_string()),
     }
@@ -818,7 +825,8 @@ pub fn mesh_mass_properties(
     // The faces the volume and the inertia are summed over: the hull's under
     // `convex` (MuJoCo's `GraphFaces`), the mesh's otherwise, and the mesh's
     // too where it has no hull: after MuJoCo's warning that it could not
-    // construct one, where MuJoCo reads the graph it freed.
+    // construct one, where MuJoCo reads the graph through the pointer it set
+    // to null (registry `D-MESH-HULL-WARNING`).
     let solid: Vec<[[f64; 3]; 3]> = match (mode, mesh.hull()) {
         (MeshInertia::Convex, Some(hull)) => hull
             .faces
@@ -1143,7 +1151,7 @@ mod tests {
             message: "initial simplex is flat",
         };
         let warning = HullError::Graph {
-            message: "Could not construct convex hull graph",
+            message: HullError::GRAPH_WARNING,
         };
         let check = HullError::Graph {
             message: "Vertex id not found in convex hull",
@@ -1155,7 +1163,7 @@ mod tests {
         assert_eq!(hull_refusal(&warning, false), None);
         assert_eq!(
             hull_refusal(&warning, true).as_deref(),
-            Some("Could not construct convex hull graph")
+            Some(HullError::GRAPH_WARNING)
         );
         assert_eq!(
             hull_refusal(&check, false).as_deref(),
