@@ -6,11 +6,12 @@
 //! qhull's choice of vertices, given as faces to a mesh written without
 //! them (`CopyGraph`), and made only for the meshes MuJoCo makes it for: a
 //! mesh or SDF geom's mesh where the geom collides or a `<pair>` names it,
-//! and a `convex` mesh such a geom names (this crate makes every `convex`
-//! mesh's: registry `D-MESH-CONVEX-UNNAMED`). Each graph is compared int for
-//! int in MuJoCo's `mesh_graph` layout, each mesh's faces id for id, its
-//! polygons corner for corner from the same corner, and the body's mass; a
-//! document MuJoCo refuses, by MuJoCo's words.
+//! a `convex` mesh such a geom names (this crate makes every `convex` mesh's:
+//! registry `D-MESH-CONVEX-UNNAMED`), and a mesh written without faces,
+//! whatever names it. Each graph is compared int for int in MuJoCo's
+//! `mesh_graph` layout, each mesh's faces id for id, its polygons corner for
+//! corner from the same corner, and the body's mass; a document MuJoCo
+//! refuses, by MuJoCo's words.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -128,10 +129,10 @@ fn to_mujoco(hull: &MeshHull) -> Vec<i64> {
 }
 
 /// Whether `ours` is `theirs` as [`BITWISE`] compares: bit for bit there;
-/// elsewhere within 1e-12 of its size (or of 1), a `NaN` matching only
-/// MuJoCo's `NaN` (whose bits differ by platform) and an infinity only the
-/// same infinity. MuJoCo's normal of a flat polygon is not finite
-/// (`builtin_plate_no_collision`'s is `[inf, NaN, NaN]`).
+/// elsewhere within 1e-12 of its size (or of 1), a `NaN` matching only a
+/// `NaN` and an infinity only the same infinity, for the golden holds values
+/// that are not finite (`builtin_plate_no_collision`'s polygon normal is
+/// `[inf, NaN, NaN]`).
 fn near(ours: f64, theirs: f64) -> bool {
     if BITWISE {
         ours.to_bits() == theirs.to_bits()

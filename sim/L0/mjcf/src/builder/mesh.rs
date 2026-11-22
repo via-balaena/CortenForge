@@ -969,9 +969,9 @@ pub fn mesh_mass_properties(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
-    use super::{convert_mjcf_mesh, hull_refusal};
+    use super::{convert_mjcf_mesh, hull_refusal, mesh_mass_properties};
     use crate::builder::mesh_file::tests::create_test_stl;
-    use crate::types::{MjcfCompiler, MjcfMesh};
+    use crate::types::{MeshInertia, MjcfCompiler, MjcfMesh};
     use nalgebra::Vector3;
     use sim_core::mesh::{HullError, TriangleMeshData};
 
@@ -1136,6 +1136,42 @@ mod tests {
             result.unwrap_err().to_string(),
             "mesh 'empty': at least 4 vertices required"
         );
+    }
+
+    /// Under `convex`, a mesh with no hull (after MuJoCo's warning, which no
+    /// known input reaches) is summed over its own faces, as under `exact`:
+    /// registry `D-MESH-HULL-WARNING`. The L-prism is not convex, so a hull
+    /// made of it would give another volume.
+    #[test]
+    fn a_convex_mesh_with_no_hull_is_summed_over_its_own_faces() {
+        let corners = [
+            [0, 0, 0],
+            [2, 0, 0],
+            [2, 1, 0],
+            [1, 1, 0],
+            [1, 2, 0],
+            [0, 2, 0],
+            [0, 0, 1],
+            [2, 0, 1],
+            [2, 1, 1],
+            [1, 1, 1],
+            [1, 2, 1],
+            [0, 2, 1],
+        ];
+        let vertices = corners
+            .iter()
+            .map(|c| nalgebra::Point3::from(c.map(f64::from)))
+            .collect();
+        let faces = vec![
+            0, 2, 1, 0, 3, 2, 0, 4, 3, 0, 5, 4, 6, 7, 8, 6, 8, 9, 6, 9, 10, 6, 10, 11, 0, 1, 7, 0,
+            7, 6, 1, 2, 8, 1, 8, 7, 2, 3, 9, 2, 9, 8, 3, 4, 10, 3, 10, 9, 4, 5, 11, 4, 11, 10, 5,
+            0, 6, 5, 6, 11,
+        ];
+        let mesh = TriangleMeshData::new(vertices, faces);
+        assert!(mesh.hull().is_none());
+        let convex = mesh_mass_properties(&mesh, MeshInertia::Convex).expect("summed");
+        let exact = mesh_mass_properties(&mesh, MeshInertia::Exact).expect("summed");
+        assert_eq!(convex, exact);
     }
 
     /// Each reason for no hull, as the loader takes it: qhull's in MuJoCo's

@@ -320,10 +320,11 @@ impl TriangleMeshData {
     /// the hull's (`CopyGraph`, `:2047-2068`); and its polygons are merged
     /// from the hull's faces ([`Self::make_polygons`]).
     ///
-    /// Its vertices are to be finite and `maxhullvert` at least 4, as
-    /// [`sim_qhull::mesh_graph`] asks; MuJoCo's reader refuses either first,
-    /// and so does this crate's loader. A `maxhullvert` below 4 or past
-    /// `i32::MAX` is taken as none. Given a vertex that is not finite it gives qhull's error or a graph of no meaning (measured on a cube with one coordinate NaN or infinite: six of seven an error, one a graph).
+    /// Its vertices are to be finite, as [`sim_qhull::mesh_graph`] asks:
+    /// MuJoCo refuses a mesh with one that is not before it makes the hull,
+    /// and so does this crate's loader; given one, the result may be qhull's
+    /// error or a graph. A `maxhullvert` below 4, which MuJoCo's reader and
+    /// this crate's refuse, or past `i32::MAX` is taken as none.
     ///
     /// MuJoCo makes the hull of a mesh's vertices as written, before its
     /// `refpos`, `refquat` and `scale` (`:1567-1603`); a hull made of the
@@ -385,12 +386,11 @@ impl TriangleMeshData {
     /// compiler moves a mesh into the frame it keeps it in (MuJoCo's
     /// `mjCMesh::Process`, `user_mesh.cc:1676-1686`), and hold each rounded
     /// to single precision, as MuJoCo keeps them (`mesh_vert`, `CopyVert`,
-    /// `:892-896`). Its faces, its hull and its polygons' paths are kept.
-    /// Its box (as MuJoCo's compiler takes it) and its polygons' normals
-    /// (`MakePolygonNormals`, `:2722-2731`) are made
-    /// from `vertices` as given, which [`Self::unrounded_vertices`] keeps, as
-    /// MuJoCo's compiler makes them before it rounds; its own hierarchy from
-    /// the rounded ones.
+    /// `:892-896`). Its faces, its hull and its polygons' paths are kept. Its
+    /// box (as MuJoCo's compiler takes it) and its polygons' normals
+    /// (`MakePolygonNormals`, `:2722-2731`) are made from `vertices` as given,
+    /// which [`Self::unrounded_vertices`] keeps, as MuJoCo's compiler makes
+    /// them before it rounds; its own hierarchy from the rounded ones.
     ///
     /// # Panics
     ///
@@ -1269,8 +1269,7 @@ mod tests {
         TriangleMeshData::new(vertices, indices)
     }
 
-    /// Its vertices moved after they were rounded: held unrounded no longer,
-    /// so its box is over the vertices it now holds.
+    /// Its vertices moved after they were rounded: held unrounded no longer.
     #[test]
     fn moving_a_meshs_rounded_vertices_holds_them_unrounded_no_longer() {
         let mut mesh = create_cube();

@@ -119,31 +119,30 @@ ellipsoid or a mesh (geom 1) at poses set in mjData: `plane_meshes` each mesh
 above and a tetrahedron as MuJoCo compiles them (their vertices, and as
 authored rounded to floats; their hull graphs where the geom collides,
 `vert_globalid` and each hull vertex's neighbours; their radii,
-`geom_rbound`), `plane_convex` the cases, each with
-the plane's pose, the geom's type, size, mesh and pose, the margin and the
-contacts listed (`dist`, `pos`, the frame's normal): `ellipsoid`, ellipsoids
-of random sizes and turns within 0.05 of planes of random poses, at margins
-0, 0.01 and 0.1; `ellipsoid_at_margin`, those apart at a margin equal to
-MuJoCo's own distance (each listed: the comparison is inclusive); `mesh`,
-each mesh within 0.02 of a plane at random turns and with its local -z face
-down, at margins 0 and 0.02; `mesh_bare`, the same draws on the mesh compiled
-without a graph (its geom not colliding), where mjc_PlaneConvex searches
-every vertex; `edge`, an unturned mesh over an unturned plane at a margin
-equal to its lowest vertices' distance exactly (the first listed, the rest
-not), with a graph and without, and a mesh without a graph apart by 0.7 of
-its radius at a margin of its radius (its first vertex farther from the first
-contact than the spacing); `nan`, a mesh and an ellipsoid turned by a matrix
-holding a NaN, and a plane whose normal holds one; and `tetra`, the
-tetrahedron laid on each of its faces at three spins, at six random turns and
-with its local -z face down at 12 (margins up to 1, every vertex within it),
-with its graph and without, from its own generator, and one pose where two
-base corners tie exactly for the deepest. It refuses plane cases that miss
-an ellipsoid listed and one not, 50 ellipsoids at their own distance, 0 to 3
-mesh contacts with a graph and without, a NaN contact, a vertex within the
-margin skipped as nearer the first contact than 0.3 of the radius, each
-lowest vertex at the margin exactly with the first listed alone, a first
-vertex past the spacing without a graph, or the tetrahedron face down listed
-with its graph.
+`geom_rbound`), `plane_convex` the cases, each with the plane's pose, the
+geom's type, size, mesh and pose, the margin and the contacts listed (`dist`,
+`pos`, the frame's normal): `ellipsoid`, ellipsoids of random sizes and turns
+within 0.05 of planes of random poses, at margins 0, 0.01 and 0.1;
+`ellipsoid_at_margin`, those apart at a margin equal to MuJoCo's own distance
+(each listed: the comparison is inclusive); `mesh`, each mesh within 0.02 of
+a plane at random turns and with its local -z face down, at margins 0 and
+0.02; `mesh_bare`, the same draws on the mesh compiled without a graph (its
+geom not colliding), where mjc_PlaneConvex searches every vertex; `edge`, an
+unturned mesh over an unturned plane at a margin equal to its lowest
+vertices' distance exactly (the first listed, the rest not), with a graph and
+without, and a mesh without a graph apart by 0.7 of its radius at a margin of
+its radius (its first vertex farther from the first contact than the
+spacing); `nan`, a mesh and an ellipsoid turned by a matrix holding a NaN,
+and a plane whose normal holds one; and `tetra`, the tetrahedron laid on each
+of its faces at three spins, at six random turns and with its local -z face
+down at 12 (margins up to 1, every vertex within it), with its graph and
+without, from its own generator, and one pose where two base corners tie
+exactly for the deepest. It refuses plane cases that miss an ellipsoid listed
+and one not, 50 ellipsoids at their own distance, 0 to 3 mesh contacts with a
+graph and without, a NaN contact, a vertex within the margin skipped as
+nearer the first contact than 0.3 of the radius, each lowest vertex at the
+margin exactly with the first listed alone, a first vertex past the spacing
+without a graph, or the tetrahedron face down listed with its graph.
 
 `hfield_fields` and `hfield_convex` hold MuJoCo's mjc_ConvexHField
 (engine_collision_convex.c:1185-1363), called on a height field (geom 0) and
@@ -1580,10 +1579,9 @@ def plane_mesh_model(name, faces=None):
 def plane_meshes():
     """Each of `PLANE_MESHES` as MuJoCo compiles it: its vertices (and as authored, rounded to
     floats), its hull graph where its geom collides (`vert_globalid` and each hull vertex's
-    neighbours, as `mjccd_support` and
-    `mjc_PlaneConvex` walk them), its hull's faces (in the authored vertices' numbering) and its
-    bounding radius (`geom_rbound`, in its mesh frame). Given those faces and not colliding, it
-    compiles to the same vertices and radius and no graph."""
+    neighbours, as `mjccd_support` and `mjc_PlaneConvex` walk them), its hull's faces (in the
+    authored vertices' numbering) and its bounding radius (`geom_rbound`, in its mesh frame). Given
+    those faces and not colliding, it compiles to the same vertices and radius and no graph."""
     out = {}
     for name in ALL_PLANE_MESHES:
         m = plane_mesh_model(name)

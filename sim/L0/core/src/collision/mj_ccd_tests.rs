@@ -527,8 +527,7 @@ fn polygon_merge_is_mujocos_from_its_hull_faces() {
 
 /// A box on a mesh and two meshes under MULTICCD, on the loader's meshes and
 /// polygons as the golden lets the test make them (their normals from
-/// MuJoCo's rounded vertices, the only ones it holds; `sim-mjcf`'s
-/// `tests/mesh_hull.rs` compares the loader's own), with `S3D`'s fourth
+/// MuJoCo's rounded vertices, the only ones it holds), with `S3D`'s fourth
 /// weight as MuJoCo keeps it (registry `D-GJK-S3D`): every case is MuJoCo's
 /// to the bit. The multi-contact clips the polygons, keeps a face's first
 /// corners from its path's start and prunes a clipped face to four corners
