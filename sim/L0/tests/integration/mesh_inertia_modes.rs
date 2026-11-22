@@ -233,12 +233,11 @@ fn t9_convex_mode_non_convex_mesh() {
     // mass = density × hull_volume = 1000 × 7.0 = 7000
     assert_relative_eq!(model.body_mass[1], 7000.0, epsilon = 1.0);
     // MuJoCo 3.5.0's principal moments, in its order (`eig3`, decreasing),
-    // printed by the census's unfused oracle; this crate's within a relative
-    // 1e-14 (its hull's faces are MuJoCo's as a set, not in order:
-    // `D-MESH-CONVEX-MASS`).
-    let mujoco = [9039.682539682539, 6666.666666666664, 3539.6825396825384];
+    // printed by the census's unfused oracle; this crate's to the bit, over
+    // qhull's hull as MuJoCo makes it.
+    let mujoco: [f64; 3] = [9039.682539682539, 6666.666666666664, 3539.6825396825384];
     for (ours, mujoco) in model.body_inertia[1].iter().zip(mujoco) {
-        assert_relative_eq!(*ours, mujoco, max_relative = 1e-14);
+        assert_eq!(ours.to_bits(), mujoco.to_bits(), "{ours} / {mujoco}");
     }
 }
 
@@ -348,9 +347,12 @@ fn t14_exactmeshinertia_deprecation() {
 // T16: Degenerate mesh shell mode (edge case)
 // ============================================================================
 
+/// A flat (zero-volume) mesh under `shell`, its vertices in the z = 0 plane.
+/// Where its geom collides MuJoCo 3.5.0 makes its convex hull, which qhull
+/// refuses ("qhull error"); where it does not, no hull is made and it loads,
+/// its mass its area's: MuJoCo's 1000.
 #[test]
 fn t16_degenerate_mesh_shell() {
-    // A flat (zero-volume) mesh: all vertices in the z=0 plane
     let mjcf = r#"<mujoco>
   <asset><mesh name="flat" inertia="shell"
     vertex="0 0 0  1 0 0  1 1 0  0 1 0"
@@ -359,9 +361,19 @@ fn t16_degenerate_mesh_shell() {
     <geom type="mesh" mesh="flat" density="1000"/>
   </body></worldbody>
 </mujoco>"#;
-    let model = load_model(mjcf).unwrap();
-    // Should not crash. Area ≈ 1.0, mass ≈ 1000.0
-    assert!(model.body_mass[1] > 0.0);
+    let err = load_model(mjcf).unwrap_err().to_string();
+    assert!(err.contains("mesh 'flat': qhull error"), "{err}");
+
+    let no_collision = r#"<mujoco>
+  <asset><mesh name="flat" inertia="shell"
+    vertex="0 0 0  1 0 0  1 1 0  0 1 0"
+    face="0 1 2  0 2 3"/></asset>
+  <worldbody><body>
+    <geom type="mesh" mesh="flat" density="1000" contype="0" conaffinity="0"/>
+  </body></worldbody>
+</mujoco>"#;
+    let model = load_model(no_collision).unwrap();
+    assert_eq!(model.body_mass[1], 1000.0);
 }
 
 // ============================================================================

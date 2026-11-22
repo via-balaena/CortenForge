@@ -49,7 +49,8 @@ use sim_types::Pose;
 
 use cf_geometry::{Aabb, Bounded, Bvh, IndexedMesh, bvh_from_mesh, closest_point_on_triangle};
 
-use crate::mesh_polygons::{MeshPolygons, make_polygons};
+pub use crate::mesh_polygons::MeshPolygons;
+use crate::mesh_polygons::make_polygons;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -409,7 +410,8 @@ impl TriangleMeshData {
 
     /// The mesh's polygons (MuJoCo's `MakePolygons`); empty until
     /// [`Self::compute_hull`] or [`Self::make_polygons`] made them.
-    pub(crate) const fn polygons(&self) -> &MeshPolygons {
+    #[must_use]
+    pub const fn polygons(&self) -> &MeshPolygons {
         &self.polygons
     }
 
