@@ -233,6 +233,9 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // document writes, returned after the keyframes.
     let negative_inertial = crate::validation::negative_inertial_fault(&mjcf);
 
+    // The meshes MuJoCo makes an octree for, marked before it discards
+    // visual geoms.
+    let needsdf = mesh::meshes_needing_an_octree(&mjcf);
     if mjcf.compiler.discardvisual {
         apply_discardvisual(&mut mjcf);
     }
@@ -254,10 +257,15 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     builder.set_options(&mjcf.option);
 
     // Process mesh assets FIRST (before geoms can reference them), each with
-    // its convex hull where MuJoCo makes one.
+    // its convex hull and its octree where MuJoCo makes them.
     let needhull = mesh::meshes_needing_a_hull(&mjcf);
     for mesh in &mjcf.meshes {
-        builder.process_mesh(mesh, base_path, needhull.contains(&mesh.name))?;
+        builder.process_mesh(
+            mesh,
+            base_path,
+            needhull.contains(&mesh.name),
+            needsdf.contains(&mesh.name),
+        )?;
     }
 
     // Process hfield assets (before geoms can reference them)

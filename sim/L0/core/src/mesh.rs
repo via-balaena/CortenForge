@@ -49,6 +49,7 @@ use sim_types::Pose;
 
 use cf_geometry::{Aabb, Bounded, Bvh, IndexedMesh, bvh_from_mesh, closest_point_on_triangle};
 
+pub use crate::mesh_octree::{MeshOctree, OctreeError};
 pub use crate::mesh_polygons::MeshPolygons;
 use crate::mesh_polygons::make_polygons;
 
@@ -107,6 +108,9 @@ pub struct TriangleMeshData {
     /// ([`Self::replace_vertices`]); empty where its vertices were never
     /// rounded.
     unrounded: Vec<Point3<f64>>,
+    /// Its octree as MuJoCo 3.5.0 makes it for a signed distance field geom
+    /// naming it ([`Self::make_octree`]). Serialized, as the hull is.
+    octree: Option<MeshOctree>,
 }
 
 /// Two meshes are equal where their vertices, the vertices those were
@@ -211,6 +215,7 @@ impl TriangleMeshData {
             hull: None,
             polygons: MeshPolygons::default(),
             unrounded: Vec::new(),
+            octree: None,
         }
     }
 
@@ -244,6 +249,7 @@ impl TriangleMeshData {
             hull: None,
             polygons: MeshPolygons::default(),
             unrounded: Vec::new(),
+            octree: None,
         }
     }
 
@@ -347,6 +353,39 @@ impl TriangleMeshData {
         Ok(())
     }
 
+    /// Make its octree as MuJoCo 3.5.0 makes a mesh's for a signed distance
+    /// field geom naming it (`mjCMesh::TryCompile`, `user_mesh.cc:774-830`;
+    /// [`crate::mesh_octree::make_octree`]): over its faces and its
+    /// vertices before they were rounded ([`Self::unrounded_vertices`]),
+    /// its root the box over those ([`Self::aabb`]) grown by a tenth. MuJoCo
+    /// makes it after the mesh is moved to the frame it keeps it in
+    /// ([`Self::replace_vertices`]), which drops an octree made before.
+    ///
+    /// # Errors
+    ///
+    /// [`OctreeError`]'s, the mesh unchanged.
+    pub fn make_octree(&mut self) -> Result<(), OctreeError> {
+        let vertices: Vec<[f64; 3]> = self
+            .unrounded_vertices()
+            .iter()
+            .map(|v| [v.x, v.y, v.z])
+            .collect();
+        let (lo, hi) = (self.aabb.min, self.aabb.max);
+        let aamm = [lo.x, lo.y, lo.z, hi.x, hi.y, hi.z];
+        self.octree = Some(crate::mesh_octree::make_octree(
+            &vertices,
+            &self.mesh.faces,
+            aamm,
+        )?);
+        Ok(())
+    }
+
+    /// Its octree, where one was made ([`Self::make_octree`]).
+    #[must_use]
+    pub const fn octree(&self) -> Option<&MeshOctree> {
+        self.octree.as_ref()
+    }
+
     /// Merge its polygons as MuJoCo 3.5.0's `mjCMesh::MakePolygons` does
     /// (`user_mesh.cc:2949-3005`): from its hull's faces where it has a hull
     /// ([`Self::compute_hull`]), from its own otherwise, over its vertices as
@@ -365,7 +404,8 @@ impl TriangleMeshData {
     /// (`user_mesh.cc:1440-1505`), after its hull and polygons were made:
     /// its faces, its hull and its polygons are kept, its box and hierarchy
     /// made again; nothing is rounded, and vertices rounded before
-    /// ([`Self::replace_vertices`]) are held unrounded no longer.
+    /// ([`Self::replace_vertices`]) are held unrounded no longer. Its octree,
+    /// which holds positions, is dropped.
     ///
     /// # Panics
     ///
@@ -378,6 +418,7 @@ impl TriangleMeshData {
         );
         self.mesh.vertices = vertices;
         self.unrounded.clear();
+        self.octree = None;
         self.aabb = Bounded::aabb(&self.mesh);
         self.bvh = Some(bvh_from_mesh(&self.mesh));
     }
@@ -390,7 +431,8 @@ impl TriangleMeshData {
     /// box (as MuJoCo's compiler takes it) and its polygons' normals
     /// (`MakePolygonNormals`, `:2722-2731`) are made from `vertices` as given,
     /// which [`Self::unrounded_vertices`] keeps, as MuJoCo's compiler makes
-    /// them before it rounds; its own hierarchy from the rounded ones.
+    /// them before it rounds; its own hierarchy from the rounded ones. Its
+    /// octree, which holds positions, is dropped.
     ///
     /// # Panics
     ///
@@ -408,6 +450,7 @@ impl TriangleMeshData {
         self.bvh = Some(bvh_from_mesh(&self.mesh));
         self.polygons.remake_normals(&vertices);
         self.unrounded = vertices;
+        self.octree = None;
     }
 
     /// Its convex hull, where one was made ([`Self::compute_hull`]).

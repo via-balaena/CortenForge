@@ -179,6 +179,28 @@ pub fn meshes_needing_a_hull(mjcf: &MjcfModel) -> HashSet<String> {
     needed
 }
 
+/// The meshes MuJoCo 3.5.0 makes an octree for (`needsdf`): each that a geom
+/// of type `sdf` names, whatever its `contype` and `conaffinity`, as
+/// `mjCModel::IndexAssets` marks them (`user_model.cc:1885-1900`) before it
+/// discards visual geoms (`:4899`, `:4976`). Read on the model before this
+/// crate's `discardvisual`, so a mesh a discarded visual SDF geom names gets
+/// its octree where another geom keeps the mesh.
+pub fn meshes_needing_an_octree(mjcf: &MjcfModel) -> HashSet<String> {
+    let mut needed = HashSet::new();
+    let mut bodies: Vec<&MjcfBody> = vec![&mjcf.worldbody];
+    while let Some(body) = bodies.pop() {
+        for geom in &body.geoms {
+            if geom.geom_type == Some(MjcfGeomType::Sdf)
+                && let Some(mesh) = &geom.mesh
+            {
+                needed.insert(mesh.clone());
+            }
+        }
+        bodies.extend(&body.children);
+    }
+    needed
+}
+
 /// A mesh's mass properties as MuJoCo 3.5.0's `mjCMesh::Process` leaves
 /// them (`user_mesh.cc:1605-1668`), from its vertices as transformed
 /// ([`apply_transformations`]): computed once per mesh by
@@ -214,17 +236,22 @@ impl ModelBuilder {
     /// * `needhull` - Whether its convex hull is made for its geoms
     ///   ([`meshes_needing_a_hull`]); a mesh with no faces gets one whatever
     ///   this says
+    /// * `needsdf` - Whether its octree is made for a signed distance field
+    ///   geom ([`meshes_needing_an_octree`]), after it is moved to its frame,
+    ///   as MuJoCo makes it after `mjCMesh::Process` (`user_mesh.cc:774-830`)
     ///
     /// # Errors
     ///
     /// Returns [`MjcfError::DuplicateName`] if the mesh's name is an
-    /// already-processed mesh's, and the conversion's error if it fails (see
-    /// [`convert_mjcf_mesh`]).
+    /// already-processed mesh's, the conversion's error if it fails (see
+    /// [`convert_mjcf_mesh`]), and [`MjcfError::Asset`] where its mass
+    /// properties or its octree cannot be made.
     pub(crate) fn process_mesh(
         &mut self,
         mjcf_mesh: &MjcfMesh,
         base_path: Option<&Path>,
         needhull: bool,
+        needsdf: bool,
     ) -> Result<()> {
         // Check for duplicate mesh names
         if self.mesh_name_to_id.contains_key(&mjcf_mesh.name) {
@@ -239,6 +266,11 @@ impl ModelBuilder {
         let props = mesh_mass_properties(&mesh_data, mjcf_mesh.inertia.unwrap_or_default())
             .map_err(|reason| MjcfError::asset(ElementKind::Mesh, &mjcf_mesh.name, reason))?;
         mesh_data.replace_vertices(to_principal_frame(mesh_data.vertices(), &props));
+        if needsdf {
+            mesh_data.make_octree().map_err(|reason| {
+                MjcfError::asset(ElementKind::Mesh, &mjcf_mesh.name, reason.to_string())
+            })?;
+        }
 
         // Register in lookup table
         let mesh_id = self.mesh_data.len();

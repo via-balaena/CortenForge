@@ -136,6 +136,7 @@ pub mod convex_hull;
 pub mod gjk_epa;
 pub mod heightfield;
 pub mod mesh;
+pub mod mesh_octree;
 pub(crate) mod mesh_polygons;
 pub mod mid_phase;
 pub mod raycast;
