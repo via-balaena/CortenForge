@@ -47,8 +47,9 @@ closure over normal and build dependencies (optional ones included):
   - a crate on `OWN_LICENCE`, under its upstream's licence rather than the
     workspace's, ships none of the root's files it names as not its own (for
     sim-qhull `LICENSE-MIT`), ships each of its upstream's licence files it
-    names, and has a README of its own that names each of them, in place of
-    the README the rule above gives;
+    names, and has a README of its own, in place of the README the rule above
+    gives, that names each of them and, for each upstream whose `ports` it is
+    on, links the project and names its licence;
   - for each upstream project the set ports code from (MuJoCo, OpenSim,
     tinyobjloader, Qhull, Apple's Libc qsort), every
     crate inside it whose `src` cites the project is on one of two closed
@@ -830,10 +831,11 @@ fn packaging_problems(
             ));
         } else if path.is_empty() || path == "." {
             found.push(format!("`{name}` excludes `{entry}`, the whole crate"));
-        } else if ROOT_FILES.contains(&path)
-            || path == README
-            || own.is_some_and(|own| own.ships.contains(&path))
-        {
+        } else if own.is_some_and(|own| own.ships.contains(&path)) {
+            found.push(format!(
+                "`{name}` excludes `{entry}`, its upstream's licence, which it must ship"
+            ));
+        } else if ROOT_FILES.contains(&path) || path == README {
             found.push(format!(
                 "`{name}` excludes `{entry}`, which every crate in the set ships"
             ));
@@ -862,6 +864,16 @@ fn packaging_problems(
                 found.push(format!(
                     "`{name}`'s {README} does not name `{file}`, its upstream's licence"
                 ));
+            }
+        }
+        for upstream in UPSTREAMS.iter().filter(|u| u.ports.contains(&name)) {
+            for (what, text) in [("link", upstream.url), ("licence", upstream.licence)] {
+                if !readme.contains(text) {
+                    found.push(format!(
+                        "`{name}`'s {README} does not give {}'s {what}, {text}",
+                        upstream.name
+                    ));
+                }
             }
         }
         return found;
@@ -1312,8 +1324,28 @@ mod tests {
             })
             .collect();
         packaging.files = ["COPYING.txt".to_owned()].into();
-        packaging.readme = Some("# Its own\n\nUnder Qhull's licence, `COPYING.txt`.\n".to_owned());
+        let mut readme = "# Its own\n\nShips `COPYING.txt`.\n".to_owned();
+        for upstream in UPSTREAMS.iter().filter(|u| u.ports.contains(&name)) {
+            readme.push_str(&format!(
+                "[{}]({}), under {}.\n",
+                upstream.name, upstream.url, upstream.licence
+            ));
+        }
+        packaging.readme = Some(readme.clone());
         assert_eq!(packaging_found(name, &packaging), Vec::<String>::new());
+        let qsort = UPSTREAMS
+            .iter()
+            .find(|u| u.section == "QSORT")
+            .expect("the qsort's entry");
+        packaging.readme = Some(readme.replace(qsort.url, ""));
+        assert_eq!(
+            packaging_found(name, &packaging),
+            [format!(
+                "`{name}`'s {README} does not give {}'s link, {}",
+                qsort.name, qsort.url
+            )]
+        );
+        packaging.readme = Some(readme.clone());
 
         packaging.root_files[1].1 = Held::Same;
         assert_eq!(
@@ -1324,17 +1356,21 @@ mod tests {
         );
         packaging.root_files[1].1 = Held::Missing;
         packaging.files.clear();
-        packaging.readme = Some("# Its own\n".to_owned());
+        packaging.readme = Some(readme.replace("`COPYING.txt`", ""));
         packaging.exclude.push("COPYING.txt".to_owned());
         let found = packaging_found(name, &packaging);
-        assert_eq!(found.len(), 3, "{found:?}");
+        assert_eq!(found.len(), 4, "{found:?}");
         assert!(
-            found[0].contains("excludes `COPYING.txt`, which every crate"),
+            found[0].contains("excludes `COPYING.txt`, its upstream's licence, which it must ship"),
             "{found:?}"
         );
         assert!(found[1].contains("has no `COPYING.txt`"), "{found:?}");
         assert!(
             found[2].contains("does not name `COPYING.txt`"),
+            "{found:?}"
+        );
+        assert!(
+            found[3].contains("does not give Qhull's licence"),
             "{found:?}"
         );
 
@@ -1599,6 +1635,19 @@ mod tests {
             vec![
                 mujoco.then(|| "src/a.rs: `engine_forward.c`".to_owned()),
                 opensim.then(|| "src/a.rs: `OpenSim/Common`".to_owned()),
+                None,
+                None,
+                None,
+            ]
+        };
+        assert_eq!(cited(true, true).len(), UPSTREAMS.len(), "every upstream");
+        let qhull = |qsort: bool| {
+            vec![
+                Some("src/lib.rs: `user_mesh.cc`".to_owned()),
+                None,
+                None,
+                Some("src/build.rs: `poly2_r.c`".to_owned()),
+                qsort.then(|| "src/qsort.rs: `qsort.c`".to_owned()),
             ]
         };
         let none = Vec::<String>::new();
@@ -1617,6 +1666,15 @@ mod tests {
         assert_eq!(
             upstream_problems("cortenforge-a", &cited(false, false), &notice),
             none
+        );
+        assert_eq!(
+            upstream_problems("cortenforge-sim-qhull", &qhull(true), &notice),
+            none
+        );
+        assert_eq!(
+            upstream_problems("cortenforge-sim-qhull", &qhull(false), &notice),
+            ["`cortenforge-sim-qhull` is on the qsort of Apple's Libc's `ports` in `UPSTREAMS`, \
+              but its `src` no longer cites the qsort of Apple's Libc: take it off"]
         );
 
         let found = upstream_problems("cortenforge-a", &cited(true, true), &notice);

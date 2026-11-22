@@ -10,10 +10,10 @@ This NOTICE accompanies the Apache-2.0 option. The portions ported from MuJoCo
 and OpenSim, named under MUJOCO and OPENSIM below, are licensed under the
 Apache License, Version 2.0, whichever license a recipient takes for the rest;
 for the rest, recipients who take the software under the MIT license instead
-are bound only by that license's terms. sim-qhull, named under QHULL below, is
-under neither choice: Qhull's licence for its Qhull portions, the Apache
-License, Version 2.0, for its MuJoCo portion, and the 3-clause BSD licence for
-its sort, named under QSORT below.
+are bound only by that license's terms. cortenforge-sim-qhull, named under
+QHULL below, is under neither choice: Qhull's licence for its Qhull portions,
+the Apache License, Version 2.0, for its MuJoCo portion, and the 3-clause BSD
+licence for its sort, named under QSORT below.
 
 ------------------------------------------------------------------------------
 DISCLAIMER
@@ -56,8 +56,7 @@ MUJOCO
 
 cortenforge-geometry, cortenforge-sim-core, cortenforge-sim-mjcf,
 cortenforge-sim-qhull and cortenforge-sim-urdf, and in this repository sim-gpu,
-include
-portions ported from MuJoCo (https://github.com/google-deepmind/mujoco),
+include portions ported from MuJoCo (https://github.com/google-deepmind/mujoco),
 translated to Rust and changed. MuJoCo's source code is licensed under the
 Apache License, Version 2.0, the text in the accompanying LICENSE-APACHE file.
 The MuJoCo source files those portions cite carry these copyright notices, as
