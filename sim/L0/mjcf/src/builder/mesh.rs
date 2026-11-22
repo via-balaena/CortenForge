@@ -132,12 +132,12 @@ pub fn check_written_counts(meshes: &[MjcfMesh]) -> Result<()> {
 }
 
 /// The meshes MuJoCo 3.5.0 makes a convex hull of (`mjCModel::TryCompile`,
-/// `user_model.cc:4904-4922`): each that a mesh or SDF geom names where the
+/// `user_model.cc:4906-4923`): each that a mesh or SDF geom names where the
 /// geom's `contype` or `conaffinity` is not 0 or a `<pair>` names the geom,
 /// and each `convex` mesh. MuJoCo marks a `convex` mesh only where a mesh or
 /// SDF geom names it, and crashes on one that none names, reading the hull it
-/// did not make (ledger L409); this crate makes the hull of every `convex`
-/// mesh. Read on the model as compiled, after
+/// did not make (registry `D-MESH-CONVEX-UNNAMED`); this crate makes the hull
+/// of every `convex` mesh. Read on the model as compiled, after
 /// `discardvisual` has dropped its geoms.
 pub fn meshes_needing_a_hull(mjcf: &MjcfModel) -> HashSet<String> {
     let paired: HashSet<&str> = mjcf
@@ -508,28 +508,41 @@ pub fn convert_mjcf_mesh(
 
 /// The mesh's convex hull as MuJoCo 3.5.0's `mjCMesh::MakeGraph` makes it
 /// (`user_mesh.cc:1861-2042`), of its vertices as they are, with the faces
-/// and polygons [`TriangleMeshData::compute_hull`] gives a mesh. Where qhull
-/// stops the mesh is refused in MuJoCo's words, "qhull error"; where MuJoCo's
-/// own check of qhull's result fails, in its words, but for "Could not
-/// construct convex hull graph", MuJoCo's warning, after which a mesh with
-/// faces goes on with no hull (one with none, which MuJoCo then crashes on,
-/// is refused in those words); where the vertices reach a routine of qhull's
-/// that sim-qhull does not hold, in words naming it (ledger L432). No input
-/// is known to reach the last two.
+/// and polygons [`TriangleMeshData::compute_hull`] gives a mesh; where none
+/// is made, the mesh is refused or goes on as [`hull_refusal`] says.
 fn make_graph(mesh: &mut TriangleMeshData, mjcf_mesh: &MjcfMesh, faceless: bool) -> Result<()> {
-    let refuse = |reason: String| MjcfError::asset(ElementKind::Mesh, &mjcf_mesh.name, reason);
-    match mesh.compute_hull(mjcf_mesh.maxhullvert) {
-        Ok(()) => Ok(()),
-        Err(HullError::Qhull { .. }) => Err(refuse("qhull error".to_owned())),
-        Err(HullError::Graph { message })
-            if message == "Could not construct convex hull graph" && !faceless =>
+    let Err(err) = mesh.compute_hull(mjcf_mesh.maxhullvert) else {
+        return Ok(());
+    };
+    if let Some(reason) = hull_refusal(&err, faceless) {
+        return Err(MjcfError::asset(ElementKind::Mesh, &mjcf_mesh.name, reason));
+    }
+    warn!(mesh = %mjcf_mesh.name, "Could not construct convex hull graph");
+    mesh.make_polygons();
+    Ok(())
+}
+
+/// Why a mesh is refused where no hull was made (`err`), in MuJoCo 3.5.0's
+/// words: "qhull error" where qhull stops, MuJoCo's own where its check of
+/// qhull's result fails (`MakeGraph`, `user_mesh.cc:1914-2027`). `None` for
+/// "Could not construct convex hull graph", MuJoCo's warning, after which a
+/// mesh with faces goes on with no hull; one with none (`faceless`), whose
+/// faces MuJoCo's `CopyGraph` then reads through the graph pointer
+/// `MakeGraph` set to null as it warned (`user_mesh.cc:2003-2007`, `:2054`;
+/// read, not run), is refused in those words. Where the vertices reach a
+/// routine of qhull's that sim-qhull does not hold, this crate's words naming
+/// it (registry `D-QHULL-UNPORTED`). No input is known to reach any but the
+/// first.
+fn hull_refusal(err: &HullError, faceless: bool) -> Option<String> {
+    match err {
+        HullError::Qhull { .. } => Some("qhull error".to_owned()),
+        HullError::Graph { message }
+            if *message == "Could not construct convex hull graph" && !faceless =>
         {
-            warn!(mesh = %mjcf_mesh.name, "Could not construct convex hull graph");
-            mesh.make_polygons();
-            Ok(())
+            None
         }
-        Err(HullError::Graph { message }) => Err(refuse(message.to_owned())),
-        Err(err @ HullError::Unported { .. }) => Err(refuse(err.to_string())),
+        HullError::Graph { message } => Some((*message).to_owned()),
+        HullError::Unported { .. } => Some(err.to_string()),
     }
 }
 
@@ -948,11 +961,11 @@ pub fn mesh_mass_properties(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
-    use super::convert_mjcf_mesh;
+    use super::{convert_mjcf_mesh, hull_refusal};
     use crate::builder::mesh_file::tests::create_test_stl;
     use crate::types::{MjcfCompiler, MjcfMesh};
     use nalgebra::Vector3;
-    use sim_core::mesh::TriangleMeshData;
+    use sim_core::mesh::{HullError, TriangleMeshData};
 
     /// The file's mesh, loaded by `convert_mjcf_mesh` with `scale`.
     fn file_mesh(path: &std::path::Path, scale: Vector3<f64>) -> TriangleMeshData {
@@ -1115,5 +1128,40 @@ mod tests {
             result.unwrap_err().to_string(),
             "mesh 'empty': at least 4 vertices required"
         );
+    }
+
+    /// Each reason for no hull, as the loader takes it: qhull's in MuJoCo's
+    /// words; MuJoCo's warning as going on where the mesh has faces and as a
+    /// refusal in its words where it has none; MuJoCo's other checks in its
+    /// words; a routine sim-qhull does not hold named in this crate's
+    /// (registry `D-QHULL-UNPORTED`). No known input reaches any but the
+    /// first, so each is made here.
+    #[test]
+    fn a_mesh_with_no_hull_is_refused_in_mujocos_words() {
+        let qhull = HullError::Qhull {
+            code: 6154,
+            message: "initial simplex is flat",
+        };
+        let warning = HullError::Graph {
+            message: "Could not construct convex hull graph",
+        };
+        let check = HullError::Graph {
+            message: "Vertex id not found in convex hull",
+        };
+        let unported = HullError::Unported {
+            routine: "qh_mergecycle",
+        };
+        assert_eq!(hull_refusal(&qhull, false).as_deref(), Some("qhull error"));
+        assert_eq!(hull_refusal(&warning, false), None);
+        assert_eq!(
+            hull_refusal(&warning, true).as_deref(),
+            Some("Could not construct convex hull graph")
+        );
+        assert_eq!(
+            hull_refusal(&check, false).as_deref(),
+            Some("Vertex id not found in convex hull")
+        );
+        let words = hull_refusal(&unported, false).expect("refused");
+        assert!(words.contains("qh_mergecycle"), "{words}");
     }
 }
