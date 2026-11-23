@@ -232,6 +232,10 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // MuJoCo raises to its bounds (`D-INERTIAL-NEGATIVE`), on every body the
     // document writes, returned after the keyframes.
     let negative_inertial = crate::validation::negative_inertial_fault(&mjcf);
+    // This crate's refusal of a geom of type `sdf` with a `<plugin>`, whose
+    // field MuJoCo reads from the plugin (`D-GEOM-SDF-PLUGIN`), returned after
+    // the keyframes.
+    let sdf_plugin = geom::sdf_plugin_fault(&mjcf);
 
     // The meshes MuJoCo makes an octree for, marked before it discards
     // visual geoms.
@@ -389,7 +393,9 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // body-level flexcomp in document order of a form sim-core does not take
     // or with a `<plugin>` (a radial or interpolated dof, a vertex body in a
     // moving or turned holding body, a pinned point on a moving one;
-    // `D-FLEXCOMP-FORM`, `D-FLEXCOMP-PLUGIN`), which MuJoCo loads, a flex
+    // `D-FLEXCOMP-FORM`, `D-FLEXCOMP-PLUGIN`), which MuJoCo loads, the first
+    // geom of type `sdf` with a `<plugin>` (`D-GEOM-SDF-PLUGIN`), whose field
+    // MuJoCo reads from the plugin, a flex
     // vertex equality (`D-FLEX-VERT-EQUALITY`) or an empty `flex` beside
     // an unnamed flex (`D-FLEX-EQ-NO-NAME`), which MuJoCo makes, a flex's
     // condim outside 1 to 6 (`D-FLEX-CONDIM-RANGE`, which MuJoCo loads), a
@@ -408,6 +414,9 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         return Err(error);
     }
     if let Some(error) = flexcomp_refusal {
+        return Err(error);
+    }
+    if let Some(error) = sdf_plugin {
         return Err(error);
     }
     if let Some(error) = flex_equality {

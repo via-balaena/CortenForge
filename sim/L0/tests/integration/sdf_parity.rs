@@ -371,3 +371,41 @@ fn a_field_read_that_finds_no_leaf_is_a_miss() {
     data.forward(&model).expect("forward");
     assert_eq!(data.sensordata.as_slice(), [-1.0], "a miss");
 }
+
+/// Registry D-GEOM-SDF-PLUGIN: MuJoCo reads a geom of type `sdf` with a
+/// `<plugin>` from the plugin (measured: a `mujoco.sdf.torus` instance on a
+/// cube-mesh field, a sphere on its tube, 40 contacts, a rangefinder down its
+/// hole -1). sim-core runs no MuJoCo plugin, so the loader refuses that geom,
+/// naming it; the same field with no `<plugin>` loads, and a `<plugin>` on a
+/// sphere, which MuJoCo's collision does not read, is dropped.
+#[test]
+fn a_loaded_field_with_a_plugin_is_refused() {
+    let doc = |geom: &str| {
+        format!(
+            r#"<mujoco><extension><plugin plugin="mujoco.sdf.torus"><instance name="torus">
+                <config key="radius1" value="0.1"/><config key="radius2" value="0.03"/>
+                </instance></plugin></extension>
+                <asset><mesh name="cube" vertex="-0.1 -0.1 -0.1  0.1 -0.1 -0.1  0.1 0.1 -0.1
+                -0.1 0.1 -0.1  -0.1 -0.1 0.1  0.1 -0.1 0.1  0.1 0.1 0.1  -0.1 0.1 0.1"
+                face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  1 2 6  1 6 5
+                0 4 7  0 7 3"/></asset>
+                <worldbody>{geom}<body name="b" pos="0.1 0 0.05"><freejoint/>
+                <geom type="sphere" size="0.03"/></body></worldbody></mujoco>"#
+        )
+    };
+    let refused = sim_mjcf::load_model(&doc(
+        r#"<geom name="field" type="sdf" mesh="cube"><plugin instance="torus"/></geom>"#,
+    ))
+    .expect_err("a field with a plugin");
+    let words = refused.to_string();
+    assert!(
+        words.contains("a <plugin> on a geom of type sdf") && words.contains("field"),
+        "{words}"
+    );
+    sim_mjcf::load_model(&doc(r#"<geom name="field" type="sdf" mesh="cube"/>"#))
+        .expect("the field with no plugin");
+    sim_mjcf::load_model(&doc(
+        r#"<geom name="ball" type="sphere" size="0.1"><plugin instance="torus"/></geom>"#,
+    ))
+    .expect("a sphere's plugin is dropped");
+}
