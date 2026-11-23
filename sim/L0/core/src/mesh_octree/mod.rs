@@ -19,7 +19,7 @@
 //! (TriangleMeshDistance's) or, hanging, the mean of the coarser vertices it
 //! hangs from; each node holds its eight corners'.
 //! MuJoCo reads a distance inside the octree by trilinear interpolation of a
-//! leaf's coefficients (`oct_distance`, `engine_collision_sdf.c:136-160`).
+//! leaf's coefficients ([`MeshOctree::distance`], [`MeshOctree::gradient`]).
 //!
 //! It is measured bit for bit against MuJoCo's on macOS arm64, MuJoCo built
 //! against libc++ there: libc++'s `std::sort` and `unordered_map` give its
@@ -29,6 +29,7 @@
 
 mod cxx_sort;
 mod distance;
+mod query;
 
 use std::collections::{HashMap, VecDeque};
 
