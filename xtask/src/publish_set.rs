@@ -51,8 +51,10 @@ closure over normal and build dependencies (optional ones included):
     gives, that names each of them and holds, for each upstream whose `ports`
     it is on, a Markdown link to its URL and its licence's words as `UPSTREAMS`
     gives them, each anywhere in the README;
-  - for each upstream project the set ports code from (MuJoCo, OpenSim,
-    tinyobjloader, Qhull, Apple's Libc qsort), every
+  - for each upstream project in `UPSTREAMS` (MuJoCo, OpenSim, tinyobjloader,
+    Qhull, Apple's Libc qsort, TriangleMeshDistance; not LLVM's libc++, which
+    sim-core also ports from: its files carry no copyright line for a NOTICE
+    section to hold), every
     crate inside it whose `src` cites the project is on one of two closed
     lists: the crates holding code ported from it, each named in the first
     paragraph of the project's section of the root NOTICE and each README
@@ -64,7 +66,7 @@ closure over normal and build dependencies (optional ones included):
     named with its extension, for OpenSim a path into its source tree or its
     repository's name, for tinyobjloader its header's name, for Qhull a
     `libqhull_r` file named with its extension, for the qsort its two files'
-    names), in a regular
+    names, for TriangleMeshDistance its header's name), in a regular
     UTF-8 file under `src`; the tests,
     examples and benches cargo also packages are not read.
     This sees citations, not derivation: a port that cites nothing in those
@@ -142,7 +144,7 @@ struct Upstream {
 /// The upstream projects, each with its two closed lists: every crate in the
 /// set whose `src` matches `cited_by` is on `ports` or `cites`, and every crate
 /// on either matches it.
-const UPSTREAMS: [Upstream; 5] = [
+const UPSTREAMS: [Upstream; 6] = [
     Upstream {
         name: "MuJoCo",
         url: "https://github.com/google-deepmind/mujoco",
@@ -218,6 +220,19 @@ const UPSTREAMS: [Upstream; 5] = [
         // Its two files named, as the port cites them (`qsort.c:265`).
         cited_by: r"\b(?:qsort|heapsort)\.c\b",
         ports: &["cortenforge-sim-qhull"],
+        cites: &[],
+    },
+    Upstream {
+        name: "TriangleMeshDistance",
+        url: "https://github.com/InteractiveComputerGraphics/TriangleMeshDistance",
+        not_affiliated_with: "José Antonio Fernández Fernández or the TriangleMeshDistance project",
+        licence: "the MIT license",
+        section: "TRIANGLEMESHDISTANCE",
+        // Its one header named, as the port cites it. The name alone is no
+        // citation.
+        cited_by: r"\bTriangleMeshDistance\.h\b",
+        // `mesh_octree/distance.rs`: its signed distance, for a mesh's octree.
+        ports: &["cortenforge-sim-core"],
         cites: &[],
     },
 ];
@@ -1673,9 +1688,16 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             ]
         };
         assert_eq!(cited(true, true).len(), UPSTREAMS.len(), "every upstream");
+        // sim-core's: OpenSim's, TriangleMeshDistance's, and MuJoCo's where `mujoco`.
+        let core = |mujoco: bool| {
+            let mut found = cited(mujoco, true);
+            found[5] = Some("src/d.rs: `TriangleMeshDistance.h`".to_owned());
+            found
+        };
         let qhull = |qsort: bool| {
             vec![
                 Some("src/lib.rs: `user_mesh.cc`".to_owned()),
@@ -1683,13 +1705,19 @@ mod tests {
                 None,
                 Some("src/build.rs: `poly2_r.c`".to_owned()),
                 qsort.then(|| "src/qsort.rs: `qsort.c`".to_owned()),
+                None,
             ]
         };
         assert_eq!(qhull(true).len(), UPSTREAMS.len(), "every upstream");
         let none = Vec::<String>::new();
         assert_eq!(
-            upstream_problems("cortenforge-sim-core", &cited(true, true), &notice),
+            upstream_problems("cortenforge-sim-core", &core(true), &notice),
             none
+        );
+        assert_eq!(
+            upstream_problems("cortenforge-sim-core", &cited(true, true), &notice),
+            ["`cortenforge-sim-core` is on TriangleMeshDistance's `ports` in `UPSTREAMS`, but its \
+              `src` no longer cites TriangleMeshDistance: take it off"]
         );
         assert_eq!(
             upstream_problems("cortenforge-sim-urdf", &cited(true, false), &notice),
@@ -1728,7 +1756,7 @@ mod tests {
         );
 
         assert_eq!(
-            upstream_problems("cortenforge-sim-core", &cited(false, true), &notice),
+            upstream_problems("cortenforge-sim-core", &core(false), &notice),
             [
                 "`cortenforge-sim-core` is on MuJoCo's `ports` in `UPSTREAMS`, but its `src` no \
               longer cites MuJoCo: take it off"
@@ -1799,7 +1827,7 @@ mod tests {
     /// of the others listed with it.
     #[test]
     fn each_upstreams_pattern_finds_its_citation_forms() {
-        let cases: [(&str, &[&str], &[&str]); 5] = [
+        let cases: [(&str, &[&str], &[&str]); 6] = [
             (
                 "MuJoCo",
                 &[
@@ -1866,6 +1894,16 @@ mod tests {
                 &["qsort.c", "qsort.c:265", "heapsort.c"],
                 &["qsort", "qsort_r.c", "qsort.rs", "psort.c"],
             ),
+            (
+                "TriangleMeshDistance",
+                &["TriangleMeshDistance.h", "TriangleMeshDistance.h:281-325"],
+                &[
+                    "TriangleMeshDistance",
+                    "TriangleMeshDistance.hpp",
+                    "tmd::TriangleMeshDistance",
+                    "MyTriangleMeshDistance.h",
+                ],
+            ),
         ];
         for (name, seen, unseen) in cases {
             let upstream = UPSTREAMS.iter().find(|u| u.name == name).expect(name);
@@ -1893,7 +1931,7 @@ mod tests {
         write(
             "a.rs",
             "// self.h made.h filled.h test.c user_meshes OpenSim, validated vs OpenSim, \
-             tinyobjloader\n",
+             tinyobjloader, TriangleMeshDistance, tmd::TriangleMeshDistance\n",
         );
         write("c.rs", "// tinyobjloader's `tiny_obj_loader.h:814`\n");
         write(
@@ -1904,6 +1942,10 @@ mod tests {
         bytes.extend_from_slice(b" OpenSim/Common\n");
         std::fs::write(src.join("b/d.bin"), bytes).expect("write");
         write("notes.md", "OpenSim/Actuators\n");
+        write(
+            "t.rs",
+            "// TriangleMeshDistance's `TriangleMeshDistance.h:344`\n",
+        );
         write("z.rs", "// user_mesh.cc\n");
         write(
             "q.rs",
@@ -1921,11 +1963,18 @@ mod tests {
                 Some("src/notes.md: `OpenSim/Actuators`".to_owned()),
                 Some("src/c.rs: `tiny_obj_loader.h`".to_owned()),
                 Some("src/q.rs: `poly2_r.c`".to_owned()),
-                Some("src/q.rs: `qsort.c`".to_owned())
+                Some("src/q.rs: `qsort.c`".to_owned()),
+                Some("src/t.rs: `TriangleMeshDistance.h`".to_owned())
             ]
         );
-        assert_eq!(missing.expect("no src"), [None, None, None, None, None]);
-        assert_eq!(empty.expect("an empty src"), [None, None, None, None, None]);
+        assert_eq!(
+            missing.expect("no src"),
+            [None, None, None, None, None, None]
+        );
+        assert_eq!(
+            empty.expect("an empty src"),
+            [None, None, None, None, None, None]
+        );
     }
 
     /// A crate's README carries a paragraph for each upstream it ports code
@@ -1967,10 +2016,17 @@ mod tests {
             core.find(what)
                 .unwrap_or_else(|| panic!("{what} not in {core}"))
         };
+        let tmd = at("[TriangleMeshDistance](https://github.com/InteractiveComputerGraphics/TriangleMeshDistance)");
         assert!(at("[MuJoCo](") < at("[OpenSim](https://github.com/opensim-org/opensim-core)"));
+        assert!(at("[OpenSim](") < tmd, "{core}");
+        assert!(
+            core[tmd..].contains("licensed under the MIT license, whichever license"),
+            "{core}"
+        );
         assert!(
             core.ends_with(
-                "not affiliated with or endorsed by Stanford University or the OpenSim project.\n"
+                "not affiliated with or endorsed by José Antonio Fernández Fernández or the \
+                 TriangleMeshDistance project.\n"
             ),
             "{core}"
         );

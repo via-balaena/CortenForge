@@ -78,15 +78,20 @@ at your option.
 Portions of some crates are ported from
 [MuJoCo](https://github.com/google-deepmind/mujoco) and
 [OpenSim](https://github.com/opensim-org/opensim-core), whose source code is
-licensed under the Apache License, Version 2.0, and sim-mjcf's OBJ reader from
+licensed under the Apache License, Version 2.0, sim-mjcf's OBJ reader from
 [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader), under the MIT
 license (its ear clipping's point-in-polygon test, W. Randolph Franklin's
-PNPOLY, under its own license as well); those portions stay under their licenses
-whichever license you take for the rest. [NOTICE](./NOTICE)'s MUJOCO, OPENSIM
-and TINYOBJLOADER sections name the crates and carry the projects' copyright
-notices. CortenForge is not affiliated with or endorsed by Google DeepMind,
-Stanford University, the OpenSim project, Syoyo Fujita, the tinyobjloader
-project or W. Randolph Franklin.
+PNPOLY, under its own license as well), sim-core's distance to a mesh from
+[TriangleMeshDistance](https://github.com/InteractiveComputerGraphics/TriangleMeshDistance),
+under the MIT license, and sim-core's sort and red-black tree from LLVM's
+[libc++](https://github.com/llvm/llvm-project), under the Apache License v2.0
+with LLVM Exceptions; those portions stay under their licenses whichever license
+you take for the rest. [NOTICE](./NOTICE)'s MUJOCO, OPENSIM, TINYOBJLOADER,
+TRIANGLEMESHDISTANCE and LIBCXX sections name the crates and carry the
+projects' notices. CortenForge is not affiliated with or endorsed by Google
+DeepMind, Stanford University, the OpenSim project, Syoyo Fujita, the
+tinyobjloader project, W. Randolph Franklin, José Antonio Fernández Fernández,
+the TriangleMeshDistance project, the LLVM Foundation or the LLVM Project.
 
 One crate is not under the choice above: cortenforge-sim-qhull (`sim/L0/qhull`),
 a port of [Qhull](http://www.qhull.org), is licensed under Qhull's license

@@ -6,9 +6,10 @@ at your option. You may obtain copies in the accompanying LICENSE-APACHE and
 LICENSE-MIT files, or at http://www.apache.org/licenses/LICENSE-2.0 and
 http://opensource.org/licenses/MIT respectively.
 
-This NOTICE accompanies the Apache-2.0 option. The portions ported from MuJoCo
-and OpenSim, named under MUJOCO and OPENSIM below, are licensed under the
-Apache License, Version 2.0, whichever license a recipient takes for the rest;
+This NOTICE accompanies the Apache-2.0 option. The portions ported from MuJoCo,
+OpenSim and LLVM's libc++, named under MUJOCO, OPENSIM and LIBCXX below, are
+licensed under the Apache License, Version 2.0 (libc++'s with the LLVM
+Exceptions), whichever license a recipient takes for the rest;
 for the rest, recipients who take the software under the MIT license instead
 are bound only by that license's terms. cortenforge-sim-qhull, named under
 QHULL below, is under neither choice: Qhull's licence for its Qhull portions,
@@ -233,6 +234,44 @@ above. The two files carry these notices:
 
 CortenForge is not affiliated with, sponsored by, or endorsed by the
 University of California or Apple.
+
+------------------------------------------------------------------------------
+TRIANGLEMESHDISTANCE
+
+cortenforge-sim-core includes portions ported from TriangleMeshDistance
+(https://github.com/InteractiveComputerGraphics/TriangleMeshDistance),
+translated to Rust and changed: its signed distance from a point to a triangle
+mesh, as MuJoCo 3.5.0's compiler asks it for a mesh's octree, at the commit
+MuJoCo 3.5.0 builds with (2cb643de). TriangleMeshDistance is licensed under the
+MIT License, the text in the accompanying LICENSE-MIT file. Its header carries
+this notice:
+
+    Copyright (c) 2021 José Antonio Fernández Fernández
+
+CortenForge is not affiliated with, sponsored by, or endorsed by José Antonio
+Fernández Fernández or the TriangleMeshDistance project.
+
+------------------------------------------------------------------------------
+LIBCXX
+
+cortenforge-sim-core's sort for the octree's distance field
+(sim/L0/core/src/mesh_octree/cxx_sort.rs) and the red-black tree its mesh
+polygons are merged in (sim/L0/core/src/mesh_polygons.rs) are ported from
+LLVM's libc++ (https://github.com/llvm/llvm-project, its libcxx directory) as
+macOS's SDK ships it, translated to Rust and changed, so that they leave
+elements as the libc++ MuJoCo 3.5.0 is built against there leaves them:
+std::sort (__algorithm/sort.h and the heap functions it falls back to) and
+std::set's insertion (__tree). libc++ is licensed under the Apache License
+v2.0 with LLVM Exceptions (https://llvm.org/LICENSE.txt); the Apache License
+2.0 text is in the accompanying LICENSE-APACHE file. Its files carry this
+notice, and no copyright line of their own:
+
+    Part of the LLVM Project, under the Apache License v2.0 with LLVM
+    Exceptions. See https://llvm.org/LICENSE.txt for license information.
+    SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+CortenForge is not affiliated with, sponsored by, or endorsed by the LLVM
+Foundation or the LLVM Project.
 
 ------------------------------------------------------------------------------
 THIRD-PARTY DATA
