@@ -43,7 +43,8 @@ closure over normal and build dependencies (optional ones included):
     to the workspace root's, and a README.md. Each of the three is a symlink
     to the root's file, which cargo packages as the file itself. Every crate
     but the facade has exactly the README its name, library name, description
-    and the upstream projects it ports code from give; the failure prints it;
+    and the upstream projects in `UPSTREAMS` it ports code from give (libc++,
+    which is not one, gets no paragraph); the failure prints it;
   - a crate on `OWN_LICENCE`, under its upstream's licence rather than the
     workspace's, ships none of the root's files it names as not its own (for
     sim-qhull `LICENSE-MIT`), ships each of its upstream's licence files it
@@ -1896,7 +1897,7 @@ mod tests {
             ),
             (
                 "TriangleMeshDistance",
-                &["TriangleMeshDistance.h", "TriangleMeshDistance.h:281-325"],
+                &["TriangleMeshDistance.h", "TriangleMeshDistance.h:269-313"],
                 &[
                     "TriangleMeshDistance",
                     "TriangleMeshDistance.hpp",

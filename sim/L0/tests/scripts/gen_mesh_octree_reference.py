@@ -3,26 +3,19 @@
 
 Run it with the oracle's own interpreter (build_mujoco_oracle.sh builds it):
 
-    <workdir>/venv/bin/python -I sim/L0/tests/scripts/gen_mesh_octree_reference.py \\
+    <workdir>/venv/bin/python -I -B sim/L0/tests/scripts/gen_mesh_octree_reference.py \\
         sim/L0/mjcf/tests/assets/mesh_octree/mesh_octree.txt
 
 It refuses any other interpreter, as gen_census_golden.py does.
 
-Each case is one document, on a free body, which MuJoCo loads: from its
-text with MjModel.from_xml_string where every mesh is embedded (vertices,
-faces, or a built-in), or, where a case names mesh files, from a directory
-holding the document and those files, which the golden carries byte for
-byte. Per mesh, its octree (`mesh_octnum`, and a hash of each of `oct_aabb`,
-`oct_child`, `oct_depth`, `oct_coeff` over the mesh's nodes) or none, and for
-a file mesh its convex hull graph (`mesh_graph`); or MuJoCo's refusal. The
-cases: an SDF geom over meshes of each shape (a box, an L prism, an
-icosahedron, meshes written without faces, built-ins), moved, turned, scaled
-and mirrored, tiny and huge, under each inertia mode, an open mesh, a flat
-mesh and two parallel flat ones, a box whose faces are wound at random; each way
-a mesh comes to have an octree (an SDF geom naming it, colliding or not, its
-type a class's, in the world, beside a mesh geom, read before discardvisual
-drops a visual one) and each way it does not; and an STL, an OBJ and an MSH
-file. `mesh_octree.rs`'s test loads each document and compares (the file's
+Each case is one document, loaded by MuJoCo: from its text with MjModel.from_xml_string where every mesh is
+embedded (vertices, faces, or a built-in), or, where a case names mesh files,
+from a directory holding the document and those files, which the golden
+carries byte for byte. Per mesh, its octree (`mesh_octnum`, and a hash of
+each of `oct_aabb`, `oct_child`, `oct_depth`, `oct_coeff` over the mesh's
+nodes) or none, and for a file mesh its convex hull graph (`mesh_graph`); or
+MuJoCo's refusal. The cases are `CASES` and `FILE_CASES` below, each named
+for what it holds. `mesh_octree.rs`'s test loads each document and compares (the file's
 header says how).
 """
 import math
@@ -87,10 +80,13 @@ PLATE_F = [(0, 1, 3), (0, 3, 2)]
 # TriangleMeshDistance's query meets first gives the corner's sign.
 TWO_PLATES = [(x, y, -0.5) for x, y, _ in PLATE] + [(x, y, 0.5) for x, y, _ in PLATE]
 TWO_PLATES_F = PLATE_F + [(a + 4, b + 4, d + 4) for a, b, d in PLATE_F]
+# A box 1e-8 thick: its octree's finest nodes are thinner than the 1e-9 within which MuJoCo takes a corner to lie
+# on a coarser node's face (`MarkHangingNodes`).
+THIN = [(x, y, z) for z in (-5e-09, 5e-09) for y in (-0.5, 0.5) for x in (-0.5, 0.5)]
 
 
 def quartered_box(extents, seed):
-    """A box centred on the origin, each face split into four squares of two triangles, each triangle wound
+    """A box centred on the origin, each face split into four rectangles of two triangles, each triangle wound
     one way or the other at random (Python's `random.Random(seed).random()`, whose sequence for a seed does not
     change between Python versions)."""
     rng = random.Random(seed)
@@ -205,6 +201,13 @@ CASES = {
     # distance, decide a corner's sign.
     "quartered_box_wound_at_random_on_the_world": world(mesh(*quartered_box((1, 2, 3), 3), ' inertia="legacy"'),
                                                         S.format("")),
+    # A cube's extents tie, so TriangleMeshDistance splits its faces along the first of the tied axes.
+    "quartered_cube_wound_at_random_on_the_world": world(mesh(*quartered_box((1, 1, 1), 0)), S.format("")),
+    "thin_box_on_the_world": world(mesh(THIN, CUBE_F), S.format("")),
+    "lprism_two_bodies_below_a_child_of_the_world": (
+        f'<mujoco><asset>{mesh(L_V, L_F)}</asset><worldbody><body name="b" pos="0 0 1"><freejoint/>'
+        '<geom size="0.1"/><body name="c" pos="0 0 0.5"><joint type="hinge"/><geom size="0.1"/>'
+        f'<body name="d"><joint type="hinge"/>{S.format("")}</body></body></body></worldbody></mujoco>'),
     "lprism_mesh_and_sdf_geoms": doc(mesh(L_V, L_F), M.format("") + S.format("")),
     "lprism_two_sdf_geoms": doc(mesh(L_V, L_F), S.format("") + S.format(' pos="3 0 0"')),
     "two_meshes_the_second_an_sdf_geoms": doc(mesh(BOX, CUBE_F, name="a") + mesh(L_V, L_F),
@@ -237,11 +240,10 @@ HEADER = """# MuJoCo 3.5.0 (built from its 3.5.0 tag with -ffp-contract=off, mac
 # `case NAME`, `xml` the document, `file NAME HEX` each mesh file it names (its bytes; MuJoCo loaded the
 # document from a directory holding them), then `err` MuJoCo's refusal, or `meshes N` and per mesh
 # `mesh I NVERT NFACE`, for a file case `graph` its mesh_graph (`none` where it has none), and `octree none` or
-# `octree NNODE AABB CHILD DEPTH COEFF ABSCOEFF NEGATIVE`: its mesh_octnum, the hash of its nodes' oct_aabb,
-# oct_child, oct_depth, oct_coeff and the coefficients' magnitudes, and how many coefficients are negative. A
-# hash is over 64-bit words (a double's bits; an int sign-extended), from 0: each word xored in, then
-# splitmix64's finalizer (z ^= z >> 30, z *= 0xbf58476d1ce4e5b9, z ^= z >> 27, z *= 0x94d049bb133111eb,
-# z ^= z >> 31), modulo 2^64.
+# `octree NNODE AABB CHILD DEPTH COEFF`: its mesh_octnum and the hash of its nodes' oct_aabb, oct_child,
+# oct_depth and oct_coeff. A hash is over 64-bit words (a double's bits; an int sign-extended), from 0: each
+# word xored in, then splitmix64's finalizer (z ^= z >> 30, z *= 0xbf58476d1ce4e5b9, z ^= z >> 27,
+# z *= 0x94d049bb133111eb, z ^= z >> 31), modulo 2^64.
 # Written by sim/L0/tests/scripts/gen_mesh_octree_reference.py; the oracle's libraries' sha256 (without UUID):
 # {oracle}"""
 
@@ -284,10 +286,8 @@ def model_lines(m, graphs):
             lines.append("octree none")
             continue
         s = slice(a, a + n)
-        coeff = m.oct_coeff[s]
         lines.append(f"octree {n} {mix_hash(doubles(m.oct_aabb[s]))} {mix_hash(ints(m.oct_child[s]))} "
-                     f"{mix_hash(ints(m.oct_depth[s]))} {mix_hash(doubles(coeff))} "
-                     f"{mix_hash(doubles(np.abs(coeff)))} {int((coeff < 0).sum())}")
+                     f"{mix_hash(ints(m.oct_depth[s]))} {mix_hash(doubles(m.oct_coeff[s]))}")
     return lines
 
 

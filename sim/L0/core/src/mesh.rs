@@ -354,16 +354,26 @@ impl TriangleMeshData {
     }
 
     /// Make its octree as MuJoCo 3.5.0 makes a mesh's for a signed distance
-    /// field geom naming it (`mjCMesh::TryCompile`, `user_mesh.cc:774-830`;
-    /// [`crate::mesh_octree::make_octree`]): over its faces and its
-    /// vertices before they were rounded ([`Self::unrounded_vertices`]),
-    /// its root the box over those ([`Self::aabb`]) grown by a tenth. MuJoCo
+    /// field geom naming it (`mjCOctree`, then the coefficients of
+    /// `mjCMesh::TryCompile`, `user_mesh.cc:774-830`): over its faces and its
+    /// vertices before they were rounded ([`Self::unrounded_vertices`]), its
+    /// root the box over those ([`Self::aabb`]) grown by a tenth. MuJoCo
     /// makes it after the mesh is moved to the frame it keeps it in
     /// ([`Self::replace_vertices`]), which drops an octree made before.
+    ///
+    /// It is measured bit for bit against MuJoCo's on macOS arm64, MuJoCo
+    /// built against libc++ there: libc++'s `std::sort` and `unordered_map`
+    /// give its tie order and its vertex map, and the platform's `acos` the
+    /// angles a mesh vertex's pseudonormal is weighted by.
     ///
     /// # Errors
     ///
     /// [`OctreeError`]'s, the mesh unchanged.
+    ///
+    /// # Panics
+    ///
+    /// On some meshes with a vertex that is not finite or past about 1e154,
+    /// which meshes has not been isolated.
     pub fn make_octree(&mut self) -> Result<(), OctreeError> {
         let vertices: Vec<[f64; 3]> = self
             .unrounded_vertices()
@@ -1283,6 +1293,21 @@ mod tests {
             0, 2, 3, // left
         ];
         TriangleMeshData::new(vertices, indices)
+    }
+
+    /// Each way its vertices are replaced drops an octree made before, which
+    /// holds their positions.
+    #[test]
+    fn replacing_or_moving_its_vertices_drops_its_octree() {
+        let mut mesh = create_tetrahedron();
+        mesh.make_octree().unwrap();
+        assert!(mesh.octree().is_some());
+        let moved: Vec<Point3<f64>> = mesh.vertices().iter().map(|v| v * 2.0).collect();
+        mesh.replace_vertices(moved.clone());
+        assert!(mesh.octree().is_none(), "replace_vertices kept an octree");
+        mesh.make_octree().unwrap();
+        mesh.move_vertices(moved);
+        assert!(mesh.octree().is_none(), "move_vertices kept an octree");
     }
 
     /// Create a simple cube mesh for testing.

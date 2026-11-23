@@ -8,27 +8,25 @@
 //! `discardvisual` drops that geom but another keeps the mesh, as MuJoCo
 //! marks the mesh before it discards (`mjCModel::IndexAssets`); none is made
 //! for a mesh only mesh geoms or fitted primitives name. Each is made in the
-//! frame MuJoCo keeps the mesh in, over meshes moved, turned, scaled,
-//! mirrored, tiny and huge, under each inertia mode, written without faces,
-//! open, flat, built in, and read from an STL, an OBJ and an MSH file; and
-//! over meshes where a tie decides a corner's sign: a flat mesh (a corner in
-//! its plane is on neither side of it), two parallel plates (a corner midway
-//! is as far from each) and a box wound at random. Each octree is compared by
-//! its node count and a hash of each of its four arrays; a
-//! file mesh's convex hull graph int for int (ledger L439: no other
-//! committed test makes the hull of a mesh read from a file); a document
-//! MuJoCo refuses, by MuJoCo's words.
+//! frame MuJoCo keeps the mesh in. The cases are the generator's `CASES` and
+//! `FILE_CASES`, each named for what it holds. Each octree is compared by its
+//! node count and a hash of each of its four arrays (off macOS arm64, not of
+//! its coefficients: [`BITWISE`]); a file mesh's convex hull graph int for int
+//! (ledger L439: no other committed test compares the hull of a mesh read
+//! from a file); a document MuJoCo refuses, by MuJoCo's words.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use sim_core::mesh::{MeshHull, MeshOctree};
 use sim_mjcf::{load_model, load_model_from_file};
 
-/// MuJoCo's octrees were hashed on macOS arm64. A coefficient's magnitude is
-/// a distance made of sums, products and square roots, and its sign the side
-/// of a pseudonormal whose vertex weights are angles from the platform's
-/// `acos`: there the signed coefficients' hash is compared, elsewhere the
-/// magnitudes' hash and how many are negative.
+/// MuJoCo's octrees were hashed on macOS arm64, where all four arrays are
+/// compared. Elsewhere the coefficients are not: a corner nearest a mesh
+/// vertex takes its sign from a pseudonormal weighted by angles from the
+/// platform's `acos`, and a hanging corner's coefficient is the mean of
+/// signed ones, so a one-ulp `acos` can change both where a pseudonormal
+/// cancels (the box wound at random has one). The boxes, children and depths
+/// are made without `acos`.
 const BITWISE: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
 
 /// One document of the golden and what MuJoCo made of it.
@@ -49,8 +47,8 @@ struct Mesh {
     octree: Option<Hashes>,
 }
 
-/// An octree's node count, the hashes of its arrays (the golden's header
-/// says how they are made) and how many coefficients are negative.
+/// An octree's node count and the hashes of its arrays (the golden's header
+/// says how they are made).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Hashes {
     nodes: usize,
@@ -58,12 +56,11 @@ struct Hashes {
     child: u64,
     depth: u64,
     coeff: u64,
-    abs_coeff: u64,
-    negative: usize,
 }
 
 enum Outcome {
-    /// MuJoCo's refusal, its words before the mesh's name.
+    /// MuJoCo's refusal: its first line, `Error: ` dropped, up to its last
+    /// `: ` where it has one.
     Refused(String),
     Loaded(Vec<Mesh>),
 }
@@ -138,8 +135,6 @@ fn golden() -> Vec<Case> {
                         child: hex(w[2]),
                         depth: hex(w[3]),
                         coeff: hex(w[4]),
-                        abs_coeff: hex(w[5]),
-                        negative: w[6].parse().unwrap(),
                     });
                 }
             }
@@ -167,15 +162,12 @@ fn int_word(x: i32) -> u64 {
 }
 
 fn hashes(octree: &MeshOctree) -> Hashes {
-    let coeff = || octree.coeff.iter().flatten();
     Hashes {
         nodes: octree.len(),
         aabb: mix_hash(octree.aabb.iter().flatten().map(|x| x.to_bits())),
         child: mix_hash(octree.child.iter().flatten().map(|&x| int_word(x))),
         depth: mix_hash(octree.depth.iter().map(|&x| int_word(x))),
-        coeff: mix_hash(coeff().map(|x| x.to_bits())),
-        abs_coeff: mix_hash(coeff().map(|x| x.abs().to_bits())),
-        negative: coeff().filter(|&&x| x < 0.0).count(),
+        coeff: mix_hash(octree.coeff.iter().flatten().map(|x| x.to_bits())),
     }
 }
 
@@ -229,7 +221,7 @@ fn load(case: &Case) -> sim_mjcf::Result<sim_core::Model> {
 #[test]
 fn each_meshs_octree_is_mujocos() {
     let cases = golden();
-    assert_eq!(cases.len(), 37, "golden cases");
+    assert_eq!(cases.len(), 40, "golden cases");
     let mut failures = Vec::new();
     for case in &cases {
         match (&case.outcome, load(case)) {

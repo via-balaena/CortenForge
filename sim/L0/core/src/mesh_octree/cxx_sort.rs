@@ -120,8 +120,8 @@ fn insertion_sort<T: Copy>(
     }
 }
 
-/// `__insertion_sort_unguarded` over `v[first..last]`: `v[first - 1]` goes
-/// before none of them, so the inner loop needs no bound.
+/// `__insertion_sort_unguarded` over `v[first..last]`: none of them goes
+/// before `v[first - 1]`, so the inner loop needs no bound.
 fn insertion_sort_unguarded<T: Copy>(
     v: &mut [T],
     first: usize,
@@ -609,7 +609,7 @@ mod tests {
     #[test]
     fn each_order_is_libcxxs() {
         let cases = cases();
-        assert_eq!(cases.len(), 768, "cases");
+        assert_eq!(cases.len(), 774, "cases");
         let mut failures = Vec::new();
         for (k, (kind, keys, order)) in cases.iter().enumerate() {
             let mut v: Vec<(f64, usize)> = keys.iter().copied().zip(0..).collect();

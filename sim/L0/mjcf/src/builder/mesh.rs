@@ -181,8 +181,9 @@ pub fn meshes_needing_a_hull(mjcf: &MjcfModel) -> HashSet<String> {
 
 /// The meshes MuJoCo 3.5.0 makes an octree for (`needsdf`): each that a geom
 /// of type `sdf` names, whatever its `contype` and `conaffinity`, as
-/// `mjCModel::IndexAssets` marks them (`user_model.cc:1885-1900`) before it
-/// discards visual geoms (`:4899`, `:4976`). Read on the model before this
+/// `mjCModel::IndexAssets` marks them (`user_model.cc:1885-1900`) in its
+/// first call (`:4899`), before its second (`:4976`) discards visual geoms
+/// (`:1987-2023`). Read on the model before this
 /// crate's `discardvisual`, so a mesh a discarded visual SDF geom names gets
 /// its octree where another geom keeps the mesh.
 pub fn meshes_needing_an_octree(mjcf: &MjcfModel) -> HashSet<String> {

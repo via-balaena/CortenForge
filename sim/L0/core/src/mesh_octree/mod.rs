@@ -10,14 +10,22 @@
 //! mesh in, from its vertices before they are rounded to single precision.
 //! Its root is the mesh's box grown by a tenth about its centre; a node is
 //! split in eight where a face touches its box (`boxTriangle`, Schwarz and
-//! Seidel's test), to six levels; then leaves are split until no leaf meets a
-//! leaf more than one level finer (`BalanceOctree`), and the vertices of a
-//! finer leaf that lie on a coarser one's face or edge are marked hanging
-//! (`MarkHangingNodes`). Each vertex's coefficient is its signed distance to
-//! the mesh (TriangleMeshDistance's) or, hanging, the mean of the coarser
-//! vertices it hangs from; each node holds its eight corners'.
+//! Seidel's test), to six levels; then leaves are split until no leaf shares
+//! a face with a leaf more than one level finer (`BalanceOctree`), and the
+//! corners of a finer leaf that lie inside the face it shares with a coarser
+//! leaf, or inside one of that face's edges, are marked hanging
+//! (`MarkHangingNodes`; each looks across a node's six faces only). Each
+//! vertex's coefficient is its signed distance to the mesh
+//! (TriangleMeshDistance's) or, hanging, the mean of the coarser vertices it
+//! hangs from; each node holds its eight corners'.
 //! MuJoCo reads a distance inside the octree by trilinear interpolation of a
 //! leaf's coefficients (`oct_distance`, `engine_collision_sdf.c:136-160`).
+//!
+//! It is measured bit for bit against MuJoCo's on macOS arm64, MuJoCo built
+//! against libc++ there: libc++'s `std::sort` and `unordered_map` give its
+//! tie order and its vertex map ([`cxx_sort`], [`Builder::vertex_id`]), and
+//! the platform's `acos` the angles a mesh vertex's pseudonormal is weighted
+//! by.
 
 mod cxx_sort;
 mod distance;
@@ -34,6 +42,11 @@ const MAX_LEVEL: i32 = 6;
 /// A mesh's octree as MuJoCo 3.5.0's model holds it, one entry per node in
 /// the order MuJoCo makes them: the root, then each level's splits in turn,
 /// then the balancing's.
+///
+/// It is measured bit for bit against MuJoCo's on macOS arm64: elsewhere a
+/// coefficient can differ where the platform's `acos` does, a corner's sign
+/// and with it a hanging corner's mean of signed ones
+/// ([`TriangleMeshData::make_octree`](crate::mesh::TriangleMeshData::make_octree)).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MeshOctree {
@@ -71,7 +84,7 @@ impl MeshOctree {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OctreeError {
     /// The mesh has no faces: TriangleMeshDistance prints "Empty triangle
-    /// list" and exits the process there (`TriangleMeshDistance.h:344-347`).
+    /// list" and exits the process there (`TriangleMeshDistance.h:343-346`).
     NoFaces,
     /// A hanging vertex's coefficient was asked before a vertex it hangs
     /// from had one: MuJoCo's "sdf coefficient computation failed"
@@ -116,20 +129,25 @@ type Triangle = [[f64; 3]; 3];
 struct Builder {
     nodes: Vec<Node>,
     vertices: Vec<[f64; 3]>,
-    /// Each vertex's index by its coordinates' bits, a zero's sign dropped
-    /// ([`point_key`]). MuJoCo's `vert_map` hashes the bits and holds two
-    /// points of one bucket equal within 1e-9 on each axis
-    /// (`Point::operator==`, `user_objects.h:224-229`).
-    vertex_ids: HashMap<[u64; 3], usize>,
+    /// Each vertex's index by MuJoCo's hash of its point ([`point_hash`]),
+    /// those of one hash in the order they were made ([`Builder::vertex_id`]
+    /// searches them newest first): MuJoCo's `vert_map`, an
+    /// `unordered_map<Point, int>`.
+    vertex_ids: HashMap<u64, Vec<usize>>,
     /// Each vertex's coarser vertices where it hangs (`hang_`), else empty.
     hang: Vec<Vec<usize>>,
 }
 
-/// The key of a point in [`Builder::vertex_ids`]: its coordinates' bits, a
-/// negative zero taken as zero (libc++'s `hash<double>` gives both one hash,
-/// and MuJoCo's equality holds them equal).
-fn point_key(p: [f64; 3]) -> [u64; 3] {
-    p.map(|x| (x + 0.0).to_bits())
+/// MuJoCo's `hash<Point>` of `p` (`user_objects.h:233-246`): libc++'s
+/// `hash<double>` of each coordinate (its bits, either zero 0), combined.
+fn point_hash(p: [f64; 3]) -> u64 {
+    let h = p.map(|x| if x == 0.0 { 0 } else { x.to_bits() });
+    h[1..].iter().fold(h[0], |seed, &hk| {
+        seed ^ hk
+            .wrapping_add(0x9e37_79b9)
+            .wrapping_add(seed << 6)
+            .wrapping_add(seed >> 2)
+    })
 }
 
 /// The octree MuJoCo 3.5.0 makes over a mesh for a signed distance field
@@ -147,7 +165,10 @@ fn point_key(p: [f64; 3]) -> [u64; 3] {
 ///
 /// # Panics
 ///
-/// If a face names a vertex past `vertices`.
+/// If a face names a vertex past `vertices`; and on some meshes with a vertex
+/// that is not finite or past about 1e154 (`MeshDistance::signed_distance`
+/// finding no face nearer a corner than infinity), which meshes has not been
+/// isolated.
 #[allow(clippy::manual_midpoint)] // MuJoCo's `(a + b) / 2`, not `f64::midpoint`
 pub fn make_octree(
     vertices: &[[f64; 3]],
@@ -241,12 +262,18 @@ impl Builder {
             if colliding.is_empty() || task.level >= MAX_LEVEL {
                 continue;
             }
-            for node in self.subdivide(task.node, task.level) {
-                queue.push_back(Task {
-                    faces: colliding.clone(),
-                    level: task.level + 1,
-                    node,
-                });
+            let children = self.subdivide(task.node, task.level);
+            // MuJoCo queues the last level's nodes too, where each only
+            // filters its parent's faces and stops: none is queued here,
+            // which changes nothing made and holds no copy of those faces.
+            if task.level + 1 < MAX_LEVEL {
+                for node in children {
+                    queue.push_back(Task {
+                        faces: colliding.clone(),
+                        level: task.level + 1,
+                        node,
+                    });
+                }
             }
         }
         self.balance();
@@ -296,13 +323,27 @@ impl Builder {
                 if i & 2 != 0 { a[4] } else { a[1] },
                 if i & 4 != 0 { a[5] } else { a[2] },
             ];
-            let next = self.vertices.len();
-            let id = *self.vertex_ids.entry(point_key(v)).or_insert(next);
-            if id == next {
-                self.vertices.push(v);
-            }
-            self.nodes[index].vertid[i] = id;
+            self.nodes[index].vertid[i] = self.vertex_id(v);
         }
+    }
+
+    /// The vertex at `v`, made where there is none: as MuJoCo's `vert_map`
+    /// finds it, the first of those with `v`'s hash within 1e-9 of it on
+    /// each axis (`Point::operator==`, `user_objects.h:225-230`), which
+    /// libc++ asks only of points whose hashes are equal. libc++ puts each
+    /// new point at the front of its bucket, so this takes the newest; a
+    /// rehash can reorder a bucket, which this does not follow (it matters
+    /// only where a point lies within 1e-9 of two of one hash).
+    fn vertex_id(&mut self, v: [f64; 3]) -> usize {
+        let vertices = &mut self.vertices;
+        let same = self.vertex_ids.entry(point_hash(v)).or_default();
+        let near = |p: &[f64; 3]| (0..3).all(|k| (p[k] - v[k]).abs() < 1e-9);
+        if let Some(&id) = same.iter().rev().find(|&&id| near(&vertices[id])) {
+            return id;
+        }
+        vertices.push(v);
+        same.push(vertices.len() - 1);
+        vertices.len() - 1
     }
 
     fn is_leaf(&self, node: usize) -> bool {
@@ -552,4 +593,130 @@ fn box_triangle(v: &Triangle, aamm: &[f64; 6]) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::{MeshOctree, make_octree};
+
+    /// MuJoCo's octrees were hashed on macOS arm64, where all four arrays are
+    /// compared; elsewhere the coefficients are not, a corner's sign coming,
+    /// where a mesh vertex is nearest, from a pseudonormal weighted by angles
+    /// from the platform's `acos`.
+    const BITWISE: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+
+    /// The golden's hash of `words`: from 0, each word xored in, then
+    /// splitmix64's finalizer (as `gen_mesh_octree_reference.py`'s).
+    fn mix_hash(words: impl Iterator<Item = u64>) -> u64 {
+        words.fold(0, |h, w| {
+            let mut z = h ^ w;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        })
+    }
+
+    /// An int's word: the int sign-extended.
+    #[allow(clippy::cast_sign_loss)] // the golden's word is the int's bits
+    fn int_word(x: i32) -> u64 {
+        i64::from(x) as u64
+    }
+
+    /// The golden's `octree` line for `octree`: its node count and the
+    /// hashes of its boxes, children, depths and coefficients.
+    fn line(octree: &MeshOctree) -> [u64; 5] {
+        [
+            octree.len() as u64,
+            mix_hash(octree.aabb.iter().flatten().map(|x| x.to_bits())),
+            mix_hash(octree.child.iter().flatten().map(|&x| int_word(x))),
+            mix_hash(octree.depth.iter().map(|&x| int_word(x))),
+            mix_hash(octree.coeff.iter().flatten().map(|x| x.to_bits())),
+        ]
+    }
+
+    fn doubles(text: &str) -> Vec<f64> {
+        text.split_whitespace()
+            .map(|x| f64::from_bits(u64::from_str_radix(x, 16).unwrap()))
+            .collect()
+    }
+
+    /// [`point_hash`] is MuJoCo's `hash<Point>`, compiled, on each point of
+    /// the golden's `hash` lines.
+    #[test]
+    fn each_point_hash_is_mujocos() {
+        let text = include_str!("../../tests/data/mesh_octree_source.txt");
+        let mut points = 0;
+        for line in text.lines().filter(|l| l.starts_with("hash ")) {
+            let words: Vec<&str> = line.split_whitespace().skip(1).collect();
+            let p: [f64; 3] = doubles(&words[..3].join(" ")).try_into().unwrap();
+            let theirs = u64::from_str_radix(words[3], 16).unwrap();
+            assert_eq!(super::point_hash(p), theirs, "{line}");
+            points += 1;
+        }
+        assert_eq!(points, 312, "hash lines");
+    }
+
+    /// Each case's octree is the one MuJoCo 3.5.0's own octree source,
+    /// compiled, makes over the same mesh and box
+    /// (`tests/data/mesh_octree_source.txt`, written by
+    /// `sim/L0/tests/scripts/gen_mesh_octree_source_reference.py`): meshes
+    /// as written, with no loader to move them off the grids their ties sit
+    /// on.
+    #[test]
+    fn each_octree_is_mujocos_sources() {
+        let text = include_str!("../../tests/data/mesh_octree_source.txt");
+        let mut failures = Vec::new();
+        let mut cases = 0;
+        let mut block: Vec<(&str, &str)> = Vec::new();
+        let lines = text
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.starts_with("hash "));
+        for line_text in lines.chain(std::iter::once("case end")) {
+            let (key, rest) = line_text.split_once(' ').unwrap();
+            if key == "case" && !block.is_empty() {
+                let get = |k: &str| block.iter().find(|(key, _)| *key == k).unwrap().1;
+                let name = get("case");
+                let vertices: Vec<[f64; 3]> = doubles(get("vertices"))
+                    .chunks(3)
+                    .map(|c| [c[0], c[1], c[2]])
+                    .collect();
+                let faces: Vec<[u32; 3]> = get("faces")
+                    .split_whitespace()
+                    .map(|x| x.parse().unwrap())
+                    .collect::<Vec<u32>>()
+                    .chunks(3)
+                    .map(|c| [c[0], c[1], c[2]])
+                    .collect();
+                let aamm: [f64; 6] = doubles(get("box")).try_into().unwrap();
+                let theirs: Vec<u64> = get("octree")
+                    .split_whitespace()
+                    .enumerate()
+                    .map(|(i, x)| {
+                        if i == 0 {
+                            x.parse().unwrap()
+                        } else {
+                            u64::from_str_radix(x, 16).unwrap()
+                        }
+                    })
+                    .collect();
+                let ours = line(&make_octree(&vertices, &faces, aamm).unwrap());
+                let compared = if BITWISE { 5 } else { 4 };
+                if ours[..compared] != theirs[..compared] {
+                    failures.push(format!("{name}: {ours:x?} / {theirs:x?}"));
+                }
+                cases += 1;
+                block.clear();
+            }
+            block.push((key, rest));
+        }
+        assert_eq!(cases, 44, "golden cases");
+        assert!(
+            failures.is_empty(),
+            "{} of {cases}:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
 }

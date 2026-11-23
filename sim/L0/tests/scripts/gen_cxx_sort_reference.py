@@ -1,30 +1,39 @@
 #!/usr/bin/env python3
 """Generate the libc++ sort golden for sim-core from macOS's own libc++ `std::sort`.
 
-Run it on macOS with the Command Line Tools (the libc++ MuJoCo 3.5.0 is built
-against there, whose `std::sort` TriangleMeshDistance sorts a mesh's faces with):
+Run it on macOS with the Command Line Tools: the golden is the order the
+`std::sort` of the libc++ `/usr/bin/c++` builds against leaves (TriangleMeshDistance
+sorts a mesh's faces with it):
 
     python3 -I sim/L0/tests/scripts/gen_cxx_sort_reference.py sim/L0/core/tests/data/cxx_sort_orders.txt
 
 It refuses any other platform. It writes a C++ program to a temporary
 directory, builds it with `/usr/bin/c++ -std=c++17 -O2`, and runs it; the
 program prints the libc++ version its headers declare (`_LIBCPP_VERSION`),
-which the file's header records.
+which the file's header records. Nothing checks that version against the
+libc++ the oracle's MuJoCo was built with (`build_mujoco_oracle.sh` takes
+cmake's default compiler); the octree golden, made by that MuJoCo, holds a
+case whose octree a stable sort changes.
 
 Each case is an array of elements `{key, id}`, `id` its index, sorted by
 `key` (a double, compared with `<`, as TriangleMeshDistance compares a face's
 first vertex's coordinate): by `std::sort`, or by `std::partial_sort(first,
 last, last)`, the heap sort `std::sort` falls back to past its depth limit;
-then the order the ids are left in. The arrays come from one fixed xorshift
-stream (as the other generators here): random keys, or those keys sorted,
-reversed, all equal, in an organ pipe or a sawtooth, drawn from one, two,
-three, five, ten or n values, mostly short, some past the 128 elements over
-which `std::sort` takes a ninther for its pivot. Last come arrays built by
-McIlroy's adversary ("A Killer Adversary for Quicksort", 1999), whose keys
-are fixed as `std::sort` compares them so that each partition splits off few
-elements, driving it to its depth limit and the heap sort, each also with
-its keys divided by two and by three so that some tie; and arrays of exactly
-128 and 129 elements, about the size past which `std::sort` takes a ninther.
+then the order the ids are left in. In the file's order: arrays from one
+fixed xorshift stream (as the other generators here), random keys, or those
+keys sorted, reversed, all equal, in an organ pipe or a sawtooth, drawn from
+one, two, three, five, ten or n values, mostly short, some past the 128
+elements over which `std::sort` takes a ninther for its pivot; arrays of
+exactly 128 and 129 elements, about that size; arrays built by McIlroy's
+adversary ("A Killer Adversary for Quicksort", 1999), whose keys are fixed as
+`std::sort` compares them so that each partition splits off few elements,
+driving it to its depth limit and the heap sort, each also with its keys
+divided by two and by three so that some tie; and arrays sorted but for a few
+keys swapped, from a second stream, of which only those listed in
+NEARLY_SORTED_CHOSEN are kept: each was chosen because the port, with the
+answer of `std::sort`'s bounded insertion sort at its limit of moves made
+"not sorted", leaves it in another order (that answer decides whether the
+range is sorted further, and rarely changes an order).
 
 The file is one case per line, '#' lines aside:
 
@@ -42,6 +51,8 @@ import tempfile
 
 COUNT = 600
 HEAP_COUNT = 150
+# Indices into the nearly sorted stream (Stream(2), `nearly_sorted`) of the arrays kept.
+NEARLY_SORTED_CHOSEN = (14342, 16784, 25084, 25520, 29049, 29130)
 # The 128 elements past which std::sort takes a ninther, exactly, and once more.
 EXACT_SIZES = (128, 129)
 ADVERSARY_SIZES = (64, 129, 300, 1000)
@@ -67,6 +78,17 @@ class Stream:
 
     def below(self, n):
         return self.bits() % n
+
+
+def nearly_sorted(s):
+    """24 to 223 keys drawn from 2, 3, 5, 10 or 50 values, sorted, then up to 11 pairs of them swapped."""
+    n = 24 + s.below(200)
+    distinct = (2, 3, 5, 10, 50)[s.below(5)]
+    keys = sorted(s.below(distinct) for _ in range(n))
+    for _ in range(s.below(12)):
+        i, j = s.below(n), s.below(n)
+        keys[i], keys[j] = keys[j], keys[i]
+    return keys
 
 
 def make_case(s):
@@ -130,7 +152,7 @@ def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     if platform.system() != "Darwin":
-        sys.exit("run this on macOS: the golden is the libc++ MuJoCo is built against there")
+        sys.exit("run this on macOS: the golden is macOS's libc++ std::sort")
     with tempfile.TemporaryDirectory() as d:
         src, exe = os.path.join(d, "sort.cc"), os.path.join(d, "sort")
         with open(src, "w") as f:
@@ -152,6 +174,9 @@ def main():
         # The adversary's own arrays as `A` (the test asks that each takes the heap sort); their keys divided as
         # `S`, for some of them take no heap sort (those of 64 and 129 elements).
         cases += [("A" if d == 1 else "S", [x // d for x in k]) for k in adv_keys for d in ADVERSARY_DIVISORS]
+        near = Stream(2)
+        stream = [nearly_sorted(near) for _ in range(max(NEARLY_SORTED_CHOSEN, default=-1) + 1)]
+        cases += [("S", stream[i]) for i in NEARLY_SORTED_CHOSEN]
         _, orders = run([f"{'S' if k == 'A' else k} {len(keys)} " + " ".join(str(x) for x in keys) for k, keys in cases])
     out = [f"# libc++ {version} (macOS {platform.mac_ver()[0]}, {platform.machine()}), std::sort and "
            "std::partial_sort, from sim/L0/tests/scripts/gen_cxx_sort_reference.py"]

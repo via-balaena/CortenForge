@@ -29,7 +29,7 @@
 // SOFTWARE.
 
 //! A point's signed distance to a triangle mesh, as TriangleMeshDistance's
-//! `signed_distance` gives it (`TriangleMeshDistance.h:281-325`): the
+//! `signed_distance` gives it (`TriangleMeshDistance.h:269-313`): the
 //! nearest point of the mesh found down a tree of bounding spheres
 //! (`_build_tree`, `_query`), Ericson's point–triangle distance
 //! (`point_triangle_sq_unsigned`), and its sign from the angle-weighted
