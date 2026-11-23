@@ -18,6 +18,7 @@ use nalgebra::{Matrix3, Vector3};
 use super::assign_margin;
 use super::broadphase::filter_sphere;
 use super::flex_rigid::filter_bitmask;
+use super::sdf_collide::is_loaded_sdf;
 use crate::types::validation::MAX_VAL;
 use crate::types::{Data, GeomType, Model};
 
@@ -97,8 +98,9 @@ pub(super) fn collide_tree(
 /// `mj_collideTree` reaches them (`engine_collision_driver.c:720-754`): the
 /// geom's bitmask meets the flex's, its bounding sphere grown by the margin
 /// meets the element's box, and its box the element's (in world
-/// coordinates); a plane or a signed distance field is left out (the caller
-/// takes their vertices). Inner
+/// coordinates); a plane or a signed distance field with a shape of its own
+/// is left out (the caller takes their vertices), a field loaded from MJCF
+/// kept, as MuJoCo keeps every field. Inner
 /// boxes are tested within the body's and the flex's margins. `false`,
 /// appending nothing, when either has no hierarchy.
 pub(super) fn collide_tree_flex(
@@ -141,7 +143,8 @@ pub(super) fn collide_tree_flex(
                     margin,
                     None,
                 )
-                && !matches!(model.geom_type[g], GeomType::Plane | GeomType::Sdf)
+                && model.geom_type[g] != GeomType::Plane
+                && (model.geom_type[g] != GeomType::Sdf || is_loaded_sdf(model, g))
             {
                 hits.push((g, e));
             }

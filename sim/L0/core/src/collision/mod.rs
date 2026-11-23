@@ -15,6 +15,7 @@ pub(crate) mod hfield;
 mod midphase;
 mod mj_ccd;
 mod mj_primitive;
+mod mj_sdf;
 mod mj_triangle;
 pub(crate) mod narrow;
 mod order;

@@ -318,7 +318,7 @@ fn ray_slab(aabb: &[f64; 6], src: &[f64; 3], dir: &[f64; 3]) -> bool {
 /// model whose mesh was replaced after its hierarchy was built reads
 /// through the old hierarchy, a leaf naming a face the mesh no longer has
 /// passed over, until it is derived again.
-pub(super) fn mj_ray_mesh(
+pub fn mj_ray_mesh(
     model: &Model,
     mesh: usize,
     xpos: &Vector3<f64>,

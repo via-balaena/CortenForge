@@ -1,13 +1,19 @@
-//! SDF collision dispatch — routes geom-SDF pairs to the standalone SDF library.
+//! SDF collision dispatch. A signed distance field loaded from MJCF (a geom
+//! of type `sdf` over a mesh, with no shape of its own) meets every geom as
+//! MuJoCo 3.5.0's does, through its mesh's octree ([`collide_loaded_sdf`]);
+//! a field with a shape (`Model::shape_data`) through the standalone SDF
+//! library's contact functions.
 
 use super::finite_rotation;
+use super::mj_sdf::{FieldContact, SdfGeom, field_of, mjc_sdf};
 use super::narrow::make_contact_from_geoms;
+use super::plane::collide_plane_convex;
 use crate::sdf::{
     SdfContact, compute_shape_contact, compute_shape_plane_contact, sdf_box_contact,
     sdf_capsule_contact, sdf_cylinder_contact, sdf_ellipsoid_contact, sdf_heightfield_contact,
     sdf_sphere_contact, sdf_triangle_mesh_contact,
 };
-use crate::types::{Contact, GeomType, Model};
+use crate::types::{Contact, GeomType, Model, make_frame};
 use nalgebra::{Matrix3, Point3, Vector3};
 use sim_types::Pose;
 
@@ -76,6 +82,12 @@ pub fn collide_with_sdf(
     mat2: Matrix3<f64>,
     margin: f64,
 ) -> Vec<Contact> {
+    if let Some(contacts) =
+        collide_loaded_sdf(model, geom1, geom2, &pos1, &mat1, &pos2, &mat2, margin)
+    {
+        return contacts;
+    }
+
     // Identify which geom is the SDF, which is the other
     let (sdf_geom, other_geom, sdf_pos, sdf_mat, other_pos, other_mat) =
         if model.geom_type[geom1] == GeomType::Sdf {
@@ -240,4 +252,109 @@ pub fn collide_with_sdf(
     };
 
     contact.map(|c| convert(&c)).into_iter().collect()
+}
+
+/// Whether geom `g` is a signed distance field loaded from MJCF: of type
+/// `sdf` with no shape of its own (`geom_shape`), its field the octree
+/// MuJoCo's compiler makes over its mesh
+/// ([`TriangleMeshData::octree`](crate::mesh::TriangleMeshData::octree)).
+pub fn is_loaded_sdf(model: &Model, g: usize) -> bool {
+    model.geom_type[g] == GeomType::Sdf && model.geom_shape[g].is_none()
+}
+
+/// The pair in MuJoCo's order (`mj_collideGeoms`,
+/// `engine_collision_driver.c:1475-1479`): the lower `mjtGeom` first, two
+/// geoms of one type as given.
+fn mujoco_order<'a>(
+    model: &Model,
+    (geom1, pos1, mat1): (usize, &'a Vector3<f64>, &'a Matrix3<f64>),
+    (geom2, pos2, mat2): (usize, &'a Vector3<f64>, &'a Matrix3<f64>),
+) -> [(usize, &'a Vector3<f64>, &'a Matrix3<f64>); 2] {
+    if model.geom_type[geom1].mjtgeom() > model.geom_type[geom2].mjtgeom() {
+        [(geom2, pos2, mat2), (geom1, pos1, mat1)]
+    } else {
+        [(geom1, pos1, mat1), (geom2, pos2, mat2)]
+    }
+}
+
+/// `mjc_SDF`'s contacts as it writes them, for `g1` and the loaded field
+/// `g2`, in MuJoCo's order ([`mujoco_order`]): none where `g1` has no field
+/// `mjc_SDF` reads (a field with a shape: MuJoCo has no such geom; a mesh
+/// geom with no mesh) or `g2`'s mesh has no octree.
+pub fn mjc_sdf_contacts(
+    model: &Model,
+    (g1, pos1, mat1): (usize, &Vector3<f64>, &Matrix3<f64>),
+    (g2, pos2, mat2): (usize, &Vector3<f64>, &Matrix3<f64>),
+) -> Vec<FieldContact> {
+    let (Some(field1), Some(field2)) = (
+        field_of(model, g1, pos1, mat1),
+        field_of(model, g2, pos2, mat2),
+    ) else {
+        return Vec::new();
+    };
+    let geom = |g: usize, pos: &Vector3<f64>, mat: &Matrix3<f64>, field| SdfGeom {
+        pos: [pos.x, pos.y, pos.z],
+        mat: std::array::from_fn(|i| mat[(i / 3, i % 3)]),
+        aabb: model.geom_aabb[g],
+        field,
+    };
+    mjc_sdf(
+        &geom(g1, pos1, mat1, field1),
+        &geom(g2, pos2, mat2, field2),
+        model.sdf_initpoints,
+        model.sdf_iterations,
+    )
+}
+
+/// A pair holding a signed distance field loaded from MJCF
+/// ([`is_loaded_sdf`]), as MuJoCo 3.5.0's collision table takes it
+/// (`engine_collision_driver.c:41-52`); `None` for a pair with no loaded
+/// field. A plane meets it through `mjc_PlaneConvex` over the field's mesh
+/// (its vertices, or a hill climb on its hull: `mjc_initCCDObj` gives a
+/// field its mesh's support, `engine_collision_convex.c:728-736`); a height
+/// field meets nothing (`mjc_HFieldSDF` warns "HField vs SDF collision not
+/// yet supported!" and lists none, `engine_collision_sdf.c:640-643`); every
+/// other geom through `mjc_SDF` ([`mjc_sdf_contacts`]), each contact's frame
+/// completed again as `mj_setContact` completes it, from the frame
+/// `mjc_SDF` wrote (`mju_makeFrame` with its first tangent).
+// The pair's context, as the other collision functions take it.
+#[allow(clippy::too_many_arguments)]
+fn collide_loaded_sdf(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+    pos1: &Vector3<f64>,
+    mat1: &Matrix3<f64>,
+    pos2: &Vector3<f64>,
+    mat2: &Matrix3<f64>,
+    margin: f64,
+) -> Option<Vec<Contact>> {
+    if !is_loaded_sdf(model, geom1) && !is_loaded_sdf(model, geom2) {
+        return None;
+    }
+    let [first, second] = mujoco_order(model, (geom1, pos1, mat1), (geom2, pos2, mat2));
+    let (g1, g2) = (first.0, second.0);
+    Some(match model.geom_type[g1] {
+        GeomType::Plane => {
+            collide_plane_convex(model, g1, g2, first.1, first.2, second.1, second.2, margin)
+        }
+        GeomType::Hfield => Vec::new(),
+        _ => mjc_sdf_contacts(model, first, second)
+            .iter()
+            .map(|c| {
+                let normal = Vector3::from(c.normal);
+                let mut contact = make_contact_from_geoms(
+                    model,
+                    Vector3::from(c.pos),
+                    normal,
+                    -c.dist,
+                    g1,
+                    g2,
+                    margin,
+                );
+                (contact.normal, contact.frame) = make_frame(&normal, &Vector3::from(c.tangent));
+                contact
+            })
+            .collect(),
+    })
 }

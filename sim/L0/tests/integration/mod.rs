@@ -85,7 +85,8 @@ pub mod velocity_derivative_parity;
 /// A site's rangefinder against MuJoCo 3.5.0's `mj_ray`.
 pub mod rangefinder_parity;
 
-/// A loaded signed distance field geom's octree reads against MuJoCo 3.5.0's.
+/// A loaded signed distance field geom against MuJoCo 3.5.0's: its octree's
+/// reads, its contacts, its rays.
 pub mod sdf_parity;
 
 /// Each mesh's bounding-volume hierarchy against MuJoCo 3.5.0's.

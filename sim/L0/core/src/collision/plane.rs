@@ -369,7 +369,7 @@ const SQRT_3_OVER_2: f64 = 0.866_025_403_784_438_6;
 /// `:1129`; ledger L176).
 // MuJoCo's pair context, as the other collision functions take it.
 #[allow(clippy::too_many_arguments)]
-fn collide_plane_convex(
+pub(super) fn collide_plane_convex(
     model: &Model,
     plane_geom: usize,
     other_geom: usize,

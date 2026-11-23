@@ -3,9 +3,10 @@
 //! This module provides ray casting functionality for distance queries against
 //! collision shapes, for visibility checks and other distance-based queries.
 //! A rangefinder casts MuJoCo's `mj_ray` (`sensor::ray_geom`), which reads a
-//! signed distance field's shape here (registry D-SDF-RAY); a mesh's and a
-//! height field's rays are ports of MuJoCo's `mj_rayMesh` and `mj_rayHfield`
-//! (`sensor::ray_mesh`). [`raycast_scene`]
+//! signed distance field's shape here where it has one (registry D-SDF-RAY);
+//! a mesh's and a height field's rays are ports of MuJoCo's `mj_rayMesh` and
+//! `mj_rayHfield` (`sensor::ray_mesh`), and a signed distance field loaded
+//! from MJCF casts `mj_raySdf`, here too. [`raycast_scene`]
 //! reads a height field's grid from the geom's origin, where MuJoCo's is
 //! centred on it (ledger L280), and a plane as unbounded and hit from either
 //! side, where `mj_ray` bounds it by its size and hits its front only.
@@ -22,6 +23,8 @@ use sim_types::Pose;
 use cf_geometry::{Ray, Shape, ray_cast, ray_triangle};
 
 use crate::collision::narrow::geom_to_shape;
+use crate::collision::sdf_collide::is_loaded_sdf;
+use crate::sensor::mj_ray_sdf;
 use crate::types::{Data, GeomType, Model};
 
 /// Result of a ray cast against a shape.
@@ -314,6 +317,26 @@ pub(crate) fn raycast_geom(
             let shape = Shape::height_field(Arc::clone(&model.hfield_data[hfield_id]));
             raycast_shape(&shape, &pose, ray_origin, ray_direction, max_distance)
         }),
+        // A field loaded from MJCF: MuJoCo's `mj_raySdf` along the unit
+        // direction.
+        GeomType::Sdf if is_loaded_sdf(model, geom_id) => {
+            let octree = model.mesh_data[model.geom_mesh[geom_id]?].octree()?;
+            let (distance, normal) = mj_ray_sdf(
+                octree,
+                &model.geom_size[geom_id],
+                &data.geom_xpos[geom_id],
+                &data.geom_xmat[geom_id],
+                &ray_origin.coords,
+                &ray_direction.into_inner(),
+            );
+            (distance >= 0.0 && distance <= max_distance).then(|| {
+                RaycastHit::new(
+                    distance,
+                    ray_origin + ray_direction.into_inner() * distance,
+                    Vector3::from(normal),
+                )
+            })
+        }
         GeomType::Sdf => model.geom_shape[geom_id].and_then(|shape_id| {
             let shape = Shape::sdf(model.shape_data[shape_id].sdf_grid_arc());
             raycast_shape(&shape, &pose, ray_origin, ray_direction, max_distance)

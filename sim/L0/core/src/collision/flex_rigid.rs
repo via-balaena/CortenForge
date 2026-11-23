@@ -29,6 +29,7 @@ use super::mj_triangle::{
     make_capsule, raw_box_triangle, raw_capsule_triangle, raw_sphere_triangle,
 };
 use super::order::{ListPlace, flex_place};
+use super::sdf_collide::is_loaded_sdf;
 use super::{
     assign_friction, assign_imp, assign_margin, assign_ref, contact_param_geom_flex,
     finite_rotation,
@@ -60,7 +61,7 @@ pub(super) fn collide_body_flex(
                 GeomType::Plane if model.body_weldid[body] == 0 => {
                     collide_plane_flex(model, data, g, flex);
                 }
-                GeomType::Sdf if !filter_bitmask(model, g, flex) => {
+                GeomType::Sdf if !is_loaded_sdf(model, g) && !filter_bitmask(model, g, flex) => {
                     collide_sdf_flex(model, data, g, flex);
                 }
                 _ => {}
@@ -76,7 +77,7 @@ pub(super) fn collide_body_flex(
             }
             match model.geom_type[g] {
                 GeomType::Plane => collide_plane_flex(model, data, g, flex),
-                GeomType::Sdf => collide_sdf_flex(model, data, g, flex),
+                GeomType::Sdf if !is_loaded_sdf(model, g) => collide_sdf_flex(model, data, g, flex),
                 _ => {
                     for e in 0..model.flex_elemnum[flex] {
                         collide_geom_elem(model, data, g, flex, e);
