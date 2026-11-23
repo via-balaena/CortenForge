@@ -64,6 +64,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
 ///
+/// 25 since Rigid-loading PR RL-9d4b: `MjcfMesh` took `plugin`.
 /// 24 since Rigid-loading PR RL-9d3: `MjcfMesh`'s and `MjcfMeshDefaults`'s
 /// `maxhullvert` hold it as written, `-1` included, where a version-23 file
 /// holds `None` for a written `-1`.
@@ -106,7 +107,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// one below mjMINVAL is refused (Rigid-loading PR RL-3b): a version-6 file
 /// holds 0.0 there for a flexcomp that did not write it. 6 since `MjcfFlex`
 /// took `vertex_bodies` (Rigid-loading L10).
-pub const MJB_VERSION: u32 = 24;
+pub const MJB_VERSION: u32 = 25;
 
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;
