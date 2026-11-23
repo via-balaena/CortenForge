@@ -1,3 +1,15 @@
+// The red-black tree below (`PolygonSet`'s insertion: `__tree_left_rotate`,
+// `__tree_right_rotate`, `__tree_balance_after_insert`, the walk down of
+// `__find_equal` and `__tree_is_left_child`) is ported from LLVM's
+// libc++ (`__tree`, as macOS's MacOSX27.2 SDK ships it), the `std::set`
+// MuJoCo 3.5.0 merges a mesh's polygons in when it is built there, and changed
+// to a tree of indices in a `Vec`; by the CortenForge authors. libc++'s files
+// carry this notice:
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
 //! A mesh's polygons as MuJoCo's compiler merges them (`mjCMesh::MakePolygons`
 //! and `MakePolygonNormals`, with the `MeshPolygon` helper,
 //! `user_mesh.cc:2722-3005`): the coplanar triangles of its convex hull (or of
