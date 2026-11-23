@@ -7,28 +7,36 @@ Run it with the oracle's own interpreter (build_mujoco_oracle.sh builds it):
         sim/L0/tests/assets/golden/sdf/sdf.json
 
 It refuses any other interpreter, as gen_census_golden.py does. Every scene holds a geom of type `sdf` over a mesh
-with no plugin (a loaded field: MuJoCo's compiler makes the mesh an octree, `mjCOctree`), and every moving body is
-free, placed by its body's `pos`, so its first contacts are those of the written pose. Each scene's name says what it
-holds: a field against each primitive `mjc_SDF` takes, turned and moved; a field that is not convex; two fields; a
-mesh geom against a field (MuJoCo reads mesh number g1's octree, g1 the mesh geom's id); a plane against a field
-(`mjc_PlaneConvex` over the mesh); a height field against a field (none); `sdf_initpoints` and `sdf_iterations`;
-explicit pairs; rangefinders; the geom-distance sensors; a flex against a field.
+with no plugin (a loaded field: MuJoCo's compiler makes the mesh an octree, `mjCOctree`); every moving body but a
+flex's vertex bodies is free, placed by its body's `pos`, so its first contacts are those of the written pose. Each
+scene's name says what it holds: a field against each primitive `mjc_SDF` takes, turned and moved, with a margin, a
+starting point on the boxes' overlap's corner; a field that is not convex; two fields over one mesh and over two; a
+mesh geom against a field (MuJoCo reads mesh number g1's octree, g1 the mesh geom's id: another mesh's, the rays where
+that mesh has none, a geom id past the meshes); a plane against a field (`mjc_PlaneConvex` over the mesh); a height
+field against a field (none); `sdf_initpoints` and `sdf_iterations`; explicit pairs (reversed, with a margin and a
+gap, two fields); rangefinders; the geom-distance sensors; a flex against a field. Every scene named for a contact
+touches at `mj_forward`.
 
 `scenes` holds, per scene, its `xml` and, after `mj_forward`, MuJoCo's contacts (geoms, flexes, vertices, elements,
-`dist`, `pos`, the 9-entry `frame`) and `sensordata`, then each of 5 `mj_step`s' `ncon` and `qpos`; or its refusal.
+`dist`, `pos`, the 9-entry `frame`) and `sensordata`, then each of 5 `mj_step`s' `ncon` and `qpos`; or its refusal. A
+scene with a rangefinder also holds `ray`: `mj_ray` from the site along its z axis over every geom (no group, static
+geoms included, no body excluded), its distance and its normal.
 `fields` holds, per mesh, a scene with one field over it and, at each of its points (a grid over 1.3 times the
-octree's root box, random points within three times it, points far along each axis and on the box's faces),
+octree's root box, random points within three times it, points far along each axis and on the box's faces, and
+points on one face's plane and outside another's, exactly: `boxProjection`'s `q = 0` with another `q > 0`),
 `mjc_distance` and `mjc_gradient` of the field alone (`mjSDFTYPE_SINGLE`, exported, called through ctypes on the
 library the bindings loaded): `oct_distance` and `oct_gradient`. Doubles are their bits as 64-bit integers in hex.
 """
 import ctypes
 import json
+import math
 import os
 import random
 import struct
 import sys
 
 import mujoco
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gen_census_golden import oracle  # noqa: E402
@@ -144,7 +152,11 @@ doc("p08_ellipsoid", ["cube"], SDF_CUBE + free("b", "0 0.03 0.14", '<geom type="
 doc("p09_cylinder", ["cube"], SDF_CUBE + free("b", "-0.02 0 0.135", '<geom type="cylinder" size="0.05 0.04"/>'))
 doc("p10_cylinder_on_side", ["cube"], SDF_CUBE + free("b", "0 0 0.14", '<geom type="cylinder" size="0.045 0.07"/>', "0.7071067811865476 0.7071067811865476 0 0"))
 doc("p11_box", ["cube"], SDF_CUBE + free("b", "0.01 0.02 0.145", '<geom type="box" size="0.05 0.04 0.05"/>', "0.9659258262890683 0 0 0.25881904510252074"))
-doc("p12_box_on_edge", ["cube"], SDF_CUBE + free("b", "0 0 0.16", '<geom type="box" size="0.04 0.04 0.04"/>', "0.9238795325112867 0.3826834323650898 0 0"))
+doc("p12_box_on_edge", ["cube"], SDF_CUBE + free("b", "0 0 0.15", '<geom type="box" size="0.04 0.04 0.04"/>', "0.9238795325112867 0.3826834323650898 0 0"))
+doc("p13_sphere_with_margin", ["cube"], SDF_CUBE + free("b", "0 0 0.14", '<geom type="sphere" size="0.05" margin="0.01"/>'))
+# a starting point exactly on the corner of the two boxes' overlap: a gradient there is not finite
+doc("k01_sphere_centre_on_the_overlaps_corner", ["cube"], SDF_CUBE
+    + free("b", "-0.10000000149011612 -0.10000000149011612 -0.10000000149011612", '<geom type="sphere" size="0.04"/>'))
 # --- a turned, moved field
 doc("t01_field_turned_sphere", ["cube"],
     '<body name="fb" pos="0.3 -0.2 0.1" quat="0.8660254037844387 0.2 0.3 0.3464101615137755"><geom name="field" type="sdf" mesh="cube"/></body>'
@@ -156,20 +168,20 @@ doc("t02_field_free_box", ["cube"],
 doc("n01_ell_sphere_in_notch", ["ell"], '<geom name="field" type="sdf" mesh="ell"/>'
     + free("b", "0.15 0.15 0.05", '<geom type="sphere" size="0.06"/>'))
 doc("n02_ell_capsule", ["ell"], '<geom name="field" type="sdf" mesh="ell"/>'
-    + free("b", "0.1 0.05 0.13", '<geom type="capsule" size="0.03 0.1"/>', "0.7071067811865476 0.7071067811865476 0 0"))
+    + free("b", "0.1 0.05 0.125", '<geom type="capsule" size="0.03 0.1"/>', "0.7071067811865476 0.7071067811865476 0 0"))
 doc("n03_grid_sphere", ["grid"], '<geom name="field" type="sdf" mesh="grid"/>'
     + free("b", "0.03 0 0.14", '<geom type="sphere" size="0.05"/>'))
 # --- two fields
 doc("s01_two_fields_same_mesh", ["cube"], SDF_CUBE + free("b", "0.05 0.02 0.19", '<geom type="sdf" mesh="cube"/>'))
 doc("s02_two_fields_turned", ["cube"], SDF_CUBE + free("b", "0 0 0.22", '<geom type="sdf" mesh="cube"/>', "0.9238795325112867 0.2 0.3 0.1"))
-doc("s03_two_fields_two_meshes", ["cube", "ell"], SDF_CUBE + free("b", "-0.05 -0.05 0.19", '<geom type="sdf" mesh="ell"/>'))
-doc("s04_field_order_swapped", ["cube", "ell"], free("b", "-0.05 -0.05 0.19", '<geom type="sdf" mesh="ell"/>')
+doc("s03_two_fields_two_meshes", ["cube", "ell"], SDF_CUBE + free("b", "-0.05 -0.05 0.095", '<geom type="sdf" mesh="ell"/>'))
+doc("s04_field_order_swapped", ["cube", "ell"], free("b", "-0.05 -0.05 0.095", '<geom type="sdf" mesh="ell"/>')
     + '<body name="w" pos="0 0 0"><geom name="field" type="sdf" mesh="cube"/></body>')
 # --- a mesh geom against a field (ledger L442: MuJoCo reads mesh number g1's octree, g1 the mesh GEOM)
-doc("m01_mesh_vs_field_same_mesh", ["cube"], SDF_CUBE + free("b", "0.02 0.01 0.195", '<geom type="mesh" mesh="cube"/>'))
-doc("m02_mesh_geom0_mesh0_no_octree", ["grid", "cube"],
+doc("m01_mesh_geom_id_past_the_one_mesh", ["cube"], SDF_CUBE + free("b", "0.02 0.01 0.195", '<geom type="mesh" mesh="cube"/>'))
+doc("m02_mesh_geom1_reads_mesh1_the_fields_octree", ["grid", "cube"],
     free("b", "0.02 0.01 0.195", '<geom type="mesh" mesh="grid"/>') + '<geom name="field" type="sdf" mesh="cube"/>')
-doc("m03_mesh_geom1_reads_mesh1", ["cube", "grid"],
+doc("m03_mesh_geom1_reads_mesh1_the_grids_octree", ["cube", "grid"],
     '<geom name="field" type="sdf" mesh="grid"/>' + free("b", "0.02 0.01 0.195", '<geom type="mesh" mesh="cube"/>'))
 doc("m04_mesh_geom1_mesh1_no_octree", ["grid", "cube"],
     '<geom name="field" type="sdf" mesh="grid"/>' + free("b", "0.02 0.01 0.195", '<geom type="mesh" mesh="cube"/>'))
@@ -177,7 +189,7 @@ doc("m05_mesh_geom_past_meshes", ["cube"],
     '<geom name="floor" type="plane" size="1 1 0.1" pos="0 0 -1"/><geom name="g1" type="sphere" size="0.01" pos="0 0 -0.9"/>'
     + SDF_CUBE + free("b", "0.02 0.01 0.195", '<geom type="mesh" mesh="cube"/>'))
 doc("m06_ell_mesh_vs_cube_field", ["cube", "ell"],
-    '<geom name="field" type="sdf" mesh="cube"/>' + free("b", "-0.05 -0.05 0.14", '<geom type="mesh" mesh="ell"/>'))
+    '<geom name="field" type="sdf" mesh="cube"/>' + free("b", "-0.05 -0.05 0.095", '<geom type="mesh" mesh="ell"/>'))
 # --- a plane against a field (mjc_PlaneConvex over the mesh)
 doc("l01_cube_into_plane", ["cube"], '<geom type="plane" size="1 1 0.1"/>'
     + free("b", "0 0 0.09", '<geom type="sdf" mesh="cube"/>'))
@@ -191,7 +203,7 @@ doc("l05_visual_field_no_contype", ["cube"], '<geom type="plane" size="1 1 0.1"/
     + free("b", "0 0 0.09", '<geom type="sdf" mesh="cube" contype="0" conaffinity="0"/><geom type="sphere" size="0.02" contype="0" conaffinity="0"/>'))
 # --- a height field against a field: MuJoCo warns and lists none
 doc("h01_field_on_hfield", ['<hfield name="hf" nrow="3" ncol="3" size="1 1 0.1 0.05" elevation="0 0 0 0 0 0 0 0 0"/>', "cube"],
-    '<geom type="hfield" hfield="hf"/>' + free("b", "0 0 0.12", '<geom type="sdf" mesh="cube"/>'))
+    '<geom type="hfield" hfield="hf"/>' + free("b", "0 0 0.09", '<geom type="sdf" mesh="cube"/>'))
 # --- options
 doc("o01_initpoints_8", ["cube"], SDF_CUBE + free("b", "0 0 0.14", '<geom type="sphere" size="0.05"/>'), option='sdf_initpoints="8"')
 doc("o02_iterations_2", ["cube"], SDF_CUBE + free("b", "0 0 0.14", '<geom type="sphere" size="0.05"/>'), option='sdf_iterations="2"')
@@ -203,6 +215,11 @@ doc("x01_explicit_pair", ["cube"], SDF_CUBE + free("b", "0 0 0.14", '<geom name=
     extra='<contact><pair geom1="field" geom2="ball"/></contact>')
 doc("x02_explicit_pair_reversed", ["cube"], SDF_CUBE + free("b", "0 0 0.14", '<geom name="ball" type="sphere" size="0.05" contype="0" conaffinity="0"/>'),
     extra='<contact><pair geom1="ball" geom2="field"/></contact>')
+doc("x03_explicit_pair_margin_gap", ["cube"], SDF_CUBE + free("b", "0 0 0.14", '<geom name="ball" type="sphere" size="0.05" contype="0" conaffinity="0"/>'),
+    extra='<contact><pair geom1="field" geom2="ball" margin="0.01" gap="0.004"/></contact>')
+doc("x04_explicit_pair_two_fields_reversed", ["cube", "ell"], SDF_CUBE
+    + free("b", "-0.05 -0.05 0.095", '<geom name="f2" type="sdf" mesh="ell" contype="0" conaffinity="0"/>'),
+    extra='<contact><pair geom1="f2" geom2="field"/></contact>')
 # --- rays
 RF = '<site name="s" pos="{p}" zaxis="{z}"/>'
 doc("r01_rangefinder_above", ["cube"], SDF_CUBE + '<body name="eye" pos="0 0 0.5">' + RF.format(p="0 0 0", z="0 0 -1") + '</body>',
@@ -217,6 +234,9 @@ doc("r04_rangefinder_turned_field", ["ell"],
     extra='<sensor><rangefinder site="s"/></sensor>')
 doc("r05_rangefinder_from_inside", ["cube"], SDF_CUBE + '<body name="eye" pos="0 0 0">' + RF.format(p="0 0 0", z="1 0 0") + '</body>',
     extra='<sensor><rangefinder site="s"/></sensor>')
+# its first step is past 1e6: no hit
+doc("r06_rangefinder_far_1e8", ["cube"], SDF_CUBE + '<body name="eye" pos="0.01 0.02 1e8">' + RF.format(p="0 0 0", z="0 0 -1") + '</body>',
+    extra='<sensor><rangefinder site="s"/></sensor>')
 # --- geom-distance sensors
 doc("d01_distance_sphere", ["cube"], SDF_CUBE + free("b", "0 0 0.14", '<geom name="ball" type="sphere" size="0.05"/>'),
     extra='<sensor><distance geom1="ball" geom2="field" cutoff="1"/><normal geom1="ball" geom2="field" cutoff="1"/><fromto geom1="field" geom2="ball" cutoff="1"/></sensor>')
@@ -227,7 +247,7 @@ doc("d02_distance_plane", ["cube"], '<geom name="floor" type="plane" size="1 1 0
 ASSETS["cube_moved"] = (f'<mesh name="cube_moved" vertex="{CUBE_V}" face="{CUBE_F}" refpos="0.02 -0.01 0.03" '
                         'refquat="0.9659258262890683 0 0.25881904510252074 0"/>')
 doc("t03_mesh_frame_moved_turned", ["cube_moved"], '<geom name="field" type="sdf" mesh="cube_moved"/>'
-    + free("b", "0.03 0 0.15", '<geom type="sphere" size="0.05"/>'))
+    + free("b", "0.03 0 0.12", '<geom type="sphere" size="0.05"/>'))
 # --- a flex against a field
 doc("f01_flex_on_field", ["cube"], SDF_CUBE
     + '<flexcomp name="f" type="grid" count="3 3 1" spacing="0.06 0.06 0.06" pos="0 0 0.105" radius="0.01" dim="2"><edge equality="true"/></flexcomp>')
@@ -253,12 +273,46 @@ def scene(xml):
                  "dist": hx(c.dist), "pos": [hx(x) for x in c.pos], "frame": [hx(x) for x in c.frame]}
                 for c in (d.contact[i] for i in range(d.ncon))]
     out = {"xml": xml, "ncon": int(d.ncon), "contacts": contacts, "sensordata": [hx(x) for x in d.sensordata]}
+    site = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, "s")
+    if site >= 0:
+        pnt = np.array(d.site_xpos[site])
+        vec = np.array(d.site_xmat[site].reshape(3, 3)[:, 2])
+        geomid = np.array([-1], dtype=np.int32)
+        normal = np.zeros(3)
+        dist = mujoco.mj_ray(m, d, pnt, vec, None, 1, -1, geomid, normal)
+        out["ray"] = {"pnt": [hx(x) for x in pnt], "vec": [hx(x) for x in vec], "dist": hx(dist),
+                      "geom": int(geomid[0]), "normal": [hx(x) for x in normal]}
     steps = []
     for _ in range(5):
         mujoco.mj_step(m, d)
         steps.append({"ncon": int(d.ncon), "qpos": [hx(x) for x in d.qpos]})
     out["steps"] = steps
     return out
+
+
+def face_plane_points(c, h):
+    """Points on the root box's face plane along one axis (`boxProjection`'s `|p - c| - h` exactly 0 there) and
+    outside the box along another, one per ordered pair of axes and side."""
+    pts = []
+    for a in range(3):
+        for b in range(3):
+            if a == b:
+                continue
+            for s in (-1, 1):
+                x = c[a] + s * h[a]
+                for _ in range(64):
+                    q = abs(x - c[a]) - h[a]
+                    if q == 0.0:
+                        break
+                    x = math.nextafter(x, -math.inf if q > 0 else math.inf) if s > 0 else math.nextafter(x, math.inf if q > 0 else -math.inf)
+                else:
+                    sys.exit(f"no point on face {a} {s}")
+                p = list(c)
+                p[a] = x
+                p[b] = c[b] + 1.5 * h[b]
+                assert abs(p[a] - c[a]) - h[a] == 0.0 and abs(p[b] - c[b]) - h[b] > 0.0
+                pts.append(p)
+    return pts
 
 
 def field(name, rng, lib):
@@ -282,6 +336,7 @@ def field(name, rng, lib):
             p = list(c)
             p[a] += s * h[a]
             pts.append(p)
+    pts += face_plane_points(c, h)
     dbl3 = ctypes.c_double * 3
     ident = (ctypes.c_double * 9)(1, 0, 0, 0, 1, 0, 0, 0, 1)
     sdf = MjSDF((ctypes.c_void_p * 2)(None, None), (ctypes.c_int * 2)(0, 0), 0, (ctypes.c_double * 3)(0, 0, 0),

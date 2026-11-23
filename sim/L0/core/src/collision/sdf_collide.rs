@@ -1,8 +1,10 @@
 //! SDF collision dispatch. A signed distance field loaded from MJCF (a geom
-//! of type `sdf` over a mesh, with no shape of its own) meets every geom as
-//! MuJoCo 3.5.0's does, through its mesh's octree ([`collide_loaded_sdf`]);
-//! a field with a shape (`Model::shape_data`) through the standalone SDF
-//! library's contact functions.
+//! of type `sdf` over a mesh, with no shape of its own) meets each geom as
+//! MuJoCo 3.5.0's collision table sends it, through its mesh's octree or,
+//! against a plane, its mesh's vertices ([`collide_loaded_sdf`]; registry
+//! D-SDF-INITPOINTS, D-SDF-SHAPED-PAIR, D-SDF-MESH-PAST, D-SDF-FAR); a field
+//! with a shape (`Model::shape_data`) through the standalone SDF library's
+//! contact functions.
 
 use super::finite_rotation;
 use super::mj_sdf::{FieldContact, SdfGeom, field_of, mjc_sdf};
@@ -66,10 +68,10 @@ fn cap_sdf_contacts(contacts: &mut Vec<SdfContact>, max: usize) {
     *contacts = kept;
 }
 
-/// Collision detection involving at least one SDF geometry.
-///
-/// Dispatches to the appropriate `sdf_*_contact()` function from `sdf.rs`.
-/// Handles all `GeomType` pairings including Mesh, Hfield, Plane, and SDF↔SDF.
+/// Collision detection involving at least one SDF geometry: a pair holding
+/// a field loaded from MJCF through [`collide_loaded_sdf`], else the
+/// shapes' own `sdf_*_contact()` functions, for every `GeomType` pairing
+/// including Mesh, Hfield, Plane, and SDF↔SDF.
 // SDF-SDF pair dispatcher takes the full per-geom context (grids, poses, transforms, contact sink).
 #[allow(clippy::too_many_arguments)]
 pub fn collide_with_sdf(
@@ -277,10 +279,10 @@ fn mujoco_order<'a>(
     }
 }
 
-/// `mjc_SDF`'s contacts as it writes them, for `g1` and the loaded field
-/// `g2`, in MuJoCo's order ([`mujoco_order`]): none where `g1` has no field
+/// `mjc_SDF`'s contacts as it writes them, for `g1` and the field `g2`, in
+/// MuJoCo's order ([`mujoco_order`]): none where either has no field
 /// `mjc_SDF` reads (a field with a shape: MuJoCo has no such geom; a mesh
-/// geom with no mesh) or `g2`'s mesh has no octree.
+/// geom with no mesh; a field whose mesh has no octree).
 pub fn mjc_sdf_contacts(
     model: &Model,
     (g1, pos1, mat1): (usize, &Vector3<f64>, &Matrix3<f64>),

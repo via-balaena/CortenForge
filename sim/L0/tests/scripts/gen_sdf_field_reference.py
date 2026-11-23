@@ -9,10 +9,10 @@ Run it with the oracle's own interpreter (build_mujoco_oracle.sh builds it):
 It refuses any other interpreter, as gen_census_golden.py does. It calls MuJoCo's own compiled functions: `mju_Halton`,
 `mju_mat2Quat`, `mju_negPose`, `mju_mulPose` and `mju_quat2Mat` (in the order `mapPose` calls them,
 engine_collision_sdf.c:535-542) through the bindings, and `mjc_distance` and `mjc_gradient` (engine_collision_sdf.c:
-433-517, exported) through ctypes on the library the bindings loaded, with an `mjSDF` built here, for one geom of
-each primitive type `mjc_SDF` takes (a sphere, a capsule, an ellipsoid, a cylinder, a box) alone (`mjSDFTYPE_SINGLE`,
-`geomDistance` and `geomGradient`) and for pairs of them under each other combination (intersection, midsurface,
-collision), the second turned and moved by `relmat` and `relpos`.
+433-517, exported) through ctypes on the library the bindings loaded, with an `mjSDF` built here, for seven geoms
+(each primitive type `mjc_SDF` takes, a sphere, a capsule, an ellipsoid, a cylinder and a box, at least once) alone
+(`mjSDFTYPE_SINGLE`, `geomDistance` and `geomGradient`) and for pairs of them under each other combination
+(intersection, midsurface, collision), the second turned and moved by `relmat` and `relpos`.
 
 Each line, doubles as their bits in hex, '#' lines aside:
 
@@ -26,9 +26,11 @@ Each line, doubles as their bits in hex, '#' lines aside:
 TYPE is `mjtGeom`'s name; a `single` line is one geom's field alone, a `field` line two geoms' under KIND
 (`intersection`, `midsurface` or `collision`); ID, ID0 and ID1 name `geom` lines (the first field's and the second's).
 
-The points: random ones within twice each geom's size, each axis, face, edge and corner of its box, the origin, a
-point on the capsule's and the cylinder's axis, and points with a coordinate -0.0 or two coordinates of equal
-magnitude (the box's `radialField3d` and its gradient's ties), from a seeded generator.
+The points, around the box over each geom (its half sizes; a sphere's radius on each axis; a capsule's radius across
+its z axis and its half-length plus radius along it; a cylinder's radius across and half-height along): random ones
+within twice that box, each axis, face, edge and corner of the box, the origin, points on the z axis, points with a
+coordinate -0.0, and for the cylinder points inside it at equal depth below its side and its caps (its gradient's
+tie, `a[0] == a[1]`), from a seeded generator.
 """
 import ctypes
 import math
@@ -62,11 +64,36 @@ def unit_quat(rng):
     return [x / n for x in q]
 
 
-def points(size, rng):
-    """Points around a geom of half sizes `size` (the box over it)."""
-    h = [s if s > 0 else size[0] for s in size]
-    if size[1] == 0:
-        h = [size[0], size[0], size[0]]
+def half_box(geom_type, size):
+    """The half sizes of the box over a geom of `geom_type` and `size`, its axis z."""
+    r = size[0]
+    return {"sphere": [r, r, r], "capsule": [r, r, size[1] + r], "cylinder": [r, r, size[1]]}.get(geom_type, list(size))
+
+
+def cylinder_ties(size):
+    """Points inside a cylinder of `size` as deep below its side as below its caps, exactly
+    (`sqrt(x*x + y*y) - r == |z| - h`, both below 0)."""
+    r, h = size[0], size[1]
+    pts = []
+    for t in (0.25, 0.5, 0.75):
+        x = t * r
+        a0 = math.sqrt(x * x + 0.0 * 0.0) - r
+        z = a0 + h
+        for _ in range(64):
+            if abs(z) - h == a0:
+                break
+            z = math.nextafter(z, math.inf if abs(z) - h < a0 else -math.inf)
+        else:
+            continue
+        if a0 < 0:
+            pts += [[x, 0.0, z], [0.0, x, -z]]
+    assert pts, "no cylinder tie point"
+    return pts
+
+
+def points(geom_type, size, rng):
+    """Points around a geom of `geom_type` and `size` (the box over it, `half_box`)."""
+    h = half_box(geom_type, size)
     pts = [[0.0, 0.0, 0.0], [-0.0, 0.0, -0.0]]
     for sx in (-1, 0, 1):
         for sy in (-1, 0, 1):
@@ -78,6 +105,8 @@ def points(size, rng):
     pts += [[0.1, 0.1, 0.05], [-0.07, 0.07, 0.07], [0.12, -0.12, 0.3], [h[0] / 2, h[0] / 2, h[0] / 2]]
     for _ in range(12):
         pts.append([rng.uniform(-2 * h[k], 2 * h[k]) for k in range(3)])
+    if geom_type == "cylinder":
+        pts += cylinder_ties(size)
     return pts
 
 
@@ -142,8 +171,8 @@ def main():
         return dist, list(grad)
 
     ident = [1.0, 0, 0, 0, 1.0, 0, 0, 0, 1.0]
-    for g, (_, size) in enumerate(GEOMS):
-        for x in points(size, rng):
+    for g, (geom_type, size) in enumerate(GEOMS):
+        for x in points(geom_type, size, rng):
             dist, grad = evaluate("single", (g, g), [0, 0, 0], ident, x)
             lines.append(f"single {g} " + " ".join(hx(v) for v in [*x, dist, *grad]))
     for kind in ("intersection", "midsurface", "collision"):
@@ -153,7 +182,7 @@ def main():
             relmat = np.zeros(9)
             mujoco.mju_quat2Mat(relmat, q)
             relpos = [rng.uniform(-0.3, 0.3) for _ in range(3)]
-            for x in points(GEOMS[g0][1], rng)[::3]:
+            for x in points(*GEOMS[g0], rng)[::3]:
                 dist, grad = evaluate(kind, (g0, g1), relpos, list(relmat), x)
                 lines.append(f"field {kind} {g0} {g1} " + " ".join(hx(v) for v in [*relpos, *relmat, *x, dist, *grad]))
 

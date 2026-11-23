@@ -421,7 +421,7 @@ let tetra = CollisionShape::tetrahedron(0.5); // circumradius 0.5
 | Ellipsoid | Yes | `CollisionShape::Ellipsoid` | **Implemented** |
 | Height field | Yes | `CollisionShape::HeightField` | **Implemented** ✅ |
 | **Mesh (non-convex)** | Yes | `CollisionShape::TriangleMesh` | **Implemented** ✅ |
-| **SDF** | Yes | loaded from MJCF: MuJoCo's octree and `mjc_SDF`; with a shape of its own, `CollisionShape::Sdf` (registry D-SDF-SHAPE) | **Implemented** ✅ |
+| **SDF** | Yes | loaded from MJCF: MuJoCo's octree and `mjc_SDF`; with a shape of its own, sim-core's shapes (registry D-SDF-SHAPE) | **Implemented** ✅ |
 
 ### Implementation Notes: Non-Convex Mesh ✅ COMPLETED (January 2026)
 
@@ -445,8 +445,10 @@ MuJoCo's. A flex vertex against a mesh without a hull still takes
 
 Full SDF (Signed Distance Field) collision support is implemented in sim-core
 and wired through the MJCF pipeline. `GeomType::Sdf` is dispatched first in
-`collide_geoms()` to `collide_with_sdf()`, which handles all 10 shape
-combinations. SDF geoms are programmatic (no MJCF asset element).
+`collide_geoms()` to `collide_with_sdf()`. A geom of type `sdf` over a mesh,
+loaded from MJCF, meets each geom as MuJoCo's does, through the octree over its
+mesh (`collision::mj_sdf`, `sdf_parity.rs`); the notes below describe a field
+given a shape of its own, which is built in code.
 - `CollisionShape::Sdf` variant with 3D grid storage
 - Trilinear interpolation for distance queries
 - Gradient-based normal computation

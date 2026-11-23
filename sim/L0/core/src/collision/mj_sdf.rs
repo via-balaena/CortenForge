@@ -178,8 +178,9 @@ pub(super) enum Field<'a> {
 
 impl MeshField<'_> {
     /// `mj_rayMesh` from the point `x` (in the geom's frame) moved to the
-    /// world, toward the world's origin; and whether the hit lies past the
-    /// origin, in lengths of that ray (MuJoCo's test of "outside").
+    /// world, along the vector to the world's origin; and MuJoCo's test of
+    /// "outside", `dist > r`: the hit's distance in lengths of that vector
+    /// against the vector's length (`engine_collision_sdf.c:290`, `:418`).
     fn ray_toward_origin(&self, x: &[f64; 3]) -> (Vector3<f64>, Vector3<f64>, f64, bool) {
         let mat: Mat9 = std::array::from_fn(|i| self.mat[(i / 3, i % 3)]);
         let a = add3(&mat_vec(&mat, x), &[self.pos.x, self.pos.y, self.pos.z]);
@@ -385,8 +386,9 @@ impl Field<'_> {
     }
 }
 
-/// `radialField3d` (`engine_collision_sdf.c:205-216`): the unit field
-/// toward a box's corner from inside it, signed by the point's octant.
+/// `radialField3d` (`engine_collision_sdf.c:205-216`): from inside a box,
+/// the unit vector along `-size / a` (each half size over the point's depth
+/// below that face), signed by the point's octant.
 fn radial_field(field: &mut [f64; 3], a: &[f64; 3], x: &[f64; 3], size: &[f64; 3]) {
     field[0] = -size[0] / a[0];
     field[1] = -size[1] / a[1];
@@ -482,10 +484,10 @@ impl Pair<'_> {
 
     /// `stepGradient` (`engine_collision_sdf.c:589-634`): up to `niter`
     /// steps down the combined field's gradient from `x`, each a
-    /// backtracking line search (Armijo's condition, `c` 0.1, the step
-    /// halved from 2 to no less than 1e-4); stops early where a step does
-    /// not lower the field, or with mjMAXVAL where the gradient is not
-    /// finite or past mjMAXVAL. The field at the last point tried.
+    /// backtracking line search (Armijo's condition, `c` 0.1; the gradient's
+    /// factor 1 first, halved while above 1e-4, so 2⁻¹⁴ last); stops early
+    /// where a step raises the field, or with mjMAXVAL where the gradient is
+    /// not finite or past mjMAXVAL. The field at the last point tried.
     fn step_gradient(&self, combine: Combine, x: &mut [f64; 3], niter: usize) -> Option<f64> {
         const C: f64 = 0.1;
         const RHO: f64 = 0.5;
@@ -715,8 +717,11 @@ mod tests {
     /// MuJoCo 3.5.0's own compiled functions on the same inputs
     /// (`tests/data/sdf_fields.txt`, written by
     /// `sim/L0/tests/scripts/gen_sdf_field_reference.py`, which says how).
-    /// They take square roots and the four operations only, so every
-    /// platform is held to the bit.
+    /// They take square roots and the four operations only, so every value
+    /// but a NaN is held to the bit on every platform (not measured off
+    /// macOS arm64); a NaN, whose sign Rust leaves to the platform (an
+    /// invalid operation gives `0x7ff8…` on arm64, `0xfff8…` on x86-64), is
+    /// held to be a NaN.
     const GOLDEN: &str = include_str!("../../tests/data/sdf_fields.txt");
 
     fn doubles(words: &[&str]) -> Vec<f64> {
@@ -726,8 +731,17 @@ mod tests {
             .collect()
     }
 
+    /// A double's bits, a NaN's the canonical NaN's.
+    fn bit(x: f64) -> u64 {
+        if x.is_nan() {
+            f64::NAN.to_bits()
+        } else {
+            x.to_bits()
+        }
+    }
+
     fn bits<const N: usize>(v: &[f64; N]) -> [u64; N] {
-        v.map(f64::to_bits)
+        v.map(bit)
     }
 
     fn lines(kind: &str) -> impl Iterator<Item = Vec<&'static str>> + '_ {
@@ -744,11 +758,7 @@ mod tests {
         for w in lines("halton") {
             let (index, base): (usize, usize) = (w[0].parse().unwrap(), w[1].parse().unwrap());
             let theirs = doubles(&w[2..])[0];
-            assert_eq!(
-                halton(index, base).to_bits(),
-                theirs.to_bits(),
-                "{index} {base}"
-            );
+            assert_eq!(bit(halton(index, base)), bit(theirs), "{index} {base}");
             n += 1;
         }
         assert_eq!(n, 210, "halton lines");
@@ -823,7 +833,7 @@ mod tests {
                 geoms[id].distance(&x).unwrap(),
                 geoms[id].gradient(&x).unwrap(),
             );
-            if (dist.to_bits(), bits(&grad)) != (theirs.0.to_bits(), bits(&theirs.1)) {
+            if (bit(dist), bits(&grad)) != (bit(theirs.0), bits(&theirs.1)) {
                 failures.push(format!(
                     "single {id} at {x:?}: ({dist}, {grad:?}) / {theirs:?}"
                 ));
@@ -849,14 +859,14 @@ mod tests {
             };
             let ours = (pair.distance(kind, &x), pair.gradient(kind, &x));
             let (dist, grad) = (ours.0.unwrap(), ours.1.unwrap());
-            if (dist.to_bits(), bits(&grad)) != (theirs.0.to_bits(), bits(&theirs.1)) {
+            if (bit(dist), bits(&grad)) != (bit(theirs.0), bits(&theirs.1)) {
                 failures.push(format!(
                     "{} {id0} {id1} at {x:?}: ({dist}, {grad:?}) / ({}, {:?})",
                     w[0], theirs.0, theirs.1
                 ));
             }
         }
-        assert_eq!(counts, [518, 125, 125, 125], "field lines by kind");
+        assert_eq!(counts, [522, 126, 126, 125], "field lines by kind");
         assert!(
             failures.is_empty(),
             "{} differ:\n{}",

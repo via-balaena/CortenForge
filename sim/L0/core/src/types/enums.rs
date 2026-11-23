@@ -115,7 +115,9 @@ pub enum GeomType {
     Mesh,
     /// Height field terrain.
     Hfield,
-    /// Signed distance field (CortenForge extension — programmatic construction only).
+    /// Signed distance field: loaded from MJCF over a mesh (its field the
+    /// mesh's octree, MuJoCo's), or given a shape of its own
+    /// (`Model::geom_shape`, a CortenForge extension).
     Sdf,
 }
 

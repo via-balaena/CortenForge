@@ -11,10 +11,11 @@
 //! Each contact lists the geom first and the flex's element or vertex
 //! second, its normal from the geom toward the flex.
 //!
-//! A signed distance field is the exception (registry `D-FLEX-SDF`): MuJoCo
-//! collides its mesh's hull with each element through the convex route;
-//! sim-core's distance field has no hull, so each vertex, a sphere of the
-//! flex's radius, is tested against the field, as the plane's vertices are.
+//! A signed distance field with a shape of its own is the exception
+//! (registry `D-FLEX-SDF`): MuJoCo collides a field's mesh hull with each
+//! element through the convex route, as a field loaded from MJCF takes it
+//! here; a shape has no hull, so each vertex, a sphere of the flex's radius,
+//! is tested against the shape's field, as the plane's vertices are.
 
 use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
@@ -55,7 +56,8 @@ pub(super) fn collide_body_flex(
     if !disabled(model, DISABLE_MIDPHASE) && collide_tree_flex(model, data, body, flex, hits, stack)
     {
         // `mj_collideTree`'s planes, before its descent and without the
-        // geom's bitmask (`:658-665`), and the distance fields.
+        // geom's bitmask (`:658-665`), and the distance fields with a shape
+        // of their own.
         for &g in geoms.of(body) {
             match model.geom_type[g] {
                 GeomType::Plane if model.body_weldid[body] == 0 => {
