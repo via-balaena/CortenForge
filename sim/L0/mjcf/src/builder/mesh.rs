@@ -202,6 +202,17 @@ pub fn meshes_needing_an_octree(mjcf: &MjcfModel) -> HashSet<String> {
     needed
 }
 
+/// This crate's refusal of a mesh with a `<plugin>` (registry
+/// D-MESH-PLUGIN): MuJoCo makes such a mesh, or the field of a geom of type
+/// `sdf` over it, from the plugin, and sim-core runs no MuJoCo plugin. The
+/// first such mesh in asset order; `None` where there is none.
+pub fn plugin_fault(mjcf: &MjcfModel) -> Option<MjcfError> {
+    mjcf.meshes.iter().find(|m| m.plugin).map(|m| {
+        MjcfError::unsupported("a <plugin> on a mesh (registry D-MESH-PLUGIN)")
+            .at(Location::named(ElementKind::Mesh, &m.name))
+    })
+}
+
 /// A mesh's mass properties as MuJoCo 3.5.0's `mjCMesh::Process` leaves
 /// them (`user_mesh.cc:1605-1668`), from its vertices as transformed
 /// ([`apply_transformations`]): computed once per mesh by

@@ -1,10 +1,8 @@
-//! SDF collision dispatch. A signed distance field loaded from MJCF (a geom
-//! of type `sdf` over a mesh, with no shape of its own) meets each geom as
-//! MuJoCo 3.5.0's collision table sends it, through its mesh's octree or,
-//! against a plane, its mesh's vertices ([`collide_loaded_sdf`]; registry
-//! D-SDF-INITPOINTS, D-SDF-SHAPED-PAIR, D-SDF-MESH-PAST, D-SDF-FAR); a field
-//! with a shape (`Model::shape_data`) through the standalone SDF library's
-//! contact functions.
+//! SDF collision dispatch: a signed distance field loaded from MJCF (a geom
+//! of type `sdf` over a mesh, with no shape of its own) through MuJoCo 3.5.0's
+//! collision table ([`collide_loaded_sdf`]); a field with a shape
+//! (`Model::shape_data`) through the standalone SDF library's contact
+//! functions.
 
 use super::finite_rotation;
 use super::mj_sdf::{FieldContact, SdfGeom, field_of, mjc_sdf};

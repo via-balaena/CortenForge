@@ -10,10 +10,9 @@
 //! `mju_Halton`.
 //!
 //! The pair is taken in MuJoCo's order: the field last (the higher
-//! `mjtGeom`), two fields as given. An octree read finds no leaf for a point
-//! so far from the mesh that it rounds outside the octree's box, where
-//! MuJoCo stops with "Node not found" ([`MeshOctree::distance`]): a starting
-//! point whose descent reads one gives no contact.
+//! `mjtGeom`), two fields as given. A starting point whose descent reads the
+//! octree where it finds no leaf, where MuJoCo stops with "Node not found"
+//! ([`MeshOctree::distance`]), gives no contact.
 
 use nalgebra::{Matrix3, Vector3};
 
@@ -259,9 +258,10 @@ impl Field<'_> {
                     // `mju_norm(b, 2)`: `mju_dot`'s two-entry tail, added to 0.
                     min(max(a[0], a[1]), 0.0) + (0.0 + (b[0] * b[0] + b[1] * b[1])).sqrt()
                 }
-                // `mjc_SDF` is not given a plane, a height field or a mesh
-                // as a primitive (`engine_collision_driver.c:41-52`).
                 GeomType::Plane | GeomType::Hfield | GeomType::Mesh | GeomType::Sdf => {
+                    // `field_of` makes no primitive of these: `mjc_SDF` is not
+                    // given a plane or a height field, and a mesh or a field is
+                    // its own variant (`engine_collision_driver.c:41-52`).
                     unreachable!("geomDistance of a {geom_type:?} as a primitive")
                 }
             },
@@ -378,6 +378,7 @@ impl Field<'_> {
                     }
                 }
                 GeomType::Plane | GeomType::Hfield | GeomType::Mesh | GeomType::Sdf => {
+                    // As in `distance`: `field_of` makes no primitive of these.
                     unreachable!("geomGradient of a {geom_type:?} as a primitive")
                 }
             },

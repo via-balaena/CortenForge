@@ -445,10 +445,8 @@ MuJoCo's. A flex vertex against a mesh without a hull still takes
 
 Full SDF (Signed Distance Field) collision support is implemented in sim-core
 and wired through the MJCF pipeline. `GeomType::Sdf` is dispatched first in
-`collide_geoms()` to `collide_with_sdf()`. A geom of type `sdf` over a mesh,
-loaded from MJCF, meets each geom as MuJoCo's does, through the octree over its
-mesh (`collision::mj_sdf`, `sdf_parity.rs`); the notes below describe a field
-given a shape of its own, which is built in code.
+`collide_geoms()` to `collide_with_sdf()`. For a geom of type `sdf` over a mesh,
+loaded from MJCF, see registry D-SDF-SHAPE.
 - `CollisionShape::Sdf` variant with 3D grid storage
 - Trilinear interpolation for distance queries
 - Gradient-based normal computation

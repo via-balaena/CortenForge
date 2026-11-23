@@ -994,6 +994,9 @@ pub struct MjcfMesh {
     /// Mesh inertia computation mode. `None` = not specified in XML
     /// (MuJoCo's default, `Legacy`, at build time).
     pub inertia: Option<MeshInertia>,
+    /// Whether it holds a `<plugin>`, which MuJoCo makes the mesh, or a
+    /// field over it, from (refused when built: registry D-MESH-PLUGIN).
+    pub plugin: bool,
 }
 
 impl Default for MjcfMesh {
@@ -1012,6 +1015,7 @@ impl Default for MjcfMesh {
             face: None,
             maxhullvert: None,
             inertia: None,
+            plugin: false,
         }
     }
 }

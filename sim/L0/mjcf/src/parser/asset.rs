@@ -30,13 +30,24 @@ pub(super) fn parse_asset<R: BufRead>(
             Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
                 let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
-                    b"mesh" => meshes.push(parse_mesh_attrs(e)?),
-                    b"hfield" => hfields.push(parse_hfield_attrs(e)?),
+                    // A mesh's children are not read, but whether a
+                    // `<plugin>` is among them.
+                    b"mesh" => {
+                        let mut mesh = parse_mesh_attrs(e)?;
+                        mesh.plugin = skip_noting_plugin(reader, child_empty)?;
+                        meshes.push(mesh);
+                    }
+                    // A height field's children are not read either.
+                    b"hfield" => {
+                        hfields.push(parse_hfield_attrs(e)?);
+                        skip_element(reader, b"hfield", child_empty)?;
+                    }
                     // Skip other asset types (texture, material, etc.)
-                    _ => {}
+                    other => {
+                        let other = other.to_vec();
+                        skip_element(reader, &other, child_empty)?;
+                    }
                 }
-                // A mesh's or hfield's children are not read either.
-                skip_element(reader, e.name().as_ref(), child_empty)?;
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"asset" => break,
             Ok(Event::Eof) => return Err(MjcfError::eof_in("asset")),
@@ -47,6 +58,37 @@ pub(super) fn parse_asset<R: BufRead>(
     }
 
     Ok((meshes, hfields))
+}
+
+/// Past a `<mesh>`'s end tag (nothing more when it closed itself), whether a
+/// `<plugin>` is among its children.
+fn skip_noting_plugin<R: BufRead>(reader: &mut Reader<R>, empty: bool) -> Result<bool> {
+    if empty {
+        return Ok(false);
+    }
+    let mut buf = Vec::new();
+    let mut plugin = false;
+    let mut depth = 1;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                plugin |= depth == 1 && e.name().as_ref() == b"plugin";
+                depth += 1;
+            }
+            Ok(Event::Empty(ref e)) => plugin |= depth == 1 && e.name().as_ref() == b"plugin",
+            Ok(Event::End(_)) => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            Ok(Event::Eof) => return Err(MjcfError::eof_in("mesh")),
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::xml(e)),
+        }
+        buf.clear();
+    }
+    Ok(plugin)
 }
 
 /// Parse mesh attributes only.

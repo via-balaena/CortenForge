@@ -135,9 +135,8 @@ impl MeshOctree {
     /// those at the point moved 1e-6 inside the box, plus the point's
     /// distance to the box.
     ///
-    /// `None` where MuJoCo stops with "Node not found" (`findOct`): a point
-    /// so far from the octree that its move inside the box rounds outside it
-    /// again.
+    /// `None` where MuJoCo stops with "Node not found" (`findOct`): where the
+    /// point, moved inside the root's box, rounds outside it again.
     #[must_use]
     pub fn distance(&self, point: [f64; 3]) -> Option<f64> {
         let mut point = point;

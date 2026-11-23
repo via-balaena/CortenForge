@@ -11,10 +11,9 @@
 //! scene holds. On macOS arm64, where it was made, every value is compared
 //! bit for bit. Off it nothing has been measured: there an octree corner's
 //! sign follows that platform's `acos` (the angles TriangleMeshDistance
-//! weights a vertex's pseudonormal by), and a corner whose sign differs
-//! would fail these tests; each value read at `mj_forward` is held within
-//! [`TOL`] of MuJoCo's, a NaN failing, and a scene's steps, whose turns take
-//! `sin` and `cos`, are not compared there.
+//! weights a vertex's pseudonormal by); each value read at `mj_forward` is
+//! held within [`TOL`] of MuJoCo's, a NaN failing, and a scene's steps,
+//! whose turns take `sin` and `cos`, are not compared there.
 
 use std::sync::{Arc, OnceLock};
 
@@ -372,40 +371,81 @@ fn a_field_read_that_finds_no_leaf_is_a_miss() {
     assert_eq!(data.sensordata.as_slice(), [-1.0], "a miss");
 }
 
-/// Registry D-GEOM-SDF-PLUGIN: MuJoCo reads a geom of type `sdf` with a
-/// `<plugin>` from the plugin (measured: a `mujoco.sdf.torus` instance on a
-/// cube-mesh field, a sphere on its tube, 40 contacts, a rangefinder down its
-/// hole -1). sim-core runs no MuJoCo plugin, so the loader refuses that geom,
-/// naming it; the same field with no `<plugin>` loads, and a `<plugin>` on a
-/// sphere, which MuJoCo's collision does not read, is dropped.
+/// A document with a `mujoco.sdf.torus` instance and a cube mesh (its own
+/// `<mesh>` element `mesh`), the world holding `world` and a body `body`,
+/// beside a free sphere.
+fn plugin_doc(mesh: &str, world: &str, body: &str) -> String {
+    format!(
+        r#"<mujoco><compiler discardvisual="true"/>
+            <extension><plugin plugin="mujoco.sdf.torus"><instance name="torus">
+            <config key="radius1" value="0.1"/><config key="radius2" value="0.03"/>
+            </instance></plugin></extension>
+            <asset>{mesh}</asset>
+            <worldbody>{world}<body name="holder" pos="0 0 -0.5">{body}</body>
+            <body name="b" pos="0.1 0 0.05"><freejoint/>
+            <geom type="sphere" size="0.03"/></body></worldbody></mujoco>"#
+    )
+}
+
+/// A cube's vertices and faces, as a `<mesh>` element's attributes.
+const CUBE: &str = r#"vertex="-0.1 -0.1 -0.1  0.1 -0.1 -0.1  0.1 0.1 -0.1
+    -0.1 0.1 -0.1  -0.1 -0.1 0.1  0.1 -0.1 0.1  0.1 0.1 0.1  -0.1 0.1 0.1"
+    face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  1 2 6  1 6 5
+    0 4 7  0 7 3""#;
+
+/// Registry D-GEOM-SDF-PLUGIN: a geom of type `sdf` with a `<plugin>`, whose
+/// field MuJoCo reads from the plugin, is refused, on the world or in a
+/// body, naming it; the same field with no `<plugin>` loads, as does one
+/// that `discardvisual` discards, and a sphere with one.
 #[test]
 fn a_loaded_field_with_a_plugin_is_refused() {
-    let doc = |geom: &str| {
-        format!(
-            r#"<mujoco><extension><plugin plugin="mujoco.sdf.torus"><instance name="torus">
-                <config key="radius1" value="0.1"/><config key="radius2" value="0.03"/>
-                </instance></plugin></extension>
-                <asset><mesh name="cube" vertex="-0.1 -0.1 -0.1  0.1 -0.1 -0.1  0.1 0.1 -0.1
-                -0.1 0.1 -0.1  -0.1 -0.1 0.1  0.1 -0.1 0.1  0.1 0.1 0.1  -0.1 0.1 0.1"
-                face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  1 2 6  1 6 5
-                0 4 7  0 7 3"/></asset>
-                <worldbody>{geom}<body name="b" pos="0.1 0 0.05"><freejoint/>
-                <geom type="sphere" size="0.03"/></body></worldbody></mujoco>"#
-        )
-    };
-    let refused = sim_mjcf::load_model(&doc(
-        r#"<geom name="field" type="sdf" mesh="cube"><plugin instance="torus"/></geom>"#,
-    ))
-    .expect_err("a field with a plugin");
-    let words = refused.to_string();
-    assert!(
-        words.contains("a <plugin> on a geom of type sdf") && words.contains("field"),
-        "{words}"
-    );
-    sim_mjcf::load_model(&doc(r#"<geom name="field" type="sdf" mesh="cube"/>"#))
-        .expect("the field with no plugin");
-    sim_mjcf::load_model(&doc(
-        r#"<geom name="ball" type="sphere" size="0.1"><plugin instance="torus"/></geom>"#,
-    ))
-    .expect("a sphere's plugin is dropped");
+    let mesh = format!(r#"<mesh name="cube" {CUBE}/>"#);
+    let field = r#"<geom name="field" type="sdf" mesh="cube"><plugin instance="torus"/></geom>"#;
+    for (world, body) in [(field, ""), ("", field)] {
+        let words = sim_mjcf::load_model(&plugin_doc(&mesh, world, body))
+            .expect_err("a field with a plugin")
+            .to_string();
+        assert!(
+            words.contains("a <plugin> on a geom of type sdf") && words.contains("field"),
+            "{words}"
+        );
+    }
+    for (world, why) in [
+        (
+            r#"<geom name="field" type="sdf" mesh="cube"/>"#,
+            "no plugin",
+        ),
+        (
+            r#"<geom type="sdf" mesh="cube"/><geom name="v" type="sdf" mesh="cube"
+                contype="0" conaffinity="0" group="3"><plugin instance="torus"/></geom>"#,
+            "a visual field discarded",
+        ),
+        (
+            r#"<geom name="ball" type="sphere" size="0.1"><plugin instance="torus"/></geom>"#,
+            "a sphere's plugin",
+        ),
+    ] {
+        sim_mjcf::load_model(&plugin_doc(&mesh, world, "")).expect(why);
+    }
+}
+
+/// Registry D-MESH-PLUGIN: a mesh with a `<plugin>`, which MuJoCo makes the
+/// mesh or a field over it from, is refused, under a geom of type `sdf` or
+/// a mesh geom, naming it.
+#[test]
+fn a_mesh_with_a_plugin_is_refused() {
+    let mesh = format!(r#"<mesh name="cube" {CUBE}><plugin instance="torus"/></mesh>"#);
+    for geom in ["sdf", "mesh"] {
+        let words = sim_mjcf::load_model(&plugin_doc(
+            &mesh,
+            &format!(r#"<geom type="{geom}" mesh="cube"/>"#),
+            "",
+        ))
+        .expect_err("a mesh with a plugin")
+        .to_string();
+        assert!(
+            words.contains("a <plugin> on a mesh") && words.contains("cube"),
+            "{geom}: {words}"
+        );
+    }
 }
