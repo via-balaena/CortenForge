@@ -107,6 +107,21 @@ octree 72649 f2ecd69ff7564dbc e33fd10fcfa61477 47cbcb0078e12799 abd0011df0eb3889
 case plate_collides_shell
 xml <mujoco><asset><mesh name="m" vertex="0.0 0.0 0.0  2.0 0.0 0.0  0.0 1.0 0.0  2.0 1.0 0.0" face="0 1 3  0 3 2" inertia="shell"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="sdf" mesh="m"/></body></worldbody></mujoco>
 err qhull error
+case plate_on_the_world_colliding_with_nothing
+xml <mujoco><asset><mesh name="m" vertex="0.0 0.0 0.0  2.0 0.0 0.0  0.0 1.0 0.0  2.0 1.0 0.0" face="0 1 3  0 3 2" inertia="shell"/></asset><worldbody><geom type="sdf" mesh="m" contype="0" conaffinity="0"/></worldbody></mujoco>
+meshes 1
+mesh 0 4 2
+octree 267849 f2f36f512fe60209 151bfd7006bf79a6 4e601a554eea06ac 444f079f5d2e4550 444f079f5d2e4550 0
+case two_plates_wound_alike_on_the_world
+xml <mujoco><asset><mesh name="m" vertex="0.0 0.0 -0.5  2.0 0.0 -0.5  0.0 1.0 -0.5  2.0 1.0 -0.5  0.0 0.0 0.5  2.0 0.0 0.5  0.0 1.0 0.5  2.0 1.0 0.5" face="0 1 3  0 3 2  4 5 7  4 7 6" inertia="shell"/></asset><worldbody><geom type="sdf" mesh="m" contype="0" conaffinity="0"/></worldbody></mujoco>
+meshes 1
+mesh 0 8 4
+octree 25225 acf117e6ec8f5701 d299516f6bc695aa e881226479888627 5f8b3d1c4450d2ee b7c34c4b7a01c251 101236
+case quartered_box_wound_at_random_on_the_world
+xml <mujoco><asset><mesh name="m" vertex="-0.5 -1.0 -1.5  -0.5 0.0 -1.5  -0.5 0.0 0.0  -0.5 -1.0 0.0  -0.5 1.0 -1.5  -0.5 1.0 0.0  -0.5 0.0 1.5  -0.5 -1.0 1.5  -0.5 1.0 1.5  0.5 -1.0 -1.5  0.5 0.0 -1.5  0.5 0.0 0.0  0.5 -1.0 0.0  0.5 1.0 -1.5  0.5 1.0 0.0  0.5 0.0 1.5  0.5 -1.0 1.5  0.5 1.0 1.5  0.0 -1.0 0.0  0.0 -1.0 -1.5  0.0 -1.0 1.5  0.0 1.0 0.0  0.0 1.0 -1.5  0.0 1.0 1.5  0.0 0.0 -1.5  0.0 0.0 1.5" face="0 1 2  0 3 2  1 4 5  1 2 5  3 6 2  3 6 7  2 5 8  2 6 8  9 11 10  9 12 11  10 13 14  10 11 14  12 11 15  12 16 15  11 14 17  11 15 17  0 18 3  0 19 18  3 20 7  3 18 20  19 12 18  19 12 9  18 16 20  18 12 16  4 21 5  4 22 21  5 8 23  5 21 23  22 21 14  22 14 13  21 23 17  21 17 14  0 19 24  0 1 24  19 9 10  19 24 10  1 22 24  1 22 4  24 10 13  24 13 22  7 20 25  7 6 25  20 16 15  20 25 15  6 25 23  6 8 23  25 17 15  25 17 23" inertia="legacy"/></asset><worldbody><geom type="sdf" mesh="m"/></worldbody></mujoco>
+meshes 1
+mesh 0 26 48
+octree 63497 5d6102dde8fb544d f756c97771e088d9 7ead96e2ed17a8b3 a21ab4c11c3a3e98 1205495424c60920 272547
 case lprism_mesh_and_sdf_geoms
 xml <mujoco><asset><mesh name="m" vertex="0.0 0.0 0.0  2.0 0.0 0.0  2.0 1.0 0.0  1.0 1.0 0.0  1.0 2.0 0.0  0.0 2.0 0.0  0.0 0.0 1.0  2.0 0.0 1.0  2.0 1.0 1.0  1.0 1.0 1.0  1.0 2.0 1.0  0.0 2.0 1.0" face="0 2 1  0 3 2  0 4 3  0 5 4  6 7 8  6 8 9  6 9 10  6 10 11  0 1 7  0 7 6  1 2 8  1 8 7  2 3 9  2 9 8  3 4 10  3 10 9  4 5 11  4 11 10  5 0 6  5 6 11"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/><geom type="sdf" mesh="m"/></body></worldbody></mujoco>
 meshes 1

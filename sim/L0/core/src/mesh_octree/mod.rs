@@ -14,8 +14,8 @@
 //! leaf more than one level finer (`BalanceOctree`), and the vertices of a
 //! finer leaf that lie on a coarser one's face or edge are marked hanging
 //! (`MarkHangingNodes`). Each vertex's coefficient is its signed distance to
-//! the mesh ([`distance`], TriangleMeshDistance's) or, hanging, the mean of
-//! the coarser vertices it hangs from; each node holds its eight corners'.
+//! the mesh (TriangleMeshDistance's) or, hanging, the mean of the coarser
+//! vertices it hangs from; each node holds its eight corners'.
 //! MuJoCo reads a distance inside the octree by trilinear interpolation of a
 //! leaf's coefficients (`oct_distance`, `engine_collision_sdf.c:136-160`).
 
@@ -158,23 +158,13 @@ pub fn make_octree(
         return Err(OctreeError::NoFaces);
     }
     let faces: Vec<[usize; 3]> = faces.iter().map(|f| f.map(|v| v as usize)).collect();
-    // `Make`: the faces moved to the octree's frame, which for a mesh is its
+    // `Make` moves the faces to the octree's frame, which for a mesh is its
     // own (`ipos_` zero and `iquat_` the identity, never set):
-    // `mjuu_rotVecQuat` copies a vertex but gives a zero vector positive
-    // zeros.
-    let triangles: Vec<Triangle> = faces
-        .iter()
-        .map(|f| {
-            f.map(|v| {
-                let p = vertices[v];
-                if p[0] == 0.0 && p[1] == 0.0 && p[2] == 0.0 {
-                    [0.0; 3]
-                } else {
-                    p
-                }
-            })
-        })
-        .collect();
+    // `mjuu_rotVecQuat` copies each vertex, but gives a zero vector positive
+    // zeros. That sign is not kept here: these faces are read only by
+    // `box_triangle`, which compares and never divides, and a comparison
+    // holds -0 equal to +0.
+    let triangles: Vec<Triangle> = faces.iter().map(|f| f.map(|v| vertices[v])).collect();
     let center = [0, 1, 2].map(|i| (aamm[i] + aamm[i + 3]) / 2.0);
     let half = [0, 1, 2].map(|i| (aamm[i + 3] - aamm[i]) / 2.0);
     let root = [

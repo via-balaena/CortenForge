@@ -17,7 +17,8 @@ byte. Per mesh, its octree (`mesh_octnum`, and a hash of each of `oct_aabb`,
 a file mesh its convex hull graph (`mesh_graph`); or MuJoCo's refusal. The
 cases: an SDF geom over meshes of each shape (a box, an L prism, an
 icosahedron, meshes written without faces, built-ins), moved, turned, scaled
-and mirrored, tiny and huge, under each inertia mode, an open mesh; each way
+and mirrored, tiny and huge, under each inertia mode, an open mesh, a flat
+mesh and two parallel flat ones, a box whose faces are wound at random; each way
 a mesh comes to have an octree (an SDF geom naming it, colliding or not, its
 type a class's, in the world, beside a mesh geom, read before discardvisual
 drops a visual one) and each way it does not; and an STL, an OBJ and an MSH
@@ -26,6 +27,7 @@ header says how).
 """
 import math
 import os
+import random
 import struct
 import sys
 import tempfile
@@ -81,6 +83,41 @@ SPH = [(0.0, 0.0, 1.0), (0.0, 0.0, -1.0)] + [
      math.cos(math.pi * i / 9)) for i in range(1, 9) for j in range(8)]
 PLATE = [(0, 0, 0), (2, 0, 0), (0, 1, 0), (2, 1, 0)]
 PLATE_F = [(0, 1, 3), (0, 3, 2)]
+# Two plates a unit apart, wound alike: a corner midway between them is as far from each, and which face
+# TriangleMeshDistance's query meets first gives the corner's sign.
+TWO_PLATES = [(x, y, -0.5) for x, y, _ in PLATE] + [(x, y, 0.5) for x, y, _ in PLATE]
+TWO_PLATES_F = PLATE_F + [(a + 4, b + 4, d + 4) for a, b, d in PLATE_F]
+
+
+def quartered_box(extents, seed):
+    """A box centred on the origin, each face split into four squares of two triangles, each triangle wound
+    one way or the other at random (Python's `random.Random(seed).random()`, whose sequence for a seed does not
+    change between Python versions)."""
+    rng = random.Random(seed)
+    half = [e / 2 for e in extents]
+    verts, index, faces = [], {}, []
+
+    def vid(p):
+        if p not in index:
+            index[p] = len(verts)
+            verts.append(p)
+        return index[p]
+
+    for axis in range(3):
+        u, w = (axis + 1) % 3, (axis + 2) % 3
+        for side in (-1, 1):
+            for j in range(2):
+                for i in range(2):
+                    def corner(a, b):
+                        p = [0.0, 0.0, 0.0]
+                        p[axis], p[u], p[w] = side * half[axis], half[u] * (a - 1), half[w] * (b - 1)
+                        return vid(tuple(p))
+                    q = corner(i, j), corner(i + 1, j), corner(i + 1, j + 1), corner(i, j + 1)
+                    for f in ((q[0], q[1], q[2]), (q[0], q[2], q[3])):
+                        faces.append(f if (side > 0) == (rng.random() >= 0.5) else (f[0], f[2], f[1]))
+    return verts, faces
+
+
 TURN = ' refquat="0.9 0.1 0.3 0.2"'
 SCALE = ' scale="1 2 0.5"'
 MOVE = ' refpos="0.3 0.1 -0.2"'
@@ -96,6 +133,11 @@ def mesh(verts=None, faces=None, attrs="", name="m"):
 def doc(asset, geoms, extra="", top=""):
     return (f'<mujoco>{top}<asset>{asset}</asset><worldbody><body name="b" pos="0 0 1"><freejoint/>{geoms}'
             f'</body></worldbody>{extra}</mujoco>')
+
+
+def world(asset, geoms):
+    """A document with its geoms on the world body, which needs no mass or inertia from them."""
+    return f'<mujoco><asset>{asset}</asset><worldbody>{geoms}</worldbody></mujoco>'
 
 
 def stl(verts, faces):
@@ -154,6 +196,15 @@ CASES = {
     "builtin_cone": doc('<mesh name="m" builtin="cone" params="6 0.5"/>', S.format("")),
     "builtin_supertorus": doc('<mesh name="m" builtin="supertorus" params="24 0.3 1 1"/>', S.format("")),
     "plate_collides_shell": doc(mesh(PLATE, PLATE_F, ' inertia="shell"'), S.format("")),
+    # A flat mesh on the world, colliding with nothing (a colliding one needs a hull, which qhull refuses a
+    # flat mesh): each corner in its plane is where the side of a face's pseudonormal is exactly 0.
+    "plate_on_the_world_colliding_with_nothing": world(mesh(PLATE, PLATE_F, ' inertia="shell"'), S.format(NOCOL)),
+    "two_plates_wound_alike_on_the_world": world(mesh(TWO_PLATES, TWO_PLATES_F, ' inertia="shell"'),
+                                                 S.format(NOCOL)),
+    # Faces wound either way: TriangleMeshDistance's sort of the faces, and its query's order among faces at one
+    # distance, decide a corner's sign.
+    "quartered_box_wound_at_random_on_the_world": world(mesh(*quartered_box((1, 2, 3), 3), ' inertia="legacy"'),
+                                                        S.format("")),
     "lprism_mesh_and_sdf_geoms": doc(mesh(L_V, L_F), M.format("") + S.format("")),
     "lprism_two_sdf_geoms": doc(mesh(L_V, L_F), S.format("") + S.format(' pos="3 0 0"')),
     "two_meshes_the_second_an_sdf_geoms": doc(mesh(BOX, CUBE_F, name="a") + mesh(L_V, L_F),

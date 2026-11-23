@@ -10,8 +10,11 @@
 //! for a mesh only mesh geoms or fitted primitives name. Each is made in the
 //! frame MuJoCo keeps the mesh in, over meshes moved, turned, scaled,
 //! mirrored, tiny and huge, under each inertia mode, written without faces,
-//! open, built in, and read from an STL, an OBJ and an MSH file. Each octree
-//! is compared by its node count and a hash of each of its four arrays; a
+//! open, flat, built in, and read from an STL, an OBJ and an MSH file; and
+//! over meshes where a tie decides a corner's sign: a flat mesh (a corner in
+//! its plane is on neither side of it), two parallel plates (a corner midway
+//! is as far from each) and a box wound at random. Each octree is compared by
+//! its node count and a hash of each of its four arrays; a
 //! file mesh's convex hull graph int for int (ledger L439: no other
 //! committed test makes the hull of a mesh read from a file); a document
 //! MuJoCo refuses, by MuJoCo's words.
@@ -226,7 +229,7 @@ fn load(case: &Case) -> sim_mjcf::Result<sim_core::Model> {
 #[test]
 fn each_meshs_octree_is_mujocos() {
     let cases = golden();
-    assert_eq!(cases.len(), 34, "golden cases");
+    assert_eq!(cases.len(), 37, "golden cases");
     let mut failures = Vec::new();
     for case in &cases {
         match (&case.outcome, load(case)) {
