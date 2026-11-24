@@ -91,22 +91,20 @@ const REFUSED: &[(&str, &str, &str, &str)] = &[
         r#"<body name="b"><freejoint/><geom type="sdf" shellinertia="true"/><geom size=".1"/></body>"#,
         "geom #0 in body 'b'",
     ),
+    (
+        "a visual SDF geom, checked before discardvisual discards it",
+        r#"<compiler discardvisual="true"/>"#,
+        r#"<geom type="sdf" contype="0" conaffinity="0"/><geom size="0.1"/>"#,
+        "geom #0 in body 'world'",
+    ),
 ];
 
 /// `(what, before the assets, the world body's contents, the loader's error
 /// or `None` where it loads, `validate`'s error)`, each refused by MuJoCo for
 /// the SDF geom's mesh: the loader names another fault, which it checks
-/// before it builds the model, as it did before Rigid-loading PR RL-9d, or
-/// loads a geom `discardvisual` discards before the checks (ledger L336);
+/// before it builds the model, as it did before Rigid-loading PR RL-9d;
 /// `validate` names the other fault where it checks it.
 const NAMED_OTHERWISE: &[(&str, &str, &str, Option<&str>, &str)] = &[
-    (
-        "a visual SDF geom, which discardvisual discards",
-        r#"<compiler discardvisual="true"/>"#,
-        r#"<geom type="sdf" contype="0" conaffinity="0"/><geom size="0.1"/>"#,
-        None,
-        "mesh geom must have valid meshid (geom #0 in body 'world')",
-    ),
     (
         "an SDF geom naming a height field",
         "",

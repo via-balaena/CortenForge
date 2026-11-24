@@ -1,0 +1,1 @@
+<mujoco><compiler discardvisual="true"/><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="box" size="0.1 0.2 0.3"/><geom type="box" size="0.3 0.1 0.1" pos="0.2 0.1 0" euler="0.3 0.4 0.5" contype="0" conaffinity="0"/></body></worldbody></mujoco>

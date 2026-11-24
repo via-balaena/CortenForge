@@ -1,0 +1,1 @@
+<mujoco><compiler discardvisual="true" inertiafromgeom="true"/><worldbody><body name="b" pos="0 0 1"><freejoint/><inertial pos="0 0 0" mass="2" diaginertia="0.1 0.1 0.1"/><geom type="sphere" size="0.1"/><geom type="sphere" size="0.1" pos="0.3 0 0" contype="0" conaffinity="0"/></body></worldbody></mujoco>

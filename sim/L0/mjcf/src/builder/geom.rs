@@ -335,16 +335,27 @@ fn site_geom_type(site: &MjcfSite) -> Result<GeomType> {
 /// This crate's refusal of a geom of type `sdf` with a `<plugin>` (registry
 /// D-GEOM-SDF-PLUGIN): MuJoCo reads such a geom's field from the plugin
 /// (`engine_collision_sdf.c:275-276`, `engine_ray.c:899-901`), and sim-core
-/// runs no MuJoCo plugin. The first such geom, the world's geoms first, then
-/// each body's before its children's; `None` where there is none.
-pub fn sdf_plugin_fault(mjcf: &MjcfModel) -> Option<MjcfError> {
-    fn first(body: &MjcfBody) -> Option<&MjcfGeom> {
+/// runs no MuJoCo plugin. The first such geom that `discardvisual` keeps
+/// (with `referenced`, one that is not visual), the world's geoms first,
+/// then each body's before its children's; `None` where there is none.
+pub fn sdf_plugin_fault(
+    mjcf: &MjcfModel,
+    referenced: Option<&super::discard::Referenced>,
+) -> Option<MjcfError> {
+    fn first<'a>(
+        body: &'a MjcfBody,
+        referenced: Option<&super::discard::Referenced>,
+    ) -> Option<&'a MjcfGeom> {
         body.geoms
             .iter()
-            .find(|g| g.geom_type == Some(MjcfGeomType::Sdf) && g.plugin.is_some())
-            .or_else(|| body.children.iter().find_map(first))
+            .find(|g| {
+                g.geom_type == Some(MjcfGeomType::Sdf)
+                    && g.plugin.is_some()
+                    && referenced.is_none_or(|r| !r.geom_is_visual(g))
+            })
+            .or_else(|| body.children.iter().find_map(|c| first(c, referenced)))
     }
-    first(&mjcf.worldbody).map(|g| {
+    first(&mjcf.worldbody, referenced).map(|g| {
         MjcfError::unsupported("a <plugin> on a geom of type sdf (registry D-GEOM-SDF-PLUGIN)").at(
             Location::named(ElementKind::Geom, g.name.as_deref().unwrap_or("")),
         )

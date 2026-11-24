@@ -13,6 +13,7 @@ mod build;
 pub mod compiler;
 mod composite;
 pub mod contact;
+mod discard;
 mod eig3;
 pub mod equality;
 mod fit;
@@ -58,7 +59,7 @@ use crate::types::{
     MjcfOption, MjcfSolverType, Prefix,
 };
 
-use self::compiler::{apply_discardvisual, apply_fusestatic};
+use self::compiler::apply_fusestatic;
 use self::frame::expand_frames;
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
@@ -236,15 +237,19 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // The meshes MuJoCo makes an octree for, marked before it discards
     // visual geoms.
     let needsdf = mesh::meshes_needing_an_octree(&mjcf);
-    if mjcf.compiler.discardvisual {
-        apply_discardvisual(&mut mjcf);
-    }
+    // What `discardvisual` keeps, read before fusion moves anything; the
+    // visual geoms and meshes are deleted once every element is built and
+    // checked (`discard`).
+    let referenced = mjcf
+        .compiler
+        .discardvisual
+        .then(|| discard::Referenced::of(&mjcf));
     // This crate's refusals of a mesh with a `<plugin>` and of a geom of type
     // `sdf` with one, whose mesh or field MuJoCo makes from the plugin
     // (`D-MESH-PLUGIN`, `D-GEOM-SDF-PLUGIN`), of what `discardvisual` keeps,
     // returned after the keyframes.
-    let mesh_plugin = mesh::plugin_fault(&mjcf);
-    let sdf_plugin = geom::sdf_plugin_fault(&mjcf);
+    let mesh_plugin = mesh::plugin_fault(&mjcf, referenced.as_ref());
+    let sdf_plugin = geom::sdf_plugin_fault(&mjcf, referenced.as_ref());
     let compile_turns = if mjcf.compiler.fusestatic {
         Some(apply_fusestatic(&mut mjcf)?)
     } else {
@@ -360,6 +365,11 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     let negative_inertial = negative_inertial.or_else(|| builder.kept_negative_inertial.take());
     builder.apply_settotalmass();
     builder.sync_flex_vertex_masses();
+    // `discardvisual`'s deletions, after every element has been built and
+    // checked, as MuJoCo's `IndexAssets` makes them (`user_model.cc:4976`).
+    if let Some(referenced) = &referenced {
+        builder.discard_visual(referenced);
+    }
 
     // Build final model
     let mut model = builder.build();

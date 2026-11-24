@@ -137,13 +137,9 @@ pub fn check_written_counts(meshes: &[MjcfMesh]) -> Result<()> {
 /// and each `convex` mesh. MuJoCo marks a `convex` mesh only where a mesh or
 /// SDF geom names it, and crashes on one that none names, reading the hull it
 /// did not make (registry `D-MESH-CONVEX-UNNAMED`); this crate makes the hull
-/// of every `convex` mesh. Read on the model after this crate's
-/// `discardvisual` has dropped its geoms, where MuJoCo marks the meshes
-/// before it discards any (`user_model.cc:4906-4923`, `:4976`): a geom it
-/// discards is visual and in no `<pair>`, so it marks a mesh only through
-/// `convex`, which this set holds anyway, but for a `<pair>` naming a
-/// discarded geom, refused here (ledger L342), and a mesh only discarded
-/// geoms name, dropped here before its hull is made (ledger L336).
+/// of every `convex` mesh. Read on the whole model, before `discardvisual`
+/// deletes anything, as MuJoCo marks the meshes (`user_model.cc:4906-4923`,
+/// before `:4976`).
 pub fn meshes_needing_a_hull(mjcf: &MjcfModel) -> HashSet<String> {
     let paired: HashSet<&str> = mjcf
         .contact
@@ -183,9 +179,8 @@ pub fn meshes_needing_a_hull(mjcf: &MjcfModel) -> HashSet<String> {
 /// of type `sdf` names, whatever its `contype` and `conaffinity`, as
 /// `mjCModel::IndexAssets` marks them (`user_model.cc:1885-1900`) in its
 /// first call (`:4899`), before its second (`:4976`) discards visual geoms
-/// (`:1987-2023`). Read on the model before this
-/// crate's `discardvisual`, so a mesh a discarded visual SDF geom names gets
-/// its octree where another geom keeps the mesh.
+/// (`:1987-2023`): read on the whole model, so a mesh a discarded visual
+/// SDF geom names gets its octree where another geom keeps the mesh.
 pub fn meshes_needing_an_octree(mjcf: &MjcfModel) -> HashSet<String> {
     let mut needed = HashSet::new();
     let mut bodies: Vec<&MjcfBody> = vec![&mjcf.worldbody];
@@ -205,12 +200,21 @@ pub fn meshes_needing_an_octree(mjcf: &MjcfModel) -> HashSet<String> {
 /// This crate's refusal of a mesh with a `<plugin>` (registry
 /// D-MESH-PLUGIN): MuJoCo makes such a mesh, or the field of a geom of type
 /// `sdf` over it, from the plugin, and sim-core runs no MuJoCo plugin. The
-/// first such mesh in asset order; `None` where there is none.
-pub fn plugin_fault(mjcf: &MjcfModel) -> Option<MjcfError> {
-    mjcf.meshes.iter().find(|m| m.plugin).map(|m| {
-        MjcfError::unsupported("a <plugin> on a mesh (registry D-MESH-PLUGIN)")
-            .at(Location::named(ElementKind::Mesh, &m.name))
-    })
+/// first such mesh in asset order that `discardvisual` keeps (with
+/// `referenced`, each mesh a geom that is not visual names); `None` where
+/// there is none.
+pub fn plugin_fault(
+    mjcf: &MjcfModel,
+    referenced: Option<&super::discard::Referenced>,
+) -> Option<MjcfError> {
+    let kept = |name: &str| referenced.is_none_or(|r| r.keeps_mesh(name));
+    mjcf.meshes
+        .iter()
+        .find(|m| m.plugin && kept(&m.name))
+        .map(|m| {
+            MjcfError::unsupported("a <plugin> on a mesh (registry D-MESH-PLUGIN)")
+                .at(Location::named(ElementKind::Mesh, &m.name))
+        })
 }
 
 /// A mesh's mass properties as MuJoCo 3.5.0's `mjCMesh::Process` leaves
