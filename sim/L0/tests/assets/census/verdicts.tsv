@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 2069
+# agree_floor 2070
 001bc4149d608b24	agree
 002cac6fc120ff66	both-refuse
 00308b83da9d8bab	agree
@@ -361,12 +361,14 @@
 183993803dcf70bc	both-refuse
 1868a1043aa6a2ba	agree
 186ffef7376d53f3	agree
+1873cec279c513eb	model:tendon_lengthspring;dyn:agree	divergence=D-FUSESTATIC-PAIR-GEOM
 187f4d695fa027ea	both-refuse
 188b06a2b3bf8554	agree
 18999be5797fffdb	model:actuator_lengthrange;dyn:agree
 189dc6293d306d57	both-refuse
 18b83da96a04de6e	agree
 18c2403bdbdfff19	agree
+18dd364102cb29ca	mj-refuses	divergence=D-TUPLE-UNCHECKED
 18de486624189c4f	both-refuse
 1908a4ce56c650b1	both-refuse
 190b172f453937bb	both-refuse
@@ -1584,6 +1586,7 @@
 68da7b59b5d7ae99	agree
 68e14d56d0683686	agree
 68f4e6888ca70cca	agree
+68fa44ac2ead58e8	both-refuse
 68fb762f7008acc1	both-refuse
 691ffdf65e566a59	agree
 693fd9b061e88237	agree
@@ -1645,6 +1648,7 @@
 6d26f6b9ee7620ac	both-refuse
 6d3833565c250c8f	ours-refused	divergence=D-MUSCLE-NEGATIVE
 6d39d833f3f392a7	agree
+6d3de651b3f7a571	both-refuse
 6d6e589c0b60e74c	agree
 6d8148b0f0e5d47a	both-refuse
 6dab2f507783c394	both-refuse
@@ -1900,6 +1904,7 @@
 7ed4f697e9d99582	agree
 7edb38282ceaf0f3	agree
 7edb6158bbbd963c	both-refuse
+7ee0855394bb30ff	model:ngeom	divergence=D-FUSESTATIC-PAIR-GEOM
 7ef33e6abd7ad54b	agree
 7ef4bd1c0009e22f	both-refuse
 7ef5994720913321	agree
@@ -2423,6 +2428,7 @@ a45eaff80c3c2dd5	both-refuse
 a46fe5f21d90b24a	both-refuse
 a471409f7847657f	both-refuse
 a478ee6ac7fc453e	agree
+a4866a22302bdd45	both-refuse
 a4a09efb00404429	ours-refused	divergence=D-PAIR-NO-GEOM
 a4a583feb464cacf	both-refuse
 a4a69b6b5718a06d	agree
@@ -2454,6 +2460,7 @@ a66b9c0ed9f55150	agree
 a675d28a8b60fce5	both-refuse
 a679573af3dd9861	both-refuse
 a69fdcd96d70baf2	mj-refuses
+a6ae5366a0305b6b	both-refuse
 a6b079c0ffc2cc8c	both-refuse
 a6b4bb51d44ed0a3	agree
 a6c0fbbadb09e283	agree
@@ -3014,6 +3021,7 @@ cbd7a05e81b3f9b0	agree
 cbd9eb7f3fc4f781	agree
 cc008402b7517ae1	agree
 cc0476fa66b8e878	agree
+cc0802ce6edb2b18	both-refuse
 cc0ea94d49c808ea	both-refuse
 cc24287a964cb513	both-refuse
 cc56ed180bc81143	agree
@@ -3091,6 +3099,7 @@ d0663fa9a18d9138	agree
 d08a1384c3ac92df	both-refuse
 d0a16d7523804df2	agree
 d0a5404e535a1291	agree
+d0b14161fd69e7ae	both-refuse
 d0faee34da88b6d9	agree
 d1041f3e7c2eca78	both-refuse
 d1055c5d214f5e3f	ours-refused	divergence=D-TENDON-ARMATURE-NEGATIVE
@@ -3260,6 +3269,7 @@ dc960c6ac9cae4f8	agree
 dc9fc30466a090b8	both-refuse
 dcd76824d776169d	agree
 dcd9a43af9d2bfe9	both-refuse
+dcf0dcea87949bf5	both-refuse
 dcfa08abb3a11d19	agree
 dd03fa030cb2a169	both-refuse
 dd1252c1ec881f35	agree
@@ -3678,6 +3688,7 @@ f8ada536b0021d09	agree
 f8b01d7b0d8e60c4	agree
 f8ce638fc99a7c66	agree
 f8d06ca0b27a6381	both-refuse
+f8d264db87f2e485	agree
 f8e019b5144ff49c	agree
 f92cb20398502e6d	both-refuse
 f933847483f45d7e	agree

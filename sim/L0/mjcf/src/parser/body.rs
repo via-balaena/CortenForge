@@ -63,10 +63,13 @@ pub(super) fn parse_worldbody<R: BufRead>(reader: &mut Reader<R>, empty: bool) -
                         worldbody.items.push(MjcfItem::Flexcomp);
                     }
                     tag @ (b"camera" | b"light") => {
-                        // Its `target` alone, which `fusestatic` reads.
-                        worldbody
-                            .targets
-                            .extend(Attrs::new(e)?.string("target").filter(|t| !t.is_empty()));
+                        // Its `target` alone: this crate makes no camera or light.
+                        let target = Attrs::new(e)?.string("target").filter(|t| !t.is_empty());
+                        if tag == b"camera" {
+                            worldbody.camera_targets.extend(target);
+                        } else {
+                            worldbody.light_targets.extend(target);
+                        }
                         skip_element(reader, tag, child_empty)?;
                     }
                     tag @ (b"replicate" | b"attach") => return Err(attach_refusal(tag)),
@@ -158,9 +161,13 @@ pub(super) fn parse_body<R: BufRead>(
                     }
                     b"plugin" => body.plugin = Some(parse_plugin_ref(reader, e, child_empty)?),
                     tag @ (b"camera" | b"light") => {
-                        // Its `target` alone, which `fusestatic` reads.
-                        body.targets
-                            .extend(Attrs::new(e)?.string("target").filter(|t| !t.is_empty()));
+                        // Its `target` alone: this crate makes no camera or light.
+                        let target = Attrs::new(e)?.string("target").filter(|t| !t.is_empty());
+                        if tag == b"camera" {
+                            body.camera_targets.extend(target);
+                        } else {
+                            body.light_targets.extend(target);
+                        }
                         skip_element(reader, tag, child_empty)?;
                     }
                     tag @ (b"replicate" | b"attach") => return Err(attach_refusal(tag)),
@@ -448,10 +455,13 @@ pub(super) fn parse_frame<R: BufRead>(
                             "skipping <{}> inside <frame>: camera/light not yet supported",
                             String::from_utf8_lossy(tag)
                         );
-                        // Its `target` alone, which `fusestatic` reads.
-                        frame
-                            .targets
-                            .extend(Attrs::new(e)?.string("target").filter(|t| !t.is_empty()));
+                        // Its `target` alone: this crate makes no camera or light.
+                        let target = Attrs::new(e)?.string("target").filter(|t| !t.is_empty());
+                        if tag == b"camera" {
+                            frame.camera_targets.extend(target);
+                        } else {
+                            frame.light_targets.extend(target);
+                        }
                         skip_element(reader, tag, child_empty)?;
                     }
                     tag @ (b"joint" | b"freejoint" | b"inertial") => {

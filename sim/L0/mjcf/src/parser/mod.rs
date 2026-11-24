@@ -320,7 +320,8 @@ fn parse_section<R: BufRead>(
             model.worldbody.composites.extend(wb.composites);
             model.worldbody.flexcomps.extend(wb.flexcomps);
             model.worldbody.items.extend(wb.items);
-            model.worldbody.targets.extend(wb.targets);
+            model.worldbody.camera_targets.extend(wb.camera_targets);
+            model.worldbody.light_targets.extend(wb.light_targets);
         }
         b"actuator" => {
             let actuators = parse_actuators(reader, empty)?;

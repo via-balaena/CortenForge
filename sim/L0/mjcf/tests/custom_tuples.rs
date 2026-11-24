@@ -50,3 +50,16 @@ fn a_tuples_elements_are_not_checked() {
         assert!(load_model(doc).is_ok(), "{doc}");
     }
 }
+
+/// A tuple's `xbody` element keeps no body from fusion: MuJoCo 3.5.0 makes no
+/// map of `xbody` names, so it fuses the static body `s` the element names,
+/// then refuses the tuple ("unrecognized object 's' in tuple 0", measured).
+/// Here `s` is fused, and the tuple, whose elements are not checked
+/// (registry `D-TUPLE-UNCHECKED`), loads.
+#[test]
+fn a_tuples_xbody_element_keeps_no_body() {
+    let m = load_model(
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 0.5"><geom size="0.2"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody><custom><tuple name="t"><element objtype="xbody" objname="s"/></tuple></custom></mujoco>"#,
+    );
+    assert_eq!(m.map(|m| m.nbody).ok(), Some(2), "s fused");
+}

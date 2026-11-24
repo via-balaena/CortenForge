@@ -2523,12 +2523,17 @@ pub struct MjcfFrame {
     /// document writes them, one entry each, as [`MjcfBody::items`] lists a
     /// body's: the frame's contents take its place among its holder's.
     pub items: Vec<MjcfItem>,
-    /// The bodies its cameras and lights name as their `target`, read for
-    /// `fusestatic` alone, which keeps a body one names (MuJoCo 3.5.0
-    /// resolves a camera's and a light's target before it fuses a body,
-    /// `user_model.cc:4245-4246`); this crate makes no camera or light.
+    /// The bodies its cameras name as their `target`, and its lights
+    /// (`light_targets`): this crate makes no camera or light, and reads
+    /// them for the target alone, which MuJoCo 3.5.0 refuses where it names
+    /// no body ("unknown target body in camera", `user_objects.cc:4073-4082`)
+    /// and resolves before it fuses a body (`user_model.cc:4245-4246`), so
+    /// that `fusestatic` keeps a body one names.
     #[cfg_attr(feature = "serde", serde(default))]
-    pub targets: Vec<String>,
+    pub camera_targets: Vec<String>,
+    /// The bodies its lights name as their `target` (`camera_targets`).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub light_targets: Vec<String>,
 }
 
 impl Default for MjcfFrame {
@@ -2549,7 +2554,8 @@ impl Default for MjcfFrame {
             composites: Vec::new(),
             flexcomps: Vec::new(),
             items: Vec::new(),
-            targets: Vec::new(),
+            camera_targets: Vec::new(),
+            light_targets: Vec::new(),
         }
     }
 }
@@ -2915,12 +2921,17 @@ pub struct MjcfBody {
     /// body's pose (`:2474`) and before it fuses static bodies
     /// (`user_model.cc:4932-4937`). `None` as read.
     pub pose_as_written: Option<(Vector3<f64>, Vector4<f64>)>,
-    /// The bodies its cameras and lights name as their `target`, read for
-    /// `fusestatic` alone, which keeps a body one names (MuJoCo 3.5.0
-    /// resolves a camera's and a light's target before it fuses a body,
-    /// `user_model.cc:4245-4246`); this crate makes no camera or light.
+    /// The bodies its cameras name as their `target`, and its lights
+    /// (`light_targets`): this crate makes no camera or light, and reads
+    /// them for the target alone, which MuJoCo 3.5.0 refuses where it names
+    /// no body ("unknown target body in camera", `user_objects.cc:4073-4082`)
+    /// and resolves before it fuses a body (`user_model.cc:4245-4246`), so
+    /// that `fusestatic` keeps a body one names.
     #[cfg_attr(feature = "serde", serde(default))]
-    pub targets: Vec<String>,
+    pub camera_targets: Vec<String>,
+    /// The bodies its lights name as their `target` (`camera_targets`).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub light_targets: Vec<String>,
     /// Explicit inertial properties.
     pub inertial: Option<MjcfInertial>,
     /// Joints attached to this body.
@@ -2978,7 +2989,8 @@ impl Default for MjcfBody {
             xyaxes: None,
             zaxis: None,
             pose_as_written: None,
-            targets: Vec::new(),
+            camera_targets: Vec::new(),
+            light_targets: Vec::new(),
             inertial: None,
             joints: Vec::new(),
             geoms: Vec::new(),

@@ -83,7 +83,8 @@ fn expand_body(body: &mut MjcfBody, own: Option<MjcfError>, compiler: &MjcfCompi
                 // body's (`fusestatic` reads them).
                 let mut frames = vec![&frame];
                 while let Some(f) = frames.pop() {
-                    body.targets.extend(f.targets.iter().cloned());
+                    body.camera_targets.extend(f.camera_targets.iter().cloned());
+                    body.light_targets.extend(f.light_targets.iter().cloned());
                     frames.extend(&f.frames);
                 }
                 dissolve(frame, None, &mut placed, &mut faults, &body.name, compiler);

@@ -1,9 +1,9 @@
 //! `fusestatic` as MuJoCo 3.5.0 makes it (book Rigid-loading L42; ledger
 //! L250, L253, L255, L343, L361, L373, L388, L406, L422, L425, L438): once
-//! every body is built and checked, each static body that no element names
-//! fused into its parent, its geoms, sites and children moved in MuJoCo's
-//! arithmetic, its mass and inertia added to its parent's, then every body,
-//! geom and site numbered again.
+//! every body is built and checked, each static body fused into its parent
+//! unless resolving the other elements' references keeps it, its geoms,
+//! sites and children moved in MuJoCo's arithmetic, its mass and inertia
+//! added to its parent's, then every body, geom and site numbered again.
 //!
 //! Every expected value was printed by MuJoCo 3.5.0 on the census's unfused
 //! oracle (2026-11-24), but the fixtures' dynamics, which MuJoCo does not
@@ -1373,6 +1373,86 @@ const CASES: &[(&str, Expect)] = &[
             qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
         }),
     ),
+    // a tendon's wrapped geom found through MuJoCo's stale geom map, a box: n kept (round 1 RW-1); MuJoCo's tendon then wraps p0, the geom at s1's old index (D-FUSESTATIC-PAIR-GEOM), this crate's s1
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><site name="sb" pos="0 0 3"/><body name="p" pos="0 0 1"><joint name="hp" type="hinge" axis="0 1 0"/><geom name="p0" size="0.1"/><site name="sa" pos="0.1 0 0"/><body name="s1b" pos="0.3 0 0"><joint name="hs" type="hinge" axis="0 1 0"/><geom name="s1" size="0.05"/></body><body pos="-0.3 0 0"><geom name="b0" type="box" size="0.05 0.05 0.05"/></body></body><body name="n" pos="2 0 1"><geom name="n0" size="0.1"/></body><body pos="3 0 1"><geom name="c0" size="0.1"/></body></worldbody><tendon><spatial name="t"><site site="sa"/><geom geom="s1"/><site site="sb"/></spatial></tendon></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "p", "s1b", "n"],
+            body_parent: &[0, 0, 1, 0],
+            body_pos: &[
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.3, 0.0, 0.0],
+                [2.0, 0.0, 1.0],
+            ],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[0, 1, 1, 2, 3],
+            geom_pos: &[
+                [3.0, 0.0, 1.0],
+                [0.0, 0.0, 0.0],
+                [-0.3, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            geom_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            site_body: &[0, 1],
+            site_pos: &[[0.0, 0.0, 3.0], [0.1, 0.0, 0.0]],
+            site_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[
+                0.0,
+                5.188790204786391,
+                0.5235987755982989,
+                4.188790204786391,
+            ],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.09107674386362617,
+                    0.09107674386362617,
+                    0.018421827485812236,
+                ],
+                [
+                    0.000523598775598299,
+                    0.000523598775598299,
+                    0.000523598775598299,
+                ],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[
+                [0.0, 0.0, 0.0],
+                [-0.05781694540728695, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [
+                    0.5000000000000007,
+                    0.5000000000000007,
+                    0.5000000000000007,
+                    0.5000000000000007,
+                ],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0],
+        }),
+    ),
     // a negative density beside an <inertial>: no geom mass checked, loads
     (
         r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><geom type="box" size="0.1 0.05 0.02"/><body name="s" pos="0.3 0 0"><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><geom size="0.05" density="-5"/></body></body></worldbody></mujoco>"#,
@@ -1461,6 +1541,41 @@ const CASES: &[(&str, Expect)] = &[
             "error 'inertia must have positive eigenvalues' in fusing static body inertias",
         ),
     ),
+    // MuJoCo: "Error: unrecognized name 's' of sensorized object"
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 0.5"><geom size="0.2"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody><sensor><framepos objtype="xbody" objname="s"/></sensor></mujoco>"#,
+        Expect::Refused("unknown body 's' (sensor #0)"),
+    ),
+    // MuJoCo: "Error: unrecognized name 's' of object"
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 0.5"><geom size="0.2"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody><sensor><framepos objtype="body" objname="f" reftype="xbody" refname="s"/></sensor></mujoco>"#,
+        Expect::Refused("unknown body 's' (sensor #0)"),
+    ),
+    // MuJoCo: "Error: unrecognized name 's' of sensorized object"
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 0.5"><geom size="0.2"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody><sensor><user objtype="xbody" objname="s" dim="1"/></sensor></mujoco>"#,
+        Expect::Refused("unknown body 's' (sensor #0)"),
+    ),
+    // MuJoCo: "Error: unknown target body in camera"
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="t" pos="0 0 1"><geom size="0.1" contype="0" conaffinity="0"/></body><camera name="cam" mode="targetbody" target="nobody" pos="1 1 1"/><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("unknown target body in camera"),
+    ),
+    // MuJoCo: "Error: unknown target body in light"
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="t" pos="0 0 1"><geom size="0.1" contype="0" conaffinity="0"/></body><light name="l" mode="targetbody" target="nobody" pos="1 1 1"/><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("unknown target body in light"),
+    ),
+    // MuJoCo: "Error: user has more values than nuser_body in body"
+    (
+        r#"<mujoco><compiler fusestatic="true"/><size nuser_body="1"/><worldbody><body name="p" pos="0 0 1"><joint type="hinge"/><geom size="0.1"/><body pos="0.3 0 0" user="1 2 3"><geom size="0.05"/></body></body></worldbody></mujoco>"#,
+        Expect::Refused("user data exceeds nuser_body=1"),
+    ),
+    // MuJoCo: "Error: user has more values than nuser_body in body"
+    (
+        r#"<mujoco><compiler fusestatic="true"/><size nuser_body="1"/><worldbody><body name="p" pos="0 0 1" user="1 2"><joint name="h" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0 0 0"/><body name="s" pos="0 0 0"><inertial pos="0 0 0" mass="1" diaginertia="0 0 0"/></body></body></worldbody></mujoco>"#,
+        Expect::Refused("user data exceeds nuser_body=1"),
+    ),
 ];
 
 const FIXTURES: &[&str] = &[
@@ -1476,8 +1591,7 @@ const FIXTURES: &[&str] = &[
 
 /// 0 on macOS arm64, where MuJoCo's values were printed, and 1e-12 of an
 /// array's largest entry elsewhere: a turned body's `euler` passes through
-/// `sin` and `cos`, and an inertia's principal axes through `sqrt` and
-/// `atan2`, whose last bits are the platform's libm's.
+/// `sin` and `cos`, whose last bits are the platform's libm's.
 const TOLERANCE: f64 = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
     0.0
 } else {
@@ -1592,8 +1706,8 @@ fn each_document_fuses_as_mujoco() {
 
 /// A fused model's dynamics are the unfused one's (book L42's test, registry
 /// `D-FUSESTATIC-INERTIA`): `qacc` at the first `forward`, fused against the
-/// same document unfused, within 1e-5 of the unfused (the principal axes'
-/// `eig3` leaves 7.3e-8 here). MuJoCo 3.5.0 adds a fused child's inertia in
+/// same document unfused, within 1e-5 of the unfused, relative (the
+/// principal axes' `eig3` leaves 7.3e-8 here). MuJoCo 3.5.0 adds a fused child's inertia in
 /// the other frame order and is off by 4.33, -23.5, -0.194 and 1.68 on these
 /// four (each document's comment).
 #[test]
@@ -1614,5 +1728,58 @@ fn a_fused_models_dynamics_are_the_unfused_ones() {
             (f - u).abs() <= 1e-5 * u.abs(),
             "fused qacc {f}, unfused {u}: {doc}"
         );
+    }
+}
+
+/// A fused body's user data counts toward the automatic `nuser_body`, as
+/// MuJoCo 3.5.0 sizes user data before it fuses (`SetNuser`,
+/// `user_model.cc:4926`; measured: 3).
+#[test]
+fn a_fused_bodys_user_data_sizes_nuser_body() {
+    let m = load_model(
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint type="hinge"/><geom size="0.1"/><body pos="0.3 0 0" user="1 2 3"><geom size="0.05"/></body></body></worldbody></mujoco>"#,
+    )
+    .unwrap();
+    assert_eq!(
+        (m.nbody, m.nuser_body),
+        (2, 3),
+        "the body fused, its user data counted"
+    );
+}
+
+/// A frame sensor with no `objtype` naming a site, which MuJoCo refuses and
+/// this crate reads as that site (registry `D-FRAME-SENSOR-OBJTYPE`), keeps
+/// no body from fusion: the two named static bodies fuse, as they do for
+/// the same sensor with `objtype="site"` (MuJoCo: nbody 2).
+#[test]
+fn a_frame_sensor_naming_a_site_keeps_no_body() {
+    let doc = |objtype: &str| {
+        format!(
+            r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 1"><geom size="0.1"/></body><body name="u" pos="1 0 1"><geom size="0.1"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/><site name="fs"/></body></worldbody><sensor><framepos{objtype} objname="fs"/></sensor></mujoco>"#
+        )
+    };
+    let unwritten = load_model(&doc("")).unwrap();
+    let site = load_model(&doc(r#" objtype="site""#)).unwrap();
+    assert_eq!(
+        (unwritten.nbody, site.nbody),
+        (2, 2),
+        "both static bodies fused"
+    );
+}
+
+/// A static body holding a camera or a light is fused, which stops MuJoCo
+/// 3.5.0 (SIGSEGV: `FuseStatic` deletes the body and its cameras and lights
+/// with it, then compiles them, registry `D-FUSESTATIC-CAMERA`): this crate
+/// makes no camera or light, and loads it. Each document is a `format!`
+/// template, which the parity census does not extract: its oracle cannot
+/// write a golden for a document that stops it.
+#[test]
+fn a_fused_bodys_camera_or_light_is_no_fault() {
+    for element in ["camera", "light"] {
+        let doc = format!(
+            r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 1"><geom size="0.1"/><{element} name="e" pos="0 0 1"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody></mujoco>"#
+        );
+        let m = load_model(&doc).unwrap();
+        assert_eq!(m.nbody, 2, "the body fused: {doc}");
     }
 }

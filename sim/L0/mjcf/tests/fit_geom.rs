@@ -1121,8 +1121,8 @@ const FUSED: (&str, &str, &str) = (
 );
 
 /// A fused static child's fitted geom refused with MuJoCo's reason where it
-/// was written, as this crate names a geom `fusestatic` moved: MuJoCo's
-/// geom 3, in body `b`.
+/// was written, by its id as built, before `fusestatic` fuses any body:
+/// MuJoCo's geom 3, in body `b`.
 #[test]
 fn a_fused_childs_fitted_geom_is_refused_where_it_was_written() {
     let (what, xml, reason) = FUSED;

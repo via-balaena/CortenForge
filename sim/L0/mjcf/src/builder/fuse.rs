@@ -1,47 +1,56 @@
 //! `fusestatic`, as MuJoCo 3.5.0's `mjCModel::FuseStatic` makes it
 //! (`user_model.cc:4237-4381`): once every body is built and checked, each
 //! body with its geoms, sites and inertia (`mjCBody::Compile`, `:4931-4934`),
-//! and before any other element is (`:4936-4945`), so that tendons,
-//! actuators, equalities, sensors and contacts name the fused bodies.
+//! and before the flexes, excludes, equalities, tendons, actuators, sensors
+//! and contact pairs are made (`:4947-4962`), so that they name the fused
+//! bodies.
 //!
 //! Body by body in the tree's preorder, a body with no joint that is not a
-//! mocap body and that no element names is fused into its parent: its mass
-//! and inertia added to the parent's, unless the parent is the world or the
-//! body's mass is below mjMINVAL (`AccumulateInertia`); its children put in
-//! its place among the parent's; its geoms and sites appended to the
-//! parent's; each child, geom and site composed with the body's pose
-//! (`changeframe`, `:4160-4170`, in `mjuu_frameaccum`'s arithmetic). Then
-//! every body, geom and site is numbered again in the tree's preorder
-//! (`FuseReindex`, `:4173-4189`).
+//! mocap body is fused into its parent, unless resolving the other elements'
+//! references keeps it ([`ModelBuilder::fuse_static`]): its mass and inertia
+//! added to the parent's, unless the parent is the world or the body's mass
+//! is below mjMINVAL (`AccumulateInertia`); its children put in its place
+//! among the parent's; its geoms and sites appended to the parent's; each
+//! child, geom and site composed with the body's pose (`changeframe`,
+//! `:4160-4168`, in `mjuu_frameaccum`'s arithmetic). Then every body, geom
+//! and site is numbered again in the tree's preorder (`FuseReindex`,
+//! `:4173-4189`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
-use sim_core::MjJointType;
+use sim_core::{GeomType, MjJointType};
 
 use super::ModelBuilder;
 use super::eig3::full_inertia;
 use super::frame::frame_accum_child;
 use super::mass::{MJ_MINVAL, global_inertia, off_center};
-use crate::error::{MjcfError, Result};
-use crate::types::{MjcfModel, MjcfSensor, MjcfSensorType};
+use crate::error::{ElementKind, Location, MjcfError, Result};
+use crate::types::{MjcfBody, MjcfModel, MjcfSensor, MjcfSensorType, SpatialPathElement};
 
 /// The names `FuseStatic` resolves before it fuses a named body
 /// (`user_model.cc:4243-4254`): a body whose name one of them needs, or one
 /// the resolution throws on, is kept.
 pub struct FuseReferences {
     /// Each body a camera, light, skin, exclude, equality, actuator, sensor
-    /// or tuple names, as each resolves its references.
+    /// or tuple names by its name (`mjOBJ_BODY`). An `xbody` reference keeps
+    /// none: MuJoCo makes no map of `xbody` names (`ProcessLists`,
+    /// `user_model.cc:4408`), so it finds the body by name in the list,
+    /// where the body being tried still is, and fuses it.
     bodies: Vec<String>,
     /// The site of each force and torque sensor: the body holding it is
     /// kept ("cannot fuse a body used by a force/torque sensor",
-    /// `:4220-4234`).
+    /// `:4219-4232`).
     force_torque_sites: Vec<String>,
+    /// The geom each spatial tendon wraps: MuJoCo's tendon resolution throws
+    /// where the geom its name finds is neither a sphere nor a cylinder
+    /// (`mjCWrap::ResolveReferences`, `user_objects.cc:6536-6541`).
+    wrap_geoms: Vec<String>,
 }
 
 impl FuseReferences {
-    /// The references of `mjcf`'s elements that name bodies, and its force
-    /// and torque sensors' sites.
+    /// The references of `mjcf`'s elements that name bodies, its force and
+    /// torque sensors' sites and its tendons' wrapped geoms.
     pub fn of(mjcf: &MjcfModel) -> Self {
         let mut bodies = Vec::new();
         for connect in &mjcf.equality.connects {
@@ -59,11 +68,20 @@ impl FuseReferences {
         for skin in &mjcf.skins {
             bodies.extend(skin.bones.iter().map(|bone| bone.body.clone()));
         }
-        // The cameras' and lights' targets, wherever they are written: a
-        // frame's are its body's once frames are expanded.
+        // The cameras' and lights' targets, wherever they are written (a
+        // frame's are its body's once frames are expanded), and the tree's
+        // body and site names.
+        let (mut body_names, mut site_names) = (HashSet::new(), HashSet::new());
         let mut stack = vec![&mjcf.worldbody];
         while let Some(body) = stack.pop() {
-            bodies.extend(body.targets.iter().cloned());
+            bodies.extend(
+                body.camera_targets
+                    .iter()
+                    .chain(&body.light_targets)
+                    .cloned(),
+            );
+            body_names.insert(body.name.as_str());
+            site_names.extend(body.sites.iter().map(|site| site.name.as_str()));
             stack.extend(&body.children);
         }
         for tuple in &mjcf.tuples {
@@ -71,7 +89,7 @@ impl FuseReferences {
                 tuple
                     .elements
                     .iter()
-                    .filter(|element| matches!(element.objtype.as_str(), "body" | "xbody"))
+                    .filter(|element| element.objtype == "body")
                     .map(|element| element.objname.clone()),
             );
         }
@@ -83,22 +101,34 @@ impl FuseReferences {
             ) {
                 force_torque_sites.extend(sensor.objname.iter().cloned());
             }
-            bodies.extend(sensor_bodies(sensor));
+            bodies.extend(sensor_bodies(sensor, |name| {
+                body_names.contains(name) && !site_names.contains(name)
+            }));
         }
+        let wrap_geoms = mjcf
+            .tendons
+            .iter()
+            .flat_map(|tendon| &tendon.path_elements)
+            .filter_map(|element| match element {
+                SpatialPathElement::Geom { geom, .. } => Some(geom.clone()),
+                _ => None,
+            })
+            .collect();
         Self {
             bodies,
             force_torque_sites,
+            wrap_geoms,
         }
     }
 }
 
-/// The bodies a sensor names: a subtree sensor's object; a frame or user
-/// sensor's object and a frame sensor's reference of type `body` or `xbody`;
-/// a geom-distance sensor's bodies. A frame sensor with no `objtype`, which
-/// MuJoCo refuses and this crate resolves by name (D-FRAME-SENSOR-OBJTYPE),
-/// is taken as naming a body.
-fn sensor_bodies(sensor: &MjcfSensor) -> Vec<String> {
-    let is_body = |kind: Option<&str>| matches!(kind, Some("body" | "xbody"));
+/// The bodies a sensor names by their name: a subtree sensor's object; a
+/// frame or user sensor's object and a frame sensor's reference of type
+/// `body`; a geom-distance sensor's bodies. A frame sensor with no
+/// `objtype`, which MuJoCo refuses and this crate reads by its name, a site
+/// first (D-FRAME-SENSOR-OBJTYPE), names a body where `names_a_body`.
+fn sensor_bodies(sensor: &MjcfSensor, names_a_body: impl Fn(&str) -> bool) -> Vec<String> {
+    let is_body = |kind: Option<&str>| kind == Some("body");
     let mut names = Vec::new();
     match sensor.sensor_type {
         MjcfSensorType::Subtreecom
@@ -116,7 +146,9 @@ fn sensor_bodies(sensor: &MjcfSensor) -> Vec<String> {
         | MjcfSensorType::Framelinacc
         | MjcfSensorType::Frameangacc => {
             let objtype = sensor.objtype.as_deref();
-            if objtype.is_none() || is_body(objtype) {
+            let unwritten =
+                objtype.is_none() && sensor.objname.as_deref().is_some_and(&names_a_body);
+            if unwritten || is_body(objtype) {
                 names.extend(sensor.objname.iter().cloned());
             }
             if is_body(sensor.reftype.as_deref()) {
@@ -136,6 +168,31 @@ fn sensor_bodies(sensor: &MjcfSensor) -> Vec<String> {
     names
 }
 
+/// MuJoCo 3.5.0's refusal of a camera's or a light's target that names no
+/// body ("unknown target body in camera", "… in light",
+/// `user_objects.cc:4073-4082`, `:4240-4257`), made as it compiles the body
+/// holding it, before it fuses any (`:4111`, `:4281`): the first in the
+/// tree's preorder, a body's cameras before its lights. `bodies` is the
+/// tree's body name map.
+pub fn target_fault(world: &MjcfBody, bodies: &HashMap<String, usize>) -> Option<MjcfError> {
+    let mut stack = vec![world];
+    while let Some(body) = stack.pop() {
+        for (targets, of) in [
+            (&body.camera_targets, "camera"),
+            (&body.light_targets, "light"),
+        ] {
+            if targets.iter().any(|t| !bodies.contains_key(t)) {
+                return Some(
+                    MjcfError::invalid_model(format!("unknown target body in {of}"))
+                        .at(Location::named(ElementKind::Body, &body.name)),
+                );
+            }
+        }
+        stack.extend(body.children.iter().rev());
+    }
+    None
+}
+
 /// A body as `FuseStatic` moves it: its children, geoms and sites in its
 /// lists' order.
 #[derive(Clone, Default)]
@@ -152,11 +209,17 @@ impl ModelBuilder {
     ///
     /// Which bodies fuse is MuJoCo's loop over its body list: a named body
     /// is kept where one of `references` names it or where resolving them
-    /// throws. MuJoCo does not number its body names again until the loop
-    /// ends, so after each fusion a later body's name maps to an index one
-    /// too high, and a reference to one of the last bodies throws ("object
-    /// not found", `findobject`, `user_model.cc:1531-1552`): the body being
-    /// tried is kept. This is done as MuJoCo does it.
+    /// throws. MuJoCo does not number its names again until the loop ends,
+    /// so after k fusions a later body's name maps to an index k too high,
+    /// and a reference to one of the last k bodies throws ("object not
+    /// found", `findobject`, `user_model.cc:1531-1552`); its geom map goes
+    /// stale the same way as fusion moves geoms, so a tendon's wrapped geom
+    /// can find a geom that is neither a sphere nor a cylinder, and throw
+    /// (`user_objects.cc:6536-6541`): either keeps the body being tried.
+    /// Both are done as MuJoCo does them. A force or torque sensor's site is
+    /// looked up by its holder now: a fusion moves sites only from bodies
+    /// MuJoCo has already tried, so its stale site map finds a site on the
+    /// body being tried exactly where the sensor's site is.
     ///
     /// A fused body's inertia is added in its parent's frame as the body's
     /// pose composed with its inertial frame. MuJoCo composes them the
@@ -187,8 +250,8 @@ impl ModelBuilder {
         for (s, &b) in self.site_body.iter().enumerate() {
             nodes[b].sites.push(s);
         }
-        // MuJoCo's body list and its name map, each name at its index in the
-        // list when the loop starts; the site map likewise.
+        // MuJoCo's body list and its name maps, each name at its index in
+        // its list when the loop starts.
         let mut order: Vec<usize> = (0..nbody).collect();
         let mut body_ids: HashMap<String, usize> = self
             .body_name
@@ -196,14 +259,11 @@ impl ModelBuilder {
             .enumerate()
             .filter_map(|(b, name)| Some((name.clone()?, b)))
             .collect();
-        let site_ids: HashMap<String, usize> = self
-            .site_name
-            .iter()
-            .enumerate()
-            .filter_map(|(s, name)| Some((name.clone()?, s)))
-            .collect();
-        let mut site_list: Vec<usize> = (0..self.site_body.len()).collect();
+        let site_ids = index_of(&self.site_name);
+        let geom_ids = index_of(&self.geom_name);
         let mut site_holder = self.site_body.clone();
+        // MuJoCo's geom list as each fusion leaves it (`FuseReindex`).
+        let mut geom_list: Vec<usize> = (0..self.geom_type.len()).collect();
 
         let mut i = 1;
         while i < order.len() {
@@ -212,15 +272,24 @@ impl ModelBuilder {
             if let Some(name) = &name {
                 body_ids.remove(name);
                 let len = order.len();
+                let neither = |g: usize| {
+                    !matches!(
+                        self.geom_type[geom_list[g]],
+                        GeomType::Sphere | GeomType::Cylinder
+                    )
+                };
                 let throws = references
                     .bodies
                     .iter()
                     .any(|r| body_ids.get(r).is_none_or(|&id| id > len - 1))
-                    || references.force_torque_sites.iter().any(|s| {
-                        site_ids
-                            .get(s)
-                            .is_some_and(|&id| site_holder[site_list[id]] == b)
-                    });
+                    || references
+                        .force_torque_sites
+                        .iter()
+                        .any(|s| site_ids.get(s).is_none_or(|&id| site_holder[id] == b))
+                    || references
+                        .wrap_geoms
+                        .iter()
+                        .any(|g| geom_ids.get(g).is_none_or(|&id| neither(id)));
                 body_ids.insert(name.clone(), i);
                 if throws {
                     i += 1;
@@ -264,10 +333,9 @@ impl ModelBuilder {
             if let Some(name) = &name {
                 body_ids.remove(name);
             }
-            // `FuseReindex`: the site list in the fused tree's preorder.
-            site_list = preorder(&nodes)
+            geom_list = preorder(&nodes)
                 .into_iter()
-                .flat_map(|b| nodes[b].sites.clone())
+                .flat_map(|b| nodes[b].geoms.clone())
                 .collect();
         }
 
@@ -411,6 +479,15 @@ impl ModelBuilder {
             }
         }
     }
+}
+
+/// Each non-empty name of `names` to its index.
+fn index_of(names: &[Option<String>]) -> HashMap<String, usize> {
+    names
+        .iter()
+        .enumerate()
+        .filter_map(|(i, name)| Some((name.clone().filter(|n| !n.is_empty())?, i)))
+        .collect()
 }
 
 /// The bodies of the tree `nodes` holds, from the world, in preorder.

@@ -860,6 +860,22 @@ fn a_tuple_naming_a_visual_geom_keeps_it() {
     );
 }
 
+/// Under `fusestatic` a tuple's geom element is bound by its index from
+/// before the fusion, which moving a fused body's geoms renumbers: MuJoCo
+/// 3.5.0 binds the tuple naming the visual geom `v` to `g1`, so deletes `v`
+/// (measured: ngeom 2, `tuple_objid` 1); this crate keeps the geom the tuple
+/// names (registry `D-FUSESTATIC-PAIR-GEOM`).
+#[test]
+fn a_fused_models_tuple_holds_the_geom_it_names() {
+    let m = load_model(
+        r#"<mujoco><compiler discardvisual="true" fusestatic="true"/><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><body pos="0 0 0.3"><freejoint/><geom name="g1" size="0.1"/><geom name="v" size="0.05" pos="0.2 0 0" contype="0" conaffinity="0"/></body><body pos="1 0 0.3"><geom name="gs" size="0.1" contype="0" conaffinity="0"/></body></worldbody><custom><tuple name="t"><element objtype="geom" objname="v"/></tuple></custom></mujoco>"#,
+    )
+    .unwrap();
+    let mut names: Vec<&str> = m.geom_name_to_id.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["floor", "g1", "v"], "the tuple's geom kept");
+}
+
 /// A mesh with a `<plugin>`, which only its plugin makes (registry
 /// `D-MESH-PLUGIN`): one with no file that no geom names, which
 /// `discardvisual` deletes, is not built, and the document loads as MuJoCo

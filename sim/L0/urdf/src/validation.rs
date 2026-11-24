@@ -241,10 +241,9 @@ fn validate_mass_properties(robot: &UrdfRobot) -> Result<()> {
 
             // The triangle inequality (A + B >= C on the principal moments) is
             // not checked here: loading refuses a link that breaks it, as
-            // MuJoCo 3.5.0's own URDF import does. A link on a fixed joint is
-            // the exception: MuJoCo's import checks it before fusing it and
-            // refuses it, where `fusestatic` fuses it first here and it loads
-            // (ledger L373).
+            // MuJoCo 3.5.0's own URDF import does, a link on a fixed joint
+            // among them, which `fusestatic` checks before it fuses it, as
+            // MuJoCo's import does.
         }
     }
 
