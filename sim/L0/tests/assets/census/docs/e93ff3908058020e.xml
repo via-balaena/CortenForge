@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="a" pos="0 0 1" euler="0.1 0.2 0.3"><joint type="hinge" axis="0 1 0"/><geom type="box" size="0.1 0.05 0.05"/></body><body name="c" pos="0.3 0.1 1.2" euler="0.4 0 0.5"><freejoint/><geom type="box" size="0.05 0.05 0.05"/></body></worldbody><equality><weld body1="a" body2="c" torquescale="0.5"/></equality></mujoco>

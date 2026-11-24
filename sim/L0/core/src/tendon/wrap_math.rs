@@ -6,7 +6,7 @@
 
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::linalg::mju_dot;
-use crate::quat::{mul_mat_vec3, normalize3};
+use crate::quat::{mul_mat_t_vec3, mul_mat_vec3, normalize3};
 use nalgebra::{Matrix3, Vector3};
 use std::f64::consts::PI;
 
@@ -365,13 +365,6 @@ fn wrap_inside(end: &[f64; 4], radius: f64) -> Option<[f64; 2]> {
 /// `vec1 − vec2` (MuJoCo `mju_sub3`).
 fn sub3(vec1: &Vector3<f64>, vec2: &Vector3<f64>) -> [f64; 3] {
     [vec1.x - vec2.x, vec1.y - vec2.y, vec1.z - vec2.z]
-}
-
-/// `matᵀ · vec`, each component summed left to right (MuJoCo
-/// `mju_mulMatTVec3`, `engine_util_blas.c:171-180`).
-fn mul_mat_t_vec3(mat: &Matrix3<f64>, vec: &[f64; 3]) -> [f64; 3] {
-    let col = |c: usize| mat[(0, c)] * vec[0] + mat[(1, c)] * vec[1] + mat[(2, c)] * vec[2];
-    [col(0), col(1), col(2)]
 }
 
 /// `‖vec‖` (MuJoCo `mju_norm3`).

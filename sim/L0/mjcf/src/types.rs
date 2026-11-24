@@ -1891,10 +1891,17 @@ pub struct MjcfWeld {
     pub body1: String,
     /// Name of the second body (optional, defaults to world).
     pub body2: Option<String>,
-    /// Anchor point in body1's local frame.
+    /// Anchor point in body2's local frame, `eq_data[0..3]`; 0 where none
+    /// is written, as MuJoCo's reader leaves it.
     pub anchor: Vector3<f64>,
-    /// Relative position offset between the two anchor frames.
+    /// `relpose` as written, `eq_data[3..10]`: body1's anchor and the
+    /// relative quaternion. A quaternion of all 0 has both computed at
+    /// `qpos0`; any other is normalized and the position kept (`mj_setConst`,
+    /// `engine_setconst.c:810-829`).
     pub relpose: Option<[f64; 7]>,
+    /// `torquescale`, `eq_data[10]`: the scale of the orientation error
+    /// against the position error; MuJoCo's default 1 where none is written.
+    pub torquescale: Option<f64>,
     /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
     pub solimp: Option<Prefix<5>>,
     /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
@@ -1912,6 +1919,7 @@ impl Default for MjcfWeld {
             body2: None,
             anchor: Vector3::zeros(),
             relpose: None,
+            torquescale: None,
             solimp: None,
             solref: None,
             active: None,

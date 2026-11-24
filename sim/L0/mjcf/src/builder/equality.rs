@@ -81,6 +81,12 @@ pub fn connect_form(connect: &MjcfConnect) -> Result<ConnectForm<'_>> {
     })
 }
 
+/// An equality's data as MuJoCo 3.5.0's `mjs_defaultEquality` leaves it
+/// (`user_init.c:301-307`), before each kind's reader writes over part of
+/// it: `data[1]` 1 (a polynomial's linear coefficient) and `data[10]` 1 (a
+/// weld's torquescale).
+const DEFAULT_EQ_DATA: [f64; 11] = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+
 /// Where MuJoCo's `mj_local2Global` places a site, in its body's frame, as a
 /// point the connect's body form maps as `xmat·p + xpos`
 /// (`engine_core_util.c:849-865`): a site in its body's frame (`site_sameframe`
@@ -170,8 +176,8 @@ impl ModelBuilder {
     ///   `[3..6]` = the point in body2's local frame
     ///
     /// In the body form the first is the anchor written and the second is
-    /// computed so both map to the same world point at qpos0, matching
-    /// MuJoCo's `engine_setconst.c` behavior. The site form is kept as the
+    /// made at `qpos0` where the first lands ([`Model::compute_equality_data0`],
+    /// MuJoCo's `mj_setConst`). The site form is kept as the
     /// sites' bodies, sim-core's equality rows naming bodies where MuJoCo's
     /// name the sites (D-CONNECT-SITE): MuJoCo's site connect is
     /// `site_xpos1 − site_xpos2` (`engine_core_constraint.c:438-443`), and
@@ -191,6 +197,8 @@ impl ModelBuilder {
                 .copied()
                 .ok_or_else(|| MjcfError::undefined(ElementKind::Site, name))
         };
+        // A site-form connect's row is MuJoCo's zeros (`mj_setConst`,
+        // `engine_setconst.c:801-804`) until its points are set.
         let mut data = [0.0; 11];
         let (body1_id, body2_id) = match connect_form(connect)? {
             ConnectForm::Bodies {
@@ -203,13 +211,11 @@ impl ModelBuilder {
                 if body1_id == body2_id {
                     return Err(repeated("connect", "body2", body1, self.eq_type.len()));
                 }
+                // MuJoCo's default row (`data[10]` 1), the anchor written
+                // over its first three; the point in body2's frame is made
+                // at `qpos0` (`Model::compute_equality_data0`).
+                data = DEFAULT_EQ_DATA;
                 data[..3].copy_from_slice(anchor.as_slice());
-                // Auto-compute body2 anchor: convert body1 anchor to world, then to body2 frame.
-                let (p1, q1) = self.body_world_pose(body1_id);
-                let anchor_world = p1 + q1 * anchor;
-                let (p2, q2) = self.body_world_pose(body2_id);
-                let anchor_body2 = q2.inverse() * (anchor_world - p2);
-                data[3..6].copy_from_slice(anchor_body2.as_slice());
                 (body1_id, body2_id)
             }
             ConnectForm::Sites { site1, site2 } => {
@@ -242,16 +248,16 @@ impl ModelBuilder {
 
     /// Process a single Weld constraint (6 DOF pose constraint).
     ///
-    /// eq_data layout (matching MuJoCo's engine_setconst.c):
-    ///   `[0..3]` = anchor in body2's local frame (user-specified `anchor` attr)
-    ///   `[3..6]` = anchor in body1's local frame (auto-computed)
-    ///   `[6..10]` = relpose quaternion `[w,x,y,z]` = `neg(q1_ref) * q2_ref`
-    ///   `[10]` = torquescale, MuJoCo's default 1 (`user_init.c:307`); the
-    ///   attribute itself is not read yet (spec book, Rigid-loading L41)
+    /// eq_data as MuJoCo 3.5.0's reader writes it
+    /// (`xml_native_reader.cc:2149-2193`):
+    ///   `[0..3]` = `anchor`, in body2's frame (0 where none is written)
+    ///   `[3..10]` = `relpose` as written: body1's anchor and the relative
+    ///   quaternion `[w,x,y,z]` (0 where none is written)
+    ///   `[10]` = `torquescale`, MuJoCo's default 1 (`user_init.c:307`)
     ///
-    /// MuJoCo convention: the `anchor` XML attribute is in body2's frame.
-    /// Body1's anchor is auto-computed so both anchor points map to the same
-    /// world-space position at qpos0.
+    /// A relative quaternion of all 0 is made at `qpos0` with body1's anchor,
+    /// any other normalized ([`Model::compute_equality_data0`], MuJoCo's
+    /// `mj_setConst`).
     fn process_weld(&mut self, weld: &MjcfWeld) -> Result<()> {
         let body1_id = self
             .body_name_to_id
@@ -270,38 +276,16 @@ impl ModelBuilder {
             return Err(repeated("weld", "body2", &weld.body1, self.eq_type.len()));
         }
 
+        // As MuJoCo's reader writes it (`xml_native_reader.cc:2149-2193`):
+        // the anchor, `relpose` as written (0 where none is), `torquescale`
+        // (1 where none is); a relative quaternion of all 0 is made at
+        // `qpos0` with body1's anchor (`Model::compute_equality_data0`).
         let mut data = [0.0; 11];
-
-        let (pos1, quat1) = self.body_world_pose(*body1_id);
-        let (pos2, quat2) = self.body_world_pose(body2_id);
-
-        // Anchor is in body2's frame (MuJoCo convention). Convert to body1's frame.
-        let anchor_body2 = weld.anchor;
-        let world_point = pos2 + quat2 * anchor_body2;
-        let anchor_body1 = quat1.inverse() * (world_point - pos1);
-
-        data[0] = anchor_body2.x;
-        data[1] = anchor_body2.y;
-        data[2] = anchor_body2.z;
-        data[3] = anchor_body1.x;
-        data[4] = anchor_body1.y;
-        data[5] = anchor_body1.z;
-
+        data[..3].copy_from_slice(weld.anchor.as_slice());
         if let Some(relpose) = weld.relpose {
-            // User-specified relpose quaternion
-            data[6] = relpose[3]; // qw
-            data[7] = relpose[4]; // qx
-            data[8] = relpose[5]; // qy
-            data[9] = relpose[6]; // qz
-        } else {
-            // Auto-compute relpose: neg(q1) * q2
-            let rel_quat = quat1.inverse() * quat2;
-            data[6] = rel_quat.w;
-            data[7] = rel_quat.i;
-            data[8] = rel_quat.j;
-            data[9] = rel_quat.k;
+            data[3..10].copy_from_slice(&relpose);
         }
-        data[10] = 1.0;
+        data[10] = weld.torquescale.unwrap_or(1.0);
 
         let (active, solref, solimp) = (weld.active, weld.solref, weld.solimp);
 
@@ -349,6 +333,8 @@ impl ModelBuilder {
             ));
         }
 
+        // Up to eleven coefficients (registry `D-POLYCOEF-DEGREE`): `data[10]`
+        // is the degree-10 one, not MuJoCo's default 1.
         let mut data = [0.0; 11];
         for (i, &coef) in joint_eq.polycoef.iter().take(11).enumerate() {
             data[i] = coef;
@@ -439,7 +425,10 @@ impl ModelBuilder {
             ));
         }
 
+        // `data[10]` MuJoCo's default 1 (`user_init.c:307`), which the
+        // coupling, reading five coefficients, does not read.
         let mut data = [0.0; 11];
+        data[10] = 1.0;
         for (i, &coef) in ten_eq.polycoef.iter().take(5).enumerate() {
             data[i] = coef;
         }
@@ -564,7 +553,7 @@ impl ModelBuilder {
         self.eq_type.push(EqualityType::Flex);
         self.eq_obj1id.push(flex_id);
         self.eq_obj2id.push(usize::MAX);
-        self.eq_data.push([0.0; 11]);
+        self.eq_data.push(DEFAULT_EQ_DATA);
         self.eq_active.push(active);
         self.eq_solimp.push(solimp);
         self.eq_solref.push(solref);

@@ -3766,3 +3766,14 @@ c9593fa8989dd918	sim/L0/mjcf/tests/geom_masses.rs:614
 cd166537a600994b	sim/L0/mjcf/tests/geom_masses.rs:602
 d0a5404e535a1291	sim/L0/mjcf/tests/geom_masses.rs:596
 e2296b456c509964	sim/L0/mjcf/tests/geom_masses.rs:608
+7403de1d7f714ad0	sim/L0/mjcf/tests/equality_data.rs:152
+8d0ddefbf74c3652	sim/L0/mjcf/tests/equality_data.rs:23
+8de4646ebf80c247	sim/L0/mjcf/tests/equality_data.rs:135
+9b18e1458aef9825	sim/L0/mjcf/tests/equality_data.rs:118
+aa3c739837832de8	sim/L0/mjcf/tests/equality_data.rs:45
+beb193acc68cb55c	sim/L0/mjcf/tests/equality_data.rs:101
+cc8d8c3151a0848c	sim/L0/mjcf/tests/equality_data.rs:84
+dbd2b709b4119c47	sim/L0/mjcf/tests/equality_data.rs:40
+e3a70ad4c1b61c5c	sim/L0/mjcf/tests/equality_data.rs:50
+e93ff3908058020e	sim/L0/mjcf/tests/equality_data.rs:67
+83ebfc40adc5bbe5	sim/L0/mjcf/tests/equality_data.rs:170

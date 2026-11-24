@@ -129,6 +129,7 @@ pub(super) fn parse_weld_attrs(e: &BytesStart) -> Result<MjcfWeld> {
 
     // Parse relpose [x y z qw qx qy qz]
     weld.relpose = a.array("relpose")?;
+    weld.torquescale = a.real("torquescale")?;
 
     // Parse solver parameters
     weld.solimp = a.prefix("solimp")?;

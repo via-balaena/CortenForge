@@ -33,6 +33,7 @@ use crate::plugin::PluginCapabilityBit;
 use super::data::Data;
 use crate::forward::mj_fwd_position;
 use crate::island::{K_AWAKE, mj_sleep, mj_update_sleep_arrays, reset_sleep_state};
+use crate::quat::{mul_mat_t_vec3, mul_mat_vec3, mul_quat, neg_quat, normalize4};
 
 /// Why a model's history buffers cannot be initialised, shared by
 /// [`MakeDataError`] and [`ResetError`].
@@ -1323,6 +1324,67 @@ impl Model {
                 self.dof_armature[i] + mju_dot(data.cdof[i].as_slice(), buf.as_slice())
             })
             .collect();
+    }
+
+    /// The equality data MuJoCo 3.5.0's `mj_setConst` completes at `qpos0`
+    /// (`set0`, `engine_setconst.c:783-838`), from the position stage at
+    /// `qpos0` as [`Self::compute_dof_m0`] runs it, each product in MuJoCo's
+    /// order (`mji_mulMatVec3`, `mju_mulMatTVec3`, `mju_mulQuat`):
+    ///
+    /// - a connect: `eq_data[3..6]`, the point in body2's frame where body1's
+    ///   point `eq_data[..3]` lands;
+    /// - a weld whose relative quaternion `eq_data[6..10]` is all 0: its
+    ///   anchor in body1's frame, `eq_data[3..6]`, where body2's anchor
+    ///   `eq_data[..3]` lands, and `neg(xquat1) · xquat2`;
+    /// - any other weld: its quaternion normalized ([`normalize4`]), its
+    ///   `eq_data[3..6]` kept as written.
+    ///
+    /// Every connect and weld is read as its body form; a site-form
+    /// connect's points are its builder's to set after this.
+    pub fn compute_equality_data0(&mut self) {
+        let completes = |t: &EqualityType| matches!(t, EqualityType::Connect | EqualityType::Weld);
+        if !self.eq_type.iter().any(completes) {
+            return;
+        }
+        let mut data = self.make_data_for_derivation();
+        mj_fwd_position(self, &mut data);
+        // `mj_local2Global`'s position: `xmat · local + xpos`.
+        let place = |body: usize, local: [f64; 3]| {
+            let turned = mul_mat_vec3(&data.xmat[body], &local);
+            let at = data.xpos[body];
+            [turned[0] + at.x, turned[1] + at.y, turned[2] + at.z]
+        };
+        let quat = |body: usize| {
+            let q = data.xquat[body];
+            [q.w, q.i, q.j, q.k]
+        };
+        for i in 0..self.neq {
+            let (id1, id2) = (self.eq_obj1id[i], self.eq_obj2id[i]);
+            let row = &mut self.eq_data[i];
+            match self.eq_type[i] {
+                EqualityType::Connect => {
+                    let pos = place(id1, [row[0], row[1], row[2]]);
+                    let at = data.xpos[id2];
+                    let rel = [pos[0] - at.x, pos[1] - at.y, pos[2] - at.z];
+                    row[3..6].copy_from_slice(&mul_mat_t_vec3(&data.xmat[id2], &rel));
+                }
+                EqualityType::Weld => {
+                    let mut relative = [row[6], row[7], row[8], row[9]];
+                    // `mju_isZero`: each exactly 0 (a NaN is not).
+                    if relative.iter().any(|&q| q != 0.0) {
+                        normalize4(&mut relative);
+                        row[6..10].copy_from_slice(&relative);
+                        continue;
+                    }
+                    let pos = place(id2, [row[0], row[1], row[2]]);
+                    let at = data.xpos[id1];
+                    let rel = [pos[0] - at.x, pos[1] - at.y, pos[2] - at.z];
+                    row[3..6].copy_from_slice(&mul_mat_t_vec3(&data.xmat[id1], &rel));
+                    row[6..10].copy_from_slice(&mul_quat(&neg_quat(&quat(id1)), &quat(id2)));
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Compute `body_invweight0`, `dof_invweight0`, and `tendon_invweight0`.
