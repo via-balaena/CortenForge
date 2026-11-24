@@ -203,11 +203,10 @@ fn t8_ellipsoid_shell_inertia() {
   </body></worldbody>
 </mujoco>"#;
     let model = load_model(mjcf).unwrap();
-    // MuJoCo 3.5.0's, on the census's unfused oracle (2026-11-23): its mass
-    // from Thomsen's area (`pow`), its moments from the shell between the
-    // ellipsoid and itself grown by 1e-6 (book Rigid-loading L40), each within
-    // 1e-9 relative, the area's last bits being the platform's libm's.
-    let mujoco = [
+    // MuJoCo 3.5.0's, on the census's unfused oracle (2026-11-23; book
+    // Rigid-loading L40): bit for bit on macOS arm64, within 1e-9 relative
+    // elsewhere, the mass coming from `pow`.
+    let mujoco: [f64; 4] = [
         48971.9333337173,
         180751.03343200684,
         140683.07421875,
@@ -218,7 +217,15 @@ fn t8_ellipsoid_shell_inertia() {
         .into_iter()
         .zip(mujoco)
     {
-        assert_relative_eq!(ours, theirs, max_relative = 1e-9);
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            assert_eq!(
+                ours.to_bits(),
+                theirs.to_bits(),
+                "{ours} vs MuJoCo's {theirs}"
+            );
+        } else {
+            assert_relative_eq!(ours, theirs, max_relative = 1e-9);
+        }
     }
 }
 

@@ -72,34 +72,6 @@ const CASES: &[(&str, Expect)] = &[
             ],
         }),
     ),
-    // which geoms are kept: each geom's type, size and position
-    (
-        r#"<mujoco><compiler discardvisual="true"/><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="sphere" size="0.1" pos="0.0 0 0" /><geom type="sphere" size="0.1" pos="0.3 0 0" contype="0" conaffinity="0"/><geom type="sphere" size="0.1" pos="0.6 0 0" /><geom type="sphere" size="0.1" pos="0.8999999999999999 0 0" contype="0" conaffinity="0"/><geom type="sphere" size="0.1" pos="1.2 0 0" /></body></worldbody></mujoco>"#,
-        Expect::Loads(Model {
-            ngeom: 3,
-            nmesh: 0,
-            geom_type: &[2, 2, 2],
-            geom_body: &[1, 1, 1],
-            geom_mesh: &[-1, -1, -1],
-            geom_size: &[[0.1, 0.0, 0.0], [0.1, 0.0, 0.0], [0.1, 0.0, 0.0]],
-            geom_pos: &[[0.0, 0.0, 0.0], [0.6, 0.0, 0.0], [1.2, 0.0, 0.0]],
-            body_mass: &[0.0, 20.94395102393196],
-            body_inertia: &[
-                [0.0, 0.0, 0.0],
-                [3.8536869884034797, 3.8536869884034797, 0.08377580409572785],
-            ],
-            body_ipos: &[[0.0, 0.0, 0.0], [0.6, 0.0, 0.0]],
-            body_iquat: &[
-                [1.0, 0.0, 0.0, 0.0],
-                [
-                    0.5000000000000007,
-                    0.5000000000000007,
-                    0.5000000000000007,
-                    0.5000000000000007,
-                ],
-            ],
-        }),
-    ),
     // a moving body whose only geom is visual: its mass and inertial frame kept
     (
         r#"<mujoco><compiler discardvisual="true"/><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="sphere" size="0.1" pos="0.2 0 0" contype="0" conaffinity="0"/></body></worldbody></mujoco>"#,
@@ -716,7 +688,7 @@ const RENUMBERED: &[(&str, GeomIds)] = &[
             names: &[("k", 3), ("k2", 4), ("w", 1), ("w2", 2)],
         },
     ),
-    // sensors" objects and references after visual geoms
+    // sensors' objects and references after visual geoms
     (
         r#"<mujoco><compiler discardvisual="true"/><worldbody><geom type="sphere" size="0.05" pos="3 3 3" contype="0" conaffinity="0"/><geom name="floor" type="plane" size="2 2 0.1"/><body name="b" pos="0 0 0.5" euler="0.1 0.2 0.3"><freejoint/><geom type="sphere" size="0.05" pos="0 0 0.3" contype="0" conaffinity="0"/><geom name="ball" type="sphere" size="0.1"/><geom name="v" type="box" size="0.05 0.05 0.05" pos="0.2 0.1 0" euler="0.3 0 0" contype="0" conaffinity="0"/></body><body name="c" pos="1 0 0.5"><freejoint/><geom type="sphere" size="0.04" contype="0" conaffinity="0"/><geom name="ball2" type="sphere" size="0.1" pos="0 0.1 0"/></body></worldbody><sensor><framepos objtype="geom" objname="v"/><framepos objtype="geom" objname="ball" reftype="geom" refname="ball2"/><framequat objtype="geom" objname="v" reftype="geom" refname="ball2"/><distance geom1="ball" geom2="ball2"/><distance geom1="v" body2="c"/><normal geom1="v" geom2="ball2"/><framexaxis objtype="geom" objname="ball2"/></sensor></mujoco>"#,
         GeomIds {
@@ -810,6 +782,9 @@ fn each_reference_is_renumbered_as_mujocos() {
             "sensor references: {doc}"
         );
         assert_eq!(pairs, want.pairs, "pairs: {doc}");
+        let set: std::collections::HashSet<(usize, usize)> =
+            pairs.iter().map(|&(a, b)| (a.min(b), a.max(b))).collect();
+        assert_eq!(m.contact_pair_set, set, "the pair set: {doc}");
         assert_eq!(names, want.names, "names: {doc}");
     }
 }
@@ -887,12 +862,11 @@ fn a_tuple_naming_a_visual_geom_keeps_its_mass_not_the_geom() {
 }
 
 /// A mesh with a `<plugin>`, which only its plugin makes (registry
-/// `D-MESH-PLUGIN`): one no geom names, which `discardvisual` deletes, is not
-/// built, and the document loads as MuJoCo 3.5.0 loads it (ngeom 1, nmesh 0,
-/// the sphere's mass, measured); one a geom names, a visual one among them,
-/// whose mass MuJoCo gives its body from the plugin's mesh (measured: 199.81
-/// for a torus, where the cube's own vertices give 12.19), is refused, as one
-/// is without `discardvisual`.
+/// `D-MESH-PLUGIN`): one with no file that no geom names, which
+/// `discardvisual` deletes, is not built, and the document loads as MuJoCo
+/// 3.5.0 loads it (ngeom 1, nmesh 0, the sphere's mass, measured); one a geom
+/// names, a visual one among them, is refused, as one is without
+/// `discardvisual`.
 #[test]
 fn a_plugin_mesh_no_geom_names_is_not_built_and_one_a_geom_names_is_refused() {
     for doc in [
@@ -927,7 +901,7 @@ fn a_plugin_mesh_no_geom_names_is_not_built_and_one_a_geom_names_is_refused() {
 }
 
 /// The geoms' user data length MuJoCo sets before it discards
-/// (`SetNuser`, `user_model.cc:4927`) stays when every geom is discarded
+/// (`SetNuser`, `user_model.cc:4926`) stays when every geom is discarded
 /// (measured: `nuser_geom` 3).
 #[test]
 fn a_discarded_geoms_user_data_length_stays() {
@@ -959,4 +933,41 @@ fn a_fused_models_references_hold_the_geoms_they_name() {
         .map(|(_, &id)| id)
         .collect();
     assert_eq!((m.ngeom, wraps), (3, vec![g1]), "the tendon's geom wrap");
+}
+
+/// A frame sensor's `refname` with no `reftype`, which MuJoCo 3.5.0's reader
+/// refuses (`xml_native_reader.cc:4213-4214`; measured), is refused here too,
+/// a visual geom it names among them; and the compile checks MuJoCo makes of
+/// a plugin mesh no geom names before `discardvisual` deletes it are made: a
+/// file it cannot open, a scale other than 1 (`user_mesh.cc:367-370`;
+/// measured, each refused by MuJoCo).
+#[test]
+fn a_discarded_elements_reader_and_compile_checks_are_made() {
+    for (doc, words) in [
+        (
+            r#"<mujoco><compiler discardvisual="true"/><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><body name="b" pos="0 0 1"><freejoint/><geom name="v" type="sphere" size="0.05" pos="0.3 0 0" contype="0" conaffinity="0"/><geom name="ball" type="sphere" size="0.1"/></body></worldbody><sensor><framepos objtype="body" objname="b" refname="v"/></sensor></mujoco>"#,
+            "refname 'v' given but reftype is missing",
+        ),
+        (
+            r#"<mujoco><compiler discardvisual="true"/><extension><plugin plugin="mujoco.sdf.torus"><instance name="torus"><config key="radius1" value="0.35"/><config key="radius2" value="0.15"/></instance></plugin></extension><asset><mesh name="t" scale="2 2 2"><plugin instance="torus"/></mesh></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+            "attribute scale is not compatible with SDFs in mesh 't'",
+        ),
+        (
+            r#"<mujoco><compiler discardvisual="true"/><extension><plugin plugin="mujoco.sdf.torus"><instance name="torus"><config key="radius1" value="0.35"/><config key="radius2" value="0.15"/></instance></plugin></extension><asset><mesh name="cf" file="missing.obj"><plugin instance="torus"/></mesh></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+            "missing.obj",
+        ),
+    ] {
+        let error = load_model(doc).unwrap_err().to_string();
+        assert!(error.contains(words), "{error}: {doc}");
+    }
+}
+
+/// A distance equality's geoms (this crate's; MuJoCo 3.5.0 refuses the
+/// element) keep the geoms they name when visual geoms before them are
+/// deleted.
+#[test]
+fn a_distance_equalitys_geoms_are_renumbered() {
+    let m = load_model(r#"<mujoco><compiler discardvisual="true"/><worldbody><geom type="sphere" size="0.05" pos="3 3 3" contype="0" conaffinity="0"/><body name="a" pos="0 0 1"><freejoint/><geom type="sphere" size="0.04" contype="0" conaffinity="0"/><geom name="g1" type="sphere" size="0.1"/></body><body name="b" pos="0.5 0 1.2"><freejoint/><geom type="sphere" size="0.04" contype="0" conaffinity="0"/><geom name="g2" type="box" size="0.1 0.1 0.1"/></body></worldbody><equality><distance geom1="g1" geom2="g2" distance="0.3"/></equality><sensor><framepos objtype="body" objname="a"/><framepos objtype="body" objname="b"/></sensor></mujoco>"#).unwrap();
+    let ids = (m.geom_name_to_id["g1"], m.geom_name_to_id["g2"]);
+    assert_eq!((m.ngeom, m.eq_obj1id[0], m.eq_obj2id[0]), (2, ids.0, ids.1));
 }

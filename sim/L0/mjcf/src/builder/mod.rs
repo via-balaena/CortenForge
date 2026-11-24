@@ -272,12 +272,20 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     let needhull = mesh::meshes_needing_a_hull(&mjcf);
     for mesh in &mjcf.meshes {
         if mesh.plugin {
-            // One no geom names, which `discardvisual` deletes: MuJoCo makes
-            // it from its plugin and deletes it, so it is not built.
-            if referenced
-                .as_ref()
-                .is_some_and(|r| !r.names_mesh(&mesh.name))
+            // One with no file that no geom names, which `discardvisual`
+            // deletes: MuJoCo makes it from its plugin, refusing a scale other
+            // than 1 (`user_mesh.cc:367-370`), and deletes it; it is not built.
+            if mesh.file.is_none()
+                && referenced
+                    .as_ref()
+                    .is_some_and(|r| !r.names_mesh(&mesh.name))
             {
+                if mesh.scale.is_some_and(|s| s != Vector3::new(1.0, 1.0, 1.0)) {
+                    return Err(MjcfError::invalid_model(format!(
+                        "attribute scale is not compatible with SDFs in mesh '{}'",
+                        mesh.name
+                    )));
+                }
                 continue;
             }
             // One with no vertices of its own, which only its plugin makes:
@@ -1006,7 +1014,7 @@ pub struct ModelBuilder {
     pub(crate) body_user_raw: Vec<Vec<f64>>,
     pub(crate) geom_user_raw: Vec<Vec<f64>>,
     /// The geoms' user data length before `discardvisual` deleted any, which
-    /// MuJoCo sets before it discards (`SetNuser`, `user_model.cc:4927`).
+    /// MuJoCo sets before it discards (`SetNuser`, `user_model.cc:4926`).
     pub(crate) nuser_geom_before_discard: Option<usize>,
     pub(crate) jnt_user_raw: Vec<Vec<f64>>,
     pub(crate) site_user_raw: Vec<Vec<f64>>,

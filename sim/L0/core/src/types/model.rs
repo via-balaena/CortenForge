@@ -923,8 +923,8 @@ pub struct Model {
     /// Second object ID (body/joint/geom, or `usize::MAX` for world origin in Distance).
     pub eq_obj2id: Vec<usize>,
     /// Constraint parameters (meaning depends on type).
-    /// - Connect: the anchor in body1's frame in `[0..3]`, in body2's in
-    ///   `[3..6]` (where body1's lands at `qpos0`; [`Self::compute_equality_data0`])
+    /// - Connect: a point in body1's frame in `[0..3]`, one in body2's in
+    ///   `[3..6]`
     /// - Weld: the anchor in body2's frame in `[0..3]`, in body1's in `[3..6]`,
     ///   the relative orientation `[qw, qx, qy, qz]` in `[6..10]`, and the
     ///   torque scale in `[10]` (MuJoCo's `torquescale`, which scales the

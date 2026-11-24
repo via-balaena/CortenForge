@@ -234,8 +234,7 @@ fn a_joint_equalitys_tenth_entry_is_its_coefficient() {
 }
 
 /// A weld written with `site1` and `site2`, which MuJoCo 3.5.0 loads
-/// (measured), is refused here: its orientation needs the sites' own turns,
-/// which a body weld's `relpose` cannot hold (registry `D-WELD-SITE`).
+/// (measured), is refused here (registry `D-WELD-SITE`).
 #[test]
 fn a_site_form_weld_is_refused() {
     let error = load_model(r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint type="hinge" axis="0 1 0"/><geom type="box" size="0.1 0.05 0.05"/><site name="s1" pos="0.1 0 0"/></body><body name="c" pos="0.3 0.1 1.2"><freejoint/><geom type="box" size="0.05 0.05 0.05"/><site name="s2"/></body></worldbody><equality><weld site1="s1" site2="s2"/></equality></mujoco>"#).unwrap_err().to_string();

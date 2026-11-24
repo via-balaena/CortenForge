@@ -201,9 +201,9 @@ pub fn meshes_needing_an_octree(mjcf: &MjcfModel) -> HashSet<String> {
 /// D-MESH-PLUGIN): MuJoCo makes such a mesh, or the field of a geom of type
 /// `sdf` over it, from the plugin, and sim-core runs no MuJoCo plugin. The
 /// first such mesh in asset order that a geom names, a visual one among them
-/// (its mass is its body's, as the plugin makes it), or, without
-/// `discardvisual`, any; `None` where there is none. A mesh `discardvisual`
-/// deletes that no geom names is not built.
+/// (every geom is built before `discardvisual` deletes any), or, without
+/// `discardvisual`, any; `None` where there is none. A plugin mesh with no
+/// file that no geom names, which `discardvisual` deletes, is not built.
 pub fn plugin_fault(
     mjcf: &MjcfModel,
     referenced: Option<&super::discard::Referenced>,

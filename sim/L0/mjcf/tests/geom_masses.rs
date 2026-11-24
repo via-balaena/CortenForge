@@ -6,7 +6,7 @@
 //! mjEPS, and a geom of mass 0 adding no inertia.
 //!
 //! Every document below was loaded by MuJoCo 3.5.0 on the census's unfused
-//! oracle (2026-11-01; the five shell rows with a written mass, 2026-11-23);
+//! oracle (2026-11-01; the five rows Rigid-loading PR RL-10 added, 2026-11-23);
 //! each expects MuJoCo's `body_mass`, bit for bit (a sum
 //! of products and quotients of the written numbers and pi: no library call
 //! to differ between platforms), and MuJoCo's `body_inertia` bit for bit,

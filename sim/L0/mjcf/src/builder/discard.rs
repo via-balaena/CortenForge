@@ -28,7 +28,8 @@ use crate::types::{MjcfGeom, MjcfModel, MjcfSensorType, SpatialPathElement};
 /// geom object or reference, or a distance equality names. A frame sensor
 /// whose `objtype` is not written, which MuJoCo refuses and this crate reads
 /// by its name, keeps a geom of that name. With them, the names of the
-/// meshes a geom that is not visual names.
+/// meshes a geom that is not visual names (`meshes`) and of those any geom
+/// names (`named_meshes`).
 pub struct Referenced {
     geoms: HashSet<String>,
     meshes: HashSet<String>,

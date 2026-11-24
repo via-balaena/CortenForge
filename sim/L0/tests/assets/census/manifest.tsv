@@ -3824,3 +3824,7 @@ bf672852a3c75370	sim/L0/mjcf/tests/equality_data.rs:175
 d64ccfcc3823beff	sim/L0/mjcf/tests/equality_data.rs:241
 dd8dd489caf85d1f	sim/L0/mjcf/tests/equality_data.rs:229
 e8deb62ecb10795d	sim/L0/mjcf/tests/discard_visual.rs:674
+41e3de2a163d87d2	sim/L0/mjcf/tests/discard_visual.rs:956
+422998f430d49c68	sim/L0/mjcf/tests/discard_visual.rs:948
+6802f803065f8c69	sim/L0/mjcf/tests/discard_visual.rs:970
+7846b5a5d268aa8c	sim/L0/mjcf/tests/discard_visual.rs:952

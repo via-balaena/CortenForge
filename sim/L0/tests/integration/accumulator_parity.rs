@@ -333,9 +333,8 @@ fn a_world_wrench_stays_out_of_cfrc_ext() {
 }
 
 /// The connects' and welds' cases: bit for bit on macOS arm64, where the
-/// golden was made, since the anchors are placed as `mj_setConst` places them
-/// (book Rigid-loading L41, ledger L215); 1e-10 elsewhere, their trajectories
-/// passing through the platform's libm.
+/// golden was made (since Rigid-loading PR RL-10; ledger L215), and 1e-10
+/// elsewhere.
 const FORCE_TOL: f64 = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
     0.0
 } else {

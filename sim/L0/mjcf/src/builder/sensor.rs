@@ -569,23 +569,12 @@ impl ModelBuilder {
                 Ok((MjObjectType::None, 0))
             }
             Some(other) => Err(MjcfError::invalid_keyword("sensor", "reftype", other)),
-            None => {
-                // refname without reftype — infer type from name lookup
-                // Priority: site → body (as XBody) → geom
-                if let Some(&id) = self.site_name_to_id.get(name) {
-                    Ok((MjObjectType::Site, id))
-                } else if let Some(&id) = self.body_name_to_id.get(name) {
-                    Ok((MjObjectType::XBody, id))
-                } else if let Some(&id) = self.geom_name_to_id.get(name) {
-                    Ok((MjObjectType::Geom, id))
-                } else {
-                    Err(MjcfError::invalid_value(
-                        "sensor",
-                        "refname",
-                        format!("unknown object '{name}'"),
-                    ))
-                }
-            }
+            // As MuJoCo's reader refuses it (`xml_native_reader.cc:4213-4214`).
+            None => Err(MjcfError::invalid_value(
+                "sensor",
+                "refname",
+                format!("refname '{name}' given but reftype is missing"),
+            )),
         }
     }
 }
