@@ -1,0 +1,1 @@
+<mujoco><compiler fusestatic="true"/><worldbody><body name="t" pos="0 0 1"><geom size="0.1" contype="0" conaffinity="0"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/><frame><frame><camera name="c" target="t"/></frame></frame></body></worldbody></mujoco>

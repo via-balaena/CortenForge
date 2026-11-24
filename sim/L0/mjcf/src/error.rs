@@ -461,12 +461,9 @@ impl fmt::Display for ValueCount {
 /// unless the error was raised after the reader went past it. An element is
 /// named by its name, or, without one, by its index among its kind from 0
 /// where the pass knows it (`actuator #1`), else by its kind alone. A body's
-/// index counts the world as #0; a geom's is its id in the built model
-/// before `discardvisual` deletes any (MuJoCo checks before it discards), and
-/// its body the one it was built into (after `fusestatic`), except in a
-/// check of the model before fusion (validation,
-/// and a geom `fusestatic` moved, checked at its own body's turn), which
-/// names a geom by its index and its body before fusion.
+/// index counts the world as #0. A body's and a geom's are their ids as each
+/// body is built, before `fusestatic` fuses any or `discardvisual` deletes
+/// any, as MuJoCo checks each body and its geoms before both.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Location(Option<Box<Place>>);
 

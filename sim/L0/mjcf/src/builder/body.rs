@@ -438,49 +438,19 @@ impl ModelBuilder {
     /// after the bounds
     /// (`:2457-2459`), then the moments' triangle
     /// ([`Self::apply_mass_pipeline`], `:2461-2469`); then the body's joints
-    /// ([`Self::check_body_joints`]). A geom `fusestatic` moved into an
-    /// earlier body is checked at its own body's turn, before the first body
-    /// MuJoCo compiles after that one ([`super::compiler::CompileTurns`]):
-    /// MuJoCo compiles every body before it fuses. The caller runs it with
-    /// the checks RL-6a added, after every check this crate makes before
-    /// building the model.
-    pub(crate) fn check_bodies(&self) -> Result<()> {
+    /// ([`Self::check_body_joints`]), body by body from `first`. The caller
+    /// runs it on the tree before `fusestatic` fuses any body, as MuJoCo
+    /// compiles every body before it fuses (`user_model.cc:4931-4938`), and
+    /// returns its refusal with the checks RL-6a added, after every check
+    /// this crate makes before building the model; then on the bodies made
+    /// after the tree (a flexcomp's vertex bodies).
+    pub(crate) fn check_bodies(&self, first: usize) -> Result<()> {
         let nbody = self.body_parent.len();
         let mut moving = vec![false; nbody];
         for body in 1..nbody {
             moving[body] = self.body_jnt_num[body] > 0 || moving[self.body_parent[body]];
         }
-        let turns = self.compile_turns.as_ref();
-        // A body the fused tree does not hold (a flexcomp's vertex body)
-        // after every one it does.
-        let body_turn = |body: usize| {
-            turns.map_or(body, |t| {
-                t.body.get(body).copied().unwrap_or(t.name.len() + body)
-            })
-        };
-        let geom_turn = |geom: usize| {
-            turns
-                .and_then(|t| t.geom.get(geom).copied())
-                .unwrap_or_else(|| body_turn(self.geom_body[geom]))
-        };
-        let mut moved: Vec<usize> = (0..self.geom_body.len())
-            .filter(|&geom| geom_turn(geom) != body_turn(self.geom_body[geom]))
-            .collect();
-        // Stable: one body's geoms as written.
-        moved.sort_by_key(|&geom| geom_turn(geom));
-        let mut moved = moved.into_iter().peekable();
-        // A moved geom by its index and its body before fusion, as a check
-        // of the model before fusion names a geom.
-        let written_in = |geom: usize| {
-            let (name, index) = turns.map_or(("", geom), |t| {
-                (t.name[geom_turn(geom)].as_str(), t.geom_index[geom])
-            });
-            Location::nth(ElementKind::Geom, self.geom_name[geom].as_deref(), index).in_body(name)
-        };
-        for body in 0..nbody {
-            while let Some(geom) = moved.next_if(|&geom| geom_turn(geom) < body_turn(body)) {
-                self.check_geom(geom, moving[self.geom_body[geom]], || written_in(geom))?;
-            }
+        for (body, &moves) in moving.iter().enumerate().skip(first) {
             let faults = self.body_faults[body];
             if faults.full_and_diagonal {
                 return Err(MjcfError::invalid_value(
@@ -499,10 +469,7 @@ impl ModelBuilder {
             }
             let start = self.body_geom_adr[body];
             for geom in start..start + self.body_geom_num[body] {
-                if geom_turn(geom) != body_turn(body) {
-                    continue;
-                }
-                self.check_geom(geom, moving[body], || {
+                self.check_geom(geom, moves, || {
                     Location::nth(ElementKind::Geom, self.geom_name[geom].as_deref(), geom)
                         .within_nth(ElementKind::Body, self.body_name[body].as_deref(), body)
                 })?;
@@ -523,9 +490,6 @@ impl ModelBuilder {
                 .at(self.body_location(body)));
             }
             self.check_body_joints(body)?;
-        }
-        for geom in moved {
-            self.check_geom(geom, moving[self.geom_body[geom]], || written_in(geom))?;
         }
         Ok(())
     }

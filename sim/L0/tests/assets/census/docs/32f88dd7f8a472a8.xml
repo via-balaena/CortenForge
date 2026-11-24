@@ -1,0 +1,1 @@
+<mujoco><compiler fusestatic="true"/><worldbody><body pos="0 0 1"><geom size="0.1"/></body><body pos="1 0 1"><geom size="0.1"/></body><body name="K" pos="2 0 1"><joint type="hinge"/><geom size="0.1"/></body><body name="S" pos="3 0 1"><geom size="0.1"/></body></worldbody><sensor><framepos objtype="body" objname="K"/></sensor></mujoco>

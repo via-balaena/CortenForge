@@ -1,0 +1,1 @@
+<mujoco><compiler fusestatic="true"/><worldbody><composite type="cable" prefix="c" curve="s" count="5 1 1" size="1" offset="0 0 1" initial="none"><joint kind="main" damping="0.01"/><geom type="capsule" size="0.01"/></composite></worldbody></mujoco>

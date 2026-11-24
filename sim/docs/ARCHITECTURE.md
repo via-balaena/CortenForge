@@ -528,7 +528,9 @@ sim-mjcf/src/builder/
 ├── mass.rs         # Mass computation + post-processing
 ├── mesh.rs         # Mesh asset processing
 ├── asset.rs        # Asset management (textures, materials)
-├── compiler.rs     # <compiler> element processing
+├── discard.rs      # discardvisual, after every element is built and checked
+├── fuse.rs         # fusestatic, as MuJoCo's FuseStatic, after every body is built
+├── select.rs       # every body, geom and site array taken in a new order
 ├── contact.rs      # Contact pair/exclude processing
 ├── equality.rs     # Equality constraint processing
 ├── composite.rs    # Composite body expansion (cable)

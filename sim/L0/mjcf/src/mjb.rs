@@ -64,6 +64,8 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
 ///
+/// 27 since Rigid-loading PR RL-10b: `MjcfBody` and `MjcfFrame` took
+/// `camera_targets` and `light_targets`, `MjcfModel` `tuples`.
 /// 26 since Rigid-loading PR RL-10: `MjcfWeld` took `torquescale`.
 /// 25 since Rigid-loading PR RL-9d4b: `MjcfMesh` took `plugin`.
 /// 24 since Rigid-loading PR RL-9d3: `MjcfMesh`'s and `MjcfMeshDefaults`'s
@@ -108,7 +110,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// one below mjMINVAL is refused (Rigid-loading PR RL-3b): a version-6 file
 /// holds 0.0 there for a flexcomp that did not write it. 6 since `MjcfFlex`
 /// took `vertex_bodies` (Rigid-loading L10).
-pub const MJB_VERSION: u32 = 26;
+pub const MJB_VERSION: u32 = 27;
 
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;

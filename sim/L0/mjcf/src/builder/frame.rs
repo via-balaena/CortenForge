@@ -79,6 +79,14 @@ fn expand_body(body: &mut MjcfBody, own: Option<MjcfError>, compiler: &MjcfCompi
     for element in Contents::take_from_body(body).into_elements() {
         match element {
             Element::Frame(frame) => {
+                // Its cameras' and lights' targets, its frames' too, are the
+                // body's (`fusestatic` reads them).
+                let mut frames = vec![&frame];
+                while let Some(f) = frames.pop() {
+                    body.camera_targets.extend(f.camera_targets.iter().cloned());
+                    body.light_targets.extend(f.light_targets.iter().cloned());
+                    frames.extend(&f.frames);
+                }
                 dissolve(frame, None, &mut placed, &mut faults, &body.name, compiler);
             }
             other => placed.push(other),

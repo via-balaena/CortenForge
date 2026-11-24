@@ -843,22 +843,37 @@ fn each_document_discards_as_mujoco() {
     );
 }
 
-/// A visual geom a `<custom><tuple>` names, which MuJoCo keeps
-/// (`user_objects.cc:7918`; measured: ngeom 2), is deleted here, where no
-/// `<custom>` is read; its mass stays in its body, as every visual geom's
-/// does (registry `D-DISCARD-TUPLE`).
+/// A visual geom a `<custom><tuple>` names is kept, as MuJoCo keeps it
+/// (`SetNotVisual`, `user_objects.cc:7918`; measured: ngeom 2), the mass of
+/// both geoms in its body.
 #[test]
-fn a_tuple_naming_a_visual_geom_keeps_its_mass_not_the_geom() {
+fn a_tuple_naming_a_visual_geom_keeps_it() {
     let m = load_model(
         r#"<mujoco><compiler discardvisual="true"/><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="sphere" size="0.1"/><geom name="v" type="sphere" size="0.1" pos="0.3 0 0" contype="0" conaffinity="0"/></body></worldbody><custom><tuple name="t"><element objtype="geom" objname="v"/></tuple></custom></mujoco>"#,
     )
     .unwrap();
-    assert_eq!(m.ngeom, 1, "the visual geom deleted");
+    assert_eq!(m.ngeom, 2, "the visual geom kept");
     assert_eq!(
         m.body_mass[1].to_bits(),
         8.377580409572783_f64.to_bits(),
         "both geoms' mass, MuJoCo's"
     );
+}
+
+/// Under `fusestatic` a tuple's geom element is bound by its index from
+/// before the fusion, which moving a fused body's geoms renumbers: MuJoCo
+/// 3.5.0 binds the tuple naming the visual geom `v` to `g1`, so deletes `v`
+/// (measured: ngeom 2, `tuple_objid` 1); this crate keeps the geom the tuple
+/// names (registry `D-FUSESTATIC-PAIR-GEOM`).
+#[test]
+fn a_fused_models_tuple_holds_the_geom_it_names() {
+    let m = load_model(
+        r#"<mujoco><compiler discardvisual="true" fusestatic="true"/><worldbody><geom name="floor" type="plane" size="2 2 0.1"/><body pos="0 0 0.3"><freejoint/><geom name="g1" size="0.1"/><geom name="v" size="0.05" pos="0.2 0 0" contype="0" conaffinity="0"/></body><body pos="1 0 0.3"><geom name="gs" size="0.1" contype="0" conaffinity="0"/></body></worldbody><custom><tuple name="t"><element objtype="geom" objname="v"/></tuple></custom></mujoco>"#,
+    )
+    .unwrap();
+    let mut names: Vec<&str> = m.geom_name_to_id.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["floor", "g1", "v"], "the tuple's geom kept");
 }
 
 /// A mesh with a `<plugin>`, which only its plugin makes (registry

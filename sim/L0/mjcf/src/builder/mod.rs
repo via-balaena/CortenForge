@@ -10,7 +10,6 @@ pub mod actuator;
 pub mod asset;
 pub mod body;
 mod build;
-pub mod compiler;
 mod composite;
 pub mod contact;
 mod discard;
@@ -21,6 +20,7 @@ pub mod flex;
 mod flexcomp;
 pub mod fluid;
 pub mod frame;
+mod fuse;
 pub mod geom;
 mod init;
 mod items;
@@ -32,6 +32,7 @@ mod mesh_file;
 mod obj;
 pub mod orientation;
 mod resolve;
+mod select;
 pub mod sensor;
 pub mod tendon;
 
@@ -59,7 +60,6 @@ use crate::types::{
     MjcfOption, MjcfSolverType, Prefix,
 };
 
-use self::compiler::apply_fusestatic;
 use self::frame::expand_frames;
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
@@ -222,7 +222,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     crate::validation::check_tree_depth(&mjcf.worldbody)?;
 
     let FrontEnd {
-        mut mjcf,
+        mjcf,
         resolver,
         actuators,
         flexcomp_refusal,
@@ -250,15 +250,14 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // returned after the keyframes.
     let mesh_plugin = mesh::plugin_fault(&mjcf, referenced.as_ref());
     let sdf_plugin = geom::sdf_plugin_fault(&mjcf, referenced.as_ref());
-    let compile_turns = if mjcf.compiler.fusestatic {
-        Some(apply_fusestatic(&mut mjcf)?)
-    } else {
-        None
-    };
+    // The references `fusestatic` keeps a body for, read before the builder.
+    let fuse_references = mjcf
+        .compiler
+        .fusestatic
+        .then(|| fuse::FuseReferences::of(&mjcf));
 
     let mut builder = ModelBuilder::new();
     builder.resolver = resolver;
-    builder.compile_turns = compile_turns;
     builder.compiler = mjcf.compiler.clone();
 
     // Set model name
@@ -316,9 +315,28 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     for child in &mjcf.worldbody.children {
         builder.process_body(child, 0, None)?;
     }
-    debug_assert!(builder.compile_turns.as_ref().is_none_or(|turns| {
-        turns.body.len() == builder.body_parent.len() && turns.geom.len() == builder.geom_type.len()
-    }));
+    // Each element of the tree sized, bounded and checked before
+    // `fusestatic` fuses any body, as MuJoCo sizes its user data first
+    // (`SetNuser`, `user_model.cc:4926`) and compiles every body before it
+    // fuses (`:4931-4938`). The user data's refusal is returned where this
+    // crate checks user data, below, and the bodies' and the cameras' and
+    // lights' targets' with the checks RL-6a added; a sum of inertias
+    // refused as the bodies fuse comes after both. Of two faults, this crate
+    // can name another than MuJoCo, which checks each body's user data and
+    // targets in its turn (ledger L353).
+    let tree_user = builder.finalize_tree_user_data(&mjcf);
+    builder.apply_mass_pipeline(1);
+    let tree_fault = builder
+        .check_bodies(0)
+        .err()
+        .or_else(|| fuse::target_fault(&mjcf.worldbody, &builder.body_name_to_id));
+    if let Some(references) = &fuse_references
+        && let Err(fault) = builder.fuse_static(references)
+    {
+        return Err(tree_user.err().or(tree_fault).unwrap_or(fault));
+    }
+    // The bodies made after the tree (a flexcomp's vertex bodies) from here.
+    let tree_end = builder.body_parent.len();
 
     // Process tendons (must be before actuators, since actuators may reference tendons)
     builder.process_tendons(&mjcf.tendons)?;
@@ -348,12 +366,14 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     builder.process_flex_bodies(&mjcf.flex)?;
     builder.process_flexcomp_equalities(&mjcf.flex);
 
-    // Each body's boundmass and boundinertia, then a mass or moment still
-    // negative, then its moments' triangle
-    builder.apply_mass_pipeline();
+    // Each body made after the tree: its boundmass and boundinertia, then a
+    // mass or moment still negative, then its moments' triangle
+    builder.apply_mass_pipeline(tree_end);
 
-    // Finalize user data: resolve nuser, validate, pad
-    builder.finalize_user_data(&mjcf)?;
+    // Finalize user data: the tree's refusal; then the elements made after
+    // the tree padded to its widths, the tendons', actuators' and sensors'
+    // resolved, validated and padded
+    builder.finalize_user_data(&mjcf, tree_user?)?;
 
     // MuJoCo 3.5.0's checks this crate did not make before Rigid-loading PR
     // RL-6a and the PRs after it (book L19-L22, L25, L31, L32; a sensor's
@@ -367,7 +387,10 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // a moving body's mass and inertia, then the free joint below the world's
     // children, as MuJoCo's `CopyTree` refuses it. An automatic range that
     // does not increase is refused after the keyframes (`D-AUTO-RANGE`).
-    builder.check_bodies()?;
+    if let Some(fault) = tree_fault {
+        return Err(fault);
+    }
+    builder.check_bodies(tree_end)?;
     flex::check_flex_bending_thickness(&mjcf.flex)?;
     builder.check_hfield_sizes()?;
     builder.check_flex_equalities()?;
@@ -650,9 +673,6 @@ pub struct ModelBuilder {
     /// the first body whose negative `<inertial>` MuJoCo keeps, none of its
     /// geoms being selected; returned after the keyframes.
     pub(crate) kept_negative_inertial: Option<MjcfError>,
-    /// Under `fusestatic`, where MuJoCo checks each body and geom
-    /// ([`Self::check_bodies`]); `None`, each where it is.
-    pub(crate) compile_turns: Option<compiler::CompileTurns>,
     pub(crate) nmocap: usize,
 
     // Joint arrays
@@ -1084,45 +1104,85 @@ impl ModelBuilder {
         apply_flags(&option.flag, &mut self.disableflags, &mut self.enableflags);
     }
 
-    /// Resolve nuser_* values, validate user data lengths, and pad arrays.
-    fn finalize_user_data(&mut self, mjcf: &MjcfModel) -> Result<()> {
-        finalize_user_type("body", "body", mjcf.nuser_body, &mut self.body_user_raw)?;
-        finalize_user_type("joint", "jnt", mjcf.nuser_jnt, &mut self.jnt_user_raw)?;
-        finalize_user_type("geom", "geom", mjcf.nuser_geom, &mut self.geom_user_raw)?;
-        finalize_user_type("site", "site", mjcf.nuser_site, &mut self.site_user_raw)?;
+    /// The tree's bodies', joints', geoms' and sites' user data sized
+    /// (`nuser_*`, or the longest where it is -1, as MuJoCo's `SetNuser`
+    /// sizes it before compiling, `user_model.cc:4926`), each array checked
+    /// against its width and padded to it, before `fusestatic` removes any
+    /// body; the widths, for [`Self::finalize_user_data`].
+    fn finalize_tree_user_data(&mut self, mjcf: &MjcfModel) -> Result<[usize; 4]> {
+        let width = |nuser: i32| usize::try_from(nuser).ok();
+        Ok([
+            finalize_user_type(
+                "body",
+                "body",
+                width(mjcf.nuser_body),
+                &mut self.body_user_raw,
+            )?,
+            finalize_user_type(
+                "joint",
+                "jnt",
+                width(mjcf.nuser_jnt),
+                &mut self.jnt_user_raw,
+            )?,
+            finalize_user_type(
+                "geom",
+                "geom",
+                width(mjcf.nuser_geom),
+                &mut self.geom_user_raw,
+            )?,
+            finalize_user_type(
+                "site",
+                "site",
+                width(mjcf.nuser_site),
+                &mut self.site_user_raw,
+            )?,
+        ])
+    }
+
+    /// The user data of the elements made after the tree (a flexcomp's
+    /// bodies and joints) padded to the tree's widths `tree`, and the
+    /// tendons', actuators' and sensors' sized, checked and padded.
+    fn finalize_user_data(&mut self, mjcf: &MjcfModel, tree: [usize; 4]) -> Result<()> {
+        let [body, jnt, geom, site] = tree;
+        finalize_user_type("body", "body", Some(body), &mut self.body_user_raw)?;
+        finalize_user_type("joint", "jnt", Some(jnt), &mut self.jnt_user_raw)?;
+        finalize_user_type("geom", "geom", Some(geom), &mut self.geom_user_raw)?;
+        finalize_user_type("site", "site", Some(site), &mut self.site_user_raw)?;
+        let width = |nuser: i32| usize::try_from(nuser).ok();
         finalize_user_type(
             "tendon",
             "tendon",
-            mjcf.nuser_tendon,
+            width(mjcf.nuser_tendon),
             &mut self.tendon_user_raw,
         )?;
         finalize_user_type(
             "actuator",
             "actuator",
-            mjcf.nuser_actuator,
+            width(mjcf.nuser_actuator),
             &mut self.actuator_user_raw,
         )?;
         finalize_user_type(
             "sensor",
             "sensor",
-            mjcf.nuser_sensor,
+            width(mjcf.nuser_sensor),
             &mut self.sensor_user_raw,
         )?;
         Ok(())
     }
 }
 
-/// For a single element type: resolve nuser, validate, pad. `element` is the
-/// type's tag, `suffix` its `nuser_` attribute's (`nuser_jnt`).
+/// For a single element type: its width `nuser` (the longest array where
+/// `None`, `-1` written), each array checked against it and padded to it;
+/// the width. `element` is the type's tag, `suffix` its `nuser_`
+/// attribute's (`nuser_jnt`).
 fn finalize_user_type(
     element: &str,
     suffix: &str,
-    explicit_nuser: i32,
+    nuser: Option<usize>,
     raw: &mut [Vec<f64>],
-) -> Result<()> {
+) -> Result<usize> {
     // Below -1 is refused by validation (`check_user_sizes`).
-    let nuser = if explicit_nuser >= 0 {
-        let nuser = explicit_nuser as usize;
+    let nuser = if let Some(nuser) = nuser {
         for user in raw.iter() {
             if user.len() > nuser {
                 return Err(MjcfError::invalid_value(
@@ -1143,7 +1203,7 @@ fn finalize_user_type(
         user.resize(nuser, 0.0);
     }
 
-    Ok(())
+    Ok(nuser)
 }
 
 /// Convert parsed `MjcfFlag` booleans into Model disable/enable bitfields.

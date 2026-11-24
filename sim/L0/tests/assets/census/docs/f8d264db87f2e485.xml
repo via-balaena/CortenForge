@@ -1,0 +1,1 @@
+<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint type="hinge"/><geom size="0.1"/><body pos="0.3 0 0" user="1 2 3"><geom size="0.05"/></body></body></worldbody></mujoco>

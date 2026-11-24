@@ -26,11 +26,12 @@ impl ModelBuilder {
     /// principal moments' triangle, A + B >= C, made the moments' mean under
     /// `balanceinertia`; each fault recorded for [`Self::check_bodies`] to
     /// refuse, as MuJoCo 3.5.0's `mjCBody::Compile` does
-    /// (`user_objects.cc:2448-2469`).
-    pub(crate) fn apply_mass_pipeline(&mut self) {
+    /// (`user_objects.cc:2448-2469`), body by body from `first` (at least 1:
+    /// the world is never bounded).
+    pub(crate) fn apply_mass_pipeline(&mut self, first: usize) {
         let nbody = self.body_mass.len();
 
-        for i in 1..nbody {
+        for i in first.max(1)..nbody {
             // A pinned flexcomp point's stand-in: MuJoCo has no body there.
             if self.flex_stand_ins.binary_search(&i).is_ok() {
                 continue;
@@ -318,7 +319,7 @@ pub fn inertia_from_geoms(
 
 /// `mjuu_globalinertia` (`user_util.cc:509-525`): principal moments `local`
 /// along the axes of `quat`, as the inertia `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]`.
-fn global_inertia(local: &[f64; 3], quat: &[f64; 4]) -> [f64; 6] {
+pub fn global_inertia(local: &[f64; 3], quat: &[f64; 4]) -> [f64; 6] {
     let mat = quat2mat(quat);
     let tmp = [
         mat[0] * local[0],
@@ -343,7 +344,7 @@ fn global_inertia(local: &[f64; 3], quat: &[f64; 4]) -> [f64; 6] {
 
 /// `mjuu_offcenter` (`user_util.cc:530-537`): the inertia `mass` adds at
 /// `vec` from the centre, `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]`.
-fn off_center(mass: f64, vec: &[f64; 3]) -> [f64; 6] {
+pub fn off_center(mass: f64, vec: &[f64; 3]) -> [f64; 6] {
     [
         mass * (vec[1] * vec[1] + vec[2] * vec[2]),
         mass * (vec[0] * vec[0] + vec[2] * vec[2]),
