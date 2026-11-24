@@ -405,7 +405,8 @@ pub struct Model {
     /// Hfield index for each geom (`None` if not an hfield geom).
     /// Length: ngeom. Only geoms with `geom_type == GeomType::Hfield` have `Some(hfield_id)`.
     pub geom_hfield: Vec<Option<usize>>,
-    /// Shape index for each geom (`None` if not an SDF geom).
+    /// Shape index for each geom: `None` but for an SDF geom given a shape of
+    /// its own (one loaded from MJCF has none; its field is its mesh's octree).
     /// Length: ngeom. Only geoms with `geom_type == GeomType::Sdf` have `Some(shape_id)`.
     pub geom_shape: Vec<Option<usize>>,
     /// Visualization group (0–5) for each geom. Used by renderers for group-based filtering.

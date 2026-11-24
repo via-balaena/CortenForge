@@ -1,6 +1,8 @@
 //! PhysicsShape trait — analytical implicit surface interface for SDF-backed geoms.
 //!
-//! Each SDF geom in the Model carries a `PhysicsShape` implementation.
+//! Each SDF geom given a shape of its own (`Model::geom_shape`) carries a
+//! `PhysicsShape` implementation; one loaded from MJCF has none, its field
+//! its mesh's octree.
 //! The trait provides:
 //!
 //! - **Required methods** (`distance`, `gradient`, `bounds`, `effective_radius`,

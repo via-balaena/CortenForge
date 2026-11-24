@@ -239,6 +239,12 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     if mjcf.compiler.discardvisual {
         apply_discardvisual(&mut mjcf);
     }
+    // This crate's refusals of a mesh with a `<plugin>` and of a geom of type
+    // `sdf` with one, whose mesh or field MuJoCo makes from the plugin
+    // (`D-MESH-PLUGIN`, `D-GEOM-SDF-PLUGIN`), of what `discardvisual` keeps,
+    // returned after the keyframes.
+    let mesh_plugin = mesh::plugin_fault(&mjcf);
+    let sdf_plugin = geom::sdf_plugin_fault(&mjcf);
     let compile_turns = if mjcf.compiler.fusestatic {
         Some(apply_fusestatic(&mut mjcf)?)
     } else {
@@ -389,7 +395,10 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // body-level flexcomp in document order of a form sim-core does not take
     // or with a `<plugin>` (a radial or interpolated dof, a vertex body in a
     // moving or turned holding body, a pinned point on a moving one;
-    // `D-FLEXCOMP-FORM`, `D-FLEXCOMP-PLUGIN`), which MuJoCo loads, a flex
+    // `D-FLEXCOMP-FORM`, `D-FLEXCOMP-PLUGIN`), which MuJoCo loads, the first
+    // mesh, then the first geom of type `sdf`, with a `<plugin>`
+    // (`D-MESH-PLUGIN`, `D-GEOM-SDF-PLUGIN`), which MuJoCo makes from the
+    // plugin, a flex
     // vertex equality (`D-FLEX-VERT-EQUALITY`) or an empty `flex` beside
     // an unnamed flex (`D-FLEX-EQ-NO-NAME`), which MuJoCo makes, a flex's
     // condim outside 1 to 6 (`D-FLEX-CONDIM-RANGE`, which MuJoCo loads), a
@@ -408,6 +417,12 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         return Err(error);
     }
     if let Some(error) = flexcomp_refusal {
+        return Err(error);
+    }
+    if let Some(error) = mesh_plugin {
+        return Err(error);
+    }
+    if let Some(error) = sdf_plugin {
         return Err(error);
     }
     if let Some(error) = flex_equality {
@@ -711,8 +726,8 @@ pub struct ModelBuilder {
     pub(crate) hfield_size: Vec<[f64; 4]>,
     /// Hfield index per geom (like geom_mesh).
     pub(crate) geom_hfield: Vec<Option<usize>>,
-    /// SDF index per geom (like geom_mesh). Always `None` from MJCF — SDF geoms
-    /// are populated programmatically.
+    /// SDF shape index per geom (like geom_mesh). Always `None` from MJCF: a
+    /// shape of its own is given in code.
     pub(crate) geom_sdf: Vec<Option<usize>>,
 
     // Site arrays

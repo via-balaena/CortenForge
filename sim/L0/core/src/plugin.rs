@@ -41,7 +41,9 @@ pub enum PluginCapabilityBit {
     Sensor = 1 << 1,
     /// Passive force plugin — `compute()` called in `mj_fwd_passive()`.
     Passive = 1 << 2,
-    /// SDF collision plugin — `sdf_distance()`/`sdf_gradient()` called during collision.
+    /// SDF collision plugin — `sdf_distance()`/`sdf_gradient()`, which MuJoCo
+    /// calls in collision; sim-core's collision calls neither (registry
+    /// D-GEOM-SDF-PLUGIN).
     Sdf = 1 << 3,
 }
 
@@ -110,7 +112,8 @@ pub enum PluginStage {
 /// - `ACTUATOR`: `actuator_act_dot()` + `compute()` in actuation
 /// - `SENSOR`: `compute()` at the stage from `need_stage()`
 /// - `PASSIVE`: `compute()` in passive force computation
-/// - `SDF`: `sdf_distance()` / `sdf_gradient()` during collision
+/// - `SDF`: `sdf_distance()` / `sdf_gradient()`, which sim-core's collision
+///   does not call (registry D-GEOM-SDF-PLUGIN)
 ///
 /// # Thread Safety
 ///

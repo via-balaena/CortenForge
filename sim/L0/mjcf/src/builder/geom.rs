@@ -17,7 +17,7 @@ use super::orientation::{
 };
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
 use crate::error::{ElementKind, Location, MjcfError, Result};
-use crate::types::{FluidShape, MjcfGeom, MjcfGeomType, MjcfSite, Prefix};
+use crate::types::{FluidShape, MjcfBody, MjcfGeom, MjcfGeomType, MjcfModel, MjcfSite, Prefix};
 
 impl ModelBuilder {
     /// Build one of body `body_id`'s geoms into the model, as MuJoCo 3.5.0's
@@ -153,7 +153,9 @@ impl ModelBuilder {
         }
         self.geom_mesh.push(geom_mesh_ref);
         self.geom_hfield.push(geom_hfield_ref);
-        self.geom_sdf.push(None); // SDF geoms are programmatic — never set via MJCF
+        // A shape of its own is given in code, never by MJCF: a loaded SDF
+        // geom's field is its mesh's octree.
+        self.geom_sdf.push(None);
 
         // Solver parameters (fall back to MuJoCo defaults if not specified in MJCF)
         self.geom_solref
@@ -327,6 +329,25 @@ fn site_geom_type(site: &MjcfSite) -> Result<GeomType> {
                 "meshes, hfields and planes not allowed in site",
             ));
         }
+    })
+}
+
+/// This crate's refusal of a geom of type `sdf` with a `<plugin>` (registry
+/// D-GEOM-SDF-PLUGIN): MuJoCo reads such a geom's field from the plugin
+/// (`engine_collision_sdf.c:275-276`, `engine_ray.c:899-901`), and sim-core
+/// runs no MuJoCo plugin. The first such geom, the world's geoms first, then
+/// each body's before its children's; `None` where there is none.
+pub fn sdf_plugin_fault(mjcf: &MjcfModel) -> Option<MjcfError> {
+    fn first(body: &MjcfBody) -> Option<&MjcfGeom> {
+        body.geoms
+            .iter()
+            .find(|g| g.geom_type == Some(MjcfGeomType::Sdf) && g.plugin.is_some())
+            .or_else(|| body.children.iter().find_map(first))
+    }
+    first(&mjcf.worldbody).map(|g| {
+        MjcfError::unsupported("a <plugin> on a geom of type sdf (registry D-GEOM-SDF-PLUGIN)").at(
+            Location::named(ElementKind::Geom, g.name.as_deref().unwrap_or("")),
+        )
     })
 }
 

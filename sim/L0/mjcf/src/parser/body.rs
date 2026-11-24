@@ -9,7 +9,7 @@ use crate::keywords;
 
 use crate::types::{
     MjcfBody, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfInertial, MjcfItem, MjcfJoint, MjcfJointType,
-    MjcfSite,
+    MjcfPluginRef, MjcfSite,
 };
 
 use super::attrs::{Attrs, skip_element};
@@ -38,7 +38,7 @@ pub(super) fn parse_worldbody<R: BufRead>(reader: &mut Reader<R>, empty: bool) -
                     }
                     b"geom" => {
                         // Static geom attached to world
-                        let geom = parse_leaf(reader, e, child_empty, parse_geom_attrs)?;
+                        let geom = parse_geom(reader, e, child_empty)?;
                         worldbody.geoms.push(geom);
                         worldbody.items.push(MjcfItem::Geom);
                     }
@@ -123,7 +123,7 @@ pub(super) fn parse_body<R: BufRead>(
                         body.items.push(MjcfItem::Joint);
                     }
                     b"geom" => {
-                        let geom = parse_leaf(reader, e, child_empty, parse_geom_attrs)?;
+                        let geom = parse_geom(reader, e, child_empty)?;
                         body.geoms.push(geom);
                         body.items.push(MjcfItem::Geom);
                     }
@@ -405,7 +405,7 @@ pub(super) fn parse_frame<R: BufRead>(
                         frame.items.push(MjcfItem::Body);
                     }
                     b"geom" => {
-                        let geom = parse_leaf(reader, e, child_empty, parse_geom_attrs)?;
+                        let geom = parse_geom(reader, e, child_empty)?;
                         frame.geoms.push(geom);
                         frame.items.push(MjcfItem::Geom);
                     }
@@ -466,6 +466,42 @@ pub(super) fn parse_frame<R: BufRead>(
 /// body's).
 fn attach_refusal(tag: &[u8]) -> MjcfError {
     MjcfError::unsupported(format!("<{}>", String::from_utf8_lossy(tag)))
+}
+
+/// A `<geom>`: its attributes, and the plugin a `<plugin>` child names (its
+/// `plugin` and `instance`; its configuration is not read), every other
+/// child skipped. MuJoCo reads a plugin on a geom of type `sdf` as its field;
+/// the builder refuses that geom (registry D-GEOM-SDF-PLUGIN).
+fn parse_geom<R: BufRead>(reader: &mut Reader<R>, e: &BytesStart, empty: bool) -> Result<MjcfGeom> {
+    let mut geom = parse_geom_attrs(e)?;
+    if empty {
+        return Ok(geom);
+    }
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(ref event @ (Event::Start(ref c) | Event::Empty(ref c))) => {
+                let child_empty = matches!(event, Event::Empty(_));
+                let name = c.name().as_ref().to_vec();
+                if name == b"plugin" {
+                    let a = Attrs::new(c)?;
+                    geom.plugin = Some(MjcfPluginRef {
+                        plugin: a.string("plugin").unwrap_or_default(),
+                        instance: a.string("instance"),
+                        config: Vec::new(),
+                        active: true,
+                    });
+                }
+                skip_element(reader, &name, child_empty)?;
+            }
+            Ok(Event::End(ref c)) if c.name().as_ref() == b"geom" => break,
+            Ok(Event::Eof) => return Err(MjcfError::eof_in("geom")),
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::xml(e)),
+        }
+        buf.clear();
+    }
+    Ok(geom)
 }
 
 /// An element whose children this parser does not read: its attributes, by

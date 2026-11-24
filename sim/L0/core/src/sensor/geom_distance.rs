@@ -4,6 +4,7 @@
 use crate::collision::geom_distance_ccd;
 use crate::collision::hfield::collide_hfield_multi;
 use crate::collision::narrow::{collide_geoms, convex_pair, primitive_contacts};
+use crate::collision::sdf_collide::{is_loaded_sdf, mjc_sdf_contacts};
 use crate::types::{Data, GeomType, Model};
 
 /// `mj_geomDistance`: the smallest distance between `geom1` and `geom2`, at
@@ -20,9 +21,11 @@ use crate::types::{Data, GeomType, Model};
 /// along that contact's normal, centred on its position. The normal is the
 /// one the collision function wrote, as MuJoCo's sensor reads it, not the
 /// one `mj_setContact` normalises: a pair of spheres, capsules and boxes, or
-/// a sphere and a cylinder, through [`primitive_contacts`]; a plane's pair,
-/// the plane's z axis, which every plane function writes. A signed distance
-/// field takes sim-core's own functions.
+/// a sphere and a cylinder, through [`primitive_contacts`]; a geom and a
+/// signed distance field loaded from MJCF, `mjc_SDF`'s
+/// ([`mjc_sdf_contacts`]); a plane's pair, the plane's z axis, which every
+/// plane function writes. A signed distance field with a shape of its own
+/// takes sim-core's own functions.
 // Paired geom identifiers (geom1/geom2, g1/g2) are intentionally similar.
 #[allow(clippy::similar_names)]
 pub fn geom_distance(
@@ -49,6 +52,11 @@ pub fn geom_distance(
     let contacts: Vec<(f64, [f64; 3], [f64; 3])> =
         if let Some(raw) = primitive_contacts(model, g1, g2, &pos1, &mat1, &pos2, &mat2, distmax) {
             raw
+        } else if is_loaded_sdf(model, g2) && !matches!(type1, GeomType::Plane | GeomType::Hfield) {
+            mjc_sdf_contacts(model, (g1, &pos1, &mat1), (g2, &pos2, &mat2))
+                .iter()
+                .map(|c| (c.dist, c.pos, c.normal))
+                .collect()
         } else if type1 == GeomType::Hfield && type2 != GeomType::Sdf {
             collide_hfield_multi(model, g1, g2, pos1, mat1, pos2, mat2, distmax)
                 .iter()

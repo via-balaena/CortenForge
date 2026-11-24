@@ -9,8 +9,9 @@
 //! 264-482`, `:622-847`, `:1658-1710`, `:1866-1998`). The golden is
 //! `assets/golden/flex/flex_rigid.json`, from the unfused MuJoCo 3.5.0
 //! oracle (`scripts/gen_flex_rigid_reference.py`, which describes its
-//! cases). A signed distance field is sim-core's own route (registry
-//! `D-FLEX-SDF`), tested against the sphere it samples.
+//! cases). A signed distance field with a shape of its own takes sim-core's
+//! own route (registry `D-FLEX-SDF`), tested against the sphere it samples;
+//! one loaded from MJCF, MuJoCo's (`sdf_parity.rs`).
 
 use sim_core::validation::{max_or_nan, min_or_nan};
 use std::sync::Arc;

@@ -11,8 +11,7 @@ use crate::sdf::shape::PhysicsShape;
 /// General convex shape that ray-marches the SDF grid for effective radius.
 ///
 /// Same behavior as the pre-trait code path. Used for CSG combinations
-/// that are known-convex but have no analytical radius formula, and as
-/// the default for MJCF-loaded SDF geoms (no shape metadata).
+/// that are known-convex but have no analytical radius formula.
 #[derive(Debug)]
 pub struct ShapeConvex {
     grid: Arc<SdfGrid>,

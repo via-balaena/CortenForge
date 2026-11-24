@@ -144,8 +144,9 @@ pub fn collide_geoms(
     let size1 = model.geom_size[geom1];
     let size2 = model.geom_size[geom2];
 
-    // SDF collision first: SDF has its own contact functions for every
-    // shape, including meshes, height fields and planes.
+    // SDF collision first: a field loaded from MJCF meets every geom as
+    // MuJoCo's collision table sends it, a field with a shape through its
+    // own contact functions, including meshes, height fields and planes.
     if type1 == GeomType::Sdf || type2 == GeomType::Sdf {
         return collide_with_sdf(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
     }

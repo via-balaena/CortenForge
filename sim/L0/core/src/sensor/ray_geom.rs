@@ -7,7 +7,10 @@
 
 use nalgebra::{Matrix3, Point3, UnitVector3, Vector3};
 
+use crate::collision::sdf_collide::is_loaded_sdf;
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::mesh::MeshOctree;
+use crate::quat::{mul_mat_vec3, normalize3};
 use crate::types::{Data, GeomType, Model};
 
 /// MuJoCo's `mj_ray` (`engine_ray.c:1308-1351`) as a site's rangefinder casts
@@ -18,10 +21,11 @@ use crate::types::{Data, GeomType, Model};
 /// alpha is not read), or −1. A primitive's distance is [`ray_geom`]'s, a
 /// height field's `mj_rayHfield`'s and a mesh's `mj_rayMesh`'s
 /// (`ray_mesh::mj_ray_hfield`, `ray_mesh::mj_ray_mesh`). A signed distance
-/// field's is `raycast_geom`'s along the unit direction, divided by `|vec|`,
-/// cast no farther than the geom's bounding sphere reaches, not MuJoCo's
-/// `mj_raySdf` (registry D-SDF-RAY). A plane bounds the hit by its size where
-/// that is positive, as MuJoCo's `ray_plane` does.
+/// field loaded from MJCF casts `mj_raySdf` ([`mj_ray_sdf`]); one with a shape
+/// of its own, `raycast_geom`'s along the unit direction, divided by `|vec|`,
+/// cast no farther than the geom's bounding sphere reaches (registry
+/// D-SDF-RAY). A plane bounds the hit by its size where that is positive, as
+/// MuJoCo's `ray_plane` does.
 pub fn mj_ray(
     model: &Model,
     data: &Data,
@@ -55,6 +59,19 @@ pub fn mj_ray(
                     vec,
                 )
             }),
+            GeomType::Sdf if is_loaded_sdf(model, g) => model.geom_mesh[g]
+                .and_then(|m| model.mesh_data[m].octree())
+                .map_or(-1.0, |octree| {
+                    mj_ray_sdf(
+                        octree,
+                        &model.geom_size[g],
+                        &data.geom_xpos[g],
+                        &data.geom_xmat[g],
+                        pnt,
+                        vec,
+                    )
+                    .0
+                }),
             GeomType::Sdf => {
                 let norm = vec.norm();
                 let reach = (pnt - data.geom_xpos[g]).norm() + model.geom_rbound[g];
@@ -82,6 +99,53 @@ pub fn mj_ray(
         }
     }
     dist
+}
+
+/// `mj_raySdf` (`engine_ray.c:885-948`) for a signed distance field loaded
+/// from MJCF, its field `octree` (its mesh's), its `geom_size` `size`, at
+/// `pos` turned by `mat`: −1 where the ray misses the box of that size
+/// (`ray_box`); else, from the ray's start along its unit direction, at most
+/// 40 steps, each the field's magnitude where it stands, until a step is
+/// below 1e-7, a hit: the distance marched, in unit lengths (not lengths of
+/// `vec`), and the field's gradient at the hit, normalized and turned to the
+/// world; −1 where a step is above 1e6 or none is below 1e-7. A field read
+/// that finds no leaf, where MuJoCo stops with "Node not found"
+/// ([`MeshOctree::distance`]), reads −1. The normal is zero without a hit.
+pub fn mj_ray_sdf(
+    octree: &MeshOctree,
+    size: &Vector3<f64>,
+    pos: &Vector3<f64>,
+    mat: &Matrix3<f64>,
+    pnt: &Vector3<f64>,
+    vec: &Vector3<f64>,
+) -> (f64, [f64; 3]) {
+    const MIN_DIST: f64 = 1e-7;
+    let miss = (-1.0, [0.0; 3]);
+    if ray_box(pos, mat, &[size.x, size.y, size.z], pnt, vec).0 < 0.0 {
+        return miss;
+    }
+    let (lpnt, mut lvec) = ray_map(pos, mat, pnt, vec);
+    normalize3(&mut lvec);
+    let at = |t: f64| [0, 1, 2].map(|i| lpnt[i] + t * lvec[i]);
+    let mut distance_total = 0.0;
+    for _ in 0..40 {
+        let Some(field) = octree.distance(at(distance_total)) else {
+            return miss;
+        };
+        let distance = field.abs();
+        distance_total += distance;
+        if distance.abs() < MIN_DIST {
+            let Some(mut normal) = octree.gradient(at(distance_total)) else {
+                return miss;
+            };
+            normalize3(&mut normal);
+            return (distance_total, mul_mat_vec3(mat, &normal));
+        }
+        if distance > 1e6 {
+            break;
+        }
+    }
+    miss
 }
 
 /// `mju_rayGeom`: the distance along the ray to the geom of `geom_type`,

@@ -125,7 +125,7 @@ pub(super) struct CcdObj<'a> {
 impl<'a> CcdObj<'a> {
     /// `mjc_initCCDObj` for a geom at `pos`, turned by the row-major `mat`;
     /// `None` for a type `mjc_ccd` does not take here (a plane, a height
-    /// field, a signed distance field) or a mesh without vertices.
+    /// field) or a mesh or signed distance field without vertices.
     pub(super) fn new(
         geom_type: GeomType,
         pos: [f64; 3],
@@ -140,7 +140,9 @@ impl<'a> CcdObj<'a> {
             GeomType::Ellipsoid => Support::Ellipsoid,
             GeomType::Cylinder => Support::Cylinder,
             GeomType::Box => Support::Box,
-            GeomType::Mesh => {
+            // `mjc_initCCDObj` gives a signed distance field its mesh's
+            // support (`engine_collision_convex.c:728-736`).
+            GeomType::Mesh | GeomType::Sdf => {
                 let mesh = mesh.filter(|m| !m.verts.is_empty())?;
                 match mesh.hull {
                     Some(hull) if mesh.verts.len() >= MESH_HILLCLIMB_MIN => {
@@ -149,7 +151,7 @@ impl<'a> CcdObj<'a> {
                     _ => Support::Mesh(mesh.verts),
                 }
             }
-            GeomType::Plane | GeomType::Hfield | GeomType::Sdf => return None,
+            GeomType::Plane | GeomType::Hfield => return None,
         };
         Some(Self {
             geom_type: Some(geom_type),
@@ -2312,8 +2314,10 @@ fn multicontact(pt: &Polytope, f: usize, status: &mut CcdStatus, o1: &CcdObj<'_>
 
 impl<'a> CcdObj<'a> {
     /// `mjc_initCCDObj` for geom `g` of `model` at `pos`, turned by `mat`:
-    /// a mesh with its vertices, its hull's graph where it has a hull, and its
-    /// polygons.
+    /// a mesh, or a signed distance field loaded over one, with its vertices,
+    /// its hull's graph where it has a hull, and its polygons. `None` for a
+    /// signed distance field with a shape of its own (`geom_shape`), which
+    /// has no mesh support.
     pub(super) fn of_geom(
         model: &'a Model,
         g: usize,
@@ -2321,6 +2325,9 @@ impl<'a> CcdObj<'a> {
         mat: &Matrix3<f64>,
         margin: f64,
     ) -> Option<Self> {
+        if model.geom_type[g] == GeomType::Sdf && model.geom_shape[g].is_some() {
+            return None;
+        }
         let mesh = model.geom_mesh[g].map(|id| {
             let data = &*model.mesh_data[id];
             CcdMesh {
