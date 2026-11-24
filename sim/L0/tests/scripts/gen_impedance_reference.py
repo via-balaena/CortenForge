@@ -137,8 +137,7 @@ torquescale, `eq_data[10]` (`:482`, `:510`, `:530`):
   0.5 and 2; and two free boxes welded to each other at 0.3, the second
   started turned; qpos and qvel after steps 1, 10, 100 and 500. The
   generator refuses a case unless MuJoCo's `eq_data[10]` is its
-  torquescale. sim-mjcf reads no `torquescale` until Rigid-loading's L41, so
-  the test writes it into `eq_data[10]` after loading.
+  torquescale; the test checks that sim-mjcf read it there too.
 """
 import hashlib
 import json

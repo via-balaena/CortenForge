@@ -64,8 +64,8 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
 ///
-/// 25 since Rigid-loading PR RL-9d4b: `MjcfMesh` took `plugin`.
 /// 26 since Rigid-loading PR RL-10: `MjcfWeld` took `torquescale`.
+/// 25 since Rigid-loading PR RL-9d4b: `MjcfMesh` took `plugin`.
 /// 24 since Rigid-loading PR RL-9d3: `MjcfMesh`'s and `MjcfMeshDefaults`'s
 /// `maxhullvert` hold it as written, `-1` included, where a version-23 file
 /// holds `None` for a written `-1`.

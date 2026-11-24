@@ -237,16 +237,14 @@ fn contact_jacobians_match_mujoco_3_5_0_bit_for_bit() {
 /// Connect and weld rows: a connect between a box on a ball joint (below a
 /// hinged arm) and a free sphere, a weld between the sphere and the arm, a
 /// weld of the box to the world, at a moved state, `efc_J` and `efc_pos`
-/// bit for bit with MuJoCo's. MuJoCo's `eq_data` (its compiler's anchors
-/// and `relpose`) is written in, as the frames are.
+/// bit for bit with MuJoCo's, the loader's `eq_data` (its anchors and
+/// `relpose`, which `mj_setConst` completes) MuJoCo's first.
 #[test]
 fn equality_rows_match_mujoco_3_5_0_bit_for_bit() {
     let case = &golden()["cases"]["equalities"];
-    let mut model = load_model(case["xml"].as_str().expect("xml")).expect("load");
-    let eq_data = floats(&case["eq_data"]);
-    for (eq, chunk) in model.eq_data.iter_mut().zip(eq_data.chunks(11)) {
-        eq.copy_from_slice(chunk);
-    }
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let eq_data: Vec<f64> = model.eq_data.iter().flatten().copied().collect();
+    assert_golden("eq_data", &eq_data, &floats(&case["eq_data"]));
     let (_, data) = at_state_of(model, case);
     assert_eq!(data.efc_J.nrows(), 15, "the equality rows alone");
     assert_golden("efc_J", &row_major(&data.efc_J), &floats(&case["efc_J"]));

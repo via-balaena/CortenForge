@@ -3,7 +3,8 @@
 //! `fusestatic` merges jointless bodies into their parents, reducing the
 //! body count while preserving physics. It runs on the parsed `MjcfModel`
 //! tree *before* the builder converts it to a physics `Model`;
-//! `discardvisual` deletes after the build (`discard`).
+//! `discardvisual` deletes once every element is built and checked, before
+//! the model is made (`discard`).
 
 use std::collections::HashSet;
 

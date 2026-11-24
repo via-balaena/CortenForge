@@ -38,8 +38,8 @@ impl ModelBuilder {
             if pair.geom1.is_empty() || pair.geom2.is_empty() {
                 continue;
             }
-            // Validation found both (`check_pairs`); `discardvisual` may
-            // have removed one since (ledger L342).
+            // Validation found both (`check_pairs`); an `MjcfModel` built
+            // in code, which validation has not read, may name one it lacks.
             let g1 = *self
                 .geom_name_to_id
                 .get(&pair.geom1)

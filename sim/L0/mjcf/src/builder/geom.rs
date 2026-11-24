@@ -624,7 +624,7 @@ fn mass_sizes(geom: &MjcfGeom, hfield_size: Option<&[f64; 4]>) -> [f64; 3] {
 /// taking the share of the mass its volume takes; a height field's is its
 /// box's; a mesh's the box of its mesh's volume and principal moments
 /// ([`MeshProps::boxsz`]). A primitive geom's with `shellinertia` is its
-/// surface's (ledger L355's).
+/// surface's ([`shell_inertia`]).
 pub fn compute_geom_inertia(
     geom: &MjcfGeom,
     mesh_props: Option<&MeshProps>,

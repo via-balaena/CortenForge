@@ -16,8 +16,8 @@
 use sim_mjcf::load_model;
 
 /// Each document, and the `eq_data` row MuJoCo 3.5.0 compiles for its one
-/// equality: but the last, a hinged box `a` and a free box `c`, each turned
-/// by an `euler`.
+/// equality: but the last two (a tendon equality, a flexcomp's edge
+/// equality), a hinged box `a` and a free box `c`, each turned by an `euler`.
 const CASES: &[(&str, [f64; 11])] = &[
     // a weld with no relpose: its anchor and quaternion made at qpos0
     (
@@ -170,6 +170,11 @@ const CASES: &[(&str, [f64; 11])] = &[
         r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="hinge"/><geom type="box" size="0.1 0.05 0.05"/><body name="c" pos="0.3 0 0"><joint name="j2" type="hinge"/><geom type="box" size="0.05 0.05 0.05"/></body></body></worldbody><tendon><fixed name="t1"><joint joint="j1" coef="1"/></fixed><fixed name="t2"><joint joint="j2" coef="0.5"/></fixed></tendon><equality><tendon tendon1="t1" tendon2="t2" polycoef="0 2 0 0 0"/></equality></mujoco>"#,
         [0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
     ),
+    // a flexcomp's edge equality: MuJoCo's default row (`data[1]` and `data[10]` 1)
+    (
+        r#"<mujoco><worldbody><flexcomp name="f" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" radius="0.01" mass="1"><edge equality="true"/></flexcomp></worldbody></mujoco>"#,
+        [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+    ),
 ];
 
 /// 0 on macOS arm64, where MuJoCo's values were printed, and 1e-12 of the
@@ -213,4 +218,26 @@ fn an_equalitys_data_is_mujocos() {
         CASES.len(),
         wrong.join("\n")
     );
+}
+
+/// A joint equality's `eq_data[10]` is its degree-10 coefficient here, 0
+/// where none is written, where MuJoCo 3.5.0's row holds its default 1
+/// there, which its coupling does not read (registry `D-POLYCOEF-DEGREE`);
+/// the rest of the row is MuJoCo's (measured).
+#[test]
+fn a_joint_equalitys_tenth_entry_is_its_coefficient() {
+    let model = load_model(r#"<mujoco><worldbody><body><joint name="j1" type="hinge" axis="0 1 0"/><geom size=".1" pos="0 0 -0.3"/><body pos="0 0 -0.5"><joint name="j2" type="hinge" axis="0 1 0"/><geom size=".1" pos="0 0 -0.3"/></body></body></worldbody><equality><joint joint1="j1" joint2="j2" polycoef="0 0.5 0 0 0"/></equality></mujoco>"#).unwrap();
+    let mujoco = [0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+    let ours = model.eq_data[0];
+    assert_eq!(ours[..10], mujoco[..10]);
+    assert_eq!((ours[10], mujoco[10]), (0.0, 1.0));
+}
+
+/// A weld written with `site1` and `site2`, which MuJoCo 3.5.0 loads
+/// (measured), is refused here: its orientation needs the sites' own turns,
+/// which a body weld's `relpose` cannot hold (registry `D-WELD-SITE`).
+#[test]
+fn a_site_form_weld_is_refused() {
+    let error = load_model(r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint type="hinge" axis="0 1 0"/><geom type="box" size="0.1 0.05 0.05"/><site name="s1" pos="0.1 0 0"/></body><body name="c" pos="0.3 0.1 1.2"><freejoint/><geom type="box" size="0.05 0.05 0.05"/><site name="s2"/></body></worldbody><equality><weld site1="s1" site2="s2"/></equality></mujoco>"#).unwrap_err().to_string();
+    assert!(error.contains("'body1' on <weld>"), "{error}");
 }

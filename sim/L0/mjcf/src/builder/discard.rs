@@ -12,7 +12,9 @@
 //! this crate does not read; registry `D-DISCARD-TUPLE`). This crate's
 //! distance equality, which MuJoCo refuses, keeps its geoms too. A mesh is
 //! visual where no geom that is not visual names it (`:1893-1895`), a
-//! primitive fitted to it among them.
+//! primitive fitted to it among them; MuJoCo's sensor on a mesh marks one too
+//! (`:7113`, `:7142`), which this crate does not make (no sensor here takes a
+//! mesh).
 
 use std::collections::{HashMap, HashSet};
 

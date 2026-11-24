@@ -203,15 +203,23 @@ fn t8_ellipsoid_shell_inertia() {
   </body></worldbody>
 </mujoco>"#;
     let model = load_model(mjcf).unwrap();
-    // Thomsen SA ≈ 48971.93, tolerance 2% (Thomsen approximation ~1.05% off)
-    let tol_mass = model.body_mass[1] * 0.02;
-    assert_relative_eq!(model.body_mass[1], 48971.93, epsilon = tol_mass);
-    let tol_ix = model.body_inertia[1].x * 0.02;
-    let tol_iy = model.body_inertia[1].y * 0.02;
-    let tol_iz = model.body_inertia[1].z * 0.02;
-    assert_relative_eq!(model.body_inertia[1].x, 180751.03, epsilon = tol_ix);
-    assert_relative_eq!(model.body_inertia[1].y, 140683.07, epsilon = tol_iy);
-    assert_relative_eq!(model.body_inertia[1].z, 81026.34, epsilon = tol_iz);
+    // MuJoCo 3.5.0's, on the census's unfused oracle (2026-11-23): its mass
+    // from Thomsen's area (`pow`), its moments from the shell between the
+    // ellipsoid and itself grown by 1e-6 (book Rigid-loading L40), each within
+    // 1e-9 relative, the area's last bits being the platform's libm's.
+    let mujoco = [
+        48971.9333337173,
+        180751.03343200684,
+        140683.07421875,
+        81026.34167098999,
+    ];
+    let inertia = model.body_inertia[1];
+    for (ours, theirs) in [model.body_mass[1], inertia.x, inertia.y, inertia.z]
+        .into_iter()
+        .zip(mujoco)
+    {
+        assert_relative_eq!(ours, theirs, max_relative = 1e-9);
+    }
 }
 
 // ============================================================================

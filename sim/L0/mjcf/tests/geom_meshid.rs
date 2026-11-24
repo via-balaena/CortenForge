@@ -6,8 +6,7 @@
 //! mesh geom's as it builds the geom, where it refused one before
 //! Rigid-loading PR RL-9d in other words, and an SDF geom's as it checks
 //! each body (`check_bodies`), after the geom's condim, as MuJoCo does.
-//! Where it checks another fault first, it names that one, and it does not
-//! check an SDF geom `discardvisual` discards (ledger L336, L353):
+//! Where it checks another fault first, it names that one:
 //! `NAMED_OTHERWISE`. `validate`
 //! checks both kinds after its other checks. A named mesh the model lacks
 //! is refused before any body, in both.
@@ -99,8 +98,8 @@ const REFUSED: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
-/// `(what, before the assets, the world body's contents, the loader's error
-/// or `None` where it loads, `validate`'s error)`, each refused by MuJoCo for
+/// `(what, before the assets, the world body's contents, the loader's error,
+/// `validate`'s error)`, each refused by MuJoCo for
 /// the SDF geom's mesh: the loader names another fault, which it checks
 /// before it builds the model, as it did before Rigid-loading PR RL-9d;
 /// `validate` names the other fault where it checks it.

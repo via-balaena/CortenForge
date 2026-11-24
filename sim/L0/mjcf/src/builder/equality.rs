@@ -674,8 +674,9 @@ mod tests {
         assert_eq!(model.eq_name_to_id.get("c1"), Some(&0));
     }
 
-    /// Connect with explicit body2 auto-computes the body2 anchor so both
-    /// anchors map to the same world-space point at qpos0. The check rebuilds
+    /// Connect with explicit body2 has its body2 anchor made at qpos0
+    /// (`Model::compute_equality_data0`), so both anchors map to the same
+    /// world-space point there. The check rebuilds
     /// world coordinates from each side independently and compares.
     #[test]
     fn connect_explicit_body2_autocomputes_anchor() {
@@ -739,8 +740,9 @@ mod tests {
         assert_eq!(model.eq_data[0][10].to_bits(), 1.0_f64.to_bits());
     }
 
-    /// Weld with explicit `relpose` packs the user-supplied quaternion into
-    /// `eq_data[6..10]` verbatim instead of computing one from world frames.
+    /// Weld with explicit `relpose` keeps the user-supplied quaternion in
+    /// `eq_data[6..10]` (normalized, a unit one unchanged) instead of
+    /// computing one from world frames.
     #[test]
     fn weld_explicit_relpose_packed_verbatim() {
         let xml = r#"
@@ -768,8 +770,8 @@ mod tests {
         assert_relative_eq!(model.eq_data[0][9], 0.0, epsilon = 1e-12);
     }
 
-    /// Weld without `relpose` auto-computes `q1.inverse() * q2`. With both
-    /// bodies at identity orientation, the relpose is identity (1,0,0,0).
+    /// Weld without `relpose` has `neg(xquat1) · xquat2` made at qpos0. With
+    /// both bodies at identity orientation, the relpose is identity (1,0,0,0).
     #[test]
     fn weld_auto_relpose_identity_when_aligned() {
         let xml = r#"
