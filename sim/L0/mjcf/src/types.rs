@@ -2523,6 +2523,12 @@ pub struct MjcfFrame {
     /// document writes them, one entry each, as [`MjcfBody::items`] lists a
     /// body's: the frame's contents take its place among its holder's.
     pub items: Vec<MjcfItem>,
+    /// The bodies its cameras and lights name as their `target`, read for
+    /// `fusestatic` alone, which keeps a body one names (MuJoCo 3.5.0
+    /// resolves a camera's and a light's target before it fuses a body,
+    /// `user_model.cc:4245-4246`); this crate makes no camera or light.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub targets: Vec<String>,
 }
 
 impl Default for MjcfFrame {
@@ -2543,6 +2549,7 @@ impl Default for MjcfFrame {
             composites: Vec::new(),
             flexcomps: Vec::new(),
             items: Vec::new(),
+            targets: Vec::new(),
         }
     }
 }
@@ -2908,6 +2915,12 @@ pub struct MjcfBody {
     /// body's pose (`:2474`) and before it fuses static bodies
     /// (`user_model.cc:4932-4937`). `None` as read.
     pub pose_as_written: Option<(Vector3<f64>, Vector4<f64>)>,
+    /// The bodies its cameras and lights name as their `target`, read for
+    /// `fusestatic` alone, which keeps a body one names (MuJoCo 3.5.0
+    /// resolves a camera's and a light's target before it fuses a body,
+    /// `user_model.cc:4245-4246`); this crate makes no camera or light.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub targets: Vec<String>,
     /// Explicit inertial properties.
     pub inertial: Option<MjcfInertial>,
     /// Joints attached to this body.
@@ -2965,6 +2978,7 @@ impl Default for MjcfBody {
             xyaxes: None,
             zaxis: None,
             pose_as_written: None,
+            targets: Vec::new(),
             inertial: None,
             joints: Vec::new(),
             geoms: Vec::new(),
@@ -4740,6 +4754,33 @@ pub struct MjcfModel {
     /// Extension declarations (plugin types + instances). §66.
     #[cfg_attr(feature = "serde", serde(default))]
     pub extensions: Vec<MjcfExtension>,
+    /// The `<custom>` section's tuples, read for the bodies `fusestatic`
+    /// keeps and the geoms `discardvisual` keeps, which MuJoCo 3.5.0 keeps
+    /// for a tuple's element (`user_model.cc:4254`, `user_objects.cc:7918`);
+    /// no element is checked (registry `D-TUPLE-UNCHECKED`).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub tuples: Vec<MjcfTuple>,
+}
+
+/// A `<custom><tuple>`, its elements as written.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfTuple {
+    /// Its name, which MuJoCo requires.
+    pub name: String,
+    /// Its `<element>`s, as written.
+    pub elements: Vec<MjcfTupleElement>,
+}
+
+/// One `<element>` of a tuple: the object it names, by its type's keyword
+/// (`body`, `geom`, …) and its name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfTupleElement {
+    /// The object's type, as MuJoCo's keyword names it (`body`, `geom`, …).
+    pub objtype: String,
+    /// The object's name.
+    pub objname: String,
 }
 
 impl Default for MjcfModel {
@@ -4768,6 +4809,7 @@ impl Default for MjcfModel {
             nuser_actuator: -1,
             nuser_sensor: -1,
             extensions: Vec::new(),
+            tuples: Vec::new(),
         }
     }
 }

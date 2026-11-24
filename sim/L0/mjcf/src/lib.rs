@@ -215,8 +215,8 @@ pub use types::{
     MjcfFlexcompPins, MjcfFrame, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial,
     MjcfIntegrator, MjcfItem, MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointEquality,
     MjcfJointType, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfSensorDefaults, MjcfSite,
-    MjcfSiteDefaults, MjcfSolverType, MjcfTendon, MjcfTendonDefaults, MjcfTendonType, MjcfWeld,
-    Prefix, SpatialPathElement, TfAuto,
+    MjcfSiteDefaults, MjcfSolverType, MjcfTendon, MjcfTendonDefaults, MjcfTendonType, MjcfTuple,
+    MjcfTupleElement, MjcfWeld, Prefix, SpatialPathElement, TfAuto,
 };
 pub use validation::{ValidationResult, validate};
 

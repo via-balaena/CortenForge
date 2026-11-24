@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 2061
+# agree_floor 2069
 001bc4149d608b24	agree
 002cac6fc120ff66	both-refuse
 00308b83da9d8bab	agree
@@ -215,6 +215,7 @@
 0e3621ca4ec655b5	both-refuse
 0e58d0da558fb30a	agree
 0e6293d1a21c9f7b	agree
+0e6390b22ab5bd5c	both-refuse
 0e7332e04d6711d4	both-refuse
 0e7a21d0862f8dd5	both-refuse
 0e7c956875a98f04	both-refuse
@@ -422,6 +423,7 @@
 1c5385dc35eb2eb2	agree
 1c5dad9c54b7626b	both-refuse
 1c67195a21e93244	both-refuse
+1c72c77ae7861066	mj-refuses	divergence=D-TUPLE-UNCHECKED
 1c7399952a893cf8	both-refuse
 1c79cbdb23b5c1f3	both-refuse
 1cb368c0461ea4c0	agree
@@ -512,6 +514,7 @@
 22adbf4357022902	agree
 22aecf15dd977f43	both-refuse
 22cffe30dbaf9036	agree
+22d07915a688203a	both-refuse
 22d579a0b078e0b6	agree
 22faa8a3cd28b7a9	agree
 2339fc91905af855	agree
@@ -804,6 +807,7 @@
 359708c0779784ff	agree
 35a1ad3f3e822ab6	both-refuse
 35b7320f221b4859	both-refuse
+35c39ec1f10a0357	agree
 35c6148537661de5	agree
 35d0f86b8cd8c281	agree
 35e74b9dc034bf86	agree
@@ -1015,6 +1019,7 @@
 42f0d1664ec4a188	agree
 42f5bdb45bbd6354	both-refuse
 4316844350ba3ccb	both-refuse
+431ef192abfd549e	both-refuse
 4365c4e26ae92516	both-refuse
 43a7692b34966690	agree
 43f75958c991d5ec	agree
@@ -1052,6 +1057,7 @@
 465b3151cb515f79	ours-refused	divergence=D-INERTIAL-NEGATIVE
 466562c517bc1019	mj-refuses
 466629bcee074964	agree
+4674d1210adce34d	agree
 4676fb9952de0711	agree
 467a5a2bb9848ed9	ours-refused	divergence=D-TENDON-FRICTIONLOSS
 4687970951045c1a	agree
@@ -1578,6 +1584,7 @@
 68da7b59b5d7ae99	agree
 68e14d56d0683686	agree
 68f4e6888ca70cca	agree
+68fb762f7008acc1	both-refuse
 691ffdf65e566a59	agree
 693fd9b061e88237	agree
 6966d46111718d58	both-refuse
@@ -2085,7 +2092,7 @@
 8d3b7020409ee595	both-refuse
 8d45b235745fb996	both-refuse
 8d5ab200f4ebddec	agree
-8d781a953fdc49cc	model:ngeom	divergence=D-DISCARD-TUPLE
+8d781a953fdc49cc	agree
 8d8163b611ba24b0	agree
 8db9458398658199	ours-refused	divergence=D-EMPTY-NAME
 8dc6f00b72b3f1c2	agree
@@ -2209,6 +2216,7 @@
 95a388f8b1f460d7	both-refuse
 95b9b26551550c69	agree
 95dddb7196249575	both-refuse
+95e5b99df3c59748	both-refuse
 95ebc6f5d4e67bf9	agree
 9608aa2be9843127	ours-refused	divergence=D-CYLINDER-BIAS
 960eb951f20adf6e	agree
@@ -2504,6 +2512,7 @@ a9efc39a81509d70	both-refuse
 a9f02cd71aa1c5e8	agree
 a9fa0eaed34dc178	agree
 aa0f2efbf67f3936	agree
+aa17613e26333f7c	agree
 aa20ff29da40acbf	both-refuse
 aa2c76f53829dcde	agree
 aa3806e35aff9152	model:nbody	divergence=D-FLEX-PINNED-BODY
@@ -2903,6 +2912,7 @@ c5b88ff3a051ab0c	ours-refused	divergence=D-FLEX-CONDIM-RANGE
 c5d95540b34aa6eb	both-refuse
 c5e18fdfcaaee719	both-refuse
 c5e327d55d993c81	both-refuse
+c5e46bc1f2197c6e	mj-refuses	divergence=D-TUPLE-UNCHECKED
 c5fe6c4ad9abb4e1	mj-refuses
 c6352a5aa798eaa9	model:actuator_lengthrange;dyn:agree
 c658402fbc653b08	agree
@@ -3056,7 +3066,9 @@ ce8d81298fa61585	both-refuse
 ce96b5e2e7c56569	agree
 ced09d26f36b4af4	agree
 cedb55734f1d066e	agree
+cede670364654604	agree
 ceef6e322c393617	agree
+cf05d8cf4e8bdf6e	mj-refuses	divergence=D-TUPLE-UNCHECKED
 cf0e230d7b20f2de	agree
 cf224c2bddf9deb3	agree
 cf64ed75113fb614	agree
@@ -3236,6 +3248,7 @@ dbd2b709b4119c47	agree
 dc074a66f69c17ad	both-refuse
 dc0e4d13f26a8729	agree
 dc2267f6c52bba1f	agree
+dc3163236b9c7ca8	agree
 dc490fd0b120a5df	agree
 dc509fba88ab200a	agree
 dc59c3840bfa0a08	both-refuse
@@ -3496,6 +3509,7 @@ ed8d322a842a1358	both-refuse
 ed913b2009a8d1a0	ours-refused	divergence=D-CYLINDER-BIAS
 ed994df10cc5e1bc	agree
 edb1146b0365719b	both-refuse
+edc9fd4ab33c6940	agree
 edd12fc57abf0a25	both-refuse
 ede96f46d03af648	ours-refused	divergence=D-ACTDIM
 ee00cbb9cb41686a	both-refuse
@@ -3696,6 +3710,7 @@ fb0983d5b579671f	both-refuse
 fb0e21fd300a63de	agree
 fb1035d0595128ff	both-refuse
 fb1e96c107d0d0fe	agree
+fb274da077b9ae7e	agree
 fb40f9ec7a17d647	agree
 fb4dc5901acc9d25	ours-refused	divergence=D-MUSCLE-SENTINEL
 fb68de099bbb81fc	both-refuse

@@ -59,6 +59,22 @@ impl FuseReferences {
         for skin in &mjcf.skins {
             bodies.extend(skin.bones.iter().map(|bone| bone.body.clone()));
         }
+        // The cameras' and lights' targets, wherever they are written: a
+        // frame's are its body's once frames are expanded.
+        let mut stack = vec![&mjcf.worldbody];
+        while let Some(body) = stack.pop() {
+            bodies.extend(body.targets.iter().cloned());
+            stack.extend(&body.children);
+        }
+        for tuple in &mjcf.tuples {
+            bodies.extend(
+                tuple
+                    .elements
+                    .iter()
+                    .filter(|element| matches!(element.objtype.as_str(), "body" | "xbody"))
+                    .map(|element| element.objname.clone()),
+            );
+        }
         let mut force_torque_sites = Vec::new();
         for sensor in &mjcf.sensors {
             if matches!(
@@ -325,6 +341,14 @@ impl ModelBuilder {
     /// parent renumbered; a free joint's `qpos0` its body's pose, as
     /// MuJoCo copies it once the tree is fused (`user_model.cc:2803-2806`).
     fn renumber_fused(&mut self, nodes: &[Node], order: &[usize]) {
+        // MuJoCo numbers the bodies by its list and the geoms and sites by
+        // walking the tree (`FuseReindex`); a fused body's children take its
+        // place among its parent's, so the two orders are one.
+        debug_assert_eq!(
+            preorder(nodes),
+            order,
+            "the fused tree's preorder is the body list"
+        );
         let mut body_id = vec![usize::MAX; nodes.len()];
         for (new, &old) in order.iter().enumerate() {
             body_id[old] = new;

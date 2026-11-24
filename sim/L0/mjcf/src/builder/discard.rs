@@ -8,8 +8,8 @@
 //! A geom is visual where its `contype` and `conaffinity` are both 0
 //! (`user_objects.cc:3672`) and nothing MuJoCo marks not visual names it: a
 //! contact pair (`:5675-5676`), a spatial tendon's geom wrap (`:6396`), a
-//! sensor's object or reference (`:7110`, `:7139`), a tuple (`:7918`, which
-//! this crate does not read; registry `D-DISCARD-TUPLE`). This crate's
+//! sensor's object or reference (`:7110`, `:7139`), a tuple's element
+//! (`:7918`). This crate's
 //! distance equality, which MuJoCo refuses, keeps its geoms too. A mesh is
 //! visual where no geom that is not visual names it (`:1893-1895`), a
 //! primitive fitted to it among them; MuJoCo's sensor on a mesh marks one too
@@ -25,7 +25,8 @@ use crate::types::{MjcfGeom, MjcfModel, MjcfSensorType, SpatialPathElement};
 
 /// The names of the geoms MuJoCo marks not visual, so that `discardvisual`
 /// keeps them: those a contact pair, a spatial tendon's geom wrap, a sensor's
-/// geom object or reference, or a distance equality names. A frame sensor
+/// geom object or reference, a distance equality or a `<custom>` tuple's
+/// element names. A frame sensor
 /// whose `objtype` is not written, which MuJoCo refuses and this crate reads
 /// by its name, keeps a geom of that name. With them, the names of the
 /// meshes a geom that is not visual names (`meshes`) and of those any geom
@@ -77,6 +78,15 @@ impl Referenced {
         for distance in &mjcf.equality.distances {
             names.insert(distance.geom1.clone());
             names.extend(distance.geom2.clone());
+        }
+        for tuple in &mjcf.tuples {
+            names.extend(
+                tuple
+                    .elements
+                    .iter()
+                    .filter(|element| element.objtype == "geom")
+                    .map(|element| element.objname.clone()),
+            );
         }
         let mut referenced = Self {
             geoms: names,

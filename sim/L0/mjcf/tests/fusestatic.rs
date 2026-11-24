@@ -1083,6 +1083,296 @@ const CASES: &[(&str, Expect)] = &[
             ],
         }),
     ),
+    // a static body a light targets: kept (L361)
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="t" pos="0 0 1"><geom size="0.1" contype="0" conaffinity="0"/></body><light name="l" mode="targetbody" target="t" pos="1 1 3"/><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "t", "f"],
+            body_parent: &[0, 0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 2.0]],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 2],
+            geom_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_mass: &[0.0, 4.188790204786391, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+        }),
+    ),
+    // a static body a <custom> tuple names: kept
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 0.5"><geom size="0.2"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody><custom><tuple name="t"><element objtype="body" objname="s"/></tuple></custom></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "s", "f"],
+            body_parent: &[0, 0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5], [0.0, 0.0, 2.0]],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 2],
+            geom_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_mass: &[0.0, 33.51032163829113, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [0.5361651462126582, 0.5361651462126582, 0.5361651462126582],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+        }),
+    ),
+    // a static body a camera in a frame targets: kept
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="t" pos="0 0 1"><geom size="0.1" contype="0" conaffinity="0"/></body><frame pos="1 0 0"><camera name="cam" mode="targetbody" target="t" pos="1 1 1"/></frame><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "t", "f"],
+            body_parent: &[0, 0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 2.0]],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 2],
+            geom_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_mass: &[0.0, 4.188790204786391, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+        }),
+    ),
+    // a moving body whose mass is a static child's <inertial>: added (L373)
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><body name="s" pos="0.3 0 0"><inertial pos="0 0 0" mass="2" diaginertia="0.01 0.02 0.03"/></body></body></worldbody></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "p"],
+            body_parent: &[0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            geom_body: &[],
+            geom_pos: &[],
+            geom_quat: &[],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_mass: &[0.0, 2.0],
+            body_inertia: &[[0.0, 0.0, 0.0], [0.03, 0.02, 0.01]],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.3, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 0.7071067811865489, 0.0, 0.7071067811865489],
+            ],
+            qpos0: &[0.0],
+        }),
+    ),
+    // a fused body's children in its place, before its later sibling
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><freejoint/><geom size="0.1"/><body name="a" pos="0.2 0 0"><geom size="0.05"/><body name="c" pos="0.1 0 0"><joint type="hinge"/><geom size="0.03"/></body></body><body name="d" pos="-0.2 0 0"><joint type="hinge"/><geom size="0.04"/></body></body></worldbody></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "p", "c", "d"],
+            body_parent: &[0, 0, 1, 1],
+            body_pos: &[
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.30000000000000004, 0.0, 0.0],
+                [-0.2, 0.0, 0.0],
+            ],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 1, 2, 3],
+            geom_pos: &[
+                [0.0, 0.0, 0.0],
+                [0.2, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            geom_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_mass: &[
+                0.0,
+                4.712388980384691,
+                0.11309733552923254,
+                0.26808257310632905,
+            ],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.035895604949350055,
+                    0.035895604949350055,
+                    0.017278759594743866,
+                ],
+                [
+                    4.071504079052371e-05,
+                    4.071504079052371e-05,
+                    4.071504079052371e-05,
+                ],
+                [
+                    0.00017157284678805058,
+                    0.00017157284678805058,
+                    0.00017157284678805058,
+                ],
+            ],
+            body_ipos: &[
+                [0.0, 0.0, 0.0],
+                [0.022222222222222223, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [
+                    0.5000000000000007,
+                    0.5000000000000007,
+                    0.5000000000000007,
+                    0.5000000000000007,
+                ],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        }),
+    ),
+    // a camera's empty target names no body: the static body fused
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 1"><geom size="0.1" contype="0" conaffinity="0"/></body><camera name="cam" target="" pos="1 1 1"/><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "f"],
+            body_parent: &[0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 2.0]],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            geom_body: &[0, 1],
+            geom_pos: &[[0.0, 0.0, 1.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_mass: &[0.0, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+        }),
+    ),
+    // a static body a light in another body targets: kept
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="t" pos="0 0 1"><geom size="0.1" contype="0" conaffinity="0"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/><light name="l" mode="targetbody" target="t" pos="0 0 1"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "t", "f"],
+            body_parent: &[0, 0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 2.0]],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 2],
+            geom_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_mass: &[0.0, 4.188790204786391, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+        }),
+    ),
     // a negative density beside an <inertial>: no geom mass checked, loads
     (
         r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><geom type="box" size="0.1 0.05 0.02"/><body name="s" pos="0.3 0 0"><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><geom size="0.05" density="-5"/></body></body></worldbody></mujoco>"#,
@@ -1158,6 +1448,18 @@ const CASES: &[(&str, Expect)] = &[
     (
         r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="m" mocap="true" pos="0 0 1"><geom size="0.1" contype="0" conaffinity="0"/><body name="c" pos="0.3 0 0"><freejoint/><geom size="0.1"/></body></body></worldbody></mujoco>"#,
         Expect::Refused("free joint can only be used on top level (body 'c')"),
+    ),
+    // MuJoCo: "Error: free joint can only be used on top level"
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="t" pos="0 0 1"><geom size="0.1"/><body name="c" pos="0.3 0 0"><freejoint/><geom size="0.1"/></body></body><camera name="cam" mode="targetbody" target="t" pos="1 1 1"/></worldbody></mujoco>"#,
+        Expect::Refused("free joint can only be used on top level (body 'c')"),
+    ),
+    // MuJoCo: "Error: error 'inertia must have positive eigenvalues' in fusing static body inertias"
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0 0 0"/><body name="s" pos="0 0 0"><inertial pos="0 0 0" mass="1" diaginertia="0 0 0"/></body></body></worldbody></mujoco>"#,
+        Expect::Refused(
+            "error 'inertia must have positive eigenvalues' in fusing static body inertias",
+        ),
     ),
 ];
 

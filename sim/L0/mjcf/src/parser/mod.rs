@@ -8,6 +8,7 @@ mod attrs;
 mod body;
 mod composite;
 mod contact;
+mod custom;
 mod defaults;
 mod deformable;
 mod equality;
@@ -35,6 +36,7 @@ use self::asset::parse_asset;
 use self::attrs::{Attrs, skip_element};
 use self::body::parse_worldbody;
 use self::contact::parse_contact;
+use self::custom::parse_custom;
 use self::defaults::parse_default;
 use self::deformable::parse_deformable;
 use self::equality::parse_equality;
@@ -318,6 +320,7 @@ fn parse_section<R: BufRead>(
             model.worldbody.composites.extend(wb.composites);
             model.worldbody.flexcomps.extend(wb.flexcomps);
             model.worldbody.items.extend(wb.items);
+            model.worldbody.targets.extend(wb.targets);
         }
         b"actuator" => {
             let actuators = parse_actuators(reader, empty)?;
@@ -378,6 +381,7 @@ fn parse_section<R: BufRead>(
             let ext = parse_extension(reader, empty)?;
             model.extensions.push(ext);
         }
+        b"custom" => model.tuples.extend(parse_custom(reader, empty)?),
         // Skip other elements
         name => skip_element(reader, name, empty)?,
     }
