@@ -3761,3 +3761,8 @@ fb68de099bbb81fc	sim/L0/mjcf/tests/refusal_order.rs:2177
 23c6de3584cec9af	sim/L0/tests/integration/mesh_inertia_modes.rs:367
 858f806f87281815	sim/L0/tests/integration/exactmeshinertia.rs:379
 16ec96d01bb62a70	sim/L0/mjcf/src/parser/tests.rs:1112
+1c3e31140ffe2c93	sim/L0/mjcf/tests/geom_masses.rs:590
+c9593fa8989dd918	sim/L0/mjcf/tests/geom_masses.rs:614
+cd166537a600994b	sim/L0/mjcf/tests/geom_masses.rs:602
+d0a5404e535a1291	sim/L0/mjcf/tests/geom_masses.rs:596
+e2296b456c509964	sim/L0/mjcf/tests/geom_masses.rs:608
