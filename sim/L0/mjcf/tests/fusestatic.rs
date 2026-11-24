@@ -6,8 +6,8 @@
 //! added to its parent's, then every body, geom and site numbered again.
 //!
 //! Every expected value was printed by MuJoCo 3.5.0 on the census's unfused
-//! oracle (2026-11-24), but the fixtures' dynamics, which MuJoCo does not
-//! keep (registry `D-FUSESTATIC-INERTIA`).
+//! oracle (2026-11-24), but the fixtures' fused dynamics, which MuJoCo does
+//! not keep (registry `D-FUSESTATIC-INERTIA`).
 
 // The values are MuJoCo's, printed to the last digit.
 #![allow(
@@ -2442,7 +2442,7 @@ const CASES: &[(&str, Expect)] = &[
             eq_data: &[],
         }),
     ),
-    // k06 without its camera: the free joint fused to the top
+    // a free body below a static body fused to the top (the same with a camera in the static body stops MuJoCo: D-FUSESTATIC-CAMERA)
     (
         r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="t" pos="0 0 1"><geom size="0.1"/><body name="c" pos="0.3 0 0"><freejoint/><geom size="0.1"/></body></body></worldbody></mujoco>"#,
         Expect::Loads(&Model {
@@ -2742,6 +2742,11 @@ const CASES: &[(&str, Expect)] = &[
         r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0 0 0"/><body name="s" pos="0 0 0"><inertial pos="0 0 0" mass="1" diaginertia="0 0 0"/></body></body><body name="q" pos="2 0 1"><freejoint/><geom size="0.1" mass="-1"/></body></worldbody></mujoco>"#,
         Expect::Refused("mass, inertia or density are negative in geom"),
     ),
+    // MuJoCo: "Error: unrecognized name 'nosuch' of sensorized object"
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0 0 0"/><site name="ps"/><body name="s" pos="0 0 0"><inertial pos="0 0 0" mass="1" diaginertia="0 0 0"/></body></body></worldbody><sensor><force site="nosuch"/></sensor></mujoco>"#,
+        Expect::Refused("unknown site 'nosuch' (sensor #0)"),
+    ),
     // MuJoCo: "Error: unrecognized name 's' of sensorized object"
     (
         r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 0.5"><geom size="0.2"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody><sensor><framepos objtype="xbody" objname="s"/></sensor></mujoco>"#,
@@ -2804,8 +2809,8 @@ const FIXTURES: &[(&str, f64)] = &[
 ];
 
 /// 0 on macOS arm64, where MuJoCo's values were printed, and 1e-12 of an
-/// array's largest entry elsewhere: a turned body's `euler` passes through
-/// `sin` and `cos`, whose last bits are the platform's libm's.
+/// array's largest entry elsewhere, where the platform's libm gives other
+/// last bits.
 const TOLERANCE: f64 = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
     0.0
 } else {
@@ -2822,8 +2827,8 @@ fn close(ours: &[f64], mujoco: &[f64]) -> bool {
             .zip(mujoco)
             .all(|(a, b)| a.to_bits() == b.to_bits());
     }
-    // An infinity is compared by its bits, and the scale is the finite
-    // entries': a NaN on either side fails.
+    // Equal bits pass, an infinity's among them; otherwise both entries are
+    // finite and within the tolerance of the array's largest finite entry.
     let scale = mujoco
         .iter()
         .filter(|v| v.is_finite())

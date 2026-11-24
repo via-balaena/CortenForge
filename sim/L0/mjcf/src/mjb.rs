@@ -65,7 +65,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// Current MJB format version.
 ///
 /// 27 since Rigid-loading PR RL-10b: `MjcfBody` and `MjcfFrame` took
-/// `targets`, `MjcfModel` `tuples`.
+/// `camera_targets` and `light_targets`, `MjcfModel` `tuples`.
 /// 26 since Rigid-loading PR RL-10: `MjcfWeld` took `torquescale`.
 /// 25 since Rigid-loading PR RL-9d4b: `MjcfMesh` took `plugin`.
 /// 24 since Rigid-loading PR RL-9d3: `MjcfMesh`'s and `MjcfMeshDefaults`'s

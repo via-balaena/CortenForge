@@ -3912,3 +3912,9 @@ ea0d37647e207383	sim/L0/mjcf/tests/fusestatic.rs:2528
 eeccf67183b7520a	sim/L0/mjcf/tests/fusestatic.rs:2742
 f273c89e6c919585	sim/L0/mjcf/tests/fusestatic.rs:1783
 fd86b37c6d7d0d39	sim/L0/mjcf/tests/fusestatic.rs:2481
+1a616bac397cec43	sim/L0/mjcf/tests/custom_tuples.rs:56
+45d5ea5ee2af534c	sim/L0/mjcf/tests/custom_tuples.rs:54
+4f641be540a5e610	sim/L0/mjcf/tests/custom_tuples.rs:53
+50b377c85791d521	sim/L0/mjcf/tests/custom_tuples.rs:52
+6d3cb739c02d02a4	sim/L0/mjcf/tests/custom_tuples.rs:55
+87c10b8f9f10e9d7	sim/L0/mjcf/tests/fusestatic.rs:2747

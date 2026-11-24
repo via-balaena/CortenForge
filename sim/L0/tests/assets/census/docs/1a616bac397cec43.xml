@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="a b" pos="0 0 1"><freejoint/><geom name="g" size="0.1"/></body><body name="b" pos="1 0 1"><freejoint/><geom size="0.1"/></body></worldbody><custom><tuple name="t"><element objtype="geom" objname="g" prm="1 2"/></tuple></custom></mujoco>

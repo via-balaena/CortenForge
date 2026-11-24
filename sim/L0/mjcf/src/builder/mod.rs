@@ -318,11 +318,12 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Each element of the tree sized, bounded and checked before
     // `fusestatic` fuses any body, as MuJoCo sizes its user data first
     // (`SetNuser`, `user_model.cc:4926`) and compiles every body before it
-    // fuses (`:4931-4938`), each body its cameras' and lights' targets with
-    // it (`user_objects.cc:4111`, `:4281`). The user data's refusal is
-    // returned where this crate checks user data, below, and the bodies'
-    // with the checks RL-6a added; a sum of inertias refused as the bodies
-    // fuse comes after both.
+    // fuses (`:4931-4938`). The user data's refusal is returned where this
+    // crate checks user data, below, and the bodies' and the cameras' and
+    // lights' targets' with the checks RL-6a added; a sum of inertias
+    // refused as the bodies fuse comes after both. Of two faults, this crate
+    // can name another than MuJoCo, which checks each body's user data and
+    // targets in its turn (ledger L353).
     let tree_user = builder.finalize_tree_user_data(&mjcf);
     builder.apply_mass_pipeline(1);
     let tree_fault = builder

@@ -392,6 +392,7 @@
 1a50f6aa1b4b5c0d	both-refuse
 1a5a8641f6b1dda8	agree
 1a5e322350d37230	both-refuse
+1a616bac397cec43	mj-refuses	divergence=D-TUPLE-UNCHECKED
 1a756fb81ba661cf	ours-refused	divergence=D-NONFINITE
 1a85f40910ee3ece	ours-refused	divergence=D-AUTO-RANGE
 1a9ef847caeebca5	both-refuse
@@ -1057,6 +1058,7 @@
 45a0d4e9c613c347	both-refuse
 45a35f9ecdeb7bdf	agree
 45d3e0eca0bd3461	agree
+45d5ea5ee2af534c	mj-refuses	divergence=D-TUPLE-UNCHECKED
 45ddb7e29abb9d59	agree
 45e5bfb7a427dc83	both-refuse
 46053abbf5a9797f	agree
@@ -1200,6 +1202,7 @@
 4f31f1a26736d557	agree
 4f43e9660573055a	both-refuse
 4f568d84ac961d20	agree
+4f641be540a5e610	mj-refuses	divergence=D-TUPLE-UNCHECKED
 4f6683a920356ee4	agree
 4f7bd09a8b19bf76	both-refuse
 4f80dc96e6d41ecc	agree
@@ -1229,6 +1232,7 @@
 508d86673bdbbd8a	agree
 50a3c621075052c9	mj-refuses
 50a73ec074eca82a	agree
+50b377c85791d521	mj-refuses	divergence=D-TUPLE-UNCHECKED
 50c88def0c4fa154	ours-refused	divergence=D-CYLINDER-BIAS
 50f5067f7a478c93	mj-refuses
 5105b899a187b919	agree
@@ -1656,6 +1660,7 @@
 6d26f6b9ee7620ac	both-refuse
 6d3833565c250c8f	ours-refused	divergence=D-MUSCLE-NEGATIVE
 6d39d833f3f392a7	agree
+6d3cb739c02d02a4	mj-refuses	divergence=D-TUPLE-UNCHECKED
 6d3de651b3f7a571	both-refuse
 6d6e589c0b60e74c	agree
 6d8148b0f0e5d47a	both-refuse
@@ -2033,6 +2038,7 @@
 878a4e11cd364c21	agree
 8793775bc4b4b075	agree
 87a1d5aec622f0d4	both-refuse
+87c10b8f9f10e9d7	both-refuse
 87d99b20e8f75e3b	agree
 87f0c42028d15c01	agree
 88011ec05d7493ef	both-refuse

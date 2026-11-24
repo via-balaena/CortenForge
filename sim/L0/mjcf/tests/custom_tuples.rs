@@ -35,17 +35,25 @@ fn a_tuples_required_attributes_are_required() {
     }
 }
 
-/// A tuple naming an object the model lacks, an empty tuple, and an element
-/// of a type MuJoCo does not know, each of which MuJoCo 3.5.0 refuses
-/// (measured: "unrecognized object 'nosuch' in tuple 0", "tuple 't' (id = 0)
-/// is empty", "unknown object type"), load here (registry
-/// `D-TUPLE-UNCHECKED`).
+/// A tuple naming an object the model lacks, an empty tuple, an element of a
+/// type MuJoCo does not know, a repeated tuple name, an `objname` empty or
+/// holding a space, and a `prm` that is no number or more than one, each of
+/// which MuJoCo 3.5.0 refuses (measured: "unrecognized object 'nosuch' in
+/// tuple 0", "tuple 't' (id = 0) is empty", "unknown object type",
+/// "repeated name 't' in tuple", "object arrays with different sizes" for
+/// both names, "bad format in attribute 'prm'", "attribute 'prm' has too
+/// much data"), load here (registry `D-TUPLE-UNCHECKED`).
 #[test]
 fn a_tuples_elements_are_not_checked() {
     for doc in [
         r#"<mujoco><worldbody><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody><custom><tuple name="t"><element objtype="body" objname="nosuch"/></tuple></custom></mujoco>"#,
         r#"<mujoco><worldbody><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody><custom><tuple name="t"/></custom></mujoco>"#,
         r#"<mujoco><worldbody><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody><custom><tuple name="t"><element objtype="nosuchtype" objname="f"/></tuple></custom></mujoco>"#,
+        r#"<mujoco><worldbody><body name="a b" pos="0 0 1"><freejoint/><geom name="g" size="0.1"/></body><body name="b" pos="1 0 1"><freejoint/><geom size="0.1"/></body></worldbody><custom><tuple name="t"><element objtype="geom" objname="g"/></tuple><tuple name="t"><element objtype="geom" objname="g"/></tuple></custom></mujoco>"#,
+        r#"<mujoco><worldbody><body name="a b" pos="0 0 1"><freejoint/><geom name="g" size="0.1"/></body><body name="b" pos="1 0 1"><freejoint/><geom size="0.1"/></body></worldbody><custom><tuple name="t"><element objtype="geom" objname=""/></tuple></custom></mujoco>"#,
+        r#"<mujoco><worldbody><body name="a b" pos="0 0 1"><freejoint/><geom name="g" size="0.1"/></body><body name="b" pos="1 0 1"><freejoint/><geom size="0.1"/></body></worldbody><custom><tuple name="t"><element objtype="body" objname="a b"/></tuple></custom></mujoco>"#,
+        r#"<mujoco><worldbody><body name="a b" pos="0 0 1"><freejoint/><geom name="g" size="0.1"/></body><body name="b" pos="1 0 1"><freejoint/><geom size="0.1"/></body></worldbody><custom><tuple name="t"><element objtype="geom" objname="g" prm="abc"/></tuple></custom></mujoco>"#,
+        r#"<mujoco><worldbody><body name="a b" pos="0 0 1"><freejoint/><geom name="g" size="0.1"/></body><body name="b" pos="1 0 1"><freejoint/><geom size="0.1"/></body></worldbody><custom><tuple name="t"><element objtype="geom" objname="g" prm="1 2"/></tuple></custom></mujoco>"#,
     ] {
         assert!(load_model(doc).is_ok(), "{doc}");
     }

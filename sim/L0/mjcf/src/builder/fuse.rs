@@ -170,10 +170,11 @@ fn sensor_bodies(sensor: &MjcfSensor, names_a_body: impl Fn(&str) -> bool) -> Ve
 
 /// MuJoCo 3.5.0's refusal of a camera's or a light's target that names no
 /// body ("unknown target body in camera", "… in light",
-/// `user_objects.cc:4073-4082`, `:4240-4257`), made as it compiles the body
-/// holding it, before it fuses any (`:4111`, `:4281`): the first in the
-/// tree's preorder, a body's cameras before its lights. `bodies` is the
-/// tree's body name map.
+/// `user_objects.cc:4073-4082`, `:4240-4257`): the first in the tree's
+/// preorder, a body's cameras before its lights. `bodies` is the tree's body
+/// name map. MuJoCo makes it in the turn of the body holding it (`:4111`,
+/// `:4281`); this crate makes it after every body's own checks, so of it and
+/// another fault this crate names the other (ledger L353).
 pub fn target_fault(world: &MjcfBody, bodies: &HashMap<String, usize>) -> Option<MjcfError> {
     let mut stack = vec![world];
     while let Some(body) = stack.pop() {
@@ -217,9 +218,10 @@ impl ModelBuilder {
     /// can find a geom that is neither a sphere nor a cylinder, and throw
     /// (`user_objects.cc:6536-6541`): either keeps the body being tried.
     /// Both are done as MuJoCo does them. A force or torque sensor's site is
-    /// looked up by its holder now: a fusion moves sites only from bodies
-    /// MuJoCo has already tried, so its stale site map finds a site on the
-    /// body being tried exactly where the sensor's site is.
+    /// looked up by its holder: a fusion moves sites only from bodies MuJoCo
+    /// has already tried, so its stale site map finds a site on the body
+    /// being tried exactly where the sensor's site is; a site that does not
+    /// exist throws, as MuJoCo's sensor resolution does.
     ///
     /// A fused body's inertia is added in its parent's frame as the body's
     /// pose composed with its inertial frame. MuJoCo composes them the
