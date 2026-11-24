@@ -1336,7 +1336,7 @@ impl Model {
     /// - a weld whose relative quaternion `eq_data[6..10]` is all 0: its
     ///   anchor in body1's frame, `eq_data[3..6]`, where body2's anchor
     ///   `eq_data[..3]` lands, and `neg(xquat1) · xquat2`;
-    /// - any other weld: its quaternion normalized ([`normalize4`]), its
+    /// - any other weld: its quaternion normalized (`mju_normalize4`), its
     ///   `eq_data[3..6]` kept as written.
     ///
     /// Every connect and weld is read as its body form; a site-form
