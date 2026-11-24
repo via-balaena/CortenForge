@@ -1,0 +1,1 @@
+<mujoco><compiler discardvisual="true"/><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="sphere" size="0.1"/><geom name="v" type="sphere" size="0.1" pos="0.3 0 0" contype="0" conaffinity="0"/></body></worldbody><sensor><framepos objtype="geom" objname="v"/></sensor></mujoco>

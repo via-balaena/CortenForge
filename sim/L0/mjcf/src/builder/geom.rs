@@ -335,16 +335,27 @@ fn site_geom_type(site: &MjcfSite) -> Result<GeomType> {
 /// This crate's refusal of a geom of type `sdf` with a `<plugin>` (registry
 /// D-GEOM-SDF-PLUGIN): MuJoCo reads such a geom's field from the plugin
 /// (`engine_collision_sdf.c:275-276`, `engine_ray.c:899-901`), and sim-core
-/// runs no MuJoCo plugin. The first such geom, the world's geoms first, then
-/// each body's before its children's; `None` where there is none.
-pub fn sdf_plugin_fault(mjcf: &MjcfModel) -> Option<MjcfError> {
-    fn first(body: &MjcfBody) -> Option<&MjcfGeom> {
+/// runs no MuJoCo plugin. The first such geom that `discardvisual` keeps
+/// (with `referenced`, one that is not visual), the world's geoms first,
+/// then each body's before its children's; `None` where there is none.
+pub fn sdf_plugin_fault(
+    mjcf: &MjcfModel,
+    referenced: Option<&super::discard::Referenced>,
+) -> Option<MjcfError> {
+    fn first<'a>(
+        body: &'a MjcfBody,
+        referenced: Option<&super::discard::Referenced>,
+    ) -> Option<&'a MjcfGeom> {
         body.geoms
             .iter()
-            .find(|g| g.geom_type == Some(MjcfGeomType::Sdf) && g.plugin.is_some())
-            .or_else(|| body.children.iter().find_map(first))
+            .find(|g| {
+                g.geom_type == Some(MjcfGeomType::Sdf)
+                    && g.plugin.is_some()
+                    && referenced.is_none_or(|r| !r.geom_is_visual(g))
+            })
+            .or_else(|| body.children.iter().find_map(|c| first(c, referenced)))
     }
-    first(&mjcf.worldbody).map(|g| {
+    first(&mjcf.worldbody, referenced).map(|g| {
         MjcfError::unsupported("a <plugin> on a geom of type sdf (registry D-GEOM-SDF-PLUGIN)").at(
             Location::named(ElementKind::Geom, g.name.as_deref().unwrap_or("")),
         )
@@ -613,7 +624,7 @@ fn mass_sizes(geom: &MjcfGeom, hfield_size: Option<&[f64; 4]>) -> [f64; 3] {
 /// taking the share of the mass its volume takes; a height field's is its
 /// box's; a mesh's the box of its mesh's volume and principal moments
 /// ([`MeshProps::boxsz`]). A primitive geom's with `shellinertia` is its
-/// surface's (ledger L355's).
+/// surface's ([`shell_inertia`]).
 pub fn compute_geom_inertia(
     geom: &MjcfGeom,
     mesh_props: Option<&MeshProps>,
@@ -626,14 +637,11 @@ pub fn compute_geom_inertia(
         return Matrix3::zeros();
     }
     let size = mass_sizes(geom, hfield_size);
-    // Shell inertia for primitive geoms
+    let geom_type = geom.geom_type.unwrap_or(MjcfGeomType::Sphere);
     if geom.shellinertia == Some(true)
-        && !matches!(
-            geom.geom_type.unwrap_or(MjcfGeomType::Sphere),
-            MjcfGeomType::Mesh | MjcfGeomType::Sdf
-        )
+        && !matches!(geom_type, MjcfGeomType::Mesh | MjcfGeomType::Sdf)
     {
-        return compute_geom_shell_inertia(geom, hfield_size);
+        return shell_inertia(geom_type, size, mass);
     }
 
     match geom.geom_type.unwrap_or(MjcfGeomType::Sphere) {
@@ -694,13 +702,6 @@ pub fn compute_geom_inertia(
     }
 }
 
-/// Compute shell (surface-area-based) mass of a primitive geom.
-///
-/// Mass = density × surface_area.
-fn compute_geom_shell_mass(geom: &MjcfGeom, hfield_size: Option<&[f64; 4]>) -> f64 {
-    geom.density.unwrap_or(1000.0) * shell_area(geom, hfield_size)
-}
-
 /// The surface area of a primitive geom with `shellinertia`, as MuJoCo
 /// 3.5.0's volume reads it for a shell (`mjCGeom::GetVolume`,
 /// `user_objects.cc:3115-3189`), each product in MuJoCo's order: an
@@ -739,236 +740,105 @@ fn shell_area(geom: &MjcfGeom, hfield_size: Option<&[f64; 4]>) -> f64 {
     }
 }
 
-/// Compute shell inertia tensor of a primitive geom; a height field's is
-/// its box's, on the sizes MuJoCo gives it from its asset.
-fn compute_geom_shell_inertia(geom: &MjcfGeom, hfield_size: Option<&[f64; 4]>) -> Matrix3<f64> {
-    let size = mass_sizes(geom, hfield_size);
-    let mass = compute_geom_shell_mass(geom, hfield_size);
-
-    match geom.geom_type.unwrap_or(MjcfGeomType::Sphere) {
+/// A primitive geom's principal moments with `shellinertia`, as MuJoCo
+/// 3.5.0's `mjCGeom::SetInertia` computes them (`user_objects.cc:3194-3413`,
+/// its `mjINERTIA_SHELL` arms), each product and quotient in MuJoCo's order,
+/// from the geom's `mass` (written, or its density times its surface's area,
+/// [`compute_geom_mass`]): a sphere's thin shell; a capsule's cylinder and
+/// two hemispheres, and a cylinder's side and two disks, each taking the
+/// share of the mass its area takes; an ellipsoid's the difference between
+/// it and itself grown by 1e-6 at the one density that gives the shell
+/// between them its mass; a box's (a height field's too) its six faces, each
+/// pair the share of the mass its area takes. A plane's is 0.
+fn shell_inertia(geom_type: MjcfGeomType, size: [f64; 3], mass: f64) -> Matrix3<f64> {
+    use std::f64::consts::PI;
+    let diagonal = |i: [f64; 3]| Matrix3::from_diagonal(&Vector3::from(i));
+    let [s00, s11, s22] = size.map(|s| s * s);
+    match geom_type {
         MjcfGeomType::Sphere => {
-            let r = size[0];
-            let i = (2.0 / 3.0) * mass * r.powi(2);
-            Matrix3::from_diagonal(&Vector3::new(i, i, i))
-        }
-        MjcfGeomType::Box | MjcfGeomType::Hfield => {
-            let [a, b, c] = size;
-            let density = if let Some(m) = geom.mass {
-                m / (8.0 * (a * b + a * c + b * c))
-            } else {
-                geom.density.unwrap_or(1000.0)
-            };
-            shell_box_inertia(a, b, c, density)
-        }
-        MjcfGeomType::Cylinder => {
-            let r = size[0];
-            let h = size[1] * 2.0;
-            let density = if let Some(m) = geom.mass {
-                let sa =
-                    2.0 * std::f64::consts::PI * r * h + 2.0 * std::f64::consts::PI * r.powi(2);
-                m / sa
-            } else {
-                geom.density.unwrap_or(1000.0)
-            };
-            shell_cylinder_inertia(r, h, density)
+            let i = 2.0 * mass * size[0] * size[0] / 3.0;
+            diagonal([i, i, i])
         }
         MjcfGeomType::Capsule => {
-            let r = size[0];
-            let h = size[1] * 2.0;
-            let density = if let Some(m) = geom.mass {
-                let sa =
-                    2.0 * std::f64::consts::PI * r * h + 4.0 * std::f64::consts::PI * r.powi(2);
-                m / sa
-            } else {
-                geom.density.unwrap_or(1000.0)
-            };
-            shell_capsule_inertia(r, h, density)
+            let (halfheight, height, radius) = (size[1], 2.0 * size[1], size[0]);
+            let a_sphere = 4.0 * PI * radius * radius;
+            let a_cylinder = 2.0 * PI * radius * height;
+            let a_total = a_sphere + a_cylinder;
+            let sphere_mass = mass * a_sphere / a_total;
+            let cylinder_mass = mass - sphere_mass;
+            let side = cylinder_mass * (6.0 * radius * radius + height * height) / 12.0;
+            let axial = cylinder_mass * radius * radius;
+            // The two hemispheres, each displaced along the axis.
+            let sphere_inertia = 2.0 * sphere_mass * radius * radius / 3.0;
+            let hs_com = radius / 2.0;
+            let hs_pos = halfheight + hs_com;
+            let shifted = sphere_inertia + sphere_mass * (hs_pos * hs_pos - hs_com * hs_com);
+            diagonal([side + shifted, side + shifted, axial + sphere_inertia])
+        }
+        MjcfGeomType::Cylinder => {
+            let (halfheight, radius) = (size[1], size[0]);
+            let height = 2.0 * halfheight;
+            let a_disk = PI * radius * radius;
+            let a_cylinder = 2.0 * PI * radius * height;
+            let a_total = 2.0 * a_disk + a_cylinder;
+            let mass_disk = mass * a_disk / a_total;
+            let mass_cylinder = mass - 2.0 * mass_disk;
+            let side = mass_cylinder * (6.0 * radius * radius + height * height) / 12.0;
+            let axial = mass_cylinder * radius * radius;
+            // The top and bottom disks.
+            let disk_x = mass_disk * radius * radius / 4.0 + mass_disk * halfheight * halfheight;
+            let disk_z = mass_disk * radius * radius / 2.0;
+            diagonal([
+                side + 2.0 * disk_x,
+                side + 2.0 * disk_x,
+                axial + 2.0 * disk_z,
+            ])
         }
         MjcfGeomType::Ellipsoid => {
-            let a = size[0];
-            let b = size[1];
-            let c = size[2];
-            shell_ellipsoid_inertia(a, b, c, mass)
+            let eps = 1e-6;
+            let va = 4.0 * PI * size[0] * size[1] * size[2] / 3.0;
+            let (ae, be, ce) = (size[0] + eps, size[1] + eps, size[2] + eps);
+            let vb = 4.0 * PI * ae * be * ce / 3.0;
+            let density = mass / (vb - va);
+            let mass_a = va * density;
+            let mass_b = vb * density;
+            diagonal([
+                mass_b * (be * be + ce * ce) / 5.0 - mass_a * (s11 + s22) / 5.0,
+                mass_b * (ae * ae + ce * ce) / 5.0 - mass_a * (s00 + s22) / 5.0,
+                mass_b * (ae * ae + be * be) / 5.0 - mass_a * (s00 + s11) / 5.0,
+            ])
         }
-        _ => Matrix3::from_diagonal(&Vector3::new(0.001, 0.001, 0.001)),
-    }
-}
-
-/// Box shell inertia via face decomposition + PAT.
-fn shell_box_inertia(a: f64, b: f64, c: f64, density: f64) -> Matrix3<f64> {
-    // ±x faces (area 4bc each)
-    let m_x = density * 4.0 * b * c;
-    let ix_x = m_x * (b * b + c * c) / 3.0;
-    let iy_x = m_x * (a * a + c * c / 3.0);
-    let iz_x = m_x * (a * a + b * b / 3.0);
-
-    // ±y faces (area 4ac each)
-    let m_y = density * 4.0 * a * c;
-    let ix_y = m_y * (b * b + c * c / 3.0);
-    let iy_y = m_y * (a * a + c * c) / 3.0;
-    let iz_y = m_y * (b * b + a * a / 3.0);
-
-    // ±z faces (area 4ab each)
-    let m_z = density * 4.0 * a * b;
-    let ix_z = m_z * (b * b / 3.0 + c * c);
-    let iy_z = m_z * (a * a / 3.0 + c * c);
-    let iz_z = m_z * (a * a + b * b) / 3.0;
-
-    Matrix3::from_diagonal(&Vector3::new(
-        2.0 * (ix_x + ix_y + ix_z),
-        2.0 * (iy_x + iy_y + iy_z),
-        2.0 * (iz_x + iz_y + iz_z),
-    ))
-}
-
-/// Cylinder shell inertia: lateral shell + 2 disk caps.
-fn shell_cylinder_inertia(r: f64, h: f64, density: f64) -> Matrix3<f64> {
-    let pi = std::f64::consts::PI;
-
-    // Lateral shell
-    let m_lat = density * 2.0 * pi * r * h;
-    let ix_lat = m_lat * (r * r / 2.0 + h * h / 12.0);
-    let iz_lat = m_lat * r * r;
-
-    // End cap (thin disk), each
-    let m_cap = density * pi * r * r;
-    let ix_cap_own = m_cap * r * r / 4.0;
-    let iz_cap_own = m_cap * r * r / 2.0;
-    let ix_cap = ix_cap_own + m_cap * (h / 2.0).powi(2);
-
-    Matrix3::from_diagonal(&Vector3::new(
-        ix_lat + 2.0 * ix_cap,
-        ix_lat + 2.0 * ix_cap,
-        iz_lat + 2.0 * iz_cap_own,
-    ))
-}
-
-/// Capsule shell inertia: open cylinder lateral + 2 hemisphere shells.
-fn shell_capsule_inertia(r: f64, h: f64, density: f64) -> Matrix3<f64> {
-    let pi = std::f64::consts::PI;
-
-    // Lateral (open cylinder — no end caps)
-    let m_lat = density * 2.0 * pi * r * h;
-    let ix_lat = m_lat * (r * r / 2.0 + h * h / 12.0);
-    let iz_lat = m_lat * r * r;
-
-    // Hemisphere shell (each)
-    let m_hemi = density * 2.0 * pi * r * r;
-    // Inertia about own COM (COM is at r/2 from equator)
-    let ix_hemi_own = m_hemi * 5.0 * r * r / 12.0;
-    let iz_hemi = 2.0 / 3.0 * m_hemi * r * r;
-    // PAT: distance from hemisphere COM to capsule center
-    let d = h / 2.0 + r / 2.0;
-    let ix_hemi = ix_hemi_own + m_hemi * d * d;
-
-    Matrix3::from_diagonal(&Vector3::new(
-        ix_lat + 2.0 * ix_hemi,
-        ix_lat + 2.0 * ix_hemi,
-        iz_lat + 2.0 * iz_hemi,
-    ))
-}
-
-/// Ellipsoid shell inertia via numerical quadrature on parametric surface.
-fn shell_ellipsoid_inertia(a: f64, b: f64, c: f64, mass: f64) -> Matrix3<f64> {
-    let n_theta = 64_usize;
-    let n_phi = 128_usize;
-
-    let (theta_nodes, theta_weights) = gauss_legendre_mapped(n_theta, 0.0, std::f64::consts::PI);
-    let (phi_nodes, phi_weights) = gauss_legendre_mapped(n_phi, 0.0, 2.0 * std::f64::consts::PI);
-
-    let mut sa_num = 0.0;
-    let mut int_xx = 0.0;
-    let mut int_yy = 0.0;
-    let mut int_zz = 0.0;
-
-    for i in 0..n_theta {
-        let theta = theta_nodes[i];
-        let wt = theta_weights[i];
-        let sin_t = theta.sin();
-        let cos_t = theta.cos();
-
-        for j in 0..n_phi {
-            let phi = phi_nodes[j];
-            let wp = phi_weights[j];
-            let sin_p = phi.sin();
-            let cos_p = phi.cos();
-
-            // Surface element magnitude
-            let e = (c * c * sin_t * sin_t * (b * b * cos_p * cos_p + a * a * sin_p * sin_p)
-                + a * a * b * b * cos_t * cos_t)
-                .sqrt();
-            let ds = sin_t * e * wt * wp;
-
-            sa_num += ds;
-            int_xx += (a * sin_t * cos_p).powi(2) * ds;
-            int_yy += (b * sin_t * sin_p).powi(2) * ds;
-            int_zz += (c * cos_t).powi(2) * ds;
+        MjcfGeomType::Box | MjcfGeomType::Hfield => {
+            let (lx, ly, lz) = (2.0 * size[0], 2.0 * size[1], 2.0 * size[2]);
+            let (a0, a1, a2) = (lx * ly, ly * lz, lz * lx);
+            let a_total = 2.0 * (a0 + a1 + a2);
+            let mass0 = mass * a0 / a_total;
+            let (ix0, iy0, iz0) = (
+                mass0 * ly * ly / 12.0,
+                mass0 * lx * lx / 12.0,
+                mass0 * (lx * lx + ly * ly) / 12.0,
+            );
+            let mass1 = mass * a1 / a_total;
+            let (ix1, iy1, iz1) = (
+                mass1 * (ly * ly + lz * lz) / 12.0,
+                mass1 * lz * lz / 12.0,
+                mass1 * ly * ly / 12.0,
+            );
+            let mass2 = mass * a2 / a_total;
+            let (ix2, iy2, iz2) = (
+                mass2 * lz * lz / 12.0,
+                mass2 * (lx * lx + lz * lz) / 12.0,
+                mass2 * lx * lx / 12.0,
+            );
+            diagonal([
+                2.0 * (mass0 * s22 + mass2 * s11 + ix0 + ix1 + ix2),
+                2.0 * (mass0 * s22 + mass1 * s00 + iy0 + iy1 + iy2),
+                2.0 * (mass1 * s00 + mass2 * s11 + iz0 + iz1 + iz2),
+            ])
         }
+        // MuJoCo's default arm; a mesh or SDF geom does not reach it.
+        MjcfGeomType::Plane | MjcfGeomType::Mesh | MjcfGeomType::Sdf => Matrix3::zeros(),
     }
-
-    // Normalize: I_x = m × (⟨y²⟩ + ⟨z²⟩) where ⟨x²⟩ = ∫x² dS / SA
-    let ix = mass * (int_yy + int_zz) / sa_num;
-    let iy = mass * (int_xx + int_zz) / sa_num;
-    let iz = mass * (int_xx + int_yy) / sa_num;
-
-    Matrix3::from_diagonal(&Vector3::new(ix, iy, iz))
-}
-
-/// Gauss-Legendre quadrature nodes and weights mapped to [lo, hi].
-fn gauss_legendre_mapped(n: usize, lo: f64, hi: f64) -> (Vec<f64>, Vec<f64>) {
-    let (std_nodes, std_weights) = gauss_legendre_standard(n);
-    let mid = f64::midpoint(lo, hi);
-    let half = (hi - lo) / 2.0;
-    let nodes: Vec<f64> = std_nodes.iter().map(|&x| mid + half * x).collect();
-    let weights: Vec<f64> = std_weights.iter().map(|&w| w * half).collect();
-    (nodes, weights)
-}
-
-/// Compute Gauss-Legendre nodes and weights on [-1, 1] via Newton iteration.
-// `n` is the quadrature order (typically <= 64); `as f64` is exact below 2^52.
-#[allow(clippy::cast_precision_loss)]
-fn gauss_legendre_standard(n: usize) -> (Vec<f64>, Vec<f64>) {
-    let mut nodes = vec![0.0; n];
-    let mut weights = vec![0.0; n];
-    let n_f = n as f64;
-
-    for i in 0..n {
-        // Initial guess using Chebyshev approximation
-        let mut x = (std::f64::consts::PI * (4.0 * i as f64 + 3.0) / (4.0 * n_f + 2.0)).cos();
-
-        // Newton's method to find root of P_n(x)
-        for _ in 0..100 {
-            let (p, dp) = legendre_pd(n, x);
-            let dx = -p / dp;
-            x += dx;
-            if dx.abs() < 1e-15 {
-                break;
-            }
-        }
-
-        nodes[i] = x;
-        let (_, dp) = legendre_pd(n, x);
-        weights[i] = 2.0 / ((1.0 - x * x) * dp * dp);
-    }
-
-    (nodes, weights)
-}
-
-/// Evaluate Legendre polynomial P_n(x) and its derivative P'_n(x).
-// Recurrence index `k` is the quadrature order, well below 2^52.
-#[allow(clippy::cast_precision_loss)]
-fn legendre_pd(n: usize, x: f64) -> (f64, f64) {
-    let mut p0 = 1.0;
-    let mut p1 = x;
-    for k in 1..n {
-        let k_f = k as f64;
-        let p2 = ((2.0 * k_f + 1.0) * x * p1 - k_f * p0) / (k_f + 1.0);
-        p0 = p1;
-        p1 = p2;
-    }
-    let n_f = n as f64;
-    let dp = n_f * (x * p1 - p0) / (x * x - 1.0);
-    (p1, dp)
 }
 
 /// A geom's size as the model stores it, from its size as resolved (written

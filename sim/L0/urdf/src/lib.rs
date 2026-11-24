@@ -53,8 +53,8 @@
 //! - `<link name="...">` - Rigid body definition
 //! - `<inertial>` - Mass, center of mass, inertia tensor
 //! - `<collision>` - Collision geometry (box, sphere, cylinder, mesh)
-//! - `<visual>` - Converted to geometry, then discarded by the MJCF compiler
-//!   (`discardvisual="true"`; Layer 0 has no rendering)
+//! - `<visual>` - Not written: MuJoCo 3.5.0's importer discards visuals under
+//!   URDF's `discardvisual` (Layer 0 has no rendering)
 //!
 //! ## Joints
 //!

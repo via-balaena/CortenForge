@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="a" pos="0 0 1"><joint type="hinge" axis="0 1 0"/><geom type="box" size="0.1 0.05 0.05"/><site name="s1" pos="0.1 0 0"/></body><body name="c" pos="0.3 0.1 1.2"><freejoint/><geom type="box" size="0.05 0.05 0.05"/><site name="s2"/></body></worldbody><equality><weld site1="s1" site2="s2"/></equality></mujoco>

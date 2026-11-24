@@ -157,6 +157,13 @@ pub fn mul_mat_vec3(mat: &Matrix3<f64>, vec: &[f64; 3]) -> [f64; 3] {
     [row(0), row(1), row(2)]
 }
 
+/// `matᵀ · vec`, each component summed left to right (MuJoCo
+/// `mju_mulMatTVec3`, `engine_util_blas.c:171-180`).
+pub fn mul_mat_t_vec3(mat: &Matrix3<f64>, vec: &[f64; 3]) -> [f64; 3] {
+    let col = |c: usize| mat[(0, c)] * vec[0] + mat[(1, c)] * vec[1] + mat[(2, c)] * vec[2];
+    [col(0), col(1), col(2)]
+}
+
 /// The conjugate of `quat` (MuJoCo `mju_negQuat`, `engine_util_spatial.c:57-62`).
 pub fn neg_quat(quat: &[f64; 4]) -> [f64; 4] {
     [quat[0], -quat[1], -quat[2], -quat[3]]

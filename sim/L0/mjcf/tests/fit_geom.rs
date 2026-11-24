@@ -921,8 +921,8 @@ const NEGATIVE_MASS: (&str, &str, &str) = (
 );
 
 /// A visual geom fitted to a mesh only it names, which `discardvisual`
-/// discards with the mesh. Its body's mass leaves out the discarded geom
-/// here, where MuJoCo's keeps it (ledger L336), so the body is not compared.
+/// discards with the mesh; its body keeps the discarded geom's mass, as
+/// MuJoCo's does (book Rigid-loading L39, ledger L336).
 const DISCARDED: Loads = Loads {
     what: "a fitted visual geom `discardvisual` discards, with its mesh",
     xml: r#"<mujoco><compiler discardvisual="true"/><asset><mesh name="m" vertex="0 0 0  1 0 0  0 2 0  0 0 3" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset><worldbody><body pos="0 0 1"><freejoint/><geom type="box" mesh="m" contype="0" conaffinity="0" pos="0.1 0.2 0.3" quat="0.9 0.1 -0.2 0.3"/><geom size="0.1"/></body></worldbody></mujoco>"#,
@@ -1202,11 +1202,13 @@ fn a_convex_mesh_only_a_fitted_geom_names_fits_as_beside_a_mesh_geom() {
 }
 
 /// A fitted visual geom `discardvisual` discards goes, with the mesh only it
-/// names; the body's other geom is MuJoCo's.
+/// names; the body's other geom, and the body with both geoms' mass, are
+/// MuJoCo's.
 #[test]
 fn a_fitted_visual_geom_discardvisual_discards_goes_with_its_mesh() {
     let model = load_model(DISCARDED.xml).unwrap();
     let mut wrong = geom_differences(&model, DISCARDED.geoms);
+    wrong.extend(body_differences(&model, DISCARDED.bodies));
     if model.nmesh != DISCARDED.nmesh {
         wrong.push(format!("nmesh {}", model.nmesh));
     }

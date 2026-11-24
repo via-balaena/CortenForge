@@ -23,7 +23,7 @@ sim-core keeps it):
 - connect_force: a hinged pendulum whose tip is connected to the world,
   turned 0.3 rad; force and torque at a site on it.
 - weld_force: a box on a hinge welded to the world at its own pose (no
-  relpose: sim-mjcf ignores it until Rigid-loading L41), turned 0.3 rad; force and torque at a site on it (a weld's
+  relpose), turned 0.3 rad; force and torque at a site on it (a weld's
   force and torque act at its anchors, the other way round from a
   connect's).
 - contact_torque: a free, frictionless sphere (condim 1 on both geoms:

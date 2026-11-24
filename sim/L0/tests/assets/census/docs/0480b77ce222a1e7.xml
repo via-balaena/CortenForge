@@ -1,0 +1,1 @@
+<mujoco>  <compiler discardvisual="true"/>  <extension><plugin plugin="mujoco.elasticity.cable"/></extension>  <worldbody>    <composite prefix="c" type="cable" curve="s" count="5 1 1" size="1" initial="none">      <joint kind="main" damping="0.1"/>      <geom type="capsule" size="0.01" contype="0" conaffinity="0" density="1000"/>    </composite>  </worldbody></mujoco>

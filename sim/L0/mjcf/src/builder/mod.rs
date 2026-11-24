@@ -13,6 +13,7 @@ mod build;
 pub mod compiler;
 mod composite;
 pub mod contact;
+mod discard;
 mod eig3;
 pub mod equality;
 mod fit;
@@ -58,7 +59,7 @@ use crate::types::{
     MjcfOption, MjcfSolverType, Prefix,
 };
 
-use self::compiler::{apply_discardvisual, apply_fusestatic};
+use self::compiler::apply_fusestatic;
 use self::frame::expand_frames;
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
@@ -236,15 +237,19 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // The meshes MuJoCo makes an octree for, marked before it discards
     // visual geoms.
     let needsdf = mesh::meshes_needing_an_octree(&mjcf);
-    if mjcf.compiler.discardvisual {
-        apply_discardvisual(&mut mjcf);
-    }
+    // What `discardvisual` keeps, read before fusion moves anything; the
+    // visual geoms and meshes are deleted once every element is built and
+    // checked (`discard`).
+    let referenced = mjcf
+        .compiler
+        .discardvisual
+        .then(|| discard::Referenced::of(&mjcf));
     // This crate's refusals of a mesh with a `<plugin>` and of a geom of type
     // `sdf` with one, whose mesh or field MuJoCo makes from the plugin
     // (`D-MESH-PLUGIN`, `D-GEOM-SDF-PLUGIN`), of what `discardvisual` keeps,
     // returned after the keyframes.
-    let mesh_plugin = mesh::plugin_fault(&mjcf);
-    let sdf_plugin = geom::sdf_plugin_fault(&mjcf);
+    let mesh_plugin = mesh::plugin_fault(&mjcf, referenced.as_ref());
+    let sdf_plugin = geom::sdf_plugin_fault(&mjcf, referenced.as_ref());
     let compile_turns = if mjcf.compiler.fusestatic {
         Some(apply_fusestatic(&mut mjcf)?)
     } else {
@@ -266,6 +271,29 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // its convex hull and its octree where MuJoCo makes them.
     let needhull = mesh::meshes_needing_a_hull(&mjcf);
     for mesh in &mjcf.meshes {
+        if mesh.plugin {
+            // One with no file that no geom names, which `discardvisual`
+            // deletes: MuJoCo makes it from its plugin, refusing a scale other
+            // than 1 (`user_mesh.cc:367-370`), and deletes it; it is not built.
+            if mesh.file.is_none()
+                && referenced
+                    .as_ref()
+                    .is_some_and(|r| !r.names_mesh(&mesh.name))
+            {
+                if mesh.scale.is_some_and(|s| s != Vector3::new(1.0, 1.0, 1.0)) {
+                    return Err(MjcfError::invalid_model(format!(
+                        "attribute scale is not compatible with SDFs in mesh '{}'",
+                        mesh.name
+                    )));
+                }
+                continue;
+            }
+            // One with no vertices of its own, which only its plugin makes:
+            // refused now, as it cannot be built (`D-MESH-PLUGIN`).
+            if mesh.file.is_none() && mesh.vertex.as_ref().is_none_or(Vec::is_empty) {
+                return Err(mesh::plugin_error(mesh));
+            }
+        }
         builder.process_mesh(
             mesh,
             base_path,
@@ -360,6 +388,11 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     let negative_inertial = negative_inertial.or_else(|| builder.kept_negative_inertial.take());
     builder.apply_settotalmass();
     builder.sync_flex_vertex_masses();
+    // `discardvisual`'s deletions, after every element has been built and
+    // checked, as MuJoCo's `IndexAssets` makes them (`user_model.cc:4976`).
+    if let Some(referenced) = &referenced {
+        builder.discard_visual(referenced);
+    }
 
     // Build final model
     let mut model = builder.build();
@@ -980,6 +1013,9 @@ pub struct ModelBuilder {
     // Per-element user data accumulation (§55, Spec C)
     pub(crate) body_user_raw: Vec<Vec<f64>>,
     pub(crate) geom_user_raw: Vec<Vec<f64>>,
+    /// The geoms' user data length before `discardvisual` deleted any, which
+    /// MuJoCo sets before it discards (`SetNuser`, `user_model.cc:4926`).
+    pub(crate) nuser_geom_before_discard: Option<usize>,
     pub(crate) jnt_user_raw: Vec<Vec<f64>>,
     pub(crate) site_user_raw: Vec<Vec<f64>>,
     pub(crate) tendon_user_raw: Vec<Vec<f64>>,

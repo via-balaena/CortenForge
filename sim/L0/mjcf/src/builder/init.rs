@@ -329,6 +329,7 @@ impl ModelBuilder {
             // Per-element user data accumulation (§55)
             body_user_raw: vec![vec![]], // World body (body 0) — always empty user data
             geom_user_raw: vec![],
+            nuser_geom_before_discard: None,
             jnt_user_raw: vec![],
             site_user_raw: vec![],
             tendon_user_raw: vec![],

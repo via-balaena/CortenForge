@@ -119,8 +119,7 @@ fn assert_trajectory(name: &str, tol: f64) {
 
 /// `cfrc_ext` bit for bit on macOS arm64, where the golden was made: each
 /// anchor placed by its body's `xmat`, as MuJoCo's `mj_local2Global` places
-/// it, where turning it by the body's quaternion rounds `weld_force`'s
-/// otherwise, within `FORCE_TOL`. Elsewhere `assert_case`'s tolerance alone.
+/// it. Elsewhere `assert_case`'s tolerance alone.
 fn assert_cfrc_ext_bits(name: &str, model: &Model, data: &Data) {
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         return;
@@ -333,7 +332,14 @@ fn a_world_wrench_stays_out_of_cfrc_ext() {
     assert_eq!(data.cfrc_ext[0].as_slice(), &[0.0; 6]);
 }
 
-const FORCE_TOL: f64 = 1e-10;
+/// The connects' and welds' cases: bit for bit on macOS arm64, where the
+/// golden was made (since Rigid-loading PR RL-10; ledger L215), and 1e-10
+/// elsewhere.
+const FORCE_TOL: f64 = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+    0.0
+} else {
+    1e-10
+};
 
 /// An accelerometer or a framelinacc on a static body (welded to the world,
 /// or mocap) reads gravity, as one on an identical box held at rest by a

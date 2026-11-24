@@ -1,0 +1,1 @@
+<mujoco><compiler discardvisual="true"/><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1 1 1 1 1 0 1 0 1 1 1 1 0"/></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="m"/><geom type="mesh" mesh="m" pos="1 0 0" contype="0" conaffinity="0"/></body></worldbody></mujoco>

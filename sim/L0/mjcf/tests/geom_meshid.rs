@@ -6,8 +6,7 @@
 //! mesh geom's as it builds the geom, where it refused one before
 //! Rigid-loading PR RL-9d in other words, and an SDF geom's as it checks
 //! each body (`check_bodies`), after the geom's condim, as MuJoCo does.
-//! Where it checks another fault first, it names that one, and it does not
-//! check an SDF geom `discardvisual` discards (ledger L336, L353):
+//! Where it checks another fault first, it names that one:
 //! `NAMED_OTHERWISE`. `validate`
 //! checks both kinds after its other checks. A named mesh the model lacks
 //! is refused before any body, in both.
@@ -91,41 +90,39 @@ const REFUSED: &[(&str, &str, &str, &str)] = &[
         r#"<body name="b"><freejoint/><geom type="sdf" shellinertia="true"/><geom size=".1"/></body>"#,
         "geom #0 in body 'b'",
     ),
-];
-
-/// `(what, before the assets, the world body's contents, the loader's error
-/// or `None` where it loads, `validate`'s error)`, each refused by MuJoCo for
-/// the SDF geom's mesh: the loader names another fault, which it checks
-/// before it builds the model, as it did before Rigid-loading PR RL-9d, or
-/// loads a geom `discardvisual` discards before the checks (ledger L336);
-/// `validate` names the other fault where it checks it.
-const NAMED_OTHERWISE: &[(&str, &str, &str, Option<&str>, &str)] = &[
     (
-        "a visual SDF geom, which discardvisual discards",
+        "a visual SDF geom, checked before discardvisual discards it",
         r#"<compiler discardvisual="true"/>"#,
         r#"<geom type="sdf" contype="0" conaffinity="0"/><geom size="0.1"/>"#,
-        None,
-        "mesh geom must have valid meshid (geom #0 in body 'world')",
+        "geom #0 in body 'world'",
     ),
+];
+
+/// `(what, before the assets, the world body's contents, the loader's error,
+/// `validate`'s error)`, each refused by MuJoCo for
+/// the SDF geom's mesh: the loader names another fault, which it checks
+/// before it builds the model, as it did before Rigid-loading PR RL-9d;
+/// `validate` names the other fault where it checks it.
+const NAMED_OTHERWISE: &[(&str, &str, &str, &str, &str)] = &[
     (
         "an SDF geom naming a height field",
         "",
         r#"<geom type="sdf" hfield="h"/>"#,
-        Some("hfield geom must have valid hfieldid (geom #0 in body 'world')"),
+        "hfield geom must have valid hfieldid (geom #0 in body 'world')",
         "hfield geom must have valid hfieldid (geom #0 in body 'world')",
     ),
     (
         "an SDF geom, then the next geom's height field",
         "",
         r#"<body name="b"><freejoint/><geom type="sdf"/><geom type="box" size="0.1 0.1 0.1" hfield="h"/></body>"#,
-        Some("hfield geom must have valid hfieldid (geom #1 in body 'b')"),
+        "hfield geom must have valid hfieldid (geom #1 in body 'b')",
         "hfield geom must have valid hfieldid (geom #1 in body 'b')",
     ),
     (
         "an SDF geom, then the next body's sphere of size 0",
         "",
         r#"<body name="b"><freejoint/><geom type="sdf"/></body><body name="c"><freejoint/><geom size="0"/></body>"#,
-        Some("invalid size on <geom>: size 0 must be positive (geom #1 in body 'c')"),
+        "invalid size on <geom>: size 0 must be positive (geom #1 in body 'c')",
         "invalid size on <geom>: size 0 must be positive (geom #1 in body 'c')",
     ),
 ];
@@ -192,7 +189,7 @@ fn an_sdf_geom_naming_no_mesh_beside_an_earlier_check_is_named_as_ledgered() {
     for &(what, before, world, loaded, validated) in NAMED_OTHERWISE {
         let xml = document(before, world);
         let got_loaded = load_model(&xml).err().map(|e| e.to_string());
-        if got_loaded.as_deref() != loaded {
+        if got_loaded.as_deref() != Some(loaded) {
             missed.push(format!("{what}: load_model: {got_loaded:?}"));
         }
         let got_validated = validate(&parse_mjcf_str(&xml).unwrap())

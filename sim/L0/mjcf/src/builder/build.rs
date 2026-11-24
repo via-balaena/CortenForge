@@ -29,15 +29,6 @@ impl ModelBuilder {
         // Structural pre-computation
         model.compute_ancestors();
         model.compute_simple_bodies();
-        // A site-form connect's points, now the sites' frames are known.
-        for &(eq, site1, site2) in &site_connects {
-            let (p1, p2) = (
-                site_connect_point(&model, site1),
-                site_connect_point(&model, site2),
-            );
-            model.eq_data[eq][..3].copy_from_slice(p1.as_slice());
-            model.eq_data[eq][3..6].copy_from_slice(p2.as_slice());
-        }
         model.compute_dof_patterns();
         model.compute_implicit_params();
         model.compute_history_addresses();
@@ -60,6 +51,22 @@ impl ModelBuilder {
             model.compute_actuator_params();
             model.compute_stat_meaninertia();
             model.compute_invweight0();
+        }
+        // The equality data `mj_setConst` completes at `qpos0`, which reads
+        // the position stage only: a range `check_ranges` refuses, which the
+        // loader passes, moves no point.
+        if model.check_joint_layout().is_ok() {
+            model.compute_equality_data0();
+        }
+        // A site-form connect's points, now the sites' frames are known: over
+        // what `compute_equality_data0` made of it as a body form.
+        for &(eq, site1, site2) in &site_connects {
+            let (p1, p2) = (
+                site_connect_point(&model, site1),
+                site_connect_point(&model, site2),
+            );
+            model.eq_data[eq][..3].copy_from_slice(p1.as_slice());
+            model.eq_data[eq][3..6].copy_from_slice(p2.as_slice());
         }
 
         // Bounding geometry and tendon rest lengths
@@ -102,7 +109,10 @@ impl ModelBuilder {
         // After finalize_user_data, all inner vecs have uniform length per type.
         let nuser_body = self.body_user_raw.first().map_or(0, |v| v.len()) as i32;
         let nuser_jnt = self.jnt_user_raw.first().map_or(0, |v| v.len()) as i32;
-        let nuser_geom = self.geom_user_raw.first().map_or(0, |v| v.len()) as i32;
+        let nuser_geom = self
+            .nuser_geom_before_discard
+            .or_else(|| self.geom_user_raw.first().map(Vec::len))
+            .unwrap_or(0) as i32;
         let nuser_site = self.site_user_raw.first().map_or(0, |v| v.len()) as i32;
         let nuser_tendon = self.tendon_user_raw.first().map_or(0, |v| v.len()) as i32;
         let nuser_actuator = self.actuator_user_raw.first().map_or(0, |v| v.len()) as i32;

@@ -1,59 +1,16 @@
 //! MJCF compiler pre-processing passes.
 //!
-//! `discardvisual` removes visual-only geoms and unreferenced meshes.
 //! `fusestatic` merges jointless bodies into their parents, reducing the
-//! body count while preserving physics.  Both passes run on the parsed
-//! `MjcfModel` tree *before* the builder converts it to a physics `Model`.
+//! body count while preserving physics. It runs on the parsed `MjcfModel`
+//! tree *before* the builder converts it to a physics `Model`;
+//! `discardvisual` deletes once every element is built and checked, before
+//! the model is made (`discard`).
 
 use std::collections::HashSet;
 
 use super::orientation::{quat_to_wxyz, resolve_orientation, site_orientation};
 use crate::error::{ElementKind, Location, Result};
 use crate::types::{MjcfBody, MjcfCompiler, MjcfModel};
-
-/// Apply `discardvisual` pre-processing: remove visual-only geoms (contype=0, conaffinity=0)
-/// and unreferenced mesh assets. Geoms referenced by sensors or actuators are protected.
-pub fn apply_discardvisual(mjcf: &mut MjcfModel) {
-    // Collect geom names referenced by sensors (site-based sensors reference sites, not geoms,
-    // but frame sensors can resolve to geoms) and actuators (no geom refs currently, but future-proof).
-    let mut protected_geoms: HashSet<String> = HashSet::new();
-    for sensor in &mjcf.sensors {
-        // Frame sensors can resolve objname as a geom; protect any objname that might be a geom.
-        if let Some(ref name) = sensor.objname {
-            protected_geoms.insert(name.clone());
-        }
-    }
-
-    fn remove_visual_geoms(body: &mut MjcfBody, protected: &HashSet<String>) {
-        body.geoms.retain(|g| {
-            g.contype.unwrap_or(1) != 0
-                || g.conaffinity.unwrap_or(1) != 0
-                || g.name.as_ref().is_some_and(|n| protected.contains(n))
-        });
-        for child in &mut body.children {
-            remove_visual_geoms(child, protected);
-        }
-    }
-
-    remove_visual_geoms(&mut mjcf.worldbody, &protected_geoms);
-
-    // Collect all mesh names still referenced
-    fn collect_mesh_refs(body: &MjcfBody, refs: &mut HashSet<String>) {
-        for g in &body.geoms {
-            if let Some(ref m) = g.mesh {
-                refs.insert(m.clone());
-            }
-        }
-        for child in &body.children {
-            collect_mesh_refs(child, refs);
-        }
-    }
-    let mut used_meshes = HashSet::new();
-    collect_mesh_refs(&mjcf.worldbody, &mut used_meshes);
-
-    // Remove unreferenced meshes
-    mjcf.meshes.retain(|m| used_meshes.contains(&m.name));
-}
 
 /// Apply `fusestatic` pre-processing: fuse jointless bodies into their parent.
 ///

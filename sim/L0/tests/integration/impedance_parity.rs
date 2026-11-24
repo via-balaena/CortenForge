@@ -734,15 +734,20 @@ fn noslip_under_impratio_as_mujoco() {
 /// torquescale 0, 0.5 and 2, and two free boxes welded to each other at 0.3:
 /// MuJoCo scales the weld's rotational error and rotational Jacobian rows by
 /// `eq_data[10]` (`engine_core_constraint.c:482`, `:510`, `:530`); 500 steps
-/// within 1e-12. sim-mjcf reads no `torquescale` until Rigid-loading's L41,
-/// so the test writes it into `eq_data[10]` after loading.
+/// within 1e-12, each from the document's own `torquescale`, which the test
+/// checks the loader read into `eq_data[10]` (book Rigid-loading L41).
 #[test]
 fn weld_torquescale_matches_mujoco() {
     let g = golden();
     let mut out = Vec::new();
     for (name, case) in g["cases"]["weld_torquescale"].as_object().expect("cases") {
-        let mut model = load_model(case["xml"].as_str().expect("xml")).expect("load");
-        model.eq_data[0][10] = case["torquescale"].as_f64().expect("torquescale");
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let torquescale = case["torquescale"].as_f64().expect("torquescale");
+        assert_eq!(
+            model.eq_data[0][10].to_bits(),
+            torquescale.to_bits(),
+            "{name}: the torquescale read"
+        );
         let mut data = model.make_data();
         data.qpos.copy_from_slice(&floats(&case["qpos"]));
         data.qvel.copy_from_slice(&floats(&case["qvel"]));
