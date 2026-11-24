@@ -200,21 +200,25 @@ pub fn meshes_needing_an_octree(mjcf: &MjcfModel) -> HashSet<String> {
 /// This crate's refusal of a mesh with a `<plugin>` (registry
 /// D-MESH-PLUGIN): MuJoCo makes such a mesh, or the field of a geom of type
 /// `sdf` over it, from the plugin, and sim-core runs no MuJoCo plugin. The
-/// first such mesh in asset order that `discardvisual` keeps (with
-/// `referenced`, each mesh a geom that is not visual names); `None` where
-/// there is none.
+/// first such mesh in asset order that a geom names, a visual one among them
+/// (its mass is its body's, as the plugin makes it), or, without
+/// `discardvisual`, any; `None` where there is none. A mesh `discardvisual`
+/// deletes that no geom names is not built.
 pub fn plugin_fault(
     mjcf: &MjcfModel,
     referenced: Option<&super::discard::Referenced>,
 ) -> Option<MjcfError> {
-    let kept = |name: &str| referenced.is_none_or(|r| r.keeps_mesh(name));
+    let refused = |name: &str| referenced.is_none_or(|r| r.names_mesh(name));
     mjcf.meshes
         .iter()
-        .find(|m| m.plugin && kept(&m.name))
-        .map(|m| {
-            MjcfError::unsupported("a <plugin> on a mesh (registry D-MESH-PLUGIN)")
-                .at(Location::named(ElementKind::Mesh, &m.name))
-        })
+        .find(|m| m.plugin && refused(&m.name))
+        .map(plugin_error)
+}
+
+/// [`plugin_fault`]'s refusal of `mesh`.
+pub fn plugin_error(mesh: &MjcfMesh) -> MjcfError {
+    MjcfError::unsupported("a <plugin> on a mesh (registry D-MESH-PLUGIN)")
+        .at(Location::named(ElementKind::Mesh, &mesh.name))
 }
 
 /// A mesh's mass properties as MuJoCo 3.5.0's `mjCMesh::Process` leaves

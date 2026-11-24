@@ -109,7 +109,10 @@ impl ModelBuilder {
         // After finalize_user_data, all inner vecs have uniform length per type.
         let nuser_body = self.body_user_raw.first().map_or(0, |v| v.len()) as i32;
         let nuser_jnt = self.jnt_user_raw.first().map_or(0, |v| v.len()) as i32;
-        let nuser_geom = self.geom_user_raw.first().map_or(0, |v| v.len()) as i32;
+        let nuser_geom = self
+            .nuser_geom_before_discard
+            .or_else(|| self.geom_user_raw.first().map(Vec::len))
+            .unwrap_or(0) as i32;
         let nuser_site = self.site_user_raw.first().map_or(0, |v| v.len()) as i32;
         let nuser_tendon = self.tendon_user_raw.first().map_or(0, |v| v.len()) as i32;
         let nuser_actuator = self.actuator_user_raw.first().map_or(0, |v| v.len()) as i32;

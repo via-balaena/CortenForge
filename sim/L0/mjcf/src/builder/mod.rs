@@ -271,6 +271,21 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // its convex hull and its octree where MuJoCo makes them.
     let needhull = mesh::meshes_needing_a_hull(&mjcf);
     for mesh in &mjcf.meshes {
+        if mesh.plugin {
+            // One no geom names, which `discardvisual` deletes: MuJoCo makes
+            // it from its plugin and deletes it, so it is not built.
+            if referenced
+                .as_ref()
+                .is_some_and(|r| !r.names_mesh(&mesh.name))
+            {
+                continue;
+            }
+            // One with no vertices of its own, which only its plugin makes:
+            // refused now, as it cannot be built (`D-MESH-PLUGIN`).
+            if mesh.file.is_none() && mesh.vertex.as_ref().is_none_or(Vec::is_empty) {
+                return Err(mesh::plugin_error(mesh));
+            }
+        }
         builder.process_mesh(
             mesh,
             base_path,
@@ -990,6 +1005,9 @@ pub struct ModelBuilder {
     // Per-element user data accumulation (§55, Spec C)
     pub(crate) body_user_raw: Vec<Vec<f64>>,
     pub(crate) geom_user_raw: Vec<Vec<f64>>,
+    /// The geoms' user data length before `discardvisual` deleted any, which
+    /// MuJoCo sets before it discards (`SetNuser`, `user_model.cc:4927`).
+    pub(crate) nuser_geom_before_discard: Option<usize>,
     pub(crate) jnt_user_raw: Vec<Vec<f64>>,
     pub(crate) site_user_raw: Vec<Vec<f64>>,
     pub(crate) tendon_user_raw: Vec<Vec<f64>>,

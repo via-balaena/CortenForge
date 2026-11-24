@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 2025
+# agree_floor 2028
 001bc4149d608b24	agree
 002cac6fc120ff66	both-refuse
 00308b83da9d8bab	agree
@@ -317,6 +317,7 @@
 1568a784dedb5e83	agree
 156c6d604a4d1b79	both-refuse
 157c48ad9ccb5bd6	agree
+15a0c7639606859f	ours-refused	divergence=D-MESH-PLUGIN
 15b24bda2c612fe6	agree
 15c648d8b16a40c2	agree
 15e49570aab7a397	agree
@@ -1177,6 +1178,7 @@
 4fb4f8eb234c8498	both-refuse
 4fbdf12799947081	both-refuse
 4fd7a6d65f25999c	both-refuse
+4fe2e0f27726d313	ours-refused	divergence=D-MESH-PLUGIN
 4fecd8edabcfd74f	agree
 4fef736d09093dd5	mj-refuses
 4ff6ca8308ec34f2	agree
@@ -1405,6 +1407,7 @@
 5f7144f037e6e57a	both-refuse
 5f8fccc75ceb8cab	agree
 5f96e77258032f2b	agree
+5fa20171dad04d19	agree
 5fa75b4af3167da8	agree
 5facc585cc0fc3f6	agree
 5fb384b981ad45e4	both-refuse
@@ -2358,6 +2361,7 @@ a37a7c967413fbb2	both-refuse
 a384846793de214f	both-refuse
 a38a7859e8ba16fb	agree
 a3943538b6868780	both-refuse
+a39e0a730363f3e8	agree
 a3a80e68d8b95804	agree
 a3b1e8810607076d	both-refuse
 a3b5ae68224c398b	both-refuse
@@ -2639,6 +2643,7 @@ b673eb8a91dfd645	agree
 b6ad1797c0bd8448	agree
 b6af1a7ec7f9c6dc	agree
 b6c26327d8eadfb2	agree
+b6c9abb758484132	agree
 b6cf674e352a380a	agree
 b6d3dd4ad0664fb7	agree
 b6d7ef856e8a8308	mj-refuses	divergence=D-FLEX-BENDING-MODEL
@@ -2767,6 +2772,7 @@ c055933cc8348dd3	both-refuse
 c058c31dc47dcf70	both-refuse
 c093e8d15fe4a250	agree
 c0aa2aebb96d22fc	agree
+c0c04bacc2f4e0ed	ours-refused	divergence=D-MESH-PLUGIN
 c0da85ffdedf445e	both-refuse
 c0ee04647909b5e0	both-refuse
 c10039bb1a6ec24b	both-refuse
@@ -3568,6 +3574,7 @@ f6ae26d89413f653	both-refuse
 f6b297e7a0e2575e	agree
 f6b5c8d138f4ce72	both-refuse
 f6d9bfb450ea5a7f	agree
+f6eebc7afef668fc	ours-refused	divergence=D-MESH-PLUGIN
 f708d8f9192934d7	agree
 f71b7bc3dabb73a6	agree
 f736afb45271ef32	both-refuse
@@ -3679,6 +3686,7 @@ fe7f5df4f8682b6c	both-refuse
 feb8b9e54529858c	agree
 feb9666b70cd1043	agree
 fec64b4636a305db	agree
+fec7d268c146a09e	ours-refused	divergence=D-MESH-PLUGIN
 fed34f3c266df9a2	agree
 fed767d7dd8f4488	agree
 fee41eb7ed64a80d	both-refuse

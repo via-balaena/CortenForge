@@ -30,6 +30,7 @@ use crate::types::{MjcfGeom, MjcfModel, MjcfSensorType, SpatialPathElement};
 pub struct Referenced {
     geoms: HashSet<String>,
     meshes: HashSet<String>,
+    named_meshes: HashSet<String>,
 }
 
 impl Referenced {
@@ -77,21 +78,29 @@ impl Referenced {
         let mut referenced = Self {
             geoms: names,
             meshes: HashSet::new(),
+            named_meshes: HashSet::new(),
         };
-        let mut meshes = HashSet::new();
+        let (mut meshes, mut named) = (HashSet::new(), HashSet::new());
         let mut bodies = vec![&mjcf.worldbody];
         while let Some(body) = bodies.pop() {
             for geom in &body.geoms {
-                if let Some(mesh) = geom.mesh.as_deref().filter(|m| !m.is_empty())
-                    && !referenced.geom_is_visual(geom)
-                {
-                    meshes.insert(mesh.to_string());
+                if let Some(mesh) = geom.mesh.as_deref().filter(|m| !m.is_empty()) {
+                    named.insert(mesh.to_string());
+                    if !referenced.geom_is_visual(geom) {
+                        meshes.insert(mesh.to_string());
+                    }
                 }
             }
             bodies.extend(&body.children);
         }
         referenced.meshes = meshes;
+        referenced.named_meshes = named;
         referenced
+    }
+
+    /// Whether any geom names the mesh `name`, a visual one among them.
+    pub fn names_mesh(&self, name: &str) -> bool {
+        self.named_meshes.contains(name)
     }
 
     /// Whether `discardvisual` keeps the mesh `name`: a geom that is not
@@ -166,7 +175,10 @@ impl ModelBuilder {
         let geom_id = renumbered(&keep);
         let mesh_id = renumbered(&mesh_keep);
         // A reference to a geom MuJoCo marks not visual, which is kept.
-        let kept_geom = |g: usize| geom_id[g].unwrap_or(g);
+        let kept_geom = |g: usize| {
+            debug_assert!(geom_id[g].is_some(), "a referenced geom {g} was deleted");
+            geom_id[g].unwrap_or(g)
+        };
 
         // Each body's geoms, contiguous in the builder's order.
         let kept_before = |end: usize| keep[..end].iter().filter(|&&k| k).count();
@@ -200,6 +212,7 @@ impl ModelBuilder {
         retain(&mut self.geom_fluid, &keep);
         retain(&mut self.geom_hfield, &keep);
         retain(&mut self.geom_sdf, &keep);
+        self.nuser_geom_before_discard = self.geom_user_raw.first().map(Vec::len);
         retain(&mut self.geom_user_raw, &keep);
         if let Some(turns) = self.compile_turns.as_mut() {
             retain(&mut turns.geom, &keep);

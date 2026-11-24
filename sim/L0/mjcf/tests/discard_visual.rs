@@ -553,3 +553,52 @@ fn a_tuple_naming_a_visual_geom_keeps_its_mass_not_the_geom() {
         "both geoms' mass, MuJoCo's"
     );
 }
+
+/// A mesh with a `<plugin>`, which only its plugin makes (registry
+/// `D-MESH-PLUGIN`): one no geom names, which `discardvisual` deletes, is not
+/// built, and the document loads as MuJoCo 3.5.0 loads it (ngeom 1, nmesh 0,
+/// the sphere's mass, measured); one a geom names, a visual one among them,
+/// whose mass MuJoCo gives its body from the plugin's mesh (measured: 199.81
+/// for a torus, where the cube's own vertices give 12.19), is refused, as one
+/// is without `discardvisual`.
+#[test]
+fn a_plugin_mesh_no_geom_names_is_not_built_and_one_a_geom_names_is_refused() {
+    for doc in [
+        // a plugin mesh with no vertices, which no geom names
+        r#"<mujoco><compiler discardvisual="true"/><extension><plugin plugin="mujoco.sdf.torus"><instance name="torus"><config key="radius1" value="0.35"/><config key="radius2" value="0.15"/></instance></plugin></extension><asset><mesh name="torus"><plugin instance="torus"/></mesh></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+        // the same with vertices of its own
+        r#"<mujoco><compiler discardvisual="true"/><extension><plugin plugin="mujoco.sdf.torus"><instance name="torus"><config key="radius1" value="0.35"/><config key="radius2" value="0.15"/></instance></plugin></extension><asset><mesh name="cube" vertex="-0.1 -0.1 -0.1 0.1 -0.1 -0.1 0.1 0.1 -0.1 -0.1 0.1 -0.1 -0.1 -0.1 0.1 0.1 -0.1 0.1 0.1 0.1 0.1 -0.1 0.1 0.1"><plugin instance="torus"/></mesh></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+    ] {
+        let m = load_model(doc).unwrap();
+        assert_eq!((m.ngeom, m.nmesh), (1, 0), "{doc}");
+        assert_eq!(
+            m.body_mass[1].to_bits(),
+            4.188790204786391_f64.to_bits(),
+            "{doc}"
+        );
+    }
+    for doc in [
+        // a visual SDF geom over a plugin mesh with no vertices
+        r#"<mujoco><compiler discardvisual="true"/><extension><plugin plugin="mujoco.sdf.torus"><instance name="torus"><config key="radius1" value="0.35"/><config key="radius2" value="0.15"/></instance></plugin></extension><asset><mesh name="torus"><plugin instance="torus"/></mesh></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="sphere" size="0.1"/><geom type="sdf" mesh="torus" contype="0" conaffinity="0"><plugin instance="torus"/></geom></body></worldbody></mujoco>"#,
+        // a visual mesh geom over it
+        r#"<mujoco><compiler discardvisual="true"/><extension><plugin plugin="mujoco.sdf.torus"><instance name="torus"><config key="radius1" value="0.35"/><config key="radius2" value="0.15"/></instance></plugin></extension><asset><mesh name="torus"><plugin instance="torus"/></mesh></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="sphere" size="0.1"/><geom type="mesh" mesh="torus" contype="0" conaffinity="0"/></body></worldbody></mujoco>"#,
+        // a visual mesh geom over a plugin mesh with vertices of its own
+        r#"<mujoco><compiler discardvisual="true"/><extension><plugin plugin="mujoco.sdf.torus"><instance name="torus"><config key="radius1" value="0.35"/><config key="radius2" value="0.15"/></instance></plugin></extension><asset><mesh name="cube" vertex="-0.1 -0.1 -0.1 0.1 -0.1 -0.1 0.1 0.1 -0.1 -0.1 0.1 -0.1 -0.1 -0.1 0.1 0.1 -0.1 0.1 0.1 0.1 0.1 -0.1 0.1 0.1"><plugin instance="torus"/></mesh></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="sphere" size="0.1"/><geom type="mesh" mesh="cube" contype="0" conaffinity="0"/></body></worldbody></mujoco>"#,
+        // a visual SDF geom with the plugin over it
+        r#"<mujoco><compiler discardvisual="true"/><extension><plugin plugin="mujoco.sdf.torus"><instance name="torus"><config key="radius1" value="0.35"/><config key="radius2" value="0.15"/></instance></plugin></extension><asset><mesh name="cube" vertex="-0.1 -0.1 -0.1 0.1 -0.1 -0.1 0.1 0.1 -0.1 -0.1 0.1 -0.1 -0.1 -0.1 0.1 0.1 -0.1 0.1 0.1 0.1 0.1 -0.1 0.1 0.1"><plugin instance="torus"/></mesh></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="sphere" size="0.1"/><geom type="sdf" mesh="cube" contype="0" conaffinity="0"><plugin instance="torus"/></geom></body></worldbody></mujoco>"#,
+        // a mesh geom over a plugin mesh with no vertices, no discardvisual
+        r#"<mujoco><extension><plugin plugin="mujoco.sdf.torus"><instance name="torus"><config key="radius1" value="0.35"/><config key="radius2" value="0.15"/></instance></plugin></extension><asset><mesh name="torus"><plugin instance="torus"/></mesh></asset><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="mesh" mesh="torus"/></body></worldbody></mujoco>"#,
+    ] {
+        let error = load_model(doc).unwrap_err().to_string();
+        assert!(error.contains("D-MESH-PLUGIN"), "{error}: {doc}");
+    }
+}
+
+/// The geoms' user data length MuJoCo sets before it discards
+/// (`SetNuser`, `user_model.cc:4927`) stays when every geom is discarded
+/// (measured: `nuser_geom` 3).
+#[test]
+fn a_discarded_geoms_user_data_length_stays() {
+    let m = load_model(r#"<mujoco><compiler discardvisual="true"/><worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="sphere" size="0.1" contype="0" conaffinity="0" user="1 2 3"/></body></worldbody></mujoco>"#).unwrap();
+    assert_eq!((m.ngeom, m.nuser_geom), (0, 3));
+}
