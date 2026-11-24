@@ -114,39 +114,23 @@ fn a_static_meshs_geom_frame_as_mujoco() {
 
 /// The turned box's geom in a body `fusestatic` fuses into its parent:
 /// MuJoCo fuses after compiling the geom (`user_model.cc:4933-4938`), so the
-/// body's frame is accumulated into the geom's with the mesh's in it, where
-/// sim-mjcf fuses first and with nalgebra's products (ledger L373, L255).
-/// Its position, size, box and radius are MuJoCo's bit for bit; its
-/// orientation is within 1e-15 (which of the two rows parts it has not been
-/// isolated).
+/// body's frame is accumulated into the geom's with the mesh's in it, in
+/// `mjuu_frameaccum`'s arithmetic, as this crate does (ledger L373, L255).
 #[test]
 fn a_fused_meshs_geom_frame_as_mujoco() {
     let xml = format!(
         r#"<mujoco><compiler fusestatic="true"/><asset>{TURNED_BOX}</asset><worldbody><body pos="0 0 1"><freejoint/><geom type="sphere" size="0.1"/><body pos="0.2 -0.1 0.4" quat="0.8 0.3 0.1 -0.2"><geom type="mesh" mesh="m" pos="0.1 0.2 0.3" quat="0.9 0.1 -0.2 0.3"/></body></body></worldbody></mujoco>"#
     );
-    let ours = geom(&xml, 1);
-    let mujoco = [
-        -0.3872751974180785,
-        0.3979761211300948,
-        -0.07573330445646463,
-        0.8281892266089562,
-    ];
-    assert!(
-        ours.quat
-            .iter()
-            .zip(mujoco)
-            .all(|(a, b)| (a - b).abs() <= 1e-15),
-        "{:?} against MuJoCo's {mujoco:?}",
-        ours.quat
-    );
     assert_geom(
-        &Geom {
-            quat: mujoco,
-            ..ours
-        },
+        &geom(&xml, 1),
         &Geom {
             pos: [0.6642375225172397, -0.4635087752971915, 0.7272334580306792],
-            quat: mujoco,
+            quat: [
+                -0.3872751974180785,
+                0.3979761211300948,
+                -0.07573330445646463,
+                0.8281892266089562,
+            ],
             size: [0.2500000000000011, 0.5000004236599732, 0.9999999635411352],
             aabb: [
                 0.0,

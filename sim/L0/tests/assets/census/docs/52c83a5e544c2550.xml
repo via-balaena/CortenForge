@@ -1,0 +1,1 @@
+<mujoco><compiler fusestatic="true"/><asset><mesh name="flat" vertex="0 0 0 1 0 0 0 1 0 1 1 0"/></asset><worldbody><body name="s" pos="0 0 1" zaxis="0 0 0"><geom type="mesh" mesh="flat"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody></mujoco>

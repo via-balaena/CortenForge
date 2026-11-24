@@ -1,0 +1,1 @@
+<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint type="hinge"/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/><body name="s" pos="0.3 0 0"><geom size="0.05" density="-5"/></body></body></worldbody></mujoco>

@@ -10,7 +10,6 @@ pub mod actuator;
 pub mod asset;
 pub mod body;
 mod build;
-pub mod compiler;
 mod composite;
 pub mod contact;
 mod discard;
@@ -21,6 +20,7 @@ pub mod flex;
 mod flexcomp;
 pub mod fluid;
 pub mod frame;
+mod fuse;
 pub mod geom;
 mod init;
 mod items;
@@ -32,6 +32,7 @@ mod mesh_file;
 mod obj;
 pub mod orientation;
 mod resolve;
+mod select;
 pub mod sensor;
 pub mod tendon;
 
@@ -59,7 +60,6 @@ use crate::types::{
     MjcfOption, MjcfSolverType, Prefix,
 };
 
-use self::compiler::apply_fusestatic;
 use self::frame::expand_frames;
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
@@ -222,7 +222,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     crate::validation::check_tree_depth(&mjcf.worldbody)?;
 
     let FrontEnd {
-        mut mjcf,
+        mjcf,
         resolver,
         actuators,
         flexcomp_refusal,
@@ -250,15 +250,14 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // returned after the keyframes.
     let mesh_plugin = mesh::plugin_fault(&mjcf, referenced.as_ref());
     let sdf_plugin = geom::sdf_plugin_fault(&mjcf, referenced.as_ref());
-    let compile_turns = if mjcf.compiler.fusestatic {
-        Some(apply_fusestatic(&mut mjcf)?)
-    } else {
-        None
-    };
+    // The references `fusestatic` keeps a body for, read before the builder.
+    let fuse_references = mjcf
+        .compiler
+        .fusestatic
+        .then(|| fuse::FuseReferences::of(&mjcf));
 
     let mut builder = ModelBuilder::new();
     builder.resolver = resolver;
-    builder.compile_turns = compile_turns;
     builder.compiler = mjcf.compiler.clone();
 
     // Set model name
@@ -316,9 +315,20 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     for child in &mjcf.worldbody.children {
         builder.process_body(child, 0, None)?;
     }
-    debug_assert!(builder.compile_turns.as_ref().is_none_or(|turns| {
-        turns.body.len() == builder.body_parent.len() && turns.geom.len() == builder.geom_type.len()
-    }));
+    // Each body of the tree bounded and checked before `fusestatic` fuses
+    // any, as MuJoCo compiles every body before it fuses
+    // (`user_model.cc:4931-4938`); the checks' refusal is returned below,
+    // with the checks RL-6a added. A sum of inertias refused as the bodies
+    // fuse comes after every body's own refusal.
+    builder.apply_mass_pipeline(1);
+    let tree_fault = builder.check_bodies(0).err();
+    if let Some(references) = &fuse_references
+        && let Err(fault) = builder.fuse_static(references)
+    {
+        return Err(tree_fault.unwrap_or(fault));
+    }
+    // The bodies made after the tree (a flexcomp's vertex bodies) from here.
+    let tree_end = builder.body_parent.len();
 
     // Process tendons (must be before actuators, since actuators may reference tendons)
     builder.process_tendons(&mjcf.tendons)?;
@@ -348,9 +358,9 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     builder.process_flex_bodies(&mjcf.flex)?;
     builder.process_flexcomp_equalities(&mjcf.flex);
 
-    // Each body's boundmass and boundinertia, then a mass or moment still
-    // negative, then its moments' triangle
-    builder.apply_mass_pipeline();
+    // Each body made after the tree: its boundmass and boundinertia, then a
+    // mass or moment still negative, then its moments' triangle
+    builder.apply_mass_pipeline(tree_end);
 
     // Finalize user data: resolve nuser, validate, pad
     builder.finalize_user_data(&mjcf)?;
@@ -367,7 +377,10 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // a moving body's mass and inertia, then the free joint below the world's
     // children, as MuJoCo's `CopyTree` refuses it. An automatic range that
     // does not increase is refused after the keyframes (`D-AUTO-RANGE`).
-    builder.check_bodies()?;
+    if let Some(fault) = tree_fault {
+        return Err(fault);
+    }
+    builder.check_bodies(tree_end)?;
     flex::check_flex_bending_thickness(&mjcf.flex)?;
     builder.check_hfield_sizes()?;
     builder.check_flex_equalities()?;
@@ -650,9 +663,6 @@ pub struct ModelBuilder {
     /// the first body whose negative `<inertial>` MuJoCo keeps, none of its
     /// geoms being selected; returned after the keyframes.
     pub(crate) kept_negative_inertial: Option<MjcfError>,
-    /// Under `fusestatic`, where MuJoCo checks each body and geom
-    /// ([`Self::check_bodies`]); `None`, each where it is.
-    pub(crate) compile_turns: Option<compiler::CompileTurns>,
     pub(crate) nmocap: usize,
 
     // Joint arrays

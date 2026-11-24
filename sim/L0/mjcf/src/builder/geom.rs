@@ -93,14 +93,8 @@ impl ModelBuilder {
             None => size,
         };
         if let Some(fit) = &fit {
-            // A check of the model as written, so named by the geom's index
-            // and body before `fusestatic` (MuJoCo's index).
-            let written = || {
-                self.written_geom_location(geom_id, geom.name.as_deref())
-                    .unwrap_or_else(at)
-            };
             crate::validation::checksize(geom.geom_type.unwrap_or(MjcfGeomType::Sphere), fit.size)
-                .map_err(|e| e.at(written()))?;
+                .map_err(|e| e.at(at()))?;
         }
 
         // Override geom_size for hfield geoms with asset dimensions.
@@ -185,17 +179,6 @@ impl ModelBuilder {
         self.geom_user_raw.push(geom.user.clone());
 
         Ok(geom)
-    }
-
-    /// Where the builder's geom `geom` was written: its index and its body
-    /// before `fusestatic` moved it, as `check_bodies` names a geom fusion
-    /// moved; `None` without fusion, or for a geom the fusion record does not
-    /// hold.
-    fn written_geom_location(&self, geom: usize, name: Option<&str>) -> Option<Location> {
-        let turns = self.compile_turns.as_ref()?;
-        let index = *turns.geom_index.get(geom)?;
-        let body = turns.name.get(*turns.geom.get(geom)?)?;
-        Some(Location::nth(ElementKind::Geom, name, index).in_body(body))
     }
 
     pub(crate) fn process_site(&mut self, site: &MjcfSite, body_id: usize) -> Result<usize> {

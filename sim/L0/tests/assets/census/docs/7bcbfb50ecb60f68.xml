@@ -1,0 +1,1 @@
+<mujoco><compiler fusestatic="true"/><worldbody><body name="a" pos="0 0 1"><geom size="0.1"/><body pos="0.2 0 0"><geom size="0.1"/><body name="m" pos="0.2 0 0"><geom size="0.1"/></body></body></body></worldbody><sensor><framepos objtype="body" objname="m"/></sensor></mujoco>

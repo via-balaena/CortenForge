@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 2035
+# agree_floor 2061
 001bc4149d608b24	agree
 002cac6fc120ff66	both-refuse
 00308b83da9d8bab	agree
@@ -210,6 +210,7 @@
 0dae986a6b2fc252	agree
 0dbb47b3e366560e	agree
 0dbf6fed06730de7	both-refuse
+0de32344db04e26d	both-refuse
 0df8f9192ee51624	both-refuse
 0e3621ca4ec655b5	both-refuse
 0e58d0da558fb30a	agree
@@ -268,6 +269,7 @@
 11c09d44bd2ef843	both-refuse
 11ce1fd51d2db2e8	mj-refuses
 11d15f269f210f88	both-refuse
+11e0a6cf9b1bcd61	model:meaninertia;dyn:e1:t0:qM	divergence=D-FUSESTATIC-INERTIA
 11f9bf3806782bba	both-refuse
 127d76572880c247	agree
 128fccf8b94496a2	agree
@@ -473,6 +475,7 @@
 1fdcd7bb9de5a071	both-refuse
 1fe4c3b1992f4991	both-refuse
 1fe63d2fd6c19a9a	agree
+2024810051f78c71	agree
 2030a608e98e3323	agree
 20337b1cae736cb2	agree
 206659638786f1f4	agree
@@ -497,6 +500,7 @@
 21796829c7634cc8	both-refuse
 21bafd1ed6b14999	both-refuse
 21fc20a7858daf8e	agree
+2211cf9ad9f7ba47	agree
 22559ceb19cd3d05	agree
 226d64203b834650	agree
 226f4e8fe41088e3	agree
@@ -541,6 +545,7 @@
 24c46590c3958932	agree
 24c88e86e8b6f27f	agree
 24ca4e64709df92c	agree
+24cdcbd2055d86bd	agree
 24cefa42a0c9b00f	both-refuse
 251c59049dab062a	agree
 2525a05126a05da3	agree
@@ -548,6 +553,7 @@
 2529ce5bef3785f7	agree
 25476495f6a7b877	agree
 254c1b2c0f82fb2a	both-refuse
+255e16e67a060e40	agree
 258075f5c622a787	agree
 25840f4b4830763c	ours-refused	divergence=D-INERTIAL-NEGATIVE
 25b2aa32d83e7bbf	agree
@@ -626,6 +632,7 @@
 2b27902247a74f6b	agree
 2b51c85a0009ed4e	agree
 2b538623875e9e85	both-refuse
+2b5ae9d8f6a23158	both-refuse
 2b6c9b303ec9581d	both-refuse
 2b8c83bd774a7651	both-refuse
 2b9d489cd9065886	agree
@@ -656,6 +663,7 @@
 2d93e04c8c0f6943	agree
 2dac9afa9ff49289	both-refuse
 2dc68973030c63b4	ours-refused	divergence=D-NONFINITE
+2dea7a18253da822	both-refuse
 2dee8ec9dc0d84d6	both-refuse
 2e10c7d58ff403e6	mj-refuses
 2e206c4d72cdef99	both-refuse
@@ -1095,6 +1103,7 @@
 49b2f19df66d840c	mj-refuses	divergence=D-CABLE-TWO-BODY
 49b34b901986c983	both-refuse
 49c364ccde1aca78	agree
+49c4d41cee6f22d3	agree
 49c63d4bcdd0691d	agree
 49e0d06f38cc7bcb	both-refuse
 49ededc986f252d5	both-refuse
@@ -1152,6 +1161,7 @@
 4d6e934d429a650e	both-refuse
 4dad55bc2c496619	both-refuse
 4dae5966a1e0adac	agree
+4db32bedc845dfaa	agree
 4dc27f7625547496	both-refuse
 4de3a390c301ab8e	both-refuse
 4de961d35352359e	both-refuse
@@ -1164,6 +1174,7 @@
 4e4b32ecd7a5cf01	agree
 4e4f866538d5b2a0	agree
 4e6971f6e1e2e357	mj-refuses
+4e7a00bf8fdf974a	agree
 4ea6c4e3b1af36f6	both-refuse
 4ebf2a9a2c8fe1d7	agree
 4ed5050c07bad07a	both-refuse
@@ -1184,6 +1195,7 @@
 4fadf0ddf2f42bb3	mj-refuses
 4fb4f8eb234c8498	both-refuse
 4fbdf12799947081	both-refuse
+4fc1a71b85cc96b5	agree
 4fd7a6d65f25999c	both-refuse
 4fe2e0f27726d313	ours-refused	divergence=D-MESH-PLUGIN
 4fecd8edabcfd74f	agree
@@ -1228,6 +1240,7 @@
 52b6bd3f9b118553	both-refuse
 52bd97e783b0cd61	both-refuse
 52c3e409ff6db41e	agree
+52c83a5e544c2550	both-refuse
 52ed66b9a15e31df	agree
 52f8569850ee9ce8	agree
 5312a1ccb4f38c18	agree
@@ -1526,6 +1539,7 @@
 6657b29beda3ae17	both-refuse
 6699b432ef411f31	agree
 66b5ca2c48912e6f	model:actuator_lengthrange;dyn:agree
+66c3a292b5e15c4d	agree
 66c72cf754f3aa38	agree
 66f9ccb6ddbc3abb	agree
 67374b975cd431ce	both-refuse
@@ -1557,7 +1571,7 @@
 6882502697d4d101	agree
 688780abdc62fc02	both-refuse
 68a24da4f11da4b7	both-refuse
-68a35ea3ea6583ab	model:body_ipos;dyn:agree
+68a35ea3ea6583ab	model:body_ipos;dyn:agree	divergence=D-FUSESTATIC-INERTIA
 68c0928ea382a0fa	both-refuse
 68cf0b17c073aa15	agree
 68cfbce7805f60a6	both-refuse
@@ -1689,6 +1703,7 @@
 714b88f7289cb64d	both-refuse
 7155e0a3b67d9302	both-refuse
 715d053641a93059	agree
+7162084029ce8589	agree
 7163fb82297cd303	both-refuse
 71b9f49f097bc26d	both-refuse
 71c801e63f136cea	agree
@@ -1730,6 +1745,7 @@
 7464c032380b70ef	agree
 7478ace674cdd463	agree
 748095f7bff58465	agree
+7487dc7a1b3508bd	both-refuse
 74908604a61b8ef6	agree
 74a97d8d2730d784	agree
 74abbe37487c2973	agree
@@ -1788,6 +1804,7 @@
 78e2a93b0c711bc8	both-refuse
 78fbda1f88441799	agree
 7910f25b8a43be4d	both-refuse
+792220dc91570774	both-refuse
 792eec1beaeea7d5	mj-refuses
 7936d001235c039b	agree
 793f1d5b89ccb72a	both-refuse
@@ -1828,6 +1845,7 @@
 7bb34ebef86428a0	both-refuse
 7bbf342163564e8f	both-refuse
 7bc46dc0fb79dbf5	agree
+7bcbfb50ecb60f68	agree
 7bd6b6fd49ca6dbc	agree
 7bfc13532ae2f980	agree
 7c0a97b671e639c9	agree
@@ -1918,9 +1936,11 @@
 81a35c74f6cc4dd9	agree
 81c27535e8046073	agree
 81c5efc976a88811	agree
+81ed9664a6aa0b05	agree
 82186474d29e2d3a	both-refuse
 821bb80cce49388a	both-refuse
 82232967ed3512e7	agree
+8226800d29c62298	agree
 822c875e59b0db75	both-refuse
 8244f58e85128a29	both-refuse
 8249c1a188462440	mj-refuses
@@ -2008,6 +2028,7 @@
 8891cacce8c0b3ce	agree
 88a3804bc7022af1	both-refuse
 88a9f0edd72481fe	agree
+88aabea88c9dab12	model:meaninertia;dyn:e1:t0:qM	divergence=D-FUSESTATIC-INERTIA
 88b2e00f01eff273	both-refuse
 88b3a20c22bc89a7	both-refuse
 88ce1c843f6a213d	both-refuse
@@ -2083,6 +2104,7 @@
 8eb53334ea400487	agree
 8ee3855ff707f302	model:eq_data;dyn:agree	divergence=D-CONNECT-SITE
 8ef74b6597d3b47c	agree
+8eff1dadd26b4c3e	agree
 8efff1853bab69bd	both-refuse
 8f02ce2052146d2a	agree
 8f078785a80735d2	both-refuse
@@ -2148,6 +2170,7 @@
 92b3b45f1b0351ff	both-refuse
 92c2f550f9e26dba	both-refuse
 92c67ea10e6ee33a	both-refuse
+92d56ba3853ab4cd	agree
 93079b94e5e87d73	both-refuse
 931ae6c72b49a537	agree
 932cabb91fc9d06d	agree
@@ -2176,6 +2199,7 @@
 94dcad3a207dbf64	agree
 94df96d1183ce202	e1:s1:qfrc_passive
 94e0077daef0cdd1	agree
+94f74e5cad05f3d3	agree
 94fbd4b1de909a47	agree
 950092abfb9834a3	agree
 952d1aba18e438c9	both-refuse
@@ -2252,6 +2276,7 @@
 9a9333b18b272379	agree
 9a9380fcbf3eacdc	agree
 9a9a28396de68c0d	both-refuse
+9aa7fc5950d71885	model:meaninertia;dyn:e1:t0:qM	divergence=D-FUSESTATIC-INERTIA
 9acca12d6c046de8	agree
 9ad01568e29f27a5	agree
 9b034f2b6bc665a3	agree
@@ -2429,7 +2454,7 @@ a6ca58534a9c264e	agree
 a6dc207b5e3eed26	agree
 a6e04a3c7773a380	agree
 a6e48aea2a52e0b5	both-refuse
-a6fb60bd3bbe23a4	model:meaninertia;dyn:e1:t0:qM
+a6fb60bd3bbe23a4	model:meaninertia;dyn:e1:t0:qM	divergence=D-FUSESTATIC-INERTIA
 a7128f4d225c0e86	agree
 a7162cf56e52f369	both-refuse
 a7349e72845270f3	both-refuse
@@ -2473,6 +2498,7 @@ a9a3337a984f7707	agree
 a9a9a39b091e20fb	both-refuse
 a9b7ddf9e479aa7b	both-refuse
 a9c07fd63d8d879b	agree
+a9edb4a84d40b05a	agree
 a9eed09f93777e21	mj-refuses
 a9efc39a81509d70	both-refuse
 a9f02cd71aa1c5e8	agree
@@ -2628,6 +2654,7 @@ b482b2cdded54bc3	agree
 b4b0675196d85537	both-refuse
 b4bedc0970a160ad	agree
 b4c08c25bf0327ca	both-refuse
+b4c2c9eca42d7811	agree
 b4ced39a3d4a385d	both-refuse
 b4d093ced5d89351	agree
 b4dc85b8ee0f4eea	agree
@@ -2757,6 +2784,7 @@ be054ffae448ca51	both-refuse
 be07776f1145291b	agree
 be13b1635488fa77	agree
 be2159a6cc5fbf30	agree
+be240bd5c4255207	both-refuse
 be53c9f44fe2ec66	agree
 be54cd4cd4f11295	agree
 be67866d4b0fd9cd	both-refuse
@@ -2802,6 +2830,7 @@ c15620089f2b4f9f	agree
 c15d1bd1a61e03fe	agree
 c1704aae6272e8f3	agree
 c178de24764dff0c	both-refuse
+c1a351ad45ddc688	agree
 c1a5f046adb89be3	agree
 c1b2d647ca4cb848	both-refuse
 c1cf992b9271955f	agree
@@ -2904,6 +2933,7 @@ c75cc18cfe7a397d	mj-refuses	divergence=D-FLEX-BEND-PINS
 c760b08a0468de51	agree
 c76b84145a857b39	both-refuse
 c7890f8af52e5479	agree
+c78d649033e8f7fb	both-refuse
 c79afafc6b27824f	agree
 c7c5c249fe649698	agree
 c7d539a75b80e0e8	agree
@@ -3101,6 +3131,7 @@ d497c31e8fc541c8	agree
 d4ac308432e38b40	agree
 d4c96bdb9df21bc2	both-refuse
 d4cfa13627d8d35e	both-refuse
+d4da5e5135268f36	agree
 d4dcd045f7dbe075	agree
 d4ef2aa311a049f8	agree
 d4f39de4a8d85efc	agree
@@ -3144,6 +3175,7 @@ d7701557afdbe155	agree
 d78b2b1753a5a817	agree
 d7a319d955019edf	agree
 d7a9aca181393004	both-refuse
+d7b1cb5270a4eec6	agree
 d7b202459dc593ce	mj-refuses
 d7c91d82d44c8a2f	agree
 d7ce012b541c53a4	agree
@@ -3195,6 +3227,7 @@ db22f3d74562cddf	agree
 db368462b6cbc012	agree
 db3dc2391aa17081	agree
 db5261a208146fff	agree
+db53afe9b3f9d4ed	agree
 db5791e2c7a7c79a	both-refuse
 db67a96924974249	both-refuse
 db7b2a4beee4fcbd	agree
@@ -3204,6 +3237,7 @@ dc074a66f69c17ad	both-refuse
 dc0e4d13f26a8729	agree
 dc2267f6c52bba1f	agree
 dc490fd0b120a5df	agree
+dc509fba88ab200a	agree
 dc59c3840bfa0a08	both-refuse
 dc6bbd81a4ba11c8	agree
 dc8517ce2da38159	both-refuse
@@ -3270,6 +3304,7 @@ e114363972a0c66b	both-refuse
 e12b0ed5dc386282	agree
 e13045105fd69b2d	agree
 e13b4cb3f32892c1	both-refuse
+e148f0d8c061508c	agree
 e157e605c7215b98	both-refuse
 e167d8b1d65a1bee	agree
 e173b8c4cb491df5	agree
@@ -3361,6 +3396,7 @@ e760971781c2d0e5	agree
 e7684905da766c66	both-refuse
 e77721e8d908b261	both-refuse
 e77ef61d0175fa9b	agree
+e7977d30e8e9fbc2	both-refuse
 e79f3c6868e549ee	both-refuse
 e7be545c578f66fb	both-refuse
 e7c78effda9d93aa	agree
@@ -3382,6 +3418,7 @@ e84848dd9eb5acfd	both-refuse
 e84b1467f775bc15	both-refuse
 e85e1506ace823d1	agree
 e86ad51c74cc8d7c	agree
+e87b4b001922c5e8	model:meaninertia;dyn:e1:t0:qM	divergence=D-FUSESTATIC-INERTIA
 e8a505cd5e588909	both-refuse
 e8a8956762b361e2	both-refuse
 e8bc1a5119a547b7	both-refuse
@@ -3533,6 +3570,7 @@ f334baa945ee2e19	agree
 f35c2c26cab2b0b6	both-refuse
 f3664295df362895	agree
 f3793e3d1915a74a	agree
+f37a3790ac6b8758	agree
 f37bacadac45680f	both-refuse
 f3803d06df412150	agree
 f385f69214ef0b6b	both-refuse
@@ -3713,6 +3751,7 @@ fee41eb7ed64a80d	both-refuse
 ff0c42b985583742	agree
 ff60001c783e0f4d	agree
 ff67ed613d416121	both-refuse
+ff6d9555f96eb0c7	agree
 ff7231e625784cb9	both-refuse
 ff7a23a8d9eac47d	both-refuse
 ff94c82fc48f8ddf	both-refuse

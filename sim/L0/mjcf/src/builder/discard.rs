@@ -16,7 +16,7 @@
 //! (`:7113`, `:7142`), which this crate does not make (no sensor here takes a
 //! mesh).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use sim_core::{EqualityType, MjObjectType, WrapType};
 
@@ -191,42 +191,9 @@ impl ModelBuilder {
             self.body_geom_num[b] = kept_before(adr + num) - kept_before(adr);
         }
 
-        retain(&mut self.geom_type, &keep);
-        retain(&mut self.geom_body, &keep);
-        retain(&mut self.geom_pos, &keep);
-        retain(&mut self.geom_quat, &keep);
-        retain(&mut self.geom_size, &keep);
-        retain(&mut self.geom_friction, &keep);
-        retain(&mut self.geom_condim, &keep);
-        retain(&mut self.geom_shellinertia_on_mesh, &keep);
-        retain(&mut self.geom_sdf_names_no_mesh, &keep);
-        retain(&mut self.geom_contype, &keep);
-        retain(&mut self.geom_conaffinity, &keep);
-        retain(&mut self.geom_name, &keep);
-        retain(&mut self.geom_mesh, &keep);
-        retain(&mut self.geom_solref, &keep);
-        retain(&mut self.geom_solimp, &keep);
-        retain(&mut self.geom_priority, &keep);
-        retain(&mut self.geom_solmix, &keep);
-        retain(&mut self.geom_margin, &keep);
-        retain(&mut self.geom_gap, &keep);
-        retain(&mut self.geom_group, &keep);
-        retain(&mut self.geom_rgba, &keep);
-        retain(&mut self.geom_fluid, &keep);
-        retain(&mut self.geom_hfield, &keep);
-        retain(&mut self.geom_sdf, &keep);
         self.nuser_geom_before_discard = self.geom_user_raw.first().map(Vec::len);
-        retain(&mut self.geom_user_raw, &keep);
-        if let Some(turns) = self.compile_turns.as_mut() {
-            retain(&mut turns.geom, &keep);
-            retain(&mut turns.geom_index, &keep);
-        }
-        self.geom_name_to_id = self
-            .geom_name
-            .iter()
-            .enumerate()
-            .filter_map(|(g, name)| Some((name.clone().filter(|n| !n.is_empty())?, g)))
-            .collect::<HashMap<_, _>>();
+        let kept: Vec<usize> = (0..keep.len()).filter(|&g| keep[g]).collect();
+        self.select_geoms(&kept);
         for mesh in &mut self.geom_mesh {
             *mesh = mesh.and_then(|m| mesh_id[m]);
         }
@@ -272,5 +239,114 @@ impl ModelBuilder {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use crate::builder::load_model;
+    use nalgebra::Vector3;
+
+    #[test]
+    fn test_discardvisual_removes_visual_geoms() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" discardvisual="true"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <geom name="collision" type="sphere" size="0.1" contype="1" conaffinity="1"/>
+                        <geom name="visual" type="sphere" size="0.12" contype="0" conaffinity="0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // Only collision geom should remain
+        assert_eq!(model.ngeom, 1, "visual geom should be discarded");
+    }
+
+    #[test]
+    fn test_discardvisual_false_keeps_all_geoms() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" discardvisual="false"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <geom name="collision" type="sphere" size="0.1" contype="1" conaffinity="1"/>
+                        <geom name="visual" type="sphere" size="0.12" contype="0" conaffinity="0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        assert_eq!(
+            model.ngeom, 2,
+            "all geoms should remain when discardvisual=false"
+        );
+    }
+
+    #[test]
+    fn test_discardvisual_protects_sensor_referenced_geom() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" discardvisual="true"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom name="collision_geom" type="sphere" size="0.1" mass="1"/>
+                        <geom name="visual_ref" type="sphere" size="0.2" contype="0" conaffinity="0"/>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <framepos name="vis_sensor" objname="visual_ref"/>
+                </sensor>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        assert_eq!(
+            model.ngeom, 2,
+            "sensor-referenced visual geom should be protected from discard"
+        );
+    }
+
+    // -- discardvisual and a frame --
+
+    #[test]
+    fn test_discardvisual_geom_inside_frame() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler discardvisual="true"/>
+                <worldbody>
+                    <body name="b">
+                        <frame pos="1 0 0">
+                            <geom type="sphere" size="0.1" contype="0" conaffinity="0"/>
+                        </frame>
+                        <geom type="sphere" size="0.1" pos="0 0 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // Only the non-visual geom should survive
+        assert_eq!(
+            model.geom_pos.len(),
+            1,
+            "discardvisual should remove visual geom from frame"
+        );
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(0.0, 0.0, 0.0)).norm() < 1e-4,
+            "surviving geom should be at origin"
+        );
     }
 }

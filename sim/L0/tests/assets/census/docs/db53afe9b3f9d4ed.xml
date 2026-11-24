@@ -1,0 +1,1 @@
+<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0.3 -0.2 1" quat="0.8 0.3 0.1 -0.2"><geom type="box" pos="0.1 0.2 0.3" quat="0.6 0.2 -0.3 0.1" size="0.05 0.04 0.03"/><site name="x" pos="0.1 -0.1 0.05" euler="10 20 30"/><body name="c" pos="0.2 0.1 -0.1" euler="5 15 25"><joint type="hinge"/><geom size="0.05"/></body></body></worldbody></mujoco>

@@ -338,8 +338,8 @@ pub fn check_tree_depth(worldbody: &MjcfBody) -> Result<()> {
 /// None under `inertiafromgeom="true"`, where MuJoCo keeps an `<inertial>`
 /// only on a body none of whose geoms it selects, which the builder finds
 /// (`ModelBuilder::kept_negative_inertial`). The loader takes it from the
-/// document before `fusestatic` removes any body, and returns it after the
-/// keyframes, with this crate's other refusals MuJoCo does not make.
+/// document, every body as written, and returns it after the keyframes, with
+/// this crate's other refusals MuJoCo does not make.
 pub fn negative_inertial_fault(model: &MjcfModel) -> Option<MjcfError> {
     if model.compiler.inertiafromgeom == InertiaFromGeom::True {
         return None;

@@ -2901,8 +2901,8 @@ pub struct MjcfBody {
     pub zaxis: Option<Vector3<f64>>,
     /// This body's pose as written in the `<frame>` or body holding it (its
     /// position, its orientation resolved and made unit, w x y z), kept where
-    /// frame expansion or `fusestatic` composes another pose into `pos` and
-    /// `quat`. MuJoCo 3.5.0 copies this pose into the inertial frame of a
+    /// frame expansion composes another pose into `pos` and `quat`. MuJoCo
+    /// 3.5.0 copies this pose into the inertial frame of a
     /// body that neither an `<inertial>` nor a selected geom gives one
     /// (`user_objects.cc:2442-2446`), before the frame composes into the
     /// body's pose (`:2474`) and before it fuses static bodies
