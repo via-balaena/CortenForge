@@ -32,11 +32,19 @@ struct Model {
     site_body: &'static [usize],
     site_pos: &'static [[f64; 3]],
     site_quat: &'static [[f64; 4]],
+    body_rootid: &'static [usize],
+    /// Each body with geoms: its id, its first geom and its count (MuJoCo's
+    /// first is -1 for a body with none).
+    body_geoms: &'static [(usize, usize, usize)],
+    jnt_body: &'static [usize],
+    dof_body: &'static [usize],
     body_mass: &'static [f64],
     body_inertia: &'static [[f64; 3]],
     body_ipos: &'static [[f64; 3]],
     body_iquat: &'static [[f64; 4]],
     qpos0: &'static [f64],
+    qpos_spring: &'static [f64],
+    eq_data: &'static [[f64; 11]],
 }
 
 /// What MuJoCo 3.5.0 makes of a document.
@@ -66,6 +74,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[1],
             site_pos: &[[0.0, 0.0, 0.0]],
             site_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(2, 0, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
             body_mass: &[0.0, 0.0, 4.188790204786391],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -83,6 +95,8 @@ const CASES: &[(&str, Expect)] = &[
                 [1.0, 0.0, 0.0, 0.0],
             ],
             qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
         }),
     ),
     // a mocap body alone: kept (L361)
@@ -103,6 +117,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
             body_mass: &[0.0, 4.188790204786391, 4.188790204786391],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -124,6 +142,8 @@ const CASES: &[(&str, Expect)] = &[
                 [1.0, 0.0, 0.0, 0.0],
             ],
             qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
         }),
     ),
     // a static body an exclude names: kept (L253)
@@ -144,6 +164,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
             body_mass: &[0.0, 33.51032163829113, 4.188790204786391],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -161,6 +185,8 @@ const CASES: &[(&str, Expect)] = &[
                 [1.0, 0.0, 0.0, 0.0],
             ],
             qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
         }),
     ),
     // a cable with initial="none": its first body, an exclude's, kept (L343)
@@ -199,6 +225,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[1, 4],
             site_pos: &[[0.0, 0.0, 0.0], [0.25, 0.0, 0.0]],
             site_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            body_rootid: &[0, 1, 1, 1, 1],
+            body_geoms: &[(1, 0, 1), (2, 1, 1), (3, 2, 1), (4, 3, 1)],
+            jnt_body: &[2, 3, 4],
+            dof_body: &[2, 2, 2, 3, 3, 3, 4, 4, 4],
             body_mass: &[
                 0.0,
                 0.08272860654453122,
@@ -244,6 +274,8 @@ const CASES: &[(&str, Expect)] = &[
                 [0.7071067811865476, 0.0, -0.7071067811865475, 0.0],
             ],
             qpos0: &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
         }),
     ),
     // a static body holding a force sensor's site: kept
@@ -264,6 +296,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[2],
             site_pos: &[[0.0, 0.0, 0.0]],
             site_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_rootid: &[0, 1, 1],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[1],
+            dof_body: &[1],
             body_mass: &[0.0, 4.188790204786391, 0.5235987755982989],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -285,6 +321,8 @@ const CASES: &[(&str, Expect)] = &[
                 [1.0, 0.0, 0.0, 0.0],
             ],
             qpos0: &[0.0],
+            qpos_spring: &[0.0],
+            eq_data: &[],
         }),
     ),
     // MuJoCo's stale body map: b kept, a sensor naming m, the last body (L406)
@@ -309,6 +347,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1, 1],
+            body_geoms: &[(0, 0, 1), (1, 1, 1), (2, 2, 1)],
+            jnt_body: &[],
+            dof_body: &[],
             body_mass: &[0.0, 4.188790204786391, 4.188790204786391],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -330,6 +372,8 @@ const CASES: &[(&str, Expect)] = &[
                 [1.0, 0.0, 0.0, 0.0],
             ],
             qpos0: &[],
+            qpos_spring: &[],
+            eq_data: &[],
         }),
     ),
     // the same, b unnamed: fused
@@ -350,6 +394,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1],
+            body_geoms: &[(0, 0, 2), (1, 2, 1)],
+            jnt_body: &[],
+            dof_body: &[],
             body_mass: &[0.0, 4.188790204786391],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -362,6 +410,8 @@ const CASES: &[(&str, Expect)] = &[
             body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
             body_iquat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
             qpos0: &[],
+            qpos_spring: &[],
+            eq_data: &[],
         }),
     ),
     // the same, no sensor: every static body fused
@@ -382,11 +432,17 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0],
+            body_geoms: &[(0, 0, 3)],
+            jnt_body: &[],
+            dof_body: &[],
             body_mass: &[0.0],
             body_inertia: &[[0.0, 0.0, 0.0]],
             body_ipos: &[[0.0, 0.0, 0.0]],
             body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
             qpos0: &[],
+            qpos_spring: &[],
+            eq_data: &[],
         }),
     ),
     // two fused before b: a reference to n throws, b kept
@@ -425,6 +481,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1, 2, 3],
+            body_geoms: &[(0, 0, 2), (1, 2, 1), (2, 3, 1), (3, 4, 1)],
+            jnt_body: &[2, 3],
+            dof_body: &[2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3],
             body_mass: &[0.0, 4.188790204786391, 4.188790204786391, 4.188790204786391],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -459,6 +519,10 @@ const CASES: &[(&str, Expect)] = &[
             qpos0: &[
                 3.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 4.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0,
             ],
+            qpos_spring: &[
+                3.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 4.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0,
+            ],
+            eq_data: &[],
         }),
     ),
     // a static body a weld names: kept
@@ -479,6 +543,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
             body_mass: &[0.0, 4.188790204786391, 4.188790204786391],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -500,6 +568,8 @@ const CASES: &[(&str, Expect)] = &[
                 [1.0, 0.0, 0.0, 0.0],
             ],
             qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[[0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 1.0]],
         }),
     ),
     // a static body an adhesion actuator names: kept
@@ -520,6 +590,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
             body_mass: &[0.0, 33.51032163829113, 4.188790204786391],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -537,6 +611,8 @@ const CASES: &[(&str, Expect)] = &[
                 [1.0, 0.0, 0.0, 0.0],
             ],
             qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
         }),
     ),
     // a static body a subtree sensor names: kept
@@ -557,6 +633,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1, 1],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[1],
+            dof_body: &[1, 1, 1, 1, 1, 1],
             body_mass: &[0.0, 4.188790204786391, 0.5235987755982989],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -578,6 +658,8 @@ const CASES: &[(&str, Expect)] = &[
                 [1.0, 0.0, 0.0, 0.0],
             ],
             qpos0: &[0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
         }),
     ),
     // an unturned static child: its mass added to its parent's
@@ -594,6 +676,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1],
+            body_geoms: &[(1, 0, 2)],
+            jnt_body: &[1],
+            dof_body: &[1],
             body_mass: &[0.0, 1.323598775598299],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -617,6 +703,8 @@ const CASES: &[(&str, Expect)] = &[
                 ],
             ],
             qpos0: &[0.0],
+            qpos_spring: &[0.0],
+            eq_data: &[],
         }),
     ),
     // an unturned static child with an offset box
@@ -633,6 +721,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1],
+            body_geoms: &[(1, 0, 2)],
+            jnt_body: &[1],
+            dof_body: &[1],
             body_mass: &[0.0, 1.0400000000000003],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -660,6 +752,8 @@ const CASES: &[(&str, Expect)] = &[
                 ],
             ],
             qpos0: &[0.0],
+            qpos_spring: &[0.0],
+            eq_data: &[],
         }),
     ),
     // two static bodies, one in the other: each added to the moving body
@@ -684,6 +778,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1],
+            body_geoms: &[(1, 0, 3)],
+            jnt_body: &[1],
+            dof_body: &[1],
             body_mass: &[0.0, 1.1811799086355619],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -707,6 +805,8 @@ const CASES: &[(&str, Expect)] = &[
                 ],
             ],
             qpos0: &[0.0],
+            qpos_spring: &[0.0],
+            eq_data: &[],
         }),
     ),
     // a static child with no mass: not added
@@ -723,6 +823,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[1],
             site_pos: &[[0.3, 0.1, 0.0]],
             site_quat: &[[0.9659258262890683, 0.0, 0.0, 0.25881904510252074]],
+            body_rootid: &[0, 1],
+            body_geoms: &[(1, 0, 1)],
+            jnt_body: &[1],
+            dof_body: &[1],
             body_mass: &[0.0, 0.8000000000000002],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -735,6 +839,8 @@ const CASES: &[(&str, Expect)] = &[
             body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
             body_iquat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
             qpos0: &[0.0],
+            qpos_spring: &[0.0],
+            eq_data: &[],
         }),
     ),
     // a static child of the world: its mass not added
@@ -754,6 +860,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1],
+            body_geoms: &[(0, 0, 1), (1, 1, 1)],
+            jnt_body: &[1],
+            dof_body: &[1, 1, 1, 1, 1, 1],
             body_mass: &[0.0, 4.188790204786391],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -766,6 +876,8 @@ const CASES: &[(&str, Expect)] = &[
             body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
             body_iquat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
             qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
         }),
     ),
     // a site-only static child, raised to boundmass before it is added
@@ -782,6 +894,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[1],
             site_pos: &[[0.3, 0.1, 0.0]],
             site_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_rootid: &[0, 1],
+            body_geoms: &[(1, 0, 1)],
+            jnt_body: &[1],
+            dof_body: &[1],
             body_mass: &[0.0, 1.3000000000000003],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -805,6 +921,8 @@ const CASES: &[(&str, Expect)] = &[
                 ],
             ],
             qpos0: &[0.0],
+            qpos_spring: &[0.0],
+            eq_data: &[],
         }),
     ),
     // a turned static child whose inertial frame is the identity
@@ -829,6 +947,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1],
+            body_geoms: &[(1, 0, 2)],
+            jnt_body: &[1],
+            dof_body: &[1],
             body_mass: &[0.0, 1.323598775598299],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -852,6 +974,8 @@ const CASES: &[(&str, Expect)] = &[
                 ],
             ],
             qpos0: &[0.0],
+            qpos_spring: &[0.0],
+            eq_data: &[],
         }),
     ),
     // two static children added in turn
@@ -872,6 +996,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1],
+            body_geoms: &[(1, 0, 3)],
+            jnt_body: &[1],
+            dof_body: &[1],
             body_mass: &[0.0, 1.803598775598299],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -887,6 +1015,8 @@ const CASES: &[(&str, Expect)] = &[
                 [0.0, 0.7071067811865489, 0.0, 0.7071067811865489],
             ],
             qpos0: &[0.0],
+            qpos_spring: &[0.0],
+            eq_data: &[],
         }),
     ),
     // inertiafromgeom true: a static child's geoms over its <inertial>
@@ -903,6 +1033,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1],
+            body_geoms: &[(1, 0, 2)],
+            jnt_body: &[1],
+            dof_body: &[1],
             body_mass: &[0.0, 1.323598775598299],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -926,6 +1060,8 @@ const CASES: &[(&str, Expect)] = &[
                 ],
             ],
             qpos0: &[0.0],
+            qpos_spring: &[0.0],
+            eq_data: &[],
         }),
     ),
     // a turned static body's geom, site and child, moved as MuJoCo moves them
@@ -966,6 +1102,10 @@ const CASES: &[(&str, Expect)] = &[
                 0.11795756628919363,
                 0.06429213809884243,
             ]],
+            body_rootid: &[0, 1],
+            body_geoms: &[(0, 0, 1), (1, 1, 1)],
+            jnt_body: &[1],
+            dof_body: &[1],
             body_mass: &[0.0, 0.5235987755982989],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -978,6 +1118,8 @@ const CASES: &[(&str, Expect)] = &[
             body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
             body_iquat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
             qpos0: &[0.0],
+            qpos_spring: &[0.0],
+            eq_data: &[],
         }),
     ),
     // a turned static body fused into the world
@@ -1014,6 +1156,10 @@ const CASES: &[(&str, Expect)] = &[
                 -0.23541596583845503,
                 0.31180507894723203,
             ]],
+            body_rootid: &[0, 1],
+            body_geoms: &[(0, 0, 1), (1, 1, 1)],
+            jnt_body: &[1],
+            dof_body: &[1, 1, 1, 1, 1, 1],
             body_mass: &[0.0, 4.188790204786391],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -1026,6 +1172,8 @@ const CASES: &[(&str, Expect)] = &[
             body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
             body_iquat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
             qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
         }),
     ),
     // a free body below a turned static body: its qpos0 its fused pose
@@ -1061,6 +1209,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1],
+            body_geoms: &[(0, 0, 1), (1, 1, 1)],
+            jnt_body: &[1],
+            dof_body: &[1, 1, 1, 1, 1, 1],
             body_mass: &[0.0, 4.188790204786391],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -1081,6 +1233,16 @@ const CASES: &[(&str, Expect)] = &[
                 0.1954588370747527,
                 0.3265668211464165,
             ],
+            qpos_spring: &[
+                0.3900165490540471,
+                0.37006562982737234,
+                0.8208967161686443,
+                0.9095342823939611,
+                0.16702497862838267,
+                0.1954588370747527,
+                0.3265668211464165,
+            ],
+            eq_data: &[],
         }),
     ),
     // a static body a light targets: kept (L361)
@@ -1101,6 +1263,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
             body_mass: &[0.0, 4.188790204786391, 4.188790204786391],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -1122,6 +1288,8 @@ const CASES: &[(&str, Expect)] = &[
                 [1.0, 0.0, 0.0, 0.0],
             ],
             qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
         }),
     ),
     // a static body a <custom> tuple names: kept
@@ -1142,6 +1310,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
             body_mass: &[0.0, 33.51032163829113, 4.188790204786391],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -1159,6 +1331,8 @@ const CASES: &[(&str, Expect)] = &[
                 [1.0, 0.0, 0.0, 0.0],
             ],
             qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
         }),
     ),
     // a static body a camera in a frame targets: kept
@@ -1179,6 +1353,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
             body_mass: &[0.0, 4.188790204786391, 4.188790204786391],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -1200,6 +1378,8 @@ const CASES: &[(&str, Expect)] = &[
                 [1.0, 0.0, 0.0, 0.0],
             ],
             qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
         }),
     ),
     // a moving body whose mass is a static child's <inertial>: added (L373)
@@ -1216,6 +1396,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1],
+            body_geoms: &[],
+            jnt_body: &[1],
+            dof_body: &[1],
             body_mass: &[0.0, 2.0],
             body_inertia: &[[0.0, 0.0, 0.0], [0.03, 0.02, 0.01]],
             body_ipos: &[[0.0, 0.0, 0.0], [0.3, 0.0, 0.0]],
@@ -1224,6 +1408,8 @@ const CASES: &[(&str, Expect)] = &[
                 [0.0, 0.7071067811865489, 0.0, 0.7071067811865489],
             ],
             qpos0: &[0.0],
+            qpos_spring: &[0.0],
+            eq_data: &[],
         }),
     ),
     // a fused body's children in its place, before its later sibling
@@ -1260,6 +1446,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1, 1, 1],
+            body_geoms: &[(1, 0, 2), (2, 2, 1), (3, 3, 1)],
+            jnt_body: &[1, 2, 3],
+            dof_body: &[1, 1, 1, 1, 1, 1, 2, 3],
             body_mass: &[
                 0.0,
                 4.712388980384691,
@@ -1302,6 +1492,8 @@ const CASES: &[(&str, Expect)] = &[
                 [1.0, 0.0, 0.0, 0.0],
             ],
             qpos0: &[0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
         }),
     ),
     // a camera's empty target names no body: the static body fused
@@ -1318,6 +1510,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1],
+            body_geoms: &[(0, 0, 1), (1, 1, 1)],
+            jnt_body: &[1],
+            dof_body: &[1, 1, 1, 1, 1, 1],
             body_mass: &[0.0, 4.188790204786391],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -1330,6 +1526,8 @@ const CASES: &[(&str, Expect)] = &[
             body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
             body_iquat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
             qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
         }),
     ),
     // a static body a light in another body targets: kept
@@ -1350,6 +1548,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
             body_mass: &[0.0, 4.188790204786391, 4.188790204786391],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -1371,6 +1573,988 @@ const CASES: &[(&str, Expect)] = &[
                 [1.0, 0.0, 0.0, 0.0],
             ],
             qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
+        }),
+    ),
+    // geoms and sites re-ordered across bodies by fusion (round 1 RB-2)
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="P" pos="0 0 1"><joint type="hinge"/><geom name="gp" size="0.1"/><site name="sp"/><body name="A" pos="0.3 0 0"><joint type="hinge"/><geom name="ga" size="0.05"/><site name="sa" pos="0.01 0 0"/></body><body pos="0 0.3 0"><geom name="gs" size="0.04"/><site name="ss" pos="0 0.02 0"/></body></body><body name="F" pos="2 0 1"><freejoint/><geom name="gf" size="0.1"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "P", "A", "F"],
+            body_parent: &[0, 0, 1, 0],
+            body_pos: &[
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.3, 0.0, 0.0],
+                [2.0, 0.0, 1.0],
+            ],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 1, 2, 3],
+            geom_pos: &[
+                [0.0, 0.0, 0.0],
+                [0.0, 0.3, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            geom_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            site_body: &[1, 1, 2],
+            site_pos: &[[0.0, 0.0, 0.0], [0.0, 0.32, 0.0], [0.01, 0.0, 0.0]],
+            site_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            body_rootid: &[0, 1, 1, 3],
+            body_geoms: &[(1, 0, 2), (2, 2, 1), (3, 3, 1)],
+            jnt_body: &[1, 2, 3],
+            dof_body: &[1, 2, 3, 3, 3, 3, 3, 3],
+            body_mass: &[
+                0.0,
+                4.456872777892721,
+                0.5235987755982989,
+                4.188790204786391,
+            ],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.039602891165529126,
+                    0.039602891165529126,
+                    0.01692673366593362,
+                ],
+                [
+                    0.000523598775598299,
+                    0.000523598775598299,
+                    0.000523598775598299,
+                ],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[
+                [0.0, 0.0, 0.0],
+                [0.0, 0.01804511278195489, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [0.707106781186548, 0.707106781186548, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 2.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
+        }),
+    ),
+    // a weld and a connect on bodies fusion renumbers: their eq_data
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body pos="0.3 0.1 0.2"><geom size="0.05"/></body><body name="f" pos="0 0 1" euler="10 20 30"><freejoint/><geom size="0.1"/></body><body name="k" pos="0.5 0.2 1.3" euler="-5 15 40"><freejoint/><geom size="0.1"/></body></worldbody><equality><weld body1="f" body2="k"/><connect body1="k" body2="f" anchor="0.1 0 0"/></equality></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "f", "k"],
+            body_parent: &[0, 0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.5, 0.2, 1.3]],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [
+                    0.943714364147489,
+                    0.12767944069578063,
+                    0.14487812541736914,
+                    0.2685358227515692,
+                ],
+                [
+                    0.9327139748246638,
+                    0.00396194569632418,
+                    0.13732883723664985,
+                    0.33342125699526975,
+                ],
+            ],
+            geom_body: &[0, 1, 2],
+            geom_pos: &[[0.3, 0.1, 0.2], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(0, 0, 1), (1, 1, 1), (2, 2, 1)],
+            jnt_body: &[1, 2],
+            dof_body: &[1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2],
+            body_mass: &[0.0, 4.188790204786391, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[
+                0.0,
+                0.0,
+                1.0,
+                0.943714364147489,
+                0.12767944069578063,
+                0.14487812541736914,
+                0.2685358227515692,
+                0.5,
+                0.2,
+                1.3,
+                0.9327139748246638,
+                0.00396194569632418,
+                0.13732883723664985,
+                0.33342125699526975,
+            ],
+            qpos_spring: &[
+                0.0,
+                0.0,
+                1.0,
+                0.943714364147489,
+                0.12767944069578063,
+                0.14487812541736914,
+                0.2685358227515692,
+                0.5,
+                0.2,
+                1.3,
+                0.9327139748246638,
+                0.00396194569632418,
+                0.13732883723664985,
+                0.33342125699526975,
+            ],
+            eq_data: &[
+                [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.45420423056029324,
+                    0.025350167011773464,
+                    0.41599986294902436,
+                    0.9901529307683885,
+                    -0.1267771879640755,
+                    0.03597645935069925,
+                    0.047227245052831546,
+                    1.0,
+                ],
+                [
+                    0.1,
+                    0.0,
+                    0.0,
+                    0.5534992868997546,
+                    0.03379040716213197,
+                    0.40767795615145375,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                ],
+            ],
+        }),
+    ),
+    // a stiff free joint below a turned fused body: its qpos_spring
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0.3 0.2 0.5" euler="10 20 30"><geom size="0.1"/><body name="f" pos="0.1 0.2 0.3" euler="5 6 7"><joint type="free" stiffness="3"/><geom size="0.1"/></body></body></worldbody></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "f"],
+            body_parent: &[0, 0],
+            body_pos: &[
+                [0.0, 0.0, 0.0],
+                [0.3900165490540471, 0.37006562982737234, 0.8208967161686443],
+            ],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [
+                    0.9095342823939611,
+                    0.16702497862838267,
+                    0.1954588370747527,
+                    0.3265668211464165,
+                ],
+            ],
+            geom_body: &[0, 1],
+            geom_pos: &[[0.3, 0.2, 0.5], [0.0, 0.0, 0.0]],
+            geom_quat: &[
+                [
+                    0.943714364147489,
+                    0.12767944069578063,
+                    0.14487812541736914,
+                    0.2685358227515692,
+                ],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_rootid: &[0, 1],
+            body_geoms: &[(0, 0, 1), (1, 1, 1)],
+            jnt_body: &[1],
+            dof_body: &[1, 1, 1, 1, 1, 1],
+            body_mass: &[0.0, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            qpos0: &[
+                0.3900165490540471,
+                0.37006562982737234,
+                0.8208967161686443,
+                0.9095342823939611,
+                0.16702497862838267,
+                0.1954588370747527,
+                0.3265668211464165,
+            ],
+            qpos_spring: &[
+                0.3900165490540471,
+                0.37006562982737234,
+                0.8208967161686443,
+                0.9095342823939611,
+                0.16702497862838267,
+                0.1954588370747527,
+                0.3265668211464165,
+            ],
+            eq_data: &[],
+        }),
+    ),
+    // hinge chains below fused bodies: root ids, joint and dof bodies
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="f" pos="0 0 1"><freejoint/><geom size="0.1"/><body pos="0.2 0 0" euler="0 0 30"><geom size="0.05"/><body name="h1" pos="0.1 0 0"><joint type="hinge" axis="0 1 0"/><geom size="0.04" pos="0.05 0 0"/><body pos="0.1 0 0"><geom size="0.03"/><body name="h2" pos="0.1 0 0"><joint type="hinge" axis="1 0 0"/><geom size="0.02" pos="0 0 0.03"/></body></body></body></body></body><body pos="1 0 0"><geom size="0.1"/><body name="g" pos="0 0 1"><freejoint/><geom size="0.1"/></body></body></worldbody><sensor><subtreecom body="h1"/><framepos objtype="body" objname="h2"/><framelinvel objtype="body" objname="g"/></sensor></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "f", "h1", "h2", "g"],
+            body_parent: &[0, 0, 1, 2, 0],
+            body_pos: &[
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.2866025403784439, 0.049999999999999996, 0.0],
+                [0.2, 0.0, 0.0],
+                [1.0, 0.0, 1.0],
+            ],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [0.9659258262890683, 0.0, 0.0, 0.25881904510252074],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[0, 1, 1, 2, 2, 3, 4],
+            geom_pos: &[
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.2, 0.0, 0.0],
+                [0.05, 0.0, 0.0],
+                [0.1, 0.0, 0.0],
+                [0.0, 0.0, 0.03],
+                [0.0, 0.0, 0.0],
+            ],
+            geom_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [0.9659258262890683, 0.0, 0.0, 0.25881904510252074],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_rootid: &[0, 1, 1, 1, 4],
+            body_geoms: &[(0, 0, 1), (1, 1, 2), (2, 3, 2), (3, 5, 1), (4, 6, 1)],
+            jnt_body: &[1, 2, 3, 4],
+            dof_body: &[1, 1, 1, 1, 1, 1, 2, 3, 4, 4, 4, 4, 4, 4],
+            body_mass: &[
+                0.0,
+                4.712388980384691,
+                0.3811799086355616,
+                0.03351032163829113,
+                4.188790204786391,
+            ],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.035895604949350055,
+                    0.035895604949350055,
+                    0.017278759594743866,
+                ],
+                [
+                    0.00041114034565195026,
+                    0.00041114034565195026,
+                    0.0002122878875785743,
+                ],
+                [
+                    5.361651462126581e-06,
+                    5.361651462126581e-06,
+                    5.361651462126581e-06,
+                ],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[
+                [0.0, 0.0, 0.0],
+                [0.022222222222222223, 0.0, 0.0],
+                [0.06483516483516483, 0.0, 0.0],
+                [0.0, 0.0, 0.03],
+                [0.0, 0.0, 0.0],
+            ],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [
+                    0.5000000000000007,
+                    0.5000000000000007,
+                    0.5000000000000007,
+                    0.5000000000000007,
+                ],
+                [
+                    0.5000000000000007,
+                    0.5000000000000007,
+                    0.5000000000000007,
+                    0.5000000000000007,
+                ],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[
+                0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0,
+            ],
+            qpos_spring: &[
+                0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0,
+            ],
+            eq_data: &[],
+        }),
+    ),
+    // a kept name put back at the loop's index, not its first (round 1 RB-3)
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body pos="0 0 1"><geom size="0.1"/></body><body pos="1 0 1"><geom size="0.1"/></body><body name="K" pos="2 0 1"><joint type="hinge"/><geom size="0.1"/></body><body name="S" pos="3 0 1"><geom size="0.1"/></body></worldbody><sensor><framepos objtype="body" objname="K"/></sensor></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "K"],
+            body_parent: &[0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [2.0, 0.0, 1.0]],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            geom_body: &[0, 0, 0, 1],
+            geom_pos: &[
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 1.0],
+                [3.0, 0.0, 1.0],
+                [0.0, 0.0, 0.0],
+            ],
+            geom_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_rootid: &[0, 1],
+            body_geoms: &[(0, 0, 3), (1, 3, 1)],
+            jnt_body: &[1],
+            dof_body: &[1],
+            body_mass: &[0.0, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            qpos0: &[0.0],
+            qpos_spring: &[0.0],
+            eq_data: &[],
+        }),
+    ),
+    // a static body a distance sensor's body1 names: kept
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 0.5"><geom size="0.2"/><site name="ss"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/><site name="fs"/></body></worldbody><sensor><distance body1="s" body2="f"/></sensor></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "s", "f"],
+            body_parent: &[0, 0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5], [0.0, 0.0, 2.0]],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 2],
+            geom_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[1, 2],
+            site_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            site_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
+            body_mass: &[0.0, 33.51032163829113, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [0.5361651462126582, 0.5361651462126582, 0.5361651462126582],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
+        }),
+    ),
+    // a static body a frame sensor's reftype body names: kept
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 0.5"><geom size="0.2"/><site name="ss"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/><site name="fs"/></body></worldbody><sensor><framepos objtype="body" objname="f" reftype="body" refname="s"/></sensor></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "s", "f"],
+            body_parent: &[0, 0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5], [0.0, 0.0, 2.0]],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 2],
+            geom_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[1, 2],
+            site_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            site_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
+            body_mass: &[0.0, 33.51032163829113, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [0.5361651462126582, 0.5361651462126582, 0.5361651462126582],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
+        }),
+    ),
+    // a static body a user sensor's objtype body names: kept
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 0.5"><geom size="0.2"/><site name="ss"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/><site name="fs"/></body></worldbody><sensor><user objtype="body" objname="s" dim="1"/></sensor></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "s", "f"],
+            body_parent: &[0, 0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5], [0.0, 0.0, 2.0]],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 2],
+            geom_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[1, 2],
+            site_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            site_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
+            body_mass: &[0.0, 33.51032163829113, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [0.5361651462126582, 0.5361651462126582, 0.5361651462126582],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
+        }),
+    ),
+    // a static body holding a torque sensor's site: kept
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 0.5"><geom size="0.2"/><site name="ss"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/><site name="fs"/></body></worldbody><sensor><torque site="ss"/></sensor></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "s", "f"],
+            body_parent: &[0, 0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5], [0.0, 0.0, 2.0]],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 2],
+            geom_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[1, 2],
+            site_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            site_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
+            body_mass: &[0.0, 33.51032163829113, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [0.5361651462126582, 0.5361651462126582, 0.5361651462126582],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
+        }),
+    ),
+    // a static body a connect names: kept
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 0.5"><geom size="0.2"/><site name="ss"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/><site name="fs"/></body></worldbody><equality><connect body1="f" body2="s" anchor="0 0 0"/></equality></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "s", "f"],
+            body_parent: &[0, 0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5], [0.0, 0.0, 2.0]],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 2],
+            geom_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[1, 2],
+            site_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            site_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
+            body_mass: &[0.0, 33.51032163829113, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [0.5361651462126582, 0.5361651462126582, 0.5361651462126582],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[[0.0, 0.0, 0.0, 0.0, 0.0, 1.5, 0.0, 0.0, 0.0, 0.0, 1.0]],
+        }),
+    ),
+    // a static body a subtreelinvel names: kept
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 0.5"><geom size="0.2"/><site name="ss"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/><site name="fs"/></body></worldbody><sensor><subtreelinvel body="s"/><subtreeangmom body="s"/></sensor></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "s", "f"],
+            body_parent: &[0, 0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5], [0.0, 0.0, 2.0]],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 2],
+            geom_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[1, 2],
+            site_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            site_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
+            body_mass: &[0.0, 33.51032163829113, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [0.5361651462126582, 0.5361651462126582, 0.5361651462126582],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
+        }),
+    ),
+    // a static body a skin's bone names: kept
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 0.5"><geom size="0.2"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody><deformable><skin name="sk" vertex="0 0 0 1 0 0 0 1 0" face="0 1 2"><bone body="s" bindpos="0 0 0" bindquat="1 0 0 0" vertid="0 1 2" vertweight="1 1 1"/></skin></deformable></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "s", "f"],
+            body_parent: &[0, 0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5], [0.0, 0.0, 2.0]],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 2],
+            geom_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
+            body_mass: &[0.0, 33.51032163829113, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [0.5361651462126582, 0.5361651462126582, 0.5361651462126582],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
+        }),
+    ),
+    // a light in a nested frame targets a static body: kept
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="t" pos="0 0 1"><geom size="0.1" contype="0" conaffinity="0"/></body><frame pos="1 0 0"><frame pos="0 1 0"><light name="l" mode="targetbody" target="t" pos="1 1 3"/></frame></frame><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "t", "f"],
+            body_parent: &[0, 0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 2.0]],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 2],
+            geom_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
+            body_mass: &[0.0, 4.188790204786391, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
+        }),
+    ),
+    // a camera in a frame in a body targets a static body: kept
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="t" pos="0 0 1"><geom size="0.1" contype="0" conaffinity="0"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/><frame pos="0.1 0 0"><camera name="c" mode="targetbody" target="t"/></frame></body></worldbody></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "t", "f"],
+            body_parent: &[0, 0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 2.0]],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 2],
+            geom_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
+            body_mass: &[0.0, 4.188790204786391, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
+        }),
+    ),
+    // a camera's target in mode fixed: kept
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="t" pos="0 0 1"><geom size="0.1" contype="0" conaffinity="0"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/><camera name="c" mode="fixed" target="t"/></body></worldbody></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "t", "f"],
+            body_parent: &[0, 0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 2.0]],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 2],
+            geom_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
+            body_mass: &[0.0, 4.188790204786391, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
+        }),
+    ),
+    // k06 without its camera: the free joint fused to the top
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="t" pos="0 0 1"><geom size="0.1"/><body name="c" pos="0.3 0 0"><freejoint/><geom size="0.1"/></body></body></worldbody></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "c"],
+            body_parent: &[0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.3, 0.0, 1.0]],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            geom_body: &[0, 1],
+            geom_pos: &[[0.0, 0.0, 1.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_rootid: &[0, 1],
+            body_geoms: &[(0, 0, 1), (1, 1, 1)],
+            jnt_body: &[1],
+            dof_body: &[1, 1, 1, 1, 1, 1],
+            body_mass: &[0.0, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            qpos0: &[0.3, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.3, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
+        }),
+    ),
+    // a nested frame's target in a body: kept
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="t" pos="0 0 1"><geom size="0.1" contype="0" conaffinity="0"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/><frame><frame><camera name="c" target="t"/></frame></frame></body></worldbody></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "t", "f"],
+            body_parent: &[0, 0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 2.0]],
+            body_quat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            geom_body: &[1, 2],
+            geom_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_rootid: &[0, 1, 2],
+            body_geoms: &[(1, 0, 1), (2, 1, 1)],
+            jnt_body: &[2],
+            dof_body: &[2, 2, 2, 2, 2, 2],
+            body_mass: &[0.0, 4.188790204786391, 4.188790204786391],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+                [
+                    0.01675516081914557,
+                    0.01675516081914557,
+                    0.01675516081914557,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+            qpos0: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            qpos_spring: &[0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            eq_data: &[],
+        }),
+    ),
+    // a sum whose centre overflows: the inertia left as it was (the NaN branch)
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><geom type="box" size="0.1 0.05 0.02"/><body name="s" pos="0 1e308 0"><inertial pos="0 1e308 0" mass="2" diaginertia="1 1 1"/></body></body></worldbody></mujoco>"#,
+        Expect::Loads(&Model {
+            body_name: &["world", "p"],
+            body_parent: &[0, 0],
+            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            geom_body: &[1],
+            geom_pos: &[[0.0, 0.0, 0.0]],
+            geom_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            site_body: &[],
+            site_pos: &[],
+            site_quat: &[],
+            body_rootid: &[0, 1],
+            body_geoms: &[(1, 0, 1)],
+            jnt_body: &[1],
+            dof_body: &[1],
+            body_mass: &[0.0, 2.8000000000000003],
+            body_inertia: &[
+                [0.0, 0.0, 0.0],
+                [
+                    0.0007733333333333337,
+                    0.0027733333333333342,
+                    0.0033333333333333344,
+                ],
+            ],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.0, f64::INFINITY, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            qpos0: &[0.0],
+            qpos_spring: &[0.0],
+            eq_data: &[],
         }),
     ),
     // a tendon's wrapped geom found through MuJoCo's stale geom map, a box: n kept (round 1 RW-1); MuJoCo's tendon then wraps p0, the geom at s1's old index (D-FUSESTATIC-PAIR-GEOM), this crate's s1
@@ -1409,6 +2593,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[0, 1],
             site_pos: &[[0.0, 0.0, 3.0], [0.1, 0.0, 0.0]],
             site_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            body_rootid: &[0, 1, 1, 3],
+            body_geoms: &[(0, 0, 1), (1, 1, 2), (2, 3, 1), (3, 4, 1)],
+            jnt_body: &[1, 2],
+            dof_body: &[1, 2],
             body_mass: &[
                 0.0,
                 5.188790204786391,
@@ -1451,6 +2639,8 @@ const CASES: &[(&str, Expect)] = &[
                 [1.0, 0.0, 0.0, 0.0],
             ],
             qpos0: &[0.0, 0.0],
+            qpos_spring: &[0.0, 0.0],
+            eq_data: &[],
         }),
     ),
     // a negative density beside an <inertial>: no geom mass checked, loads
@@ -1467,6 +2657,10 @@ const CASES: &[(&str, Expect)] = &[
             site_body: &[],
             site_pos: &[],
             site_quat: &[],
+            body_rootid: &[0, 1],
+            body_geoms: &[(1, 0, 2)],
+            jnt_body: &[1],
+            dof_body: &[1],
             body_mass: &[0.0, 1.8000000000000003],
             body_inertia: &[
                 [0.0, 0.0, 0.0],
@@ -1482,6 +2676,8 @@ const CASES: &[(&str, Expect)] = &[
                 [0.0, 0.7071067811865489, 0.0, 0.7071067811865489],
             ],
             qpos0: &[0.0],
+            qpos_spring: &[0.0],
+            eq_data: &[],
         }),
     ),
     // MuJoCo: "Error: mass, inertia or density are negative in geom"
@@ -1541,6 +2737,11 @@ const CASES: &[(&str, Expect)] = &[
             "error 'inertia must have positive eigenvalues' in fusing static body inertias",
         ),
     ),
+    // MuJoCo: "Error: mass, inertia or density are negative in geom"
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><inertial pos="0 0 0" mass="1" diaginertia="0 0 0"/><body name="s" pos="0 0 0"><inertial pos="0 0 0" mass="1" diaginertia="0 0 0"/></body></body><body name="q" pos="2 0 1"><freejoint/><geom size="0.1" mass="-1"/></body></worldbody></mujoco>"#,
+        Expect::Refused("mass, inertia or density are negative in geom"),
+    ),
     // MuJoCo: "Error: unrecognized name 's' of sensorized object"
     (
         r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="s" pos="0 0 0.5"><geom size="0.2"/></body><body name="f" pos="0 0 2"><freejoint/><geom size="0.1"/></body></worldbody><sensor><framepos objtype="xbody" objname="s"/></sensor></mujoco>"#,
@@ -1578,15 +2779,28 @@ const CASES: &[(&str, Expect)] = &[
     ),
 ];
 
-const FIXTURES: &[&str] = &[
-    // MuJoCo: qacc unfused np.float64(24.798337967198677), fused np.float64(29.130299346210602)
-    r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><geom type="box" size="0.1 0.05 0.02"/><body name="s" pos="0.3 0.1 0" euler="20 30 40"><inertial pos="0.05 0.02 0.01" euler="10 0 50" mass="0.7" diaginertia="0.01 0.02 0.025"/></body></body></worldbody></mujoco>"#,
-    // MuJoCo: qacc unfused np.float64(34.977110889627234), fused np.float64(11.477805739125529)
-    r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><geom type="box" size="0.1 0.05 0.02"/><body name="s" pos="0.2 0 0.1" euler="0 30 45"><geom type="capsule" fromto="0 0 0 0.2 0.1 0" size="0.03"/></body></body></worldbody></mujoco>"#,
-    // MuJoCo: qacc unfused np.float64(17.162573705695586), fused np.float64(16.96819809431316)
-    r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><inertial pos="0.01 0 0" mass="1" diaginertia="0.01 0.012 0.014"/><body name="s" pos="0.3 0 0" euler="0 0 60"><geom type="box" pos="0.05 0 0" size="0.05 0.02 0.01"/></body></body></worldbody></mujoco>"#,
-    // MuJoCo: qacc unfused np.float64(26.286173633440516), fused np.float64(27.965566161579975)
-    r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><inertial pos="0.2 0 0" mass="2" diaginertia="0.01 0.05 0.05"/><body name="tool" pos="0.4 0 0" euler="0 90 0"><inertial pos="0 0 0.05" euler="0 17.19 0" mass="0.5" diaginertia="0.001 0.002 0.0025"/></body></body></worldbody></mujoco>"#,
+/// Each fixture, fused, with MuJoCo 3.5.0's `qacc` unfused.
+const FIXTURES: &[(&str, f64)] = &[
+    // MuJoCo: qacc fused np.float64(29.130299346210602)
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><geom type="box" size="0.1 0.05 0.02"/><body name="s" pos="0.3 0.1 0" euler="20 30 40"><inertial pos="0.05 0.02 0.01" euler="10 0 50" mass="0.7" diaginertia="0.01 0.02 0.025"/></body></body></worldbody></mujoco>"#,
+        24.798337967198677,
+    ),
+    // MuJoCo: qacc fused np.float64(11.477805739125529)
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><geom type="box" size="0.1 0.05 0.02"/><body name="s" pos="0.2 0 0.1" euler="0 30 45"><geom type="capsule" fromto="0 0 0 0.2 0.1 0" size="0.03"/></body></body></worldbody></mujoco>"#,
+        34.977110889627234,
+    ),
+    // MuJoCo: qacc fused np.float64(16.96819809431316)
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="p" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><inertial pos="0.01 0 0" mass="1" diaginertia="0.01 0.012 0.014"/><body name="s" pos="0.3 0 0" euler="0 0 60"><geom type="box" pos="0.05 0 0" size="0.05 0.02 0.01"/></body></body></worldbody></mujoco>"#,
+        17.162573705695586,
+    ),
+    // MuJoCo: qacc fused np.float64(27.965566161579975)
+    (
+        r#"<mujoco><compiler fusestatic="true"/><worldbody><body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><inertial pos="0.2 0 0" mass="2" diaginertia="0.01 0.05 0.05"/><body name="tool" pos="0.4 0 0" euler="0 90 0"><inertial pos="0 0 0.05" euler="0 17.19 0" mass="0.5" diaginertia="0.001 0.002 0.0025"/></body></body></worldbody></mujoco>"#,
+        26.286173633440516,
+    ),
 ];
 
 /// 0 on macOS arm64, where MuJoCo's values were printed, and 1e-12 of an
@@ -1608,10 +2822,16 @@ fn close(ours: &[f64], mujoco: &[f64]) -> bool {
             .zip(mujoco)
             .all(|(a, b)| a.to_bits() == b.to_bits());
     }
-    let scale = mujoco.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-    ours.iter()
-        .zip(mujoco)
-        .all(|(a, b)| (a - b).abs() <= TOLERANCE * scale)
+    // An infinity is compared by its bits, and the scale is the finite
+    // entries': a NaN on either side fails.
+    let scale = mujoco
+        .iter()
+        .filter(|v| v.is_finite())
+        .fold(0.0_f64, |m, v| m.max(v.abs()));
+    ours.iter().zip(mujoco).all(|(a, b)| {
+        a.to_bits() == b.to_bits()
+            || (a.is_finite() && b.is_finite() && (a - b).abs() <= TOLERANCE * scale)
+    })
 }
 
 fn flat3(v: &[nalgebra::Vector3<f64>]) -> Vec<f64> {
@@ -1635,6 +2855,10 @@ fn each_document_fuses_as_mujoco() {
                     .body_name
                     .iter()
                     .map(|n| n.as_deref().unwrap_or(""))
+                    .collect();
+                let body_geoms: Vec<(usize, usize, usize)> = (0..m.nbody)
+                    .filter(|&b| m.body_geom_num[b] > 0)
+                    .map(|b| (b, m.body_geom_adr[b], m.body_geom_num[b]))
                     .collect();
                 let differ: Vec<&str> = [
                     ("body_name", names == want.body_name),
@@ -1678,7 +2902,16 @@ fn each_document_fuses_as_mujoco() {
                         "body_iquat",
                         close(&flat4(&m.body_iquat), want.body_iquat.as_flattened()),
                     ),
+                    ("body_rootid", m.body_rootid == want.body_rootid),
+                    ("body_geoms", body_geoms == want.body_geoms),
+                    ("jnt_body", m.jnt_body == want.jnt_body),
+                    ("dof_body", m.dof_body == want.dof_body),
                     ("qpos0", close(m.qpos0.as_slice(), want.qpos0)),
+                    ("qpos_spring", close(&m.qpos_spring, want.qpos_spring)),
+                    (
+                        "eq_data",
+                        close(m.eq_data.as_flattened(), want.eq_data.as_flattened()),
+                    ),
                 ]
                 .into_iter()
                 .filter(|&(_, same)| !same)
@@ -1707,14 +2940,16 @@ fn each_document_fuses_as_mujoco() {
 /// A fused model's dynamics are the unfused one's (book L42's test, registry
 /// `D-FUSESTATIC-INERTIA`): `qacc` at the first `forward`, fused against the
 /// same document unfused, within 1e-5 of the unfused, relative (the
-/// principal axes' `eig3` leaves 7.3e-8 here). MuJoCo 3.5.0 adds a fused child's inertia in
-/// the other frame order and is off by 4.33, -23.5, -0.194 and 1.68 on these
-/// four (each document's comment).
+/// principal axes' `eig3` leaves 7.3e-8 here); the unfused `qacc` is MuJoCo
+/// 3.5.0's (bit for bit on macOS arm64, within 1e-12 relative elsewhere).
+/// MuJoCo adds a fused child's inertia in the other frame order and is off by
+/// 4.33, -23.5, -0.194 and 1.68 on these four (each document's comment
+/// gives its fused `qacc`).
 #[test]
 fn a_fused_models_dynamics_are_the_unfused_ones() {
-    for doc in FIXTURES {
+    for &(doc, mujoco) in FIXTURES {
         let unfused_doc = doc.replace(r#"<compiler fusestatic="true"/>"#, "");
-        assert_ne!(&unfused_doc, doc, "the fixture fuses: {doc}");
+        assert_ne!(unfused_doc, doc, "the fixture fuses: {doc}");
         let fused = load_model(doc).unwrap();
         let unfused = load_model(&unfused_doc).unwrap();
         assert!(fused.nbody < unfused.nbody, "a body fused: {doc}");
@@ -1724,6 +2959,10 @@ fn a_fused_models_dynamics_are_the_unfused_ones() {
             d.qacc[0]
         };
         let (f, u) = (qacc(&fused), qacc(&unfused));
+        assert!(
+            close(&[u], &[mujoco]),
+            "unfused qacc {u}, MuJoCo's {mujoco}: {doc}"
+        );
         assert!(
             (f - u).abs() <= 1e-5 * u.abs(),
             "fused qacc {f}, unfused {u}: {doc}"

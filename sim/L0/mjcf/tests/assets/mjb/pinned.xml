@@ -20,6 +20,7 @@
   <worldbody>
     <geom name="floor" type="plane" size="5 5 0.1"/>
     <geom name="ground" type="hfield" hfield="hf" pos="3 0 0"/>
+    <camera name="watch" mode="targetbody" target="base" pos="2 2 2"/>
     <body name="base" pos="0 0 1" quat="1 0 0 0">
       <freejoint name="root"/>
       <geom name="fitted" type="box" mesh="tet" fitscale="2"/>
@@ -29,7 +30,9 @@
         <inertial pos="0 0 0.1" mass="1" diaginertia="0.01 0.01 0.001"/>
         <geom name="upper" fromto="0 0 0 0 0 0.4" size="0.04"/>
         <site name="tip" pos="0 0 0.4"/>
+        <light name="lamp" mode="targetbody" target="hand" pos="0 0 1"/>
         <frame pos="0 0 0.4" euler="0 0.3 0">
+          <camera name="eye" target="arm" pos="0 0 0.2"/>
           <body name="hand" pos="0 0 0.1">
             <joint name="wrist" type="slide" axis="1 0 0"/>
             <geom name="palm" type="sphere" size="0.05"/>
@@ -38,6 +41,12 @@
       </body>
     </body>
   </worldbody>
+  <custom>
+    <tuple name="pair">
+      <element objtype="body" objname="hand"/>
+      <element objtype="geom" objname="palm"/>
+    </tuple>
+  </custom>
   <contact>
     <pair geom1="floor" geom2="palm" condim="3"/>
     <exclude body1="base" body2="arm"/>

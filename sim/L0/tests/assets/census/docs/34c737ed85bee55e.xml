@@ -1,0 +1,1 @@
+<mujoco><compiler fusestatic="true"/><worldbody><body pos="0.3 0.1 0.2"><geom size="0.05"/></body><body name="f" pos="0 0 1" euler="10 20 30"><freejoint/><geom size="0.1"/></body><body name="k" pos="0.5 0.2 1.3" euler="-5 15 40"><freejoint/><geom size="0.1"/></body></worldbody><equality><weld body1="f" body2="k"/><connect body1="k" body2="f" anchor="0.1 0 0"/></equality></mujoco>

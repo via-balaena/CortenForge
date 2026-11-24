@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 2070
+# agree_floor 2087
 001bc4149d608b24	agree
 002cac6fc120ff66	both-refuse
 00308b83da9d8bab	agree
@@ -769,6 +769,7 @@
 32c3c6a3344a1bc1	agree
 32d640baf8fc76e8	agree
 32dc42d8a4218edc	agree
+32f88dd7f8a472a8	agree
 332e30fa0dac1673	both-refuse
 333c24d33d6f1e14	both-refuse
 335a051112861825	agree
@@ -795,6 +796,7 @@
 34876fd7dc1d49ff	both-refuse
 348da12f74b6427c	both-refuse
 34ae22eae87a77b9	model:actuator_lengthrange;dyn:agree
+34c737ed85bee55e	agree
 34cd265148f7b8f5	agree
 34e084197442a3f7	agree
 34ece1328304412d	both-refuse
@@ -910,6 +912,7 @@
 3c186cbccae53d05	both-refuse
 3c1af1f1ee82ac5f	agree
 3c1eb612010b2f16	agree
+3c35b6446cf078a9	agree
 3c60c2cecaf3419a	agree
 3c6520fd38bcd272	agree
 3c8efdc6d4cd414b	ours-refused	divergence=D-INERTIAL-NEGATIVE
@@ -987,6 +990,7 @@
 41138d35535a797d	both-refuse
 4114a4db80768455	agree
 4143ce5c09be9678	agree
+414c748042926dd9	agree
 415c830337c1ca7e	agree
 4163de4aa845d0b6	agree
 41684a62911393e0	both-refuse
@@ -1001,6 +1005,7 @@
 41e179ad40fa5853	both-refuse
 41e3de2a163d87d2	both-refuse
 41e412eea3fe18a6	agree
+41f0a67820b664ee	agree
 420f869860b7e83c	agree
 42198d080bc8cab3	agree
 421fc0caf077a8a7	both-refuse
@@ -1043,6 +1048,7 @@
 45379ba561f49e10	agree
 454201bfc3c446d5	agree
 45449843a1c34a9c	agree
+45523ec891d5840a	agree
 45708941412f6679	agree
 457530bc46d4fef3	both-refuse
 457d0743508ee853	agree
@@ -1155,6 +1161,7 @@
 4c346f24e15cc327	model:actuator_lengthrange;dyn:agree
 4c3dd341723739d6	both-refuse
 4c48d3c31909e5bf	both-refuse
+4c6aaeded8e58aab	agree
 4c6bad09f8a7069f	both-refuse
 4cc24b1b4255eca2	mj-refuses
 4cd1c554c051a95a	both-refuse
@@ -1339,6 +1346,7 @@
 586fe774f0b95b8d	both-refuse
 58923bdface6bf9f	agree
 589418f6fa84fb2e	agree
+58a466125d4d3d92	agree
 58b61e09a4b212cf	agree
 58ce5bdb0d56fe65	both-refuse
 58dc62c91ee0d7ea	both-refuse
@@ -1690,6 +1698,7 @@
 6f72c558b0adbb55	mj-refuses
 6fbae70bc1a9b788	both-refuse
 6fdb633f73ad774c	both-refuse
+700971bf654f154f	agree
 700d773cda1689fc	agree
 7010a7d93830f179	both-refuse
 7026bc17c9212a56	agree
@@ -1843,6 +1852,7 @@
 7ae121d9f93cf4e8	both-refuse
 7af60f487a3ec00a	both-refuse
 7b25ced0969d4e3f	agree
+7b2696069d7c46d6	agree
 7b36e479aec9d6ad	agree
 7b53469f81b43d81	agree
 7b5928434fff25b7	agree
@@ -1971,6 +1981,7 @@
 833acc3ae42e8b5e	agree
 83514b4845d4b7a7	both-refuse
 8360101383858427	agree
+836e6ae32955eae2	agree
 836fce1360fd29e9	both-refuse
 838aabab0b34f8b8	agree
 83d8fed5a048f800	agree
@@ -2331,6 +2342,7 @@
 9ddddcb59258432b	agree
 9ddf506b3b3be930	agree
 9dea45e942307485	agree
+9debd16e9af9f453	agree
 9df39706e0dbebf9	agree
 9df5d4ece542102b	agree
 9e03ba46b8064182	both-refuse
@@ -3066,6 +3078,7 @@ ce2e5393f1d84a89	agree
 ce434d26d9b43713	agree
 ce472c51731e3e66	both-refuse
 ce4efcfe7cb49f86	both-refuse
+ce511685e71c5529	agree
 ce51e0e00813e31f	both-refuse
 ce5597ac65f799c3	agree
 ce59bfa47e5b4459	agree
@@ -3139,6 +3152,7 @@ d333ae355ad932de	both-refuse
 d33779d199265de9	both-refuse
 d39bad6c5073ce22	agree
 d3ace5a2c6d55e58	both-refuse
+d3c89649c7f573ce	agree
 d3dac07527d15855	both-refuse
 d3f22eb080e3760c	both-refuse
 d3f385a26f8b4630	agree
@@ -3183,6 +3197,7 @@ d6ce5586c3a5bd13	agree
 d6ce8144027a1358	agree
 d6d7031332a2c358	agree
 d70998fb4ff09add	agree
+d71f37f95d23f126	agree
 d72ea476f3c31053	agree
 d735efed5cb731fb	both-refuse
 d736e327d57f0c46	agree
@@ -3460,6 +3475,7 @@ e9af8cfbee14fb75	both-refuse
 e9bafd359e2095f3	both-refuse
 e9c9311a16b1bb15	agree
 e9f9e30a78367c7e	both-refuse
+ea0d37647e207383	e1:s1:qfrc_passive
 ea1543e4f1469866	both-refuse
 ea1f28f2996b7857	agree
 ea73c8f39893034f	agree
@@ -3528,6 +3544,7 @@ ee4e9e6b5ed067ea	agree
 ee61e84548cacee3	both-refuse
 ee74e6fdb1b5d9bf	agree
 eeb6bc4dc165f2b7	agree
+eeccf67183b7520a	both-refuse
 eee6660c9094068e	agree
 eef83d84853cd5a9	agree
 ef07de83bc3f1b9c	both-refuse
@@ -3582,6 +3599,7 @@ f233dbf79124c507	both-refuse
 f23bfa8529856b7f	both-refuse
 f25895baadc4a342	both-refuse
 f26179fd4c423c05	both-refuse
+f273c89e6c919585	agree
 f27c583a1a376b80	both-refuse
 f28e0cb5ec143e85	agree
 f28fc2391fc24e7c	both-refuse
@@ -3749,6 +3767,7 @@ fd26237cb81fa7b7	both-refuse
 fd319557ca9c266f	agree
 fd5e37ce44262783	agree
 fd6188c08122b166	agree
+fd86b37c6d7d0d39	agree
 fd93c71f51acdfed	both-refuse
 fdb720750178267c	both-refuse
 fdb84cae291fdadd	both-refuse
