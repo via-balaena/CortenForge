@@ -33,7 +33,9 @@ pub(super) fn parse_worldbody<R: BufRead>(reader: &mut Reader<R>, empty: bool) -
                 let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
                     b"body" => {
-                        worldbody.children.push(parse_body(reader, e, child_empty)?);
+                        worldbody
+                            .children
+                            .push(parse_body(reader, e, child_empty, true)?);
                         worldbody.items.push(MjcfItem::Body);
                     }
                     b"geom" => {
@@ -90,10 +92,15 @@ pub(super) fn parse_worldbody<R: BufRead>(reader: &mut Reader<R>, empty: bool) -
 }
 
 /// Parse body element (`empty`: it closed itself, so it has no children).
+/// `schema_checked`: whether MuJoCo 3.5.0's schema checks the body's
+/// elements' attributes, which it does for a body the world body or a
+/// checked body holds and for none in a `<frame>`'s subtree (`mjXSchema::Check`
+/// recurses only into child `<body>` elements, `xml_util.cc:516-525`).
 pub(super) fn parse_body<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
     empty: bool,
+    schema_checked: bool,
 ) -> Result<MjcfBody> {
     let mut body = parse_body_attrs(start)?;
     if empty {
@@ -108,17 +115,19 @@ pub(super) fn parse_body<R: BufRead>(
                 let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
                     b"body" => {
-                        body.children.push(parse_body(reader, e, child_empty)?);
+                        body.children
+                            .push(parse_body(reader, e, child_empty, schema_checked)?);
                         body.items.push(MjcfItem::Body);
                     }
                     tag @ (b"joint" | b"freejoint") => {
                         // <freejoint/> is MuJoCo shorthand for <joint type="free"/>
-                        let read = if tag == b"joint" {
-                            parse_joint_attrs
+                        let mut joint = if tag == b"joint" {
+                            parse_leaf(reader, e, child_empty, |e| {
+                                parse_joint_attrs(e, schema_checked)
+                            })?
                         } else {
-                            parse_freejoint_attrs
+                            parse_leaf(reader, e, child_empty, parse_freejoint_attrs)?
                         };
-                        let mut joint = parse_leaf(reader, e, child_empty, read)?;
                         // Auto-generate name only when the parent body has a
                         // name. Anonymous joints in anonymous bodies stay
                         // empty — mirrors the parser's anonymous-body fix
@@ -222,9 +231,13 @@ pub(super) fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
 }
 
 /// Parse joint attributes only.
-pub(super) fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
+/// Parse joint attributes; `align` refused where MuJoCo 3.5.0's schema
+/// checks the joint (`schema_checked`, [`parse_body`]).
+pub(super) fn parse_joint_attrs(e: &BytesStart, schema_checked: bool) -> Result<MjcfJoint> {
     let a = Attrs::new(e)?;
-    refuse_joint_align(&a)?;
+    if schema_checked {
+        refuse_joint_align(&a)?;
+    }
     let mut joint = MjcfJoint::default();
 
     joint.name = a.string("name").unwrap_or_default();
@@ -267,9 +280,11 @@ pub(super) fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     Ok(joint)
 }
 
-/// `align` on a `<joint>`, which MuJoCo 3.5.0's schema refuses there, in a
-/// body and in a `<default>` ("unrecognized attribute",
+/// `align` on a `<joint>`, which MuJoCo 3.5.0's schema refuses in a
+/// `<default>` and in a body it checks ("unrecognized attribute",
 /// `xml_native_reader.cc:159-163`, `:265-269`): only a `<freejoint>` takes it.
+/// Its reader never reads a `<joint>`'s `align`, so in a `<frame>`'s subtree,
+/// which the schema does not check, the attribute loads and does nothing.
 pub(super) fn refuse_joint_align(a: &Attrs) -> Result<()> {
     if a.has("align") {
         return Err(MjcfError::unknown_attribute("joint", "align"));
@@ -433,7 +448,9 @@ pub(super) fn parse_frame<R: BufRead>(
                 let child_empty = matches!(event, Event::Empty(_));
                 match e.name().as_ref() {
                     b"body" => {
-                        frame.bodies.push(parse_body(reader, e, child_empty)?);
+                        frame
+                            .bodies
+                            .push(parse_body(reader, e, child_empty, false)?);
                         frame.items.push(MjcfItem::Body);
                     }
                     b"geom" => {
@@ -549,7 +566,7 @@ fn parse_leaf<R: BufRead, T>(
     reader: &mut Reader<R>,
     e: &BytesStart,
     empty: bool,
-    read: fn(&BytesStart) -> Result<T>,
+    read: impl FnOnce(&BytesStart) -> Result<T>,
 ) -> Result<T> {
     let value = read(e)?;
     skip_element(reader, e.name().as_ref(), empty)?;

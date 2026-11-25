@@ -20,8 +20,10 @@ impl ModelBuilder {
     /// * `body_id` - Index of the body this joint belongs to
     /// * `parent_last_dof` - Index of the last DOF in the parent kinematic chain
     ///   (from parent body or previous joint on same body)
-    /// * `world_pos` - Body's world-frame position (for free joint qpos0)
-    /// * `world_quat` - Body's world-frame orientation (for free joint qpos0)
+    /// * `body_pos`, `body_quat` - The body's pose, a free joint's `qpos0` as
+    ///   MuJoCo 3.5.0 copies it once the tree is fused
+    ///   (`user_model.cc:2804-2807`): a free body that loads is then a child
+    ///   of the world (fusion copies its fused pose again, `renumber_fused`)
     ///
     /// # MuJoCo Semantics
     ///
@@ -35,8 +37,8 @@ impl ModelBuilder {
         joint: &MjcfJoint,
         body_id: usize,
         parent_last_dof: Option<usize>,
-        world_pos: Vector3<f64>,
-        world_quat: UnitQuaternion<f64>,
+        body_pos: Vector3<f64>,
+        body_quat: UnitQuaternion<f64>,
     ) -> Result<usize> {
         let jnt_id = self.jnt_type.len();
 
@@ -83,7 +85,12 @@ impl ModelBuilder {
         self.jnt_body.push(body_id);
         self.jnt_qpos_adr.push(qpos_adr);
         self.jnt_dof_adr.push(dof_adr);
-        self.jnt_pos.push(joint.pos.unwrap_or_else(Vector3::zeros));
+        // A free joint's position is the origin, whatever is written, as
+        // `mjCJoint::Compile` fixes it (`user_objects.cc:2967-2970`).
+        self.jnt_pos.push(match jnt_type {
+            MjJointType::Free => Vector3::zeros(),
+            _ => joint.pos.unwrap_or_else(Vector3::zeros),
+        });
         self.jnt_axis.push(axis);
         self.jnt_axis_too_small.push(axis_too_small);
         let limit = limits::resolve(
@@ -187,10 +194,9 @@ impl ModelBuilder {
                 self.qpos_spring_values.extend_from_slice(&qpos0_ball);
             }
             MjJointType::Free => {
-                // Free joint qpos0 is the body's world position and orientation
-                // Position [x, y, z] from world frame, quaternion [w, x, y, z] from world frame
-                let q = world_quat.into_inner();
-                let qpos0_free = [world_pos.x, world_pos.y, world_pos.z, q.w, q.i, q.j, q.k];
+                // Free joint qpos0 is the body's pose: [x, y, z, w, x, y, z]
+                let q = body_quat.into_inner();
+                let qpos0_free = [body_pos.x, body_pos.y, body_pos.z, q.w, q.i, q.j, q.k];
                 self.qpos0_values.extend_from_slice(&qpos0_free);
                 // Free: qpos_spring = qpos0 (MuJoCo ignores springref for free joints)
                 self.qpos_spring_values.extend_from_slice(&qpos0_free);

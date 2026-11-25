@@ -244,7 +244,7 @@ impl ModelBuilder {
 
         for joint in &body.joints {
             let jnt_id =
-                self.process_joint(joint, body_id, current_last_dof, world_pos, world_quat)?;
+                self.process_joint(joint, body_id, current_last_dof, body_pos, body_quat)?;
             let jnt_nv = self.jnt_type[jnt_id].nv();
             body_nv += jnt_nv;
 
@@ -418,8 +418,7 @@ impl ModelBuilder {
     /// after the `<frame>` holding it is composed into its pose): its pose
     /// composed with its inertial frame, which becomes the identity, and each
     /// of its geoms moved by that frame's inverse. Its world pose and its free
-    /// joint's `qpos0` are made from the moved pose; the joint's `pos` is not
-    /// moved (MuJoCo compiles joints after, `:2516`). Returns the inverse,
+    /// joint's `qpos0` are made from the moved pose. Returns the inverse,
     /// which MuJoCo applies to the body's sites once they are built (`:2577-2584`).
     fn align_free(&mut self, body_id: usize) -> (Vector3<f64>, UnitQuaternion<f64>) {
         let (ipos, iquat) = (self.body_ipos[body_id], self.body_iquat[body_id]);
@@ -445,8 +444,8 @@ impl ModelBuilder {
             );
         }
 
-        // The world pose a free joint's `qpos0` is (`process_joint`), made
-        // again from the moved pose; the body's one joint is that free joint.
+        // Its world pose, made again from the moved pose, and its one joint's
+        // `qpos0`, the moved pose (`process_joint`).
         let parent = self.body_parent[body_id];
         let (parent_pos, parent_quat) = if parent == 0 {
             (Vector3::zeros(), UnitQuaternion::identity())
@@ -461,8 +460,8 @@ impl ModelBuilder {
         self.body_world_pos[body_id - 1] = world_pos;
         self.body_world_quat[body_id - 1] = world_quat;
         let adr = self.jnt_qpos_adr[self.body_jnt_adr[body_id]];
-        let q = world_quat.into_inner();
-        let pose = [world_pos.x, world_pos.y, world_pos.z, q.w, q.i, q.j, q.k];
+        let q = quat.into_inner();
+        let pose = [pos.x, pos.y, pos.z, q.w, q.i, q.j, q.k];
         self.qpos0_values[adr..adr + 7].copy_from_slice(&pose);
         self.qpos_spring_values[adr..adr + 7].copy_from_slice(&pose);
         (inverse_pos, inverse_quat)

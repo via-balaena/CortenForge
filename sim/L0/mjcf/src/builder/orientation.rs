@@ -38,6 +38,23 @@ pub fn normvec<const N: usize>(v: &mut [f64; N]) -> f64 {
     nrm
 }
 
+/// MuJoCo's `mju_normalize4` (`engine_util_blas.c:255-272`), which its
+/// compiler applies to a keyframe's quaternions through `mj_normalizeQuat`:
+/// `q` scaled by its norm's inverse, unless the norm lies within mjMINVAL of
+/// 1; a norm below mjMINVAL makes it (1, 0, 0, 0). Returns the norm.
+pub fn normalize4(q: &mut [f64; 4]) -> f64 {
+    let norm = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+    if norm < super::mass::MJ_MINVAL {
+        *q = [1.0, 0.0, 0.0, 0.0];
+    } else if (norm - 1.0).abs() > super::mass::MJ_MINVAL {
+        let inv = 1.0 / norm;
+        for x in q.iter_mut() {
+            *x *= inv;
+        }
+    }
+    norm
+}
+
 /// MuJoCo's `mjuu_rotVecQuat` (`user_util.cc:583-608`): `quat` as written,
 /// not normalised, turns `vec`; a zero vector stays zero, and the quaternion
 /// (1, 0, 0, 0) copies it.

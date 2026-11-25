@@ -1,0 +1,1 @@
+<mujoco><compiler alignfree="true"/><worldbody><body name="b" pos="-0 0 1"><freejoint/><inertial pos="-0 -0.1 -0.2" mass="1" diaginertia="0.1 0.1 0.1"/></body></worldbody><sensor><framepos objtype="xbody" objname="b"/><framequat objtype="xbody" objname="b"/></sensor></mujoco>

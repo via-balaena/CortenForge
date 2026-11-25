@@ -1,8 +1,9 @@
 //! Frame expansion for MJCF body trees.
 //!
 //! `<frame>` elements are coordinate-system wrappers that compose their SE(3)
-//! transform into each child element and then disappear.  This module expands
-//! all frames before the builder processes bodies.
+//! transform into each child element and then disappear; a geom keeps its
+//! frame, which the builder composes last (`MjcfGeom::frame`).  This module
+//! expands all frames before the builder processes bodies.
 //!
 //! Each element a frame holds reaches it with its class applied and its
 //! `fromto` resolved (`resolve::apply_defaults`), so a frame composes the
@@ -157,7 +158,8 @@ impl Faults {
 
 /// One frame's contents, in its document order, composed with its transform
 /// (itself composed with `outer`'s, the pose of the frame holding it, where a
-/// frame holds it) and added to `placed`, the elements of `body`; a nested
+/// frame holds it), a geom given it, and added to `placed`, the elements of
+/// `body`; a nested
 /// frame's at its place. An orientation refused is kept in `faults`, and its
 /// element left out (a frame's with its contents), or, a body's, placed as
 /// written.

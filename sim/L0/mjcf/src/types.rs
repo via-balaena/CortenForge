@@ -1363,7 +1363,8 @@ pub struct MjcfGeom {
     /// frame expansion and composed into the geom's pose last, after the
     /// geom's own orientation and its mesh's frame, as MuJoCo 3.5.0's
     /// `mjCGeom::Compile` composes it (`user_objects.cc:3831-3834`). `None`
-    /// as read.
+    /// as read; frame expansion sets it, replacing what a geom built in code
+    /// holds.
     #[cfg_attr(feature = "serde", serde(default))]
     pub frame: Option<(Vector3<f64>, Vector4<f64>)>,
     /// Size parameters: one to three numbers as written, over its class's in

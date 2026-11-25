@@ -66,7 +66,7 @@ impl ModelBuilder {
         // mesh's frame, to which `process_mesh` moved the mesh, into their
         // own: the fitted shape's centre (a mesh or SDF geom's is the
         // origin) turned by the mesh's turn and added to its centre, then
-        // composed with the geom's frame (MuJoCo 3.5.0's `mjCGeom::Compile`,
+        // composed with the geom's own pose (MuJoCo 3.5.0's `mjCGeom::Compile`,
         // `user_objects.cc:3748-3754`). A mesh or SDF geom's size along each
         // axis is the larger magnitude of the mesh's bounds there
         // (`:3765-3769`); a fitted geom's is its fit's, which MuJoCo then
