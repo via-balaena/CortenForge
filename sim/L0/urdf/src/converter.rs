@@ -60,6 +60,20 @@ fn escape(text: &str) -> std::borrow::Cow<'_, str> {
     quick_xml::escape::escape(text)
 }
 
+/// A mesh file's path as the converter writes it: under `strippath`, the
+/// importer's default for a URDF, its `package://` or `file://` prefix
+/// stripped ([`strip_package_prefix`]), for the compiler strips the path to
+/// the file's name; otherwise as written, as MuJoCo 3.5.0's importer keeps it
+/// (measured: a `package://` mesh under `strippath="false"` is refused by
+/// MuJoCo, "Error opening file").
+fn mesh_file(path: &str, strippath: bool) -> String {
+    if strippath {
+        strip_package_prefix(path)
+    } else {
+        path.to_owned()
+    }
+}
+
 /// Strip `package://.../<file>` prefix, returning just the filename.
 /// Also strips `file://` prefix. Passes through plain paths unchanged.
 fn strip_package_prefix(path: &str) -> String {
@@ -797,14 +811,18 @@ impl<'a> Converter<'a> {
         }
 
         // A continuous joint is left unlimited, as URDF defines it
-        // (D-URDF-CONTINUOUS-LIMIT: MuJoCo limits it).
+        // (D-URDF-CONTINUOUS-LIMIT: MuJoCo limits it), but where
+        // `autolimits="false"`, under which MuJoCo's compiler refuses a range
+        // its importer left automatic (`checklimited`), its range is written
+        // so, and refused as MuJoCo's is.
+        let autolimits = self.robot.mujoco.autolimits();
         if let Some(limit) = &joint.limit
-            && matches!(
+            && (matches!(
                 joint.joint_type,
                 UrdfJointType::Revolute | UrdfJointType::Prismatic
-            )
+            ) || (joint.joint_type == UrdfJointType::Continuous && !autolimits))
         {
-            attrs.push_str(&limit_attrs(limit, self.robot.mujoco.autolimits()));
+            attrs.push_str(&limit_attrs(limit, autolimits));
         }
         attrs.push_str(&dynamics_attrs(joint));
 
@@ -931,7 +949,7 @@ impl<'a> Converter<'a> {
                 ("capsule", format!("{} {}", radius, length / 2.0))
             }
             UrdfGeometry::Mesh { filename, scale } => {
-                let stripped = strip_package_prefix(filename);
+                let stripped = mesh_file(filename, self.robot.mujoco.strippath());
                 if let Some(asset) = self.mesh_asset(&stripped, *scale) {
                     let mesh_ref = asset.name.clone();
                     // Mesh geoms use type="mesh" mesh="asset_name" (no size)
@@ -973,6 +991,7 @@ impl<'a> Converter<'a> {
     /// `D-URDF-MESH-SCALE`).
     fn collect_mesh_assets(&mut self) {
         let discardvisual = self.robot.mujoco.discardvisual();
+        let strippath = self.robot.mujoco.strippath();
         let geoms: Vec<&UrdfGeometry> = self
             .robot
             .links
@@ -988,7 +1007,7 @@ impl<'a> Converter<'a> {
             .collect();
         for geometry in geoms {
             if let UrdfGeometry::Mesh { filename, scale } = geometry {
-                let file = strip_package_prefix(filename);
+                let file = mesh_file(filename, strippath);
                 if self.mesh_asset(&file, *scale).is_some() {
                     continue;
                 }
@@ -1583,6 +1602,28 @@ mod tests {
             at(
                 r#"<geom type="mesh" mesh="tet" name="v" contype="0" conaffinity="0" group="1" density="0"/>"#
             ) < at(r#"<geom type="mesh" mesh="tet1" name="c"/>"#)
+        );
+    }
+
+    /// A mesh's `package://` prefix is stripped under `strippath`, the
+    /// importer's default, and kept under `strippath="false"`, where MuJoCo
+    /// 3.5.0 keeps the path as written (measured with a mesh file: a
+    /// `package://` or `file://` path refused, "Error opening file", as the
+    /// written path is here; a relative one loads).
+    #[test]
+    fn a_mesh_paths_prefix_is_stripped_only_under_strippath() {
+        let urdf = |compiler: &str| {
+            format!(
+                r#"<robot name="r">{compiler}<link name="base"><collision><geometry><mesh filename="package://pkg/meshes/tet.stl"/></geometry></collision></link></robot>"#
+            )
+        };
+        let default = urdf_to_mjcf(&urdf("")).expect("converts");
+        assert!(default.contains(r#"file="meshes/tet.stl""#), "{default}");
+        let kept = urdf_to_mjcf(&urdf(r#"<mujoco><compiler strippath="false"/></mujoco>"#))
+            .expect("converts");
+        assert!(
+            kept.contains(r#"file="package://pkg/meshes/tet.stl""#),
+            "{kept}"
         );
     }
 

@@ -548,6 +548,14 @@ impl UrdfMujoco {
     pub fn autolimits(&self) -> bool {
         self.compiler_flag("autolimits")
     }
+
+    /// Whether a mesh file's path is stripped to its name: true, the
+    /// importer's default for a URDF (`xml.cc:299`), unless
+    /// `<compiler strippath="false">`.
+    #[must_use]
+    pub fn strippath(&self) -> bool {
+        self.compiler_flag("strippath")
+    }
 }
 
 // ============================================================================
