@@ -1581,6 +1581,12 @@ pub struct MjcfJoint {
     /// Written as `<freejoint>`, which MuJoCo 3.5.0 makes without defaults
     /// (`mjs_addFreeJoint`): it takes no class.
     pub freejoint: bool,
+    /// A `<freejoint>`'s `align`: whether its body's frame is moved onto the
+    /// body's inertial frame, `Auto` (and `None`, as MuJoCo 3.5.0's default
+    /// `mjALIGNFREE_AUTO`) following `<compiler alignfree>`
+    /// (`xml_native_reader.cc:3576`). MuJoCo's schema gives a `<joint>` none.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub align: Option<TfAuto>,
     /// Joint position relative to body frame.
     pub pos: Option<Vector3<f64>>,
     /// Joint axis (for hinge and slide).
@@ -1629,6 +1635,7 @@ impl Default for MjcfJoint {
             class: None,
             joint_type: None,
             freejoint: false,
+            align: None,
             pos: None,
             axis: None,
             limited: None,

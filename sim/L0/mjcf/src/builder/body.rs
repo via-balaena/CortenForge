@@ -7,6 +7,7 @@
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 
 use super::ModelBuilder;
+use super::frame::{frame_accum_child, frame_invert};
 use super::geom::{compute_geom_mass, geom_volume};
 use super::mass::{
     GeomInertiaFault, InertialGeom, InertialValues, MJ_MINVAL, PlacedGeom, geom_hfield_size,
@@ -15,7 +16,7 @@ use super::mass::{
 use super::orientation::{MJ_EPS, OrientationError, resolve_orientation};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::keywords;
-use crate::types::{InertiaFromGeom, MjcfBody, MjcfGeom};
+use crate::types::{InertiaFromGeom, MjcfBody, MjcfGeom, MjcfJointType, TfAuto};
 use sim_core::GeomType;
 
 /// What MuJoCo 3.5.0's `mjCBody::Compile` refuses in one body, found as the
@@ -364,9 +365,19 @@ impl ModelBuilder {
                 .map(|error| error.at(self.body_location(body_id)));
         }
 
+        // A free body MuJoCo aligns: its frame moved onto its inertial frame
+        // and its geoms by the inverse; its sites, once built, by the same.
+        let inverse = self.aligns(body).then(|| self.align_free(body_id));
+
         // Process sites for this body
+        let site_adr = self.site_pos.len();
         for site in &body.sites {
             self.process_site(site, body_id)?;
+        }
+        if let Some((pos, quat)) = inverse {
+            for s in site_adr..self.site_pos.len() {
+                frame_accum_child(&pos, &quat, &mut self.site_pos[s], &mut self.site_quat[s]);
+            }
         }
 
         // Recursively process children, passing this body's last DOF and world frame
@@ -381,6 +392,80 @@ impl ModelBuilder {
         }
 
         Ok(body_id)
+    }
+
+    /// Whether MuJoCo 3.5.0 moves this body's frame onto its inertial frame
+    /// (`mjCBody::Compile`, `user_objects.cc:2487-2493`): the body holds one
+    /// joint, a free one, and no body, and that joint's `align` is true, or
+    /// auto (as unwritten) under `<compiler alignfree>`.
+    fn aligns(&self, body: &MjcfBody) -> bool {
+        match body.joints.as_slice() {
+            [joint] => {
+                joint.joint_type == Some(MjcfJointType::Free)
+                    && body.children.is_empty()
+                    && match joint.align {
+                        Some(TfAuto::True) => true,
+                        Some(TfAuto::False) => false,
+                        Some(TfAuto::Auto) | None => self.compiler.alignfree,
+                    }
+            }
+            _ => false,
+        }
+    }
+
+    /// Body `body_id`'s frame moved onto its inertial frame, as MuJoCo 3.5.0
+    /// aligns a free body once its inertia is made (`user_objects.cc:2495-2511`,
+    /// after the `<frame>` holding it is composed into its pose): its pose
+    /// composed with its inertial frame, which becomes the identity, and each
+    /// of its geoms moved by that frame's inverse. Its world pose and its free
+    /// joint's `qpos0` are made from the moved pose; the joint's `pos` is not
+    /// moved (MuJoCo compiles joints after, `:2516`). Returns the inverse,
+    /// which MuJoCo applies to the body's sites once they are built (`:2577-2584`).
+    fn align_free(&mut self, body_id: usize) -> (Vector3<f64>, UnitQuaternion<f64>) {
+        let (ipos, iquat) = (self.body_ipos[body_id], self.body_iquat[body_id]);
+        let (mut pos, mut quat) = (ipos, iquat);
+        frame_accum_child(
+            &self.body_pos[body_id],
+            &self.body_quat[body_id],
+            &mut pos,
+            &mut quat,
+        );
+        self.body_pos[body_id] = pos;
+        self.body_quat[body_id] = quat;
+        let (inverse_pos, inverse_quat) = frame_invert(&ipos, &iquat);
+        self.body_ipos[body_id] = Vector3::zeros();
+        self.body_iquat[body_id] = UnitQuaternion::identity();
+        let first = self.body_geom_adr[body_id];
+        for g in first..first + self.body_geom_num[body_id] {
+            frame_accum_child(
+                &inverse_pos,
+                &inverse_quat,
+                &mut self.geom_pos[g],
+                &mut self.geom_quat[g],
+            );
+        }
+
+        // The world pose a free joint's `qpos0` is (`process_joint`), made
+        // again from the moved pose; the body's one joint is that free joint.
+        let parent = self.body_parent[body_id];
+        let (parent_pos, parent_quat) = if parent == 0 {
+            (Vector3::zeros(), UnitQuaternion::identity())
+        } else {
+            (
+                self.body_world_pos[parent - 1],
+                self.body_world_quat[parent - 1],
+            )
+        };
+        let world_pos = parent_pos + parent_quat * pos;
+        let world_quat = parent_quat * quat;
+        self.body_world_pos[body_id - 1] = world_pos;
+        self.body_world_quat[body_id - 1] = world_quat;
+        let adr = self.jnt_qpos_adr[self.body_jnt_adr[body_id]];
+        let q = world_quat.into_inner();
+        let pose = [world_pos.x, world_pos.y, world_pos.z, q.w, q.i, q.j, q.k];
+        self.qpos0_values[adr..adr + 7].copy_from_slice(&pose);
+        self.qpos_spring_values[adr..adr + 7].copy_from_slice(&pose);
+        (inverse_pos, inverse_quat)
     }
 
     /// Whether a geom's group is in `inertiagrouprange`, both ends included

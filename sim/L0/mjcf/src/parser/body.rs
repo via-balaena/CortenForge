@@ -224,6 +224,7 @@ pub(super) fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
 /// Parse joint attributes only.
 pub(super) fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     let a = Attrs::new(e)?;
+    refuse_joint_align(&a)?;
     let mut joint = MjcfJoint::default();
 
     joint.name = a.string("name").unwrap_or_default();
@@ -266,9 +267,19 @@ pub(super) fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     Ok(joint)
 }
 
+/// `align` on a `<joint>`, which MuJoCo 3.5.0's schema refuses there, in a
+/// body and in a `<default>` ("unrecognized attribute",
+/// `xml_native_reader.cc:159-163`, `:265-269`): only a `<freejoint>` takes it.
+pub(super) fn refuse_joint_align(a: &Attrs) -> Result<()> {
+    if a.has("align") {
+        return Err(MjcfError::unknown_attribute("joint", "align"));
+    }
+    Ok(())
+}
+
 /// Parse freejoint attributes: a free joint MuJoCo 3.5.0 makes without
-/// defaults (`mjs_addFreeJoint`), so no class reaches it; it reads `name` and
-/// `group` (its `align` is not read).
+/// defaults (`mjs_addFreeJoint`), so no class reaches it; it reads `name`,
+/// `group` and `align` (`xml_native_reader.cc:3569-3576`).
 pub(super) fn parse_freejoint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     let a = Attrs::new(e)?;
     let mut joint = MjcfJoint::default();
@@ -276,6 +287,7 @@ pub(super) fn parse_freejoint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     joint.freejoint = true;
     joint.name = a.string("name").unwrap_or_default();
     joint.group = a.int("group")?;
+    joint.align = a.tf_auto("align")?;
     Ok(joint)
 }
 

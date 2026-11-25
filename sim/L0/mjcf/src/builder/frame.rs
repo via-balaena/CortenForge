@@ -41,6 +41,22 @@ pub fn frame_accum_child(
     *child_quat = UnitQuaternion::new_unchecked(Quaternion::new(w, x, y, z));
 }
 
+/// A frame's inverse, in MuJoCo 3.5.0's arithmetic (`mjuu_frameinvert`,
+/// `user_util.cc:452-466`): its position turned by its quaternion's
+/// conjugate (`mjuu_localaxis`, `quat2mat`, `mulvecmat`) and negated, and
+/// that conjugate.
+pub fn frame_invert(
+    pos: &Vector3<f64>,
+    quat: &UnitQuaternion<f64>,
+) -> (Vector3<f64>, UnitQuaternion<f64>) {
+    let [w, x, y, z] = wxyz(quat);
+    let local = mulvecmat(&[pos.x, pos.y, pos.z], &quat2mat(&[w, -x, -y, -z]));
+    (
+        Vector3::new(-local[0], -local[1], -local[2]),
+        UnitQuaternion::new_unchecked(Quaternion::new(w, -x, -y, -z)),
+    )
+}
+
 /// `q`'s components, (w, x, y, z).
 fn wxyz(q: &UnitQuaternion<f64>) -> [f64; 4] {
     [q.w, q.i, q.j, q.k]

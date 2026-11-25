@@ -114,6 +114,7 @@ fn read_class_element(default: &mut MjcfDefault, e: &BytesStart) -> Result<()> {
 /// Parse joint defaults.
 pub(super) fn parse_joint_defaults(e: &BytesStart) -> Result<MjcfJointDefaults> {
     let a = Attrs::new(e)?;
+    super::body::refuse_joint_align(&a)?;
     let mut defaults = MjcfJointDefaults::default();
 
     defaults.joint_type = a.keyword("type", MjcfJointType::from_str)?;
