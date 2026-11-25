@@ -636,23 +636,26 @@ impl<'a> Converter<'a> {
         let pos = inertial.origin.xyz;
         let mass = inertial.mass;
         let inertia = &inertial.inertia;
+        let moments = [
+            inertia.ixx,
+            inertia.iyy,
+            inertia.izz,
+            inertia.ixy,
+            inertia.ixz,
+            inertia.iyz,
+        ];
 
-        // MJCF inertial uses diaginertia (ixx, iyy, izz) when the tensor is
-        // diagonal, or fullinertia (ixx, iyy, izz, ixy, ixz, iyz) when any
-        // off-diagonal term is present.
-        let inertia_attr = if inertia.ixy.abs() > 1e-10
-            || inertia.ixz.abs() > 1e-10
-            || inertia.iyz.abs() > 1e-10
-        {
-            format!(
-                r#"fullinertia="{} {} {} {} {} {}""#,
-                inertia.ixx, inertia.iyy, inertia.izz, inertia.ixy, inertia.ixz, inertia.iyz
-            )
+        // MuJoCo 3.5.0's importer fills the body's `fullinertia` with the six
+        // moments, a diagonal tensor's too (`xml_urdf.cc:252-258`), so its
+        // compiler takes the tensor's principal axes as the inertial frame,
+        // the moments largest first (`mjuu_fullInertia`, `mjuu_eig3`); six
+        // zeros are a tensor not given (`:260-270`), as `diaginertia` zeros
+        // are in MJCF.
+        let inertia_attr = if moments.iter().all(|&moment| moment == 0.0) {
+            r#"diaginertia="0 0 0""#.to_string()
         } else {
-            format!(
-                r#"diaginertia="{} {} {}""#,
-                inertia.ixx, inertia.iyy, inertia.izz
-            )
+            let [ixx, iyy, izz, ixy, ixz, iyz] = moments;
+            format!(r#"fullinertia="{ixx} {iyy} {izz} {ixy} {ixz} {iyz}""#)
         };
 
         // MJCF requires an inertial's `pos` (MuJoCo 3.5.0 refuses one without
