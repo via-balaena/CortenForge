@@ -26,9 +26,9 @@ use quick_xml::events::{BytesStart, Event};
 
 use crate::error::{Result, UrdfError};
 use crate::types::{
-    UrdfCollision, UrdfGeometry, UrdfInertia, UrdfInertial, UrdfJoint, UrdfJointDynamics,
-    UrdfJointLimit, UrdfJointType, UrdfLink, UrdfMimic, UrdfMujoco, UrdfOrigin, UrdfRobot,
-    UrdfSection, UrdfVisual,
+    UrdfCollision, UrdfElement, UrdfGeometry, UrdfInertia, UrdfInertial, UrdfJoint,
+    UrdfJointDynamics, UrdfJointLimit, UrdfJointType, UrdfLink, UrdfMimic, UrdfMujoco, UrdfOrigin,
+    UrdfRobot, UrdfSection, UrdfVisual,
 };
 
 /// Parse a URDF string into a robot model.
@@ -96,7 +96,9 @@ pub fn parse_urdf_str(xml: &str) -> Result<UrdfRobot> {
                 "link '{name}' is reached from no root link: its parent joints lead into a loop"
             )));
         }
-        robot.links.push(parse_link(link, &materials)?);
+        robot
+            .links
+            .push(parse_link(link, &materials, robot.mujoco.discardvisual())?);
     }
     for joint in joints {
         robot.joints.push(parse_joint(joint)?);
@@ -590,11 +592,18 @@ fn material_colour(
 }
 
 /// A link's contents (`mjXURDF::Body`, `xml_urdf.cc:227-364`): its
-/// `<inertial>`, then its visuals and collisions in order. The link has one
-/// colour, unset at its start (`:291`): each visual's material sets it, and
-/// each visual and collision takes it as it is when read (`:322-323`,
-/// `:344-347`).
-fn parse_link(element: &Element, materials: &HashMap<String, [f64; 4]>) -> Result<UrdfLink> {
+/// `<inertial>`, then its visuals and collisions in order, recorded in
+/// [`UrdfLink::elements`]. The link has one colour, unset at its start
+/// (`:291`): each visual's material sets it, and each visual and collision
+/// takes it as it is when read (`:322-323`, `:344-347`). A visual is read as
+/// a collision is where the importer keeps visuals (`discardvisual` false,
+/// `:318-319`: its geometry and origin, required), and otherwise as
+/// [`parse_visual`] reads it.
+fn parse_link(
+    element: &Element,
+    materials: &HashMap<String, [f64; 4]>,
+    discardvisual: bool,
+) -> Result<UrdfLink> {
     let mut link = UrdfLink::new(element.required_text("name")?);
     if let Some(inertial) = element.find_sub("inertial", false)? {
         link.inertial = Some(parse_inertial(inertial)?);
@@ -609,14 +618,22 @@ fn parse_link(element: &Element, materials: &HashMap<String, [f64; 4]>) -> Resul
                 {
                     rgba = Some(colour);
                 }
-                if let Some(mut visual) = parse_visual(child, material) {
+                let visual = if discardvisual {
+                    parse_visual(child, material)
+                } else {
+                    Some(parse_kept_visual(child, material)?)
+                };
+                if let Some(mut visual) = visual {
                     visual.rgba = rgba;
+                    link.elements.push(UrdfElement::Visual(link.visuals.len()));
                     link.visuals.push(visual);
                 }
             }
             "collision" => {
                 let mut collision = parse_collision(child)?;
                 collision.rgba = rgba;
+                link.elements
+                    .push(UrdfElement::Collision(link.collisions.len()));
                 link.collisions.push(collision);
             }
             _ => {}
@@ -673,6 +690,20 @@ fn parse_visual(element: &Element, material: Option<&Element>) -> Option<UrdfVis
     origin.zip(geometry).map(|(origin, geometry)| UrdfVisual {
         name: element.attr("name").map(str::to_owned),
         origin,
+        geometry,
+        material: material.and_then(|m| m.attr("name")).map(str::to_owned),
+        rgba: None,
+    })
+}
+
+/// A `<visual>` the importer makes a geom (`mjXURDF::Geom`,
+/// `xml_urdf.cc:524-643`, as a collision): its required `<geometry>`, then
+/// its origin; its material, read by [`parse_link`], gives it its name.
+fn parse_kept_visual(element: &Element, material: Option<&Element>) -> Result<UrdfVisual> {
+    let geometry = parse_geometry(element.required_sub("geometry")?)?;
+    Ok(UrdfVisual {
+        name: element.attr("name").map(str::to_owned),
+        origin: parse_origin(element)?,
         geometry,
         material: material.and_then(|m| m.attr("name")).map(str::to_owned),
         rgba: None,

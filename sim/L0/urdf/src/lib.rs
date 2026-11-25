@@ -118,9 +118,9 @@ pub use converter::{robot_to_mjcf, urdf_to_mjcf};
 pub use error::{Result, UrdfError};
 pub use parser::parse_urdf_str;
 pub use types::{
-    UrdfCollision, UrdfGeometry, UrdfInertia, UrdfInertial, UrdfJoint, UrdfJointDynamics,
-    UrdfJointLimit, UrdfJointType, UrdfLink, UrdfMimic, UrdfMujoco, UrdfOrigin, UrdfRobot,
-    UrdfSection, UrdfVisual,
+    UrdfCollision, UrdfElement, UrdfGeometry, UrdfInertia, UrdfInertial, UrdfJoint,
+    UrdfJointDynamics, UrdfJointLimit, UrdfJointType, UrdfLink, UrdfMimic, UrdfMujoco, UrdfOrigin,
+    UrdfRobot, UrdfSection, UrdfVisual,
 };
 pub use validation::{ValidationResult, validate};
 

@@ -220,6 +220,23 @@ pub struct UrdfLink {
     pub visuals: Vec<UrdfVisual>,
     /// Collision geometries (can have multiple).
     pub collisions: Vec<UrdfCollision>,
+    /// The link's visuals and collisions in document order ([`UrdfElement`]).
+    pub elements: Vec<UrdfElement>,
+}
+
+/// A link's `<visual>` or `<collision>`, by its index in
+/// [`UrdfLink::visuals`] or [`UrdfLink::collisions`].
+///
+/// MuJoCo 3.5.0's importer makes, names and colours a link's geoms in
+/// document order (`xml_urdf.cc:294-363`), which [`UrdfLink::elements`]
+/// records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum UrdfElement {
+    /// `visuals[i]`.
+    Visual(usize),
+    /// `collisions[i]`.
+    Collision(usize),
 }
 
 impl UrdfLink {
@@ -231,6 +248,7 @@ impl UrdfLink {
             inertial: None,
             visuals: Vec::new(),
             collisions: Vec::new(),
+            elements: Vec::new(),
         }
     }
 
@@ -241,11 +259,34 @@ impl UrdfLink {
         self
     }
 
-    /// Add a collision geometry.
+    /// Add a collision geometry, after the link's other elements.
     #[must_use]
     pub fn with_collision(mut self, collision: UrdfCollision) -> Self {
+        self.elements
+            .push(UrdfElement::Collision(self.collisions.len()));
         self.collisions.push(collision);
         self
+    }
+
+    /// The link's visuals and collisions in document order: those
+    /// [`Self::elements`] lists, once each, then any it does not list (one
+    /// pushed onto `visuals` or `collisions` directly), visuals first.
+    #[must_use]
+    pub fn elements_in_order(&self) -> Vec<UrdfElement> {
+        let mut order: Vec<UrdfElement> = Vec::new();
+        let present = |e: &UrdfElement| match *e {
+            UrdfElement::Visual(i) => i < self.visuals.len(),
+            UrdfElement::Collision(i) => i < self.collisions.len(),
+        };
+        let rest = (0..self.visuals.len())
+            .map(UrdfElement::Visual)
+            .chain((0..self.collisions.len()).map(UrdfElement::Collision));
+        for element in self.elements.iter().copied().filter(present).chain(rest) {
+            if !order.contains(&element) {
+                order.push(element);
+            }
+        }
+        order
     }
 }
 

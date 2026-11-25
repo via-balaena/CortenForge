@@ -4081,3 +4081,16 @@ f44e7494a5055f0a	sim/L0/urdf/tests/importer_sections.rs:1412
 f4ce0797c8af5eed	sim/L0/urdf/tests/importer_sections.rs:2882
 fbe98144c03aa201	sim/L0/urdf/tests/importer_sections.rs:779
 ffb88ea1c24a5a5d	sim/L0/urdf/tests/importer_sections.rs:2892
+03fae5a0248b51ff	sim/L0/urdf/tests/importer_sections.rs:3036
+1163e0a914b64c83	sim/L0/urdf/src/converter.rs:1546
+1163e0a914b64c83	sim/L0/urdf/tests/importer_sections.rs:2859
+1163e0a914b64c83	sim/L0/urdf/tests/importer_sections.rs:2896
+1163e0a914b64c83	sim/L0/urdf/tests/importer_sections.rs:2944
+1163e0a914b64c83	sim/L0/urdf/tests/importer_sections.rs:3080
+1163e0a914b64c83	sim/L0/urdf/tests/importer_sections.rs:3191
+1163e0a914b64c83	sim/L0/urdf/tests/importer_sections.rs:3400
+1163e0a914b64c83	sim/L0/urdf/tests/importer_sections.rs:3405
+1163e0a914b64c83	sim/L0/urdf/tests/importer_sections.rs:3410
+3f574778c42ac345	sim/L0/urdf/tests/importer_sections.rs:3227
+9c0460f918c15815	sim/L0/urdf/tests/importer_sections.rs:3128
+ac6acd80d23d3eb7	sim/L0/urdf/tests/importer_sections.rs:2992
