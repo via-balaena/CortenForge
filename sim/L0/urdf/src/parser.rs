@@ -1455,6 +1455,15 @@ mod tests {
             let err = parse_urdf_str(&urdf("revolute", mimics)).expect_err(mimics);
             assert!(err.to_string().contains(words), "{mimics}: {err}");
         }
+        for leader in ["spherical", "floating"] {
+            let doc = urdf(leader, r#"<mimic joint="j1"/>"#);
+            let err = crate::load_urdf_model(&doc).expect_err(leader);
+            assert!(
+                err.to_string()
+                    .contains(&format!("joint 'j1' is {leader}: a mimic couples")),
+                "{leader}: {err}"
+            );
+        }
         for (leader, mimic) in [("revolute", "nope"), ("fixed", "j1"), ("planar", "j1")] {
             let doc = urdf(leader, &format!(r#"<mimic joint="{mimic}"/>"#));
             parse_urdf_str(&doc).expect(leader);

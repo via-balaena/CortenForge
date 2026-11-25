@@ -1808,7 +1808,33 @@ const CASES: &[(&str, Expect)] = &[
 
 /// Documents whose load status this crate and MuJoCo 3.5.0's import do not
 /// share, each with the row that holds it and whether it loads here.
-const DIVERGENT: &[(&str, &str, bool)] = &[];
+const DIVERGENT: &[(&str, &str, bool)] = &[
+    (
+        r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm2"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><joint name="j1" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint><joint name="j2" type="spherical"><parent link="base"/><child link="arm2"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/><mimic joint="j1" multiplier="2" offset="0.1"/></joint></robot>"#,
+        "D-URDF-MIMIC: a mimic on a spherical joint",
+        false,
+    ),
+    (
+        r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm2"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><joint name="j1" type="spherical"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint><joint name="j2" type="revolute"><parent link="base"/><child link="arm2"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/><mimic joint="j1"/></joint></robot>"#,
+        "D-URDF-MIMIC: a mimic naming a spherical joint",
+        false,
+    ),
+    (
+        r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm2"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><joint name="j1" type="spherical"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint><joint name="j2" type="spherical"><parent link="base"/><child link="arm2"/><origin xyz="0 0 0.5"/><mimic joint="j1"/></joint></robot>"#,
+        "D-URDF-MIMIC: a mimic between two spherical joints",
+        false,
+    ),
+    (
+        r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm2"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><joint name="j1" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint><joint name="j2" type="floating"><parent link="base"/><child link="arm2"/><origin xyz="0 0 0.5"/><mimic joint="j1"/></joint></robot>"#,
+        "D-URDF-MIMIC: a mimic on a floating joint",
+        false,
+    ),
+    (
+        r#"<robot name="r"><link name="base"/><link name="a"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="b"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j1" type="revolute"><parent link="base"/><child link="a"/></joint><joint name="j2" type="revolute"><parent link="base"/><child link="b"/><mimic joint="j2"/></joint></robot>"#,
+        "D-URDF-MIMIC: a mimic naming its own joint",
+        false,
+    ),
+];
 
 /// URDFs with a mesh, written into a directory of tetrahedra ({D} the
 /// directory, {N} its name) and loaded from their files.

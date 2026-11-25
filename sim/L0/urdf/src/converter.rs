@@ -580,6 +580,9 @@ impl<'a> Converter<'a> {
         self.write_line("</worldbody>");
 
         // Write equality constraints for mimic joints
+        for mimic in &self.mimic_constraints {
+            self.check_mimic(mimic)?;
+        }
         if !self.mimic_constraints.is_empty() {
             self.write_line("");
             self.write_line("<equality>");
@@ -912,6 +915,29 @@ impl<'a> Converter<'a> {
             r#"<joint name="{name}_RZ" type="hinge" axis="{} {} {}"{dynamics}/>"#,
             normal.x, normal.y, normal.z,
         ));
+        Ok(())
+    }
+
+    /// A `<mimic>`'s two joints, refused where either is spherical or floating:
+    /// the joint equality this crate makes of a mimic (D-URDF-MIMIC) couples
+    /// hinge and slide joints only, as MuJoCo 3.5.0's compiler requires of
+    /// the MJCF it is written as ("only HINGE and SLIDE joint allowed in
+    /// constraint", `user_objects.cc:6034-6041`), which sim-mjcf does not
+    /// check (ledger L465). A leader the converter writes no joint for (a
+    /// fixed or planar one, or none) is refused by sim-mjcf ("unknown joint").
+    fn check_mimic(&self, mimic: &MimicEntry) -> Result<()> {
+        for name in [&mimic.follower, &mimic.leader] {
+            let kind = match self.robot.joints.iter().find(|joint| &joint.name == name) {
+                Some(joint) if joint.joint_type == UrdfJointType::Spherical => "spherical",
+                Some(joint) if joint.joint_type == UrdfJointType::Floating => "floating",
+                _ => continue,
+            };
+            return Err(UrdfError::invalid_attribute(
+                "joint",
+                format!("mimic in joint {}", mimic.follower),
+                format!("joint '{name}' is {kind}: a mimic couples hinge and slide joints only"),
+            ));
+        }
         Ok(())
     }
 
