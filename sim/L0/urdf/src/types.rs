@@ -678,6 +678,40 @@ mod tests {
         assert_eq!(UrdfJointType::from_str("invalid"), None);
     }
 
+    /// A visual or collision pushed onto a link without `elements` comes after
+    /// those `elements` lists, visuals first, each once; an index past the end
+    /// is dropped.
+    #[test]
+    fn elements_not_listed_come_last_visuals_first() {
+        let geometry = UrdfGeometry::Sphere { radius: 1.0 };
+        let collision = UrdfCollision {
+            name: None,
+            origin: UrdfOrigin::default(),
+            geometry: geometry.clone(),
+            rgba: None,
+        };
+        let visual = UrdfVisual {
+            name: None,
+            origin: UrdfOrigin::default(),
+            geometry,
+            material: None,
+            rgba: None,
+        };
+        let mut link = UrdfLink::new("l").with_collision(collision.clone());
+        link.collisions.push(collision);
+        link.visuals.push(visual);
+        link.elements.push(UrdfElement::Collision(0));
+        link.elements.push(UrdfElement::Visual(9));
+        assert_eq!(
+            link.elements_in_order(),
+            [
+                UrdfElement::Collision(0),
+                UrdfElement::Visual(0),
+                UrdfElement::Collision(1),
+            ]
+        );
+    }
+
     #[test]
     fn test_robot_builder() {
         let robot = UrdfRobot::new("test_robot")

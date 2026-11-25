@@ -1353,9 +1353,11 @@ mod tests {
         .expect("conversion should succeed");
 
         assert!(mjcf.contains(r#"name="c" type="hinge""#));
+        // No range at all: an automatic one would be limited (since C3 no
+        // `limited` is written for it), clamping free rotation.
         assert!(
-            !mjcf.contains("limited="),
-            "continuous joints are unbounded; a range would clamp free rotation"
+            !mjcf.contains("range=") && !mjcf.contains("limited="),
+            "continuous joints are unbounded; a range would clamp free rotation: {mjcf}"
         );
     }
 
