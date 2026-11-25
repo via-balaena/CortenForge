@@ -521,8 +521,6 @@ impl<'a> Converter<'a> {
         Ok(std::mem::take(&mut self.output))
     }
 
-    /// Every link no joint enters, in document order: MuJoCo 3.5.0's importer
-    /// writes each one's tree under the world (`xml_urdf.cc`).
     /// Write the model's sections as MuJoCo 3.5.0's importer sets them up.
     /// The `<compiler>`: radians and `eulerseq="XYZ"`, as the importer reads a
     /// URDF (`xml_urdf.cc:111`; it resolves `rpy` as extrinsic x-y-z,
@@ -568,6 +566,8 @@ impl<'a> Converter<'a> {
         }
     }
 
+    /// Every link no joint enters, in document order: MuJoCo 3.5.0's importer
+    /// writes each one's tree under the world (`xml_urdf.cc`).
     fn root_links(&self) -> Result<Vec<&'a str>> {
         let roots: Vec<&'a str> = self
             .robot
