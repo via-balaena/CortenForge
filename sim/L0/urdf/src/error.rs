@@ -1,5 +1,7 @@
 //! Error types for URDF parsing and loading.
 
+use std::path::PathBuf;
+
 use thiserror::Error;
 
 /// Errors that can occur during URDF parsing and loading.
@@ -127,9 +129,14 @@ pub enum UrdfError {
         message: String,
     },
 
-    /// File I/O error.
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
+    /// A URDF file could not be read.
+    #[error("cannot read '{}': {source}", path.display())]
+    Io {
+        /// The file, as the caller named it.
+        path: PathBuf,
+        /// What the operating system reported.
+        source: std::io::Error,
+    },
 
     /// The model the URDF converts to is refused by sim-mjcf, as MuJoCo
     /// 3.5.0's compiler refuses the model its importer builds (a moving body

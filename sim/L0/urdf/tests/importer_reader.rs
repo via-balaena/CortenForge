@@ -4,7 +4,9 @@
 //! compiler's refusals of the model and of a `<mujoco>` section, each in its
 //! own words; and the XML outside attribute text as tinyxml2 reads it (the
 //! root's name in any case, a declaration only before every other node, a
-//! document ending in text refused, an `&` that starts no reference kept).
+//! document ending in text refused, an `&` that starts no reference kept);
+//! and a URDF with a mesh loaded from its file, the mesh's file found against
+//! the URDF's directory as `from_xml_path` finds it.
 //!
 //! Every expected value was printed on the census's oracle (2026-11-25):
 //! MuJoCo 3.5.0's URDF import's.
@@ -12,7 +14,7 @@
 // The values are MuJoCo's, printed to the last digit.
 #![allow(clippy::unwrap_used, clippy::unreadable_literal)]
 
-use sim_urdf::load_urdf_model;
+use sim_urdf::{UrdfError, load_urdf_model, load_urdf_model_from_file};
 
 /// The fields of a converted URDF MuJoCo 3.5.0's import decides, and `qpos`
 /// after five steps.
@@ -1215,6 +1217,763 @@ const CASES: &[(&str, Expect)] = &[
 /// share, each with the row that holds it and whether it loads here.
 const DIVERGENT: &[(&str, &str, bool)] = &[];
 
+/// URDFs with a mesh, written into a directory of tetrahedra ({D} the
+/// directory, {N} its name) and loaded from their files.
+const FILE_CASES: &[(&str, Expect)] = &[
+    // m01_sf_package; MuJoCo: "Error: Error opening file 'package://pkg/meshes/tet.stl'"
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="false"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="package://pkg/meshes/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Refused("asset file not found"),
+    ),
+    // m02_sf_file_abs; MuJoCo: "Error: Error opening file 'file://{D}/meshes/tet.stl'"
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="false"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="file://{D}/meshes/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Refused("asset file not found"),
+    ),
+    // m03_sf_abs
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="false"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="{D}/meshes/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &[""],
+            geom_type: &["Mesh"],
+            geom_body: &[0],
+            geom_pos: &[[0.5, 0.4999999999999999, 0.4999999999999999]],
+            geom_quat: &[[
+                0.88047623921715,
+                0.11591689595929515,
+                -0.27984814233312144,
+                0.364705199631001,
+            ]],
+            geom_size: &[[0.8660254037844397, 1.4142135623730971, 1.6329931618554543]],
+            geom_contype: &[1],
+            geom_conaffinity: &[1],
+            geom_group: &[0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+    // m04_sf_relative
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="false"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="meshes/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &[""],
+            geom_type: &["Mesh"],
+            geom_body: &[0],
+            geom_pos: &[[0.5, 0.4999999999999999, 0.4999999999999999]],
+            geom_quat: &[[
+                0.88047623921715,
+                0.11591689595929515,
+                -0.27984814233312144,
+                0.364705199631001,
+            ]],
+            geom_size: &[[0.8660254037844397, 1.4142135623730971, 1.6329931618554543]],
+            geom_contype: &[1],
+            geom_conaffinity: &[1],
+            geom_group: &[0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+    // m05_sf_meshdir
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="false" meshdir="meshes"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &[""],
+            geom_type: &["Mesh"],
+            geom_body: &[0],
+            geom_pos: &[[0.5, 0.4999999999999999, 0.4999999999999999]],
+            geom_quat: &[[
+                0.88047623921715,
+                0.11591689595929515,
+                -0.27984814233312144,
+                0.364705199631001,
+            ]],
+            geom_size: &[[0.8660254037844397, 1.4142135623730971, 1.6329931618554543]],
+            geom_contype: &[1],
+            geom_conaffinity: &[1],
+            geom_group: &[0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+    // m06_sf_assetdir
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="false" assetdir="meshes"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &[""],
+            geom_type: &["Mesh"],
+            geom_body: &[0],
+            geom_pos: &[[0.5, 0.4999999999999999, 0.4999999999999999]],
+            geom_quat: &[[
+                0.88047623921715,
+                0.11591689595929515,
+                -0.27984814233312144,
+                0.364705199631001,
+            ]],
+            geom_size: &[[0.8660254037844397, 1.4142135623730971, 1.6329931618554543]],
+            geom_contype: &[1],
+            geom_conaffinity: &[1],
+            geom_group: &[0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+    // m07_st_package
+    (
+        r#"<robot name="r"><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="package://pkg/meshes/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &[""],
+            geom_type: &["Mesh"],
+            geom_body: &[0],
+            geom_pos: &[[0.25, 0.24999999999999994, 0.24999999999999994]],
+            geom_quat: &[[
+                0.88047623921715,
+                0.11591689595929515,
+                -0.27984814233312144,
+                0.364705199631001,
+            ]],
+            geom_size: &[[0.43301270189221985, 0.7071067811865486, 0.8164965809277271]],
+            geom_contype: &[1],
+            geom_conaffinity: &[1],
+            geom_group: &[0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+    // m08_st_meshdir_package
+    (
+        r#"<robot name="r"><mujoco><compiler meshdir="meshes"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="package://pkg/meshes/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &[""],
+            geom_type: &["Mesh"],
+            geom_body: &[0],
+            geom_pos: &[[0.5, 0.4999999999999999, 0.4999999999999999]],
+            geom_quat: &[[
+                0.88047623921715,
+                0.11591689595929515,
+                -0.27984814233312144,
+                0.364705199631001,
+            ]],
+            geom_size: &[[0.8660254037844397, 1.4142135623730971, 1.6329931618554543]],
+            geom_contype: &[1],
+            geom_conaffinity: &[1],
+            geom_group: &[0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+    // m09_sf_meshdir_package; MuJoCo: "Error: Error opening file 'package://pkg/tet.stl'"
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="false" meshdir="meshes"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="package://pkg/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Refused("asset file not found"),
+    ),
+    // m10_sf_abs_meshdir
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="false" meshdir="nowhere"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="{D}/a/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &[""],
+            geom_type: &["Mesh"],
+            geom_body: &[0],
+            geom_pos: &[[1.0, 0.9999999999999998, 0.9999999999999998]],
+            geom_quat: &[[
+                0.88047623921715,
+                0.11591689595929515,
+                -0.27984814233312144,
+                0.364705199631001,
+            ]],
+            geom_size: &[[1.7320508075688794, 2.8284271247461943, 3.2659863237109086]],
+            geom_contype: &[1],
+            geom_conaffinity: &[1],
+            geom_group: &[0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+    // m11_sf_two_dirs_same_scale
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="false"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="a/tet.stl"/></geometry></collision><collision><geometry><mesh filename="b/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &["", ""],
+            geom_type: &["Mesh", "Mesh"],
+            geom_body: &[0, 0],
+            geom_pos: &[
+                [1.0, 0.9999999999999998, 0.9999999999999998],
+                [1.0, 0.9999999999999998, 0.9999999999999998],
+            ],
+            geom_quat: &[
+                [
+                    0.88047623921715,
+                    0.11591689595929515,
+                    -0.27984814233312144,
+                    0.364705199631001,
+                ],
+                [
+                    0.88047623921715,
+                    0.11591689595929515,
+                    -0.27984814233312144,
+                    0.364705199631001,
+                ],
+            ],
+            geom_size: &[
+                [1.7320508075688794, 2.8284271247461943, 3.2659863237109086],
+                [1.7320508075688794, 2.8284271247461943, 3.2659863237109086],
+            ],
+            geom_contype: &[1, 1],
+            geom_conaffinity: &[1, 1],
+            geom_group: &[0, 0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0], [0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+    // m12_sf_two_dirs_two_scales
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="false"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="a/tet.stl"/></geometry></collision><collision><geometry><mesh filename="b/tet.stl" scale="2 2 2"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &["", ""],
+            geom_type: &["Mesh", "Mesh"],
+            geom_body: &[0, 0],
+            geom_pos: &[
+                [1.0, 0.9999999999999998, 0.9999999999999998],
+                [2.4999999999999996, 2.4999999999999996, 2.4999999999999996],
+            ],
+            geom_quat: &[
+                [
+                    0.88047623921715,
+                    0.11591689595929515,
+                    -0.27984814233312144,
+                    0.364705199631001,
+                ],
+                [
+                    0.8204732385702844,
+                    0.33985114297998775,
+                    -0.1759198966061614,
+                    0.4247082002778675,
+                ],
+            ],
+            geom_size: &[
+                [1.7320508075688794, 2.8284271247461943, 3.2659863237109086],
+                [4.330127018922203, 8.164965809277282, 7.071067811865493],
+            ],
+            geom_contype: &[1, 1],
+            geom_conaffinity: &[1, 1],
+            geom_group: &[0, 0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0], [0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+    // m13_st_file_abs
+    (
+        r#"<robot name="r"><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="file://{D}/meshes/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &[""],
+            geom_type: &["Mesh"],
+            geom_body: &[0],
+            geom_pos: &[[0.25, 0.24999999999999994, 0.24999999999999994]],
+            geom_quat: &[[
+                0.88047623921715,
+                0.11591689595929515,
+                -0.27984814233312144,
+                0.364705199631001,
+            ]],
+            geom_size: &[[0.43301270189221985, 0.7071067811865486, 0.8164965809277271]],
+            geom_contype: &[1],
+            geom_conaffinity: &[1],
+            geom_group: &[0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+    // m14_sf_kept_visual_package; MuJoCo: "Error: Error opening file 'package://pkg/meshes/tet.stl'"
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="false" discardvisual="false"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><visual><geometry><mesh filename="package://pkg/meshes/tet.stl"/></geometry></visual><collision><geometry><mesh filename="meshes/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Refused("asset file not found"),
+    ),
+    // m16_sf_dot_relative
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="false"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="./meshes/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &[""],
+            geom_type: &["Mesh"],
+            geom_body: &[0],
+            geom_pos: &[[0.5, 0.4999999999999999, 0.4999999999999999]],
+            geom_quat: &[[
+                0.88047623921715,
+                0.11591689595929515,
+                -0.27984814233312144,
+                0.364705199631001,
+            ]],
+            geom_size: &[[0.8660254037844397, 1.4142135623730971, 1.6329931618554543]],
+            geom_contype: &[1],
+            geom_conaffinity: &[1],
+            geom_group: &[0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+    // m17_sf_dotdot_relative
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="false"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="../{N}/b/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &[""],
+            geom_type: &["Mesh"],
+            geom_body: &[0],
+            geom_pos: &[[1.2499999999999998, 1.2499999999999998, 1.2499999999999998]],
+            geom_quat: &[[
+                0.8204732385702844,
+                0.33985114297998775,
+                -0.1759198966061614,
+                0.4247082002778675,
+            ]],
+            geom_size: &[[2.1650635094611017, 4.082482904638641, 3.5355339059327466]],
+            geom_contype: &[1],
+            geom_conaffinity: &[1],
+            geom_group: &[0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+    // m18_st_meshdir_abs
+    (
+        r#"<robot name="r"><mujoco><compiler meshdir="meshes"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="{D}/a/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &[""],
+            geom_type: &["Mesh"],
+            geom_body: &[0],
+            geom_pos: &[[0.5, 0.4999999999999999, 0.4999999999999999]],
+            geom_quat: &[[
+                0.88047623921715,
+                0.11591689595929515,
+                -0.27984814233312144,
+                0.364705199631001,
+            ]],
+            geom_size: &[[0.8660254037844397, 1.4142135623730971, 1.6329931618554543]],
+            geom_contype: &[1],
+            geom_conaffinity: &[1],
+            geom_group: &[0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+    // m20_sf_file_relative; MuJoCo: "Error: Error opening file 'file://meshes/tet.stl'"
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="false"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="file://meshes/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Refused("asset file not found"),
+    ),
+    // m21_st_two_dirs_same_scale
+    (
+        r#"<robot name="r"><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="a/tet.stl"/></geometry></collision><collision><geometry><mesh filename="b/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &["", ""],
+            geom_type: &["Mesh", "Mesh"],
+            geom_body: &[0, 0],
+            geom_pos: &[
+                [0.25, 0.24999999999999994, 0.24999999999999994],
+                [0.25, 0.24999999999999994, 0.24999999999999994],
+            ],
+            geom_quat: &[
+                [
+                    0.88047623921715,
+                    0.11591689595929515,
+                    -0.27984814233312144,
+                    0.364705199631001,
+                ],
+                [
+                    0.88047623921715,
+                    0.11591689595929515,
+                    -0.27984814233312144,
+                    0.364705199631001,
+                ],
+            ],
+            geom_size: &[
+                [0.43301270189221985, 0.7071067811865486, 0.8164965809277271],
+                [0.43301270189221985, 0.7071067811865486, 0.8164965809277271],
+            ],
+            geom_contype: &[1, 1],
+            geom_conaffinity: &[1, 1],
+            geom_group: &[0, 0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0], [0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+    // m22_sf_package_no_pkg_path; MuJoCo: "Error: Error opening file 'package://tet.stl'"
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="false"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="package://tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Refused("asset file not found"),
+    ),
+    // m23_st_package_no_pkg_path
+    (
+        r#"<robot name="r"><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="package://tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &[""],
+            geom_type: &["Mesh"],
+            geom_body: &[0],
+            geom_pos: &[[0.25, 0.24999999999999994, 0.24999999999999994]],
+            geom_quat: &[[
+                0.88047623921715,
+                0.11591689595929515,
+                -0.27984814233312144,
+                0.364705199631001,
+            ]],
+            geom_size: &[[0.43301270189221985, 0.7071067811865486, 0.8164965809277271]],
+            geom_contype: &[1],
+            geom_conaffinity: &[1],
+            geom_group: &[0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+    // m24_sf_true_written
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="true"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="package://pkg/meshes/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &[""],
+            geom_type: &["Mesh"],
+            geom_body: &[0],
+            geom_pos: &[[0.25, 0.24999999999999994, 0.24999999999999994]],
+            geom_quat: &[[
+                0.88047623921715,
+                0.11591689595929515,
+                -0.27984814233312144,
+                0.364705199631001,
+            ]],
+            geom_size: &[[0.43301270189221985, 0.7071067811865486, 0.8164965809277271]],
+            geom_contype: &[1],
+            geom_conaffinity: &[1],
+            geom_group: &[0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+    // m25_sf_meshdir_relative_sub
+    (
+        r#"<robot name="r"><mujoco><compiler strippath="false" meshdir="pkg"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="meshes/tet.stl"/></geometry></collision></link></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0],
+            body_inertia: &[[0.0, 0.0, 0.0]],
+            body_ipos: &[[0.0, 0.0, 0.0]],
+            body_iquat: &[[1.0, 0.0, 0.0, 0.0]],
+            geom_name: &[""],
+            geom_type: &["Mesh"],
+            geom_body: &[0],
+            geom_pos: &[[0.75, 0.75, 0.75]],
+            geom_quat: &[[
+                0.8204732385702844,
+                0.33985114297998775,
+                -0.1759198966061614,
+                0.4247082002778675,
+            ]],
+            geom_size: &[[1.2990381056766613, 2.4494897427831845, 2.121320343559648]],
+            geom_contype: &[1],
+            geom_conaffinity: &[1],
+            geom_group: &[0],
+            geom_rgba: &[[0.5, 0.5, 0.5, 1.0]],
+            jnt_limited: &[],
+            jnt_range: &[],
+            key_qpos: &[],
+            qpos5: &[],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
+];
+
 /// 0 on macOS arm64, where MuJoCo's values were printed, and 1e-12 of an
 /// array's largest entry elsewhere, where the platform's libm gives other
 /// last bits.
@@ -1417,27 +2176,28 @@ fn differing(m: &sim_core::Model, want: &Model) -> Vec<&'static str> {
     .collect()
 }
 
+/// How `loaded` departs from what MuJoCo 3.5.0 makes of `doc`, if it does.
+fn check(loaded: Result<sim_core::Model, UrdfError>, expect: &Expect, doc: &str) -> Option<String> {
+    match (loaded, expect) {
+        (Ok(m), Expect::Loads(want)) => {
+            let differ = differing(&m, want);
+            (!differ.is_empty()).then(|| format!("{differ:?} differ: {doc}"))
+        }
+        (Err(e), Expect::Refused(words)) if e.to_string().contains(words) => None,
+        (Ok(_), Expect::Refused(words)) => Some(format!("loads, MuJoCo refuses ({words}): {doc}")),
+        (Err(e), _) => Some(format!("refused ({e}): {doc}")),
+    }
+}
+
 /// Each document's name, colours and the fields above, and five steps, as
 /// MuJoCo 3.5.0's URDF import makes them; each document MuJoCo refuses
 /// refused for its fault.
 #[test]
 fn each_urdf_loads_as_mujocos_import() {
-    let mut wrong = Vec::new();
-    for (doc, expect) in CASES {
-        match (load_urdf_model(doc), expect) {
-            (Ok(m), Expect::Loads(want)) => {
-                let differ = differing(&m, want);
-                if !differ.is_empty() {
-                    wrong.push(format!("{differ:?} differ: {doc}"));
-                }
-            }
-            (Err(e), Expect::Refused(words)) if e.to_string().contains(words) => {}
-            (Ok(_), Expect::Refused(words)) => {
-                wrong.push(format!("loads, MuJoCo refuses ({words}): {doc}"));
-            }
-            (Err(e), _) => wrong.push(format!("refused ({e}): {doc}")),
-        }
-    }
+    let wrong: Vec<String> = CASES
+        .iter()
+        .filter_map(|(doc, expect)| check(load_urdf_model(doc), expect, doc))
+        .collect();
     assert!(
         wrong.is_empty(),
         "{} of {}:\n{}",
@@ -1457,4 +2217,108 @@ fn each_known_divergence_holds() {
         .map(|(doc, row, _)| format!("{row}: {doc}"))
         .collect();
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// A binary STL of the tetrahedron with edge `size` along each axis, so the
+/// size of a geom made from it names the file it was read from.
+fn tetrahedron(size: f32) -> Vec<u8> {
+    let corner = [
+        [0.0, 0.0, 0.0],
+        [size, 0.0, 0.0],
+        [0.0, size, 0.0],
+        [0.0, 0.0, size],
+    ];
+    let mut stl = vec![0; 80];
+    stl.extend(4_u32.to_le_bytes());
+    for face in [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]] {
+        let normal = [0.0_f32; 3];
+        let points = face.into_iter().flat_map(|i| corner[i]);
+        stl.extend(normal.into_iter().chain(points).flat_map(f32::to_le_bytes));
+        stl.extend([0, 0]);
+    }
+    stl
+}
+
+/// A directory of its own under the system's temporary directory, removed
+/// when dropped.
+struct ScratchDir(std::path::PathBuf);
+
+impl ScratchDir {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("sim-urdf-{}-{name}", std::process::id()));
+        // A directory left by a run killed before its drop.
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).ok();
+    }
+}
+
+/// Where each case's directory holds a tetrahedron, and its size.
+const MESH_FILES: [(&str, f32); 5] = [
+    ("tet.stl", 1.0),
+    ("meshes/tet.stl", 2.0),
+    ("pkg/meshes/tet.stl", 3.0),
+    ("a/tet.stl", 4.0),
+    ("b/tet.stl", 5.0),
+];
+
+/// Each URDF with a mesh, written into a directory of tetrahedra, loaded from
+/// its file as MuJoCo 3.5.0's `from_xml_path` loads it, so each mesh's file is
+/// found where MuJoCo finds it; each one MuJoCo refuses refused for its fault.
+#[test]
+fn each_mesh_urdf_loads_from_its_file_as_mujocos_import() {
+    let mut wrong = Vec::new();
+    for (case, (template, expect)) in FILE_CASES.iter().enumerate() {
+        let dir = ScratchDir::new(&format!("mesh-{case}"));
+        for (file, size) in MESH_FILES {
+            let path = dir.0.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, tetrahedron(size)).unwrap();
+        }
+        let name = dir.0.file_name().unwrap().to_str().unwrap();
+        let doc = template
+            .replace("{D}", dir.0.to_str().unwrap())
+            .replace("{N}", name);
+        let urdf = dir.0.join("robot.urdf");
+        std::fs::write(&urdf, doc).unwrap();
+        wrong.extend(check(load_urdf_model_from_file(&urdf), expect, template));
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} of {}:\n{}",
+        wrong.len(),
+        FILE_CASES.len(),
+        wrong.join("\n")
+    );
+}
+
+/// A URDF file that cannot be read is refused naming the file.
+#[test]
+fn an_unreadable_urdf_file_is_refused_naming_it() {
+    let dir = ScratchDir::new("unreadable");
+    let error = load_urdf_model_from_file(dir.0.join("nowhere.urdf")).unwrap_err();
+    assert!(matches!(error, UrdfError::Io { .. }), "{error}");
+    assert!(error.to_string().contains("nowhere.urdf"), "{error}");
+}
+
+/// Text has no directory: a URDF whose mesh's file is beside it loads from its
+/// file and is refused from its text.
+#[test]
+fn a_mesh_urdf_loads_from_its_file_not_from_its_text() {
+    let dir = ScratchDir::new("text");
+    std::fs::write(dir.0.join("tet.stl"), tetrahedron(1.0)).unwrap();
+    let urdf = r#"<robot name="r"><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="tet.stl"/></geometry></collision></link></robot>"#;
+    std::fs::write(dir.0.join("robot.urdf"), urdf).unwrap();
+    load_urdf_model_from_file(dir.0.join("robot.urdf")).unwrap();
+    let error = load_urdf_model(urdf).unwrap_err();
+    assert!(
+        error.to_string().contains("no base path provided"),
+        "{error}"
+    );
 }

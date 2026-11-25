@@ -4112,3 +4112,12 @@ fa8ac49104436b7c	sim/L0/urdf/tests/importer_sections.rs:3787
 e5b7a0ab79b9d40b	sim/L0/urdf/tests/importer_sections.rs:4286
 fbeca9297fcd09ba	sim/L0/urdf/tests/importer_sections.rs:4623
 fc6964cec8b9bd83	sim/L0/urdf/tests/importer_sections.rs:4618
+298aff029f2d1c0e	sim/L0/urdf/tests/importer_reader.rs:1435
+298aff029f2d1c0e	sim/L0/urdf/tests/importer_reader.rs:1753
+31e44f8e947280cc	sim/L0/urdf/tests/importer_reader.rs:1897
+6ecf728ec4b36c85	sim/L0/urdf/tests/importer_reader.rs:1355
+9ba8f29f6b98c9b2	sim/L0/urdf/tests/importer_reader.rs:1480
+cc6fd7fe690b9ed8	sim/L0/urdf/tests/importer_reader.rs:1315
+cc6fd7fe690b9ed8	sim/L0/urdf/tests/importer_reader.rs:1475
+d9aa8b9c8ed73e38	sim/L0/urdf/tests/importer_reader.rs:1668
+dacb65095575b909	sim/L0/urdf/tests/importer_reader.rs:1937
