@@ -3,7 +3,10 @@
 //! principal axes as the inertial frame, the moments largest first, and six
 //! zeros a tensor not given; every origin's `rpy` read as extrinsic x-y-z,
 //! and every `xyz` and `rpy` as written, however small; and no option set,
-//! so energy is not computed.
+//! so energy is not computed. One difference is deliberate: a link's tensor
+//! in a turned `<inertial>` origin is turned into the link's frame, R·I·Rᵀ,
+//! as URDF defines the origin, where MuJoCo's import drops the turn
+//! (D-URDF-INERTIAL-TURN).
 //!
 //! Every expected value was printed by MuJoCo 3.5.0's URDF import on the
 //! census's oracle (2026-11-25).
@@ -229,39 +232,6 @@ const CASES: &[(&str, Expect)] = &[
             body_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
             body_mass: &[0.0, 1.0],
             body_inertia: &[[0.0, 0.0, 0.0], [0.3, 0.2, 0.1]],
-            body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-            body_iquat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
-            body_simple: &[1, 1],
-            dof_simplenum: &[1],
-            geom_pos: &[[0.05, 0.0, 0.0]],
-            geom_quat: &[[1.0, 0.0, 0.0, 0.0]],
-            geom_size: &[[0.05, 0.1, 0.15]],
-            jnt_axis: &[[0.0, 0.0, 1.0]],
-            jnt_limited: &[false],
-            jnt_range: &[[0.0, 0.0]],
-            dof_damping: &[0.0],
-            dof_frictionloss: &[0.0],
-            qpos0: &[0.0],
-            meaninertia: 0.1,
-            xpos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
-            xquat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
-            xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
-            qacc: &[0.0],
-            qpos5: &[0.0],
-            enableflags: 0,
-            disableflags: 0,
-            timestep: 0.002,
-            gravity: [0.0, 0.0, -9.81],
-        }),
-    ),
-    // an isotropic tensor in a turned origin: no axes to take
-    (
-        r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin rpy="0.3 0.5 0.7"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0.05 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 0 1"/></joint></robot>"#,
-        Expect::Loads(&Model {
-            body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
-            body_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
-            body_mass: &[0.0, 1.0],
-            body_inertia: &[[0.0, 0.0, 0.0], [0.1, 0.1, 0.1]],
             body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
             body_iquat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
             body_simple: &[1, 1],
@@ -1798,6 +1768,60 @@ const CASES: &[(&str, Expect)] = &[
     ),
 ];
 
+/// Documents whose `<inertial>` origin turns, each with its link's tensor
+/// `(ixx, iyy, izz, ixy, ixz, iyz)` in the link's frame, R·I·Rᵀ, computed in
+/// numpy from the written `rpy` and moments.
+const TURNED: &[(&str, [f64; 6])] = &[
+    // a diagonal tensor in an origin turned about three axes
+    (
+        r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin xyz="0.01 0.02 0.03" rpy="0.3 0.5 0.7"/><mass value="1"/><inertia ixx="0.1" iyy="0.2" izz="0.3" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0.05 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 0 1"/></joint></robot>"#,
+        [
+            0.18418164303242432,
+            0.16851402525845333,
+            0.2473043317091224,
+            -0.03421470847023272,
+            0.07751008354002573,
+            0.03289220672746646,
+        ],
+    ),
+    // a full tensor in an origin turned about three axes
+    (
+        r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin rpy="0.3 0.5 0.7"/><mass value="1"/><inertia ixx="0.5" iyy="0.4" izz="0.3" ixy="0.05" ixz="0.02" iyz="0.01"/></inertial><collision><origin xyz="0.05 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 0 1"/></joint></robot>"#,
+        [
+            0.3908155773651755,
+            0.48065149651818606,
+            0.3285329261166386,
+            0.05860040997215612,
+            -0.05342970803451543,
+            -0.02937649010412463,
+        ],
+    ),
+    // a diagonal tensor in an origin turned about z
+    (
+        r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin rpy="0 0 0.5"/><mass value="1"/><inertia ixx="0.1" iyy="0.2" izz="0.3" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0.05 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 0 1"/></joint></robot>"#,
+        [
+            0.12298488470659304,
+            0.17701511529340702,
+            0.3,
+            -0.04207354924039483,
+            0.0,
+            0.0,
+        ],
+    ),
+    // an isotropic tensor in a turned origin: the same tensor
+    (
+        r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin rpy="0.3 0.5 0.7"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0.05 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 0 1"/></joint></robot>"#,
+        [
+            0.09999999999999999,
+            0.10000000000000002,
+            0.10000000000000002,
+            1.482471997738566e-17,
+            -1.268273022212582e-17,
+            -2.6120197855687294e-18,
+        ],
+    ),
+];
+
 /// 0 on macOS arm64, where MuJoCo's values were printed, and 1e-12 of an
 /// array's largest entry elsewhere, where the platform's libm gives other
 /// last bits.
@@ -1946,4 +1970,56 @@ fn each_urdf_loads_as_mujocos_import() {
         CASES.len(),
         wrong.join("\n")
     );
+}
+
+/// A link's tensor `(ixx, iyy, izz, ixy, ixz, iyz)` in the link's frame, from
+/// its body's inertial frame and moments: R·diag(moments)·Rᵀ.
+fn link_tensor(m: &sim_core::Model, body: usize) -> [f64; 6] {
+    let turn = m.body_iquat[body].to_rotation_matrix();
+    let r = turn.matrix();
+    let d = m.body_inertia[body];
+    let at = |i: usize, j: usize| (0..3).map(|k| r[(i, k)] * d[k] * r[(j, k)]).sum::<f64>();
+    [at(0, 0), at(1, 1), at(2, 2), at(0, 1), at(0, 2), at(1, 2)]
+}
+
+/// The six moments the converter writes as the last body's `fullinertia`.
+fn written_moments(doc: &str) -> [f64; 6] {
+    let mjcf = sim_urdf::urdf_to_mjcf(doc).unwrap();
+    let start = mjcf.rfind(r#"fullinertia=""#).unwrap() + r#"fullinertia=""#.len();
+    let end = start + mjcf[start..].find('"').unwrap();
+    let v: Vec<f64> = mjcf[start..end]
+        .split(' ')
+        .map(|x| x.parse().unwrap())
+        .collect();
+    [v[0], v[1], v[2], v[3], v[4], v[5]]
+}
+
+fn within(got: &[f64; 6], want: &[f64; 6], tolerance: f64) -> bool {
+    let scale = want.iter().fold(0.0_f64, |a, v| a.max(v.abs()));
+    got.iter()
+        .zip(want)
+        .all(|(a, b)| (a - b).abs() <= tolerance * scale)
+}
+
+/// A link's tensor in a turned `<inertial>` origin is turned into the link's
+/// frame, R·I·Rᵀ, as URDF defines the origin (ledger L372;
+/// D-URDF-INERTIAL-TURN). The converter writes it within 1e-12 of numpy's;
+/// the loaded link's tensor, rebuilt from its inertial frame and moments, is
+/// within 1e-7, `mjuu_eig3`'s round trip (6.1e-9 of the largest moment on
+/// MuJoCo's own import of the full tensor (0.5, 0.4, 0.3, 0.05, 0.02, 0.01),
+/// measured).
+#[test]
+fn an_inertial_origins_turn_turns_its_tensor() {
+    let mut wrong = Vec::new();
+    for (doc, want) in TURNED {
+        let written = written_moments(doc);
+        if !within(&written, want, 1e-12) {
+            wrong.push(format!("written {written:?}, want {want:?}: {doc}"));
+        }
+        let loaded = link_tensor(&load_urdf_model(doc).unwrap(), 1);
+        if !within(&loaded, want, 1e-7) {
+            wrong.push(format!("loaded {loaded:?}, want {want:?}: {doc}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }

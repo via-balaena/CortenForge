@@ -42,7 +42,7 @@ use std::fmt::Write;
 
 use crate::error::{Result, UrdfError};
 use crate::parser::parse_urdf_str;
-use nalgebra::Vector3;
+use nalgebra::{Matrix3, Rotation3, Vector3};
 
 use crate::types::{
     UrdfGeometry, UrdfJoint, UrdfJointLimit, UrdfJointType, UrdfLink, UrdfOrigin, UrdfRobot,
@@ -82,6 +82,27 @@ fn strip_package_prefix(path: &str) -> String {
 /// which `+0`s are.
 fn written(v: &Vector3<f64>) -> bool {
     v.iter().any(|x| x.to_bits() != 0)
+}
+
+/// A link's six moments `(ixx, iyy, izz, ixy, ixz, iyz)`, written in its
+/// `<inertial>` origin's frame, in the link's frame: R·I·Rᵀ, R the turn
+/// the origin's `rpy` names (extrinsic x-y-z, as URDF and MuJoCo read it).
+fn turned(moments: [f64; 6], rpy: &Vector3<f64>) -> [f64; 6] {
+    if !written(rpy) {
+        return moments;
+    }
+    let [ixx, iyy, izz, ixy, ixz, iyz] = moments;
+    let tensor = Matrix3::new(ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz);
+    let turn = Rotation3::from_euler_angles(rpy.x, rpy.y, rpy.z);
+    let t = turn.matrix() * tensor * turn.matrix().transpose();
+    [
+        t[(0, 0)],
+        t[(1, 1)],
+        t[(2, 2)],
+        t[(0, 1)],
+        t[(0, 2)],
+        t[(1, 2)],
+    ]
 }
 
 /// A geom's ` pos` and ` euler` attributes for its URDF origin, each where
@@ -665,6 +686,12 @@ impl<'a> Converter<'a> {
             inertia.ixz,
             inertia.iyz,
         ];
+        // The tensor turned by its origin's `rpy` into the link's frame
+        // (ledger L372, Jon 2026-11-19): MuJoCo 3.5.0's import drops the
+        // turn, its compiler taking the inertial frame from the unturned
+        // tensor (`mjCBody::Compile`'s `mjuu_fullInertia`;
+        // D-URDF-INERTIAL-TURN).
+        let moments = turned(moments, &inertial.origin.rpy);
 
         // MuJoCo 3.5.0's importer fills the body's `fullinertia` with the six
         // moments, a diagonal tensor's too (`xml_urdf.cc:252-258`), so its
@@ -686,11 +713,9 @@ impl<'a> Converter<'a> {
             pos.x, pos.y, pos.z
         );
 
-        // No orientation is written: MuJoCo 3.5.0's own URDF import drops an
-        // inertial origin's rotation, beside a full tensor and a diagonal one
-        // (measured: a link's tensor with `rpy="0.3 0.5 0.7"` is the one
-        // without, ledger L372), and `<inertial>` refuses a `fullinertia`
-        // beside one, as MuJoCo's reader does.
+        // No orientation is written: the origin's turn is in the tensor, and
+        // `<inertial>` refuses a `fullinertia` beside one, as MuJoCo's reader
+        // does.
         self.write_line(&format!("<inertial {attrs}/>"));
 
         Ok(())
@@ -860,40 +885,6 @@ mod tests {
         )
         .expect("converts");
         assert!(mjcf.contains(r#"<inertial pos="0 0 0" mass="1""#), "{mjcf}");
-    }
-
-    /// A link's full tensor in a turned inertial origin loads, as the same
-    /// tensor unturned: MuJoCo 3.5.0's URDF import drops the turn (measured,
-    /// both tensors (0.5, 0.4, 0.3, 0.05, 0.02, 0.01) in the link's frame),
-    /// and `<inertial>` refuses a `fullinertia` beside an `euler`.
-    #[test]
-    fn a_full_tensor_in_a_turned_origin_loads_as_mujocos_urdf_import() {
-        let urdf = |rpy: &str| {
-            format!(
-                r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="1"/><inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin xyz="0.1 0 0"{rpy}/><mass value="2"/><inertia ixx="0.5" iyy="0.4" izz="0.3" ixy="0.05" ixz="0.02" iyz="0.01"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 1"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint></robot>"#
-            )
-        };
-        let turned = crate::load_urdf_model(&urdf(r#" rpy="0.3 0.5 0.7""#)).expect("loads");
-        let plain = crate::load_urdf_model(&urdf("")).expect("loads");
-        assert_eq!(turned.body_inertia, plain.body_inertia);
-        assert_eq!(turned.body_iquat, plain.body_iquat);
-    }
-
-    /// A link's diagonal tensor in a turned inertial origin loads as the same
-    /// tensor unturned, as MuJoCo 3.5.0's URDF import loads it (measured: it
-    /// drops the turn beside a diagonal tensor as beside a full one, ledger
-    /// L372).
-    #[test]
-    fn a_diagonal_tensor_in_a_turned_origin_loads_as_mujocos_urdf_import() {
-        let urdf = |rpy: &str| {
-            format!(
-                r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="1"/><inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin xyz="0.1 0 0"{rpy}/><mass value="2"/><inertia ixx="0.5" iyy="0.4" izz="0.3" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 1"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint></robot>"#
-            )
-        };
-        let turned = crate::load_urdf_model(&urdf(r#" rpy="0.3 0.5 0.7""#)).expect("loads");
-        let plain = crate::load_urdf_model(&urdf("")).expect("loads");
-        assert_eq!(turned.body_inertia, plain.body_inertia);
-        assert_eq!(turned.body_iquat, plain.body_iquat);
     }
 
     /// A link whose principal moments break A + B >= C is refused, as
