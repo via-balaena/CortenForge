@@ -11,6 +11,22 @@ use crate::types::{
 };
 use approx::assert_relative_eq;
 
+/// A model written without a name takes MuJoCo 3.5.0's default,
+/// "MuJoCo Model" (`user_model.cc:158`; measured: `<mujoco/>` loads with that
+/// name), and `model=""` the empty name (measured), in the parsed model and
+/// the loaded one.
+#[test]
+fn a_model_without_a_name_takes_mujocos_default_name() {
+    for (doc, want) in [
+        ("<mujoco/>", "MuJoCo Model"),
+        (r#"<mujoco model=""/>"#, ""),
+        (r#"<mujoco model="m"/>"#, "m"),
+    ] {
+        assert_eq!(parse_mjcf_str(doc).expect("parses").name, want, "{doc}");
+        assert_eq!(crate::load_model(doc).expect("loads").name, want, "{doc}");
+    }
+}
+
 #[test]
 fn test_parse_simple_model() {
     let xml = r#"

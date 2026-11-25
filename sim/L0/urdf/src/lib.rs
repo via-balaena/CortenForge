@@ -53,8 +53,10 @@
 //! - `<link name="...">` - Rigid body definition
 //! - `<inertial>` - Mass, center of mass, inertia tensor
 //! - `<collision>` - Collision geometry (box, sphere, cylinder, mesh)
-//! - `<visual>` - Not written: MuJoCo 3.5.0's importer discards visuals under
-//!   URDF's `discardvisual` (Layer 0 has no rendering)
+//! - `<visual>` - Not written under URDF's `discardvisual`, its default, as
+//!   MuJoCo 3.5.0's importer discards visuals; under a URDF's
+//!   `<mujoco><compiler discardvisual="false">`, a geom with no contacts in
+//!   group 1, as the importer makes one
 //!
 //! ## Joints
 //!
@@ -118,8 +120,9 @@ pub use converter::{robot_to_mjcf, urdf_to_mjcf};
 pub use error::{Result, UrdfError};
 pub use parser::parse_urdf_str;
 pub use types::{
-    UrdfCollision, UrdfGeometry, UrdfInertia, UrdfInertial, UrdfJoint, UrdfJointDynamics,
-    UrdfJointLimit, UrdfJointType, UrdfLink, UrdfMimic, UrdfOrigin, UrdfRobot, UrdfVisual,
+    UrdfCollision, UrdfElement, UrdfGeometry, UrdfInertia, UrdfInertial, UrdfJoint,
+    UrdfJointDynamics, UrdfJointLimit, UrdfJointType, UrdfLink, UrdfMimic, UrdfMujoco, UrdfOrigin,
+    UrdfRobot, UrdfSection, UrdfVisual,
 };
 pub use validation::{ValidationResult, validate};
 

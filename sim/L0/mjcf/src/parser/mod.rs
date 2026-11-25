@@ -239,9 +239,11 @@ fn parse_mujoco<R: BufRead>(
     empty: bool,
     locate_at: &dyn Fn(u64) -> Location,
 ) -> Result<MjcfModel> {
+    // A model without a `model` attribute takes MuJoCo 3.5.0's default name
+    // (`user_model.cc:158`); `model=""` names it "" (measured).
     let name = Attrs::new(start)?
         .string("model")
-        .unwrap_or_else(|| "unnamed".to_string());
+        .unwrap_or_else(|| crate::types::DEFAULT_MODEL_NAME.to_string());
     let mut model = MjcfModel::new(name);
     if empty {
         return Ok(model);

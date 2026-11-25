@@ -4812,10 +4812,14 @@ pub struct MjcfTupleElement {
     pub objname: String,
 }
 
+/// The name MuJoCo 3.5.0 gives a model written without one
+/// (`user_model.cc:158`).
+pub const DEFAULT_MODEL_NAME: &str = "MuJoCo Model";
+
 impl Default for MjcfModel {
     fn default() -> Self {
         Self {
-            name: "unnamed".to_string(),
+            name: DEFAULT_MODEL_NAME.to_string(),
             option: MjcfOption::default(),
             compiler: MjcfCompiler::default(),
             defaults: Vec::new(),

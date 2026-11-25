@@ -24,7 +24,7 @@
 //! | `<joint>` | `<joint>` (inside child body; a planar one: two slides and a hinge) |
 //! | `<inertial>` | `<inertial>` |
 //! | `<collision>` | `<geom>` |
-//! | `<visual>` | not written (MuJoCo's importer discards visuals under URDF's `discardvisual`) |
+//! | `<visual>` | a `<geom>` of no contacts in group 1, only under `discardvisual="false"` |
 //!
 //! ## Key Differences
 //!
@@ -45,7 +45,8 @@ use crate::parser::parse_urdf_str;
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 
 use crate::types::{
-    UrdfGeometry, UrdfJoint, UrdfJointLimit, UrdfJointType, UrdfLink, UrdfOrigin, UrdfRobot,
+    UrdfElement, UrdfGeometry, UrdfJoint, UrdfJointLimit, UrdfJointType, UrdfLink, UrdfOrigin,
+    UrdfRobot,
 };
 
 /// The link name MuJoCo 3.5.0's importer reads as the world body
@@ -56,7 +57,29 @@ const WORLD: &str = "world";
 /// written as entities, so the document the converter writes reads the text
 /// the URDF held.
 fn escape(text: &str) -> std::borrow::Cow<'_, str> {
-    quick_xml::escape::escape(text)
+    let escaped = quick_xml::escape::escape(text);
+    // A carriage return as a character reference: written as itself, the
+    // reader would take it for a line end and read `\n` (measured: a robot
+    // named `a&#13;b` is "a\rb" in MuJoCo 3.5.0).
+    if escaped.contains('\r') {
+        std::borrow::Cow::Owned(escaped.replace('\r', "&#13;"))
+    } else {
+        escaped
+    }
+}
+
+/// A mesh file's path as the converter writes it: under `strippath`, the
+/// importer's default for a URDF, its `package://` or `file://` prefix
+/// stripped ([`strip_package_prefix`]), for the compiler strips the path to
+/// the file's name; otherwise as written, as MuJoCo 3.5.0's importer keeps it
+/// (measured: a `package://` mesh under `strippath="false"` is refused by
+/// MuJoCo, "Error opening file").
+fn mesh_file(path: &str, strippath: bool) -> String {
+    if strippath {
+        strip_package_prefix(path)
+    } else {
+        path.to_owned()
+    }
 }
 
 /// Strip `package://.../<file>` prefix, returning just the filename.
@@ -186,13 +209,22 @@ struct MimicEntry {
 }
 
 /// A `<limit>`'s MJCF attributes, as MuJoCo 3.5.0's URDF importer reads it
-/// (`xml_urdf.cc`): one bound written, or a lower above the upper, leaves the
-/// joint unlimited; otherwise its limit is automatic, which limits it only
-/// where lower < upper. A bound not written is 0.
-fn limit_attrs(limit: &UrdfJointLimit) -> String {
+/// (`xml_urdf.cc:500-508`): one bound written, or a lower above the upper,
+/// leaves the joint unlimited (`limited="false"`); otherwise the importer
+/// leaves `limited` to the compiler (`mjLIMITED_AUTO`). Under `autolimits`
+/// the compiler limits such a range only where lower < upper (`islimited`,
+/// `user_objects.cc:184-189`), and sim-mjcf refuses an automatic one with
+/// lower >= upper (D-AUTO-RANGE), so that range is written
+/// `limited="false"`, which limits it no more. Without `autolimits` every
+/// range the importer leaves automatic is written so, for the compiler to
+/// refuse a written range as MuJoCo's does (`checklimited`, `:171-181`). A
+/// bound not written is 0.
+fn limit_attrs(limit: &UrdfJointLimit, autolimits: bool) -> String {
     let (lower, upper) = (limit.lower.unwrap_or(0.0), limit.upper.unwrap_or(0.0));
-    let limited = limit.lower.is_some() && limit.upper.is_some() && lower < upper;
-    format!(r#" limited="{limited}" range="{lower} {upper}""#)
+    let bad = limit.lower.is_some() != limit.upper.is_some() || lower > upper;
+    let automatic = !bad && (lower < upper || !autolimits);
+    let limited = if automatic { "" } else { r#" limited="false""# };
+    format!(r#"{limited} range="{lower} {upper}""#)
 }
 
 /// A `<dynamics>`'s damping and friction as MJCF attributes, each where
@@ -285,32 +317,105 @@ fn same_scale(a: Option<Vector3<f64>>, b: Option<Vector3<f64>>) -> bool {
     a.unwrap_or(one) == b.unwrap_or(one)
 }
 
-/// Each link's collision geoms' names, as MuJoCo 3.5.0's importer names
-/// them (`xml_urdf.cc:345-358`): links in document order, a link's
-/// collisions in order, a name kept only where no earlier collision has it,
-/// a repeat left unnamed with MuJoCo's warning; an empty name is no name,
-/// without a warning (measured: two `name=""` give geoms `[None, None]`).
-fn collision_names(robot: &UrdfRobot) -> HashMap<&str, Vec<Option<String>>> {
+/// The elements of `link` MuJoCo 3.5.0's importer makes geoms of, in document
+/// order: its collisions, and its visuals where it keeps them (`discardvisual`
+/// false, `xml_urdf.cc:318`).
+fn geom_elements(link: &UrdfLink, discardvisual: bool) -> Vec<UrdfElement> {
+    link.elements_in_order()
+        .into_iter()
+        .filter(|e| !discardvisual || matches!(e, UrdfElement::Collision(_)))
+        .collect()
+}
+
+/// Each link's geoms ([`geom_elements`]) with their names, as MuJoCo 3.5.0's
+/// importer names them (`xml_urdf.cc:326-336`, `:349-359`): links in document
+/// order, a link's geoms in order, a name kept only where no earlier geom
+/// has it, a repeat left unnamed with MuJoCo's warning; an empty name is no
+/// name, without a warning (measured: two `name=""` give geoms
+/// `[None, None]`).
+fn geom_names(robot: &UrdfRobot) -> HashMap<&str, Vec<(UrdfElement, Option<String>)>> {
+    let discardvisual = robot.mujoco.discardvisual();
     let mut seen = HashSet::new();
     let mut names = HashMap::new();
     for link in &robot.links {
-        let kept = link
-            .collisions
-            .iter()
-            .map(|collision| {
-                let name = collision.name.as_ref().filter(|n| !n.is_empty())?;
-                if seen.insert(name.as_str()) {
-                    return Some(name.clone());
-                }
-                tracing::warn!(
-                    "Geom with duplicate name '{name}' encountered in URDF, creating an unnamed geom."
-                );
-                None
+        let kept = geom_elements(link, discardvisual)
+            .into_iter()
+            .map(|element| {
+                let written = match element {
+                    UrdfElement::Visual(i) => link.visuals[i].name.as_ref(),
+                    UrdfElement::Collision(i) => link.collisions[i].name.as_ref(),
+                };
+                let name = written.filter(|n| !n.is_empty()).and_then(|name| {
+                    if seen.insert(name.as_str()) {
+                        return Some(name.clone());
+                    }
+                    tracing::warn!(
+                        "Geom with duplicate name '{name}' encountered in URDF, creating an unnamed geom."
+                    );
+                    None
+                });
+                (element, name)
             })
             .collect();
         names.insert(link.name.as_str(), kept);
     }
     names
+}
+
+/// A visual geom's attributes, as MuJoCo 3.5.0's importer makes one: no
+/// contacts, group 1, density 0 (`xml_urdf.cc:538-543`).
+const VISUAL: &str = r#" contype="0" conaffinity="0" group="1" density="0""#;
+
+/// Attributes as written in an MJCF start tag, each value escaped.
+fn attribute_text(attributes: &[(String, String)]) -> String {
+    let mut text = String::new();
+    for (name, value) in attributes {
+        write!(text, r#" {name}="{}""#, escape(value)).ok();
+    }
+    text
+}
+
+/// One section's MJCF lines: `tag` with its attributes, and its child
+/// `child_tag` with the child's where written.
+fn section_lines(
+    tag: &str,
+    attributes: &[(String, String)],
+    child_tag: &str,
+    child: Option<&[(String, String)]>,
+) -> Vec<String> {
+    let open = format!("<{tag}{}", attribute_text(attributes));
+    match child {
+        Some(child) => vec![
+            format!("{open}>"),
+            format!("  <{child_tag}{}/>", attribute_text(child)),
+            format!("</{tag}>"),
+        ],
+        None => vec![format!("{open}/>")],
+    }
+}
+
+/// Attributes of a URDF's section `tag`, or of its child where given,
+/// checked as sim-mjcf's reader checks them in a converted model, alone in an
+/// MJCF model, in sim-mjcf's words. sim-mjcf reads them as MuJoCo 3.5.0's MJCF
+/// reader does, but for those it does not read, which it does not check
+/// (`<size memory>`, `nkey`, …: ledger L315, L455; `<lengthrange>`: L37).
+///
+/// # Errors
+///
+/// [`UrdfError::Unsupported`] with sim-mjcf's error, as a converted model's
+/// own refusal is worded.
+pub fn check_section(
+    tag: &str,
+    attributes: &[(String, String)],
+    child: Option<(&str, &[(String, String)])>,
+) -> Result<()> {
+    let (child_tag, child_attributes) = child.map_or(("", None), |(t, a)| (t, Some(a)));
+    let mut lines = vec!["<mujoco>".to_owned()];
+    lines.extend(section_lines(tag, attributes, child_tag, child_attributes));
+    lines.push("</mujoco>".to_owned());
+    sim_mjcf::parse_mjcf_str(&lines.join("\n"))
+        .map(drop)
+        .map_err(|e| UrdfError::Unsupported(format!("MJCF conversion error: {e}")))
 }
 
 /// Internal converter state.
@@ -322,8 +427,8 @@ struct Converter<'a> {
     child_to_joint: HashMap<&'a str, &'a UrdfJoint>,
     /// Map from parent link name to list of child joints
     parent_to_joints: HashMap<&'a str, Vec<&'a UrdfJoint>>,
-    /// Each link's collision geoms' names ([`collision_names`]).
-    collision_names: HashMap<&'a str, Vec<Option<String>>>,
+    /// Each link's geoms, in order, with their names ([`geom_names`]).
+    geom_names: HashMap<&'a str, Vec<(UrdfElement, Option<String>)>>,
     /// Output buffer
     output: String,
     /// Current indentation level
@@ -380,7 +485,7 @@ impl<'a> Converter<'a> {
             links,
             child_to_joint,
             parent_to_joints,
-            collision_names: collision_names(robot),
+            geom_names: geom_names(robot),
             output: String::with_capacity(4096),
             indent: 0,
             mesh_assets: Vec::new(),
@@ -392,20 +497,16 @@ impl<'a> Converter<'a> {
         let roots = self.root_links()?;
 
         // Write MJCF header
-        self.write_line(&format!(r#"<mujoco model="{}">"#, escape(&self.robot.name)));
+        // A robot without a name is written without one, so the model takes
+        // MuJoCo 3.5.0's default name, as its importer gives it
+        // (`xml_urdf.cc:115-117`: the name is set only where written).
+        match &self.robot.name {
+            Some(name) => self.write_line(&format!(r#"<mujoco model="{}">"#, escape(name))),
+            None => self.write_line("<mujoco>"),
+        }
         self.indent += 1;
 
-        // No `<option>`: MuJoCo 3.5.0's importer sets no option of its own; it
-        // reads a URDF's `<mujoco><option>` (`xml_urdf.cc:101-103`), which
-        // this converter does not read yet (ledger L378). Without one, a
-        // converted model has MJCF's defaults, as MuJoCo's: gravity
-        // (0, 0, -9.81), a timestep of 0.002, energy not computed.
-
-        // Write compiler settings for URDF compatibility
-        // `eulerseq="XYZ"`: MuJoCo 3.5.0's importer reads a URDF `rpy` as
-        // extrinsic x-y-z (`mjs_resolveOrientation(quat, 0, "XYZ", …)`,
-        // `xml_urdf.cc:664-666`), whatever a compiler's own sequence.
-        self.write_line(r#"<compiler angle="radian" eulerseq="XYZ" fusestatic="true" discardvisual="true" strippath="true"/>"#);
+        self.write_sections();
         self.write_line("");
 
         // Pre-scan all links for mesh geometries and emit <asset> block
@@ -486,6 +587,57 @@ impl<'a> Converter<'a> {
         self.write_line("</mujoco>");
 
         Ok(std::mem::take(&mut self.output))
+    }
+
+    /// Write the model's sections as MuJoCo 3.5.0's importer sets them up.
+    /// The `<compiler>`: radians and `eulerseq="XYZ"`, as the importer reads a
+    /// URDF (`xml_urdf.cc:111`; it resolves `rpy` as extrinsic x-y-z,
+    /// `mjs_resolveOrientation(quat, 0, "XYZ", …)`, `:664-666`, whatever a
+    /// compiler's own sequence), `fusestatic`, `discardvisual` and
+    /// `strippath` true, its URDF defaults (`xml.cc:299-301`), then the URDF's
+    /// own `<compiler>`'s attributes over them, in its order, and its
+    /// `<lengthrange>`. The URDF's `<option>` and `<size>` as written; without
+    /// an `<option>`, the model has MJCF's defaults, as MuJoCo's: gravity
+    /// (0, 0, -9.81), a timestep of 0.002, energy not computed.
+    fn write_sections(&mut self) {
+        let mut compiler: Vec<(String, String)> = [
+            ("angle", "radian"),
+            ("eulerseq", "XYZ"),
+            ("fusestatic", "true"),
+            ("discardvisual", "true"),
+            ("strippath", "true"),
+        ]
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .into();
+        let mujoco = &self.robot.mujoco;
+        if let Some(section) = &mujoco.compiler {
+            // `angle` and `eulerseq` stay as written above, whatever a robot
+            // built in code holds (the parser keeps neither).
+            let kept = section
+                .attributes
+                .iter()
+                .filter(|(name, _)| name != "angle" && name != "eulerseq");
+            for (name, value) in kept {
+                match compiler.iter_mut().find(|(written, _)| written == name) {
+                    Some(slot) => slot.1.clone_from(value),
+                    None => compiler.push((name.clone(), value.clone())),
+                }
+            }
+        }
+        let lengthrange = mujoco.compiler.as_ref().and_then(|c| c.child.clone());
+        let lines = [
+            section_lines("compiler", &compiler, "lengthrange", lengthrange.as_deref()),
+            mujoco.option.as_ref().map_or_else(Vec::new, |o| {
+                section_lines("option", &o.attributes, "flag", o.child.as_deref())
+            }),
+            mujoco
+                .size
+                .as_ref()
+                .map_or_else(Vec::new, |s| section_lines("size", &s.attributes, "", None)),
+        ];
+        for line in lines.iter().flatten() {
+            self.write_line(line);
+        }
     }
 
     /// Every link no joint enters, in document order: MuJoCo 3.5.0's importer
@@ -600,19 +752,38 @@ impl<'a> Converter<'a> {
             .ok_or_else(|| UrdfError::undefined_link(link_name, "converter"))
     }
 
-    /// Write a link's collision geoms, named as [`collision_names`] names
-    /// them. Its visual geoms are not written: MuJoCo 3.5.0's importer makes
-    /// none under URDF's `discardvisual` (`xml_urdf.cc:317`), which this
-    /// converter writes.
+    /// Write a link's geoms in document order, named as [`geom_names`] names
+    /// them, each with the colour MuJoCo 3.5.0's importer gives it
+    /// (`rgba`): its collisions, and its visuals where the importer keeps
+    /// them (`discardvisual` false, `xml_urdf.cc:318-319`), as a visual geom
+    /// is made: no contacts, group 1, density 0 (`:538-543`). Under
+    /// `discardvisual`, its default for a URDF, the importer makes none.
     fn write_geoms(&mut self, link_name: &str) -> Result<()> {
         let link = self.link(link_name)?;
-        let names = self
-            .collision_names
-            .get(link_name)
-            .cloned()
-            .unwrap_or_default();
-        for (collision, name) in link.collisions.iter().zip(names) {
-            self.convert_geom(&collision.geometry, &collision.origin, name.as_ref())?;
+        let geoms = self.geom_names.get(link_name).cloned().unwrap_or_default();
+        for (element, name) in geoms {
+            match element {
+                UrdfElement::Visual(i) => {
+                    let visual = &link.visuals[i];
+                    self.convert_geom(
+                        &visual.geometry,
+                        &visual.origin,
+                        name.as_ref(),
+                        visual.rgba.as_ref(),
+                        VISUAL,
+                    )?;
+                }
+                UrdfElement::Collision(i) => {
+                    let collision = &link.collisions[i];
+                    self.convert_geom(
+                        &collision.geometry,
+                        &collision.origin,
+                        name.as_ref(),
+                        collision.rgba.as_ref(),
+                        "",
+                    )?;
+                }
+            }
         }
         Ok(())
     }
@@ -654,14 +825,18 @@ impl<'a> Converter<'a> {
         }
 
         // A continuous joint is left unlimited, as URDF defines it
-        // (D-URDF-CONTINUOUS-LIMIT: MuJoCo limits it).
+        // (D-URDF-CONTINUOUS-LIMIT: MuJoCo limits it), but where
+        // `autolimits="false"`, under which MuJoCo's compiler refuses a range
+        // its importer left automatic (`checklimited`), its range is written
+        // so: refused, or loaded unlimited, as MuJoCo's is.
+        let autolimits = self.robot.mujoco.autolimits();
         if let Some(limit) = &joint.limit
-            && matches!(
+            && (matches!(
                 joint.joint_type,
                 UrdfJointType::Revolute | UrdfJointType::Prismatic
-            )
+            ) || (joint.joint_type == UrdfJointType::Continuous && !autolimits))
         {
-            attrs.push_str(&limit_attrs(limit));
+            attrs.push_str(&limit_attrs(limit, autolimits));
         }
         attrs.push_str(&dynamics_attrs(joint));
 
@@ -688,7 +863,12 @@ impl<'a> Converter<'a> {
     fn convert_planar_joint(&mut self, joint: &UrdfJoint) -> Result<()> {
         let (tx, ty) = planar_axes(&joint.axis);
         let normal = joint.axis;
-        let limit = joint.limit.as_ref().map(limit_attrs).unwrap_or_default();
+        let autolimits = self.robot.mujoco.autolimits();
+        let limit = joint
+            .limit
+            .as_ref()
+            .map(|l| limit_attrs(l, autolimits))
+            .unwrap_or_default();
         let dynamics = dynamics_attrs(joint);
         let name = escape(&joint.name);
         self.write_line(&format!(
@@ -752,12 +932,21 @@ impl<'a> Converter<'a> {
         Ok(())
     }
 
+    /// Write one geom: its shape, its name, its colour where one is set
+    /// (each a single-precision value, which sim-mjcf reads back exactly),
+    /// `kind`'s attributes (a visual's [`VISUAL`]; a collision has none), its
+    /// pose.
     fn convert_geom(
         &mut self,
         geometry: &UrdfGeometry,
         origin: &UrdfOrigin,
         name: Option<&String>,
+        rgba: Option<&[f64; 4]>,
+        kind: &str,
     ) -> Result<()> {
+        let colour = rgba.map_or_else(String::new, |[r, g, b, a]| {
+            format!(r#" rgba="{r} {g} {b} {a}""#)
+        }) + kind;
         let (geom_type, size) = match geometry {
             UrdfGeometry::Box { size } => {
                 // URDF box size is full dimensions, MJCF uses half-extents
@@ -774,7 +963,7 @@ impl<'a> Converter<'a> {
                 ("capsule", format!("{} {}", radius, length / 2.0))
             }
             UrdfGeometry::Mesh { filename, scale } => {
-                let stripped = strip_package_prefix(filename);
+                let stripped = mesh_file(filename, self.robot.mujoco.strippath());
                 if let Some(asset) = self.mesh_asset(&stripped, *scale) {
                     let mesh_ref = asset.name.clone();
                     // Mesh geoms use type="mesh" mesh="asset_name" (no size)
@@ -782,6 +971,7 @@ impl<'a> Converter<'a> {
                     if let Some(n) = name {
                         write!(attrs, r#" name="{}""#, escape(n)).ok();
                     }
+                    attrs.push_str(&colour);
                     attrs.push_str(&pose_attrs(origin));
                     self.write_line(&format!("<geom {attrs}/>"));
                 }
@@ -795,6 +985,7 @@ impl<'a> Converter<'a> {
         if let Some(n) = name {
             write!(attrs, r#" name="{}""#, escape(n)).ok();
         }
+        attrs.push_str(&colour);
 
         attrs.push_str(&pose_attrs(origin));
 
@@ -803,23 +994,34 @@ impl<'a> Converter<'a> {
         Ok(())
     }
 
-    /// Every mesh the collision geoms name, as MuJoCo 3.5.0's importer makes
-    /// them (`xml_urdf.cc:576-626`), links in document order: one per file
-    /// stem and scale, the first scale of a stem named by the stem, each later
-    /// one by the stem and its index. A geom names the asset of its own stem
-    /// and scale, where MuJoCo gives a geom of a stem's later scale, met a
-    /// second time, the stem's first mesh (`:604-616`, `:632`; measured:
+    /// Every mesh the geoms name ([`geom_elements`]), as MuJoCo 3.5.0's
+    /// importer makes them (`xml_urdf.cc:576-626`), links and their geoms in
+    /// document order: one per file stem and scale, the first scale of a stem
+    /// named by the stem, each later one by the stem and its index. A geom
+    /// names the asset of its own stem and scale, where MuJoCo gives a geom of
+    /// a stem's later scale, met a second time, the stem's first mesh
+    /// (`:604-616`, `:632`; measured:
     /// scales 1, 2, 2 give the third geom the scale-1 mesh;
     /// `D-URDF-MESH-SCALE`).
     fn collect_mesh_assets(&mut self) {
-        let geoms = self
+        let discardvisual = self.robot.mujoco.discardvisual();
+        let strippath = self.robot.mujoco.strippath();
+        let geoms: Vec<&UrdfGeometry> = self
             .robot
             .links
             .iter()
-            .flat_map(|link| link.collisions.iter().map(|collision| &collision.geometry));
+            .flat_map(|link| {
+                geom_elements(link, discardvisual)
+                    .into_iter()
+                    .map(move |element| match element {
+                        UrdfElement::Visual(i) => &link.visuals[i].geometry,
+                        UrdfElement::Collision(i) => &link.collisions[i].geometry,
+                    })
+            })
+            .collect();
         for geometry in geoms {
             if let UrdfGeometry::Mesh { filename, scale } = geometry {
-                let file = strip_package_prefix(filename);
+                let file = mesh_file(filename, strippath);
                 if self.mesh_asset(&file, *scale).is_some() {
                     continue;
                 }
@@ -866,6 +1068,54 @@ impl<'a> Converter<'a> {
 mod tests {
     use super::*;
 
+    /// A robot without a name loads with MuJoCo 3.5.0's default name,
+    /// "MuJoCo Model", as its importer gives it, and `name=""` with the empty
+    /// one (measured on these three documents).
+    #[test]
+    fn a_robot_without_a_name_takes_mujocos_default_name() {
+        for (head, want) in [
+            ("<robot>", "MuJoCo Model"),
+            (r#"<robot name="">"#, ""),
+            (r#"<robot name="r">"#, "r"),
+        ] {
+            let urdf = format!(r#"{head}<link name="base"/></robot>"#);
+            let model = crate::load_urdf_model(&urdf).expect("loads");
+            assert_eq!(model.name, want, "{urdf}");
+        }
+    }
+
+    /// Text the URDF holds reaches the converted model as written, a carriage
+    /// return too, which written as itself the reader would take for a line
+    /// end (measured: a robot named `a&#13;b` is "a\rb" in MuJoCo 3.5.0).
+    #[test]
+    fn a_carriage_return_in_a_name_is_kept() {
+        let model = crate::load_urdf_model(r#"<robot name="a&#13;b"><link name="base"/></robot>"#)
+            .expect("loads");
+        assert_eq!(model.name, "a\rb");
+    }
+
+    /// A robot built in code whose `<compiler>` holds an `angle` or `eulerseq`
+    /// is converted in radians and "XYZ", as a parsed one is (the parser keeps
+    /// neither: MuJoCo 3.5.0's importer reads a URDF so whatever they say).
+    #[test]
+    fn a_built_robots_angle_and_eulerseq_are_not_written() {
+        let mut robot = UrdfRobot::new("r").with_link(crate::types::UrdfLink::new("base"));
+        robot.mujoco.compiler = Some(crate::types::UrdfSection {
+            attributes: vec![
+                ("angle".to_owned(), "degree".to_owned()),
+                ("eulerseq".to_owned(), "zyx".to_owned()),
+            ],
+            child: None,
+        });
+        let mjcf = robot_to_mjcf(&robot).expect("converts");
+        assert!(
+            mjcf.contains(r#"angle="radian" eulerseq="XYZ""#)
+                && !mjcf.contains("degree")
+                && !mjcf.contains("zyx"),
+            "{mjcf}"
+        );
+    }
+
     #[test]
     fn test_simple_urdf_to_mjcf() {
         let urdf = r#"<?xml version="1.0"?>
@@ -900,7 +1150,9 @@ mod tests {
         assert!(mjcf.contains(r#"<body name="link1""#));
         assert!(mjcf.contains(r#"<joint name="joint1" type="hinge""#));
         assert!(mjcf.contains(r#"axis="0 1 0""#));
-        assert!(mjcf.contains(r#"limited="true" range="-3.14 3.14""#));
+        // A limit of two bounds, lower below upper, is left to the
+        // compiler's `autolimits`, as MuJoCo's importer leaves it.
+        assert!(mjcf.contains(r#" range="-3.14 3.14""#) && !mjcf.contains("limited="));
     }
 
     /// MJCF requires an inertial's `pos` (MuJoCo 3.5.0 refuses one without
@@ -1134,8 +1386,9 @@ mod tests {
     }
 
     /// ★ A `continuous` joint is unbounded, so a `<limit>` on it must NOT
-    /// become an MJCF range — only revolute and prismatic are limited. Emitting
-    /// a range here would silently clamp a joint URDF says spins freely.
+    /// become an MJCF range, but under `autolimits="false"` (where MuJoCo
+    /// refuses it, D-URDF-CONTINUOUS-LIMIT). Emitting a range here would
+    /// silently clamp a joint URDF says spins freely.
     #[test]
     fn a_limit_on_a_continuous_joint_is_not_emitted_as_a_range() {
         let mjcf = urdf_to_mjcf(&robot_with_joint(
@@ -1147,9 +1400,11 @@ mod tests {
         .expect("conversion should succeed");
 
         assert!(mjcf.contains(r#"name="c" type="hinge""#));
+        // No range at all: an automatic one, written without `limited`,
+        // would be limited, clamping free rotation.
         assert!(
-            !mjcf.contains("limited="),
-            "continuous joints are unbounded; a range would clamp free rotation"
+            !mjcf.contains("range=") && !mjcf.contains("limited="),
+            "continuous joints are unbounded; a range would clamp free rotation: {mjcf}"
         );
     }
 
@@ -1370,6 +1625,55 @@ mod tests {
                 "{err}"
             );
         }
+    }
+
+    /// Under `discardvisual="false"` a visual is a geom, made with its mesh in
+    /// document order among the link's collisions, as MuJoCo 3.5.0's importer
+    /// makes them (measured on this document, a visual and a collision of one file:
+    /// meshes `tet` at scale 1 and `tet1` at scale 2, geoms `v` on `tet` with
+    /// no contacts in group 1 and `c` on `tet1`).
+    #[test]
+    fn a_kept_visual_and_its_mesh_are_made_in_document_order() {
+        let mjcf = urdf_to_mjcf(concat!(
+            r#"<robot name="r"><mujoco><compiler discardvisual="false"/></mujoco>"#,
+            r#"<link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial>"#,
+            r#"<visual name="v"><geometry><mesh filename="tet.stl"/></geometry></visual>"#,
+            r#"<collision name="c"><geometry><mesh filename="tet.stl" scale="2 2 2"/></geometry></collision>"#,
+            r#"</link></robot>"#,
+        ))
+        .expect("converts");
+        let at = |text: &str| mjcf.find(text).expect(text);
+        assert!(
+            at(r#"<mesh name="tet" file="tet.stl"/>"#)
+                < at(r#"<mesh name="tet1" file="tet.stl" scale="2 2 2"/>"#)
+        );
+        assert!(
+            at(
+                r#"<geom type="mesh" mesh="tet" name="v" contype="0" conaffinity="0" group="1" density="0"/>"#
+            ) < at(r#"<geom type="mesh" mesh="tet1" name="c"/>"#)
+        );
+    }
+
+    /// A mesh's `package://` prefix is stripped under `strippath`, the
+    /// importer's default, and kept under `strippath="false"`, where MuJoCo
+    /// 3.5.0 keeps the path as written (measured with a mesh file: a
+    /// `package://` or `file://` path refused, "Error opening file", as the
+    /// written path is here; a relative one loads).
+    #[test]
+    fn a_mesh_paths_prefix_is_stripped_only_under_strippath() {
+        let urdf = |compiler: &str| {
+            format!(
+                r#"<robot name="r">{compiler}<link name="base"><collision><geometry><mesh filename="package://pkg/meshes/tet.stl"/></geometry></collision></link></robot>"#
+            )
+        };
+        let default = urdf_to_mjcf(&urdf("")).expect("converts");
+        assert!(default.contains(r#"file="meshes/tet.stl""#), "{default}");
+        let kept = urdf_to_mjcf(&urdf(r#"<mujoco><compiler strippath="false"/></mujoco>"#))
+            .expect("converts");
+        assert!(
+            kept.contains(r#"file="package://pkg/meshes/tet.stl""#),
+            "{kept}"
+        );
     }
 
     /// Mesh assets are named as MuJoCo 3.5.0's importer names them: by the

@@ -1,0 +1,1 @@
+<mujoco><option ls_iterations="7" noslip_iterations="3" ccd_iterations="9" ls_tolerance="0.02" noslip_tolerance="1e-5" ccd_tolerance="1e-5"/></mujoco>

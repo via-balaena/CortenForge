@@ -495,6 +495,7 @@ mod tests {
             name: None,
             origin: UrdfOrigin::default(),
             geometry,
+            rgba: None,
         })
     }
 
@@ -546,6 +547,7 @@ mod tests {
                     filename: "foo.obj".to_string(),
                     scale: Some(Vector3::new(1.0, f64::NAN, 1.0)),
                 },
+                rgba: None,
             }));
 
         let result = validate(&robot);
@@ -560,6 +562,7 @@ mod tests {
                 name: None,
                 origin: UrdfOrigin::default(),
                 geometry: UrdfGeometry::Sphere { radius: 1.0 },
+                rgba: None,
             }));
         // Now mutate to add a bad visual alongside the good collision.
         let mut robot = robot;
@@ -570,6 +573,7 @@ mod tests {
                 size: Vector3::new(f64::NAN, 1.0, 1.0),
             },
             material: None,
+            rgba: None,
         });
 
         let result = validate(&robot);

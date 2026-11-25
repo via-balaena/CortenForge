@@ -180,6 +180,11 @@ pub struct UrdfVisual {
     pub geometry: UrdfGeometry,
     /// Material name reference.
     pub material: Option<String>,
+    /// The colour MuJoCo 3.5.0's importer gives the visual's geom, where it
+    /// keeps one: the colour its link's visuals last set, this one's included,
+    /// where its red is not negative (`xml_urdf.cc:291-323`), single-precision
+    /// values; `None` otherwise.
+    pub rgba: Option<[f64; 4]>,
 }
 
 /// Collision properties from `<collision>` element.
@@ -192,6 +197,11 @@ pub struct UrdfCollision {
     pub origin: UrdfOrigin,
     /// Geometry shape.
     pub geometry: UrdfGeometry,
+    /// The colour MuJoCo 3.5.0's importer gives the geom: the colour its
+    /// link's visuals last set before it, where its red is not negative
+    /// (`xml_urdf.cc:291-316`, `:344-347`), single-precision values; `None`
+    /// otherwise, for the geom's default.
+    pub rgba: Option<[f64; 4]>,
 }
 
 // ============================================================================
@@ -210,6 +220,23 @@ pub struct UrdfLink {
     pub visuals: Vec<UrdfVisual>,
     /// Collision geometries (can have multiple).
     pub collisions: Vec<UrdfCollision>,
+    /// The link's visuals and collisions in document order ([`UrdfElement`]).
+    pub elements: Vec<UrdfElement>,
+}
+
+/// A link's `<visual>` or `<collision>`, by its index in
+/// [`UrdfLink::visuals`] or [`UrdfLink::collisions`].
+///
+/// MuJoCo 3.5.0's importer makes, names and colours a link's geoms in
+/// document order (`xml_urdf.cc:294-363`), which [`UrdfLink::elements`]
+/// records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum UrdfElement {
+    /// `visuals[i]`.
+    Visual(usize),
+    /// `collisions[i]`.
+    Collision(usize),
 }
 
 impl UrdfLink {
@@ -221,6 +248,7 @@ impl UrdfLink {
             inertial: None,
             visuals: Vec::new(),
             collisions: Vec::new(),
+            elements: Vec::new(),
         }
     }
 
@@ -231,11 +259,34 @@ impl UrdfLink {
         self
     }
 
-    /// Add a collision geometry.
+    /// Add a collision geometry, after the link's other elements.
     #[must_use]
     pub fn with_collision(mut self, collision: UrdfCollision) -> Self {
+        self.elements
+            .push(UrdfElement::Collision(self.collisions.len()));
         self.collisions.push(collision);
         self
+    }
+
+    /// The link's visuals and collisions in document order: those
+    /// [`Self::elements`] lists, once each, then any it does not list (one
+    /// pushed onto `visuals` or `collisions` directly), visuals first.
+    #[must_use]
+    pub fn elements_in_order(&self) -> Vec<UrdfElement> {
+        let mut order: Vec<UrdfElement> = Vec::new();
+        let present = |e: &UrdfElement| match *e {
+            UrdfElement::Visual(i) => i < self.visuals.len(),
+            UrdfElement::Collision(i) => i < self.collisions.len(),
+        };
+        let rest = (0..self.visuals.len())
+            .map(UrdfElement::Visual)
+            .chain((0..self.collisions.len()).map(UrdfElement::Collision));
+        for element in self.elements.iter().copied().filter(present).chain(rest) {
+            if !order.contains(&element) {
+                order.push(element);
+            }
+        }
+        order
     }
 }
 
@@ -438,6 +489,76 @@ impl UrdfJoint {
 }
 
 // ============================================================================
+// MuJoCo's sections
+// ============================================================================
+
+/// One of MuJoCo's own sections in a URDF (`<mujoco><compiler>`, `<option>`
+/// or `<size>`), as MuJoCo 3.5.0's importer reads it (`xml_urdf.cc:93-108`).
+///
+/// It holds the attributes MuJoCo's reader of that section reads, as
+/// written, in document order, and the one child that reader reads
+/// (`<compiler>`'s `<lengthrange>`, `<option>`'s `<flag>`) with the
+/// attributes it reads there. MuJoCo checks no schema here: it ignores every
+/// other attribute and child (measured).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct UrdfSection {
+    /// The section's attributes, `(name, text)`.
+    pub attributes: Vec<(String, String)>,
+    /// Its child's attributes, where the child is written.
+    pub child: Option<Vec<(String, String)>>,
+}
+
+/// MuJoCo's own sections in a URDF, each where written
+/// (`xml_urdf.cc:93-108`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct UrdfMujoco {
+    /// `<compiler>`. Its `angle` and `eulerseq` are checked by the parser
+    /// and not kept: MuJoCo's importer reads a URDF in radians and its `rpy`
+    /// as "XYZ" whatever they say (`xml_urdf.cc:111`, `:664-666`).
+    pub compiler: Option<UrdfSection>,
+    /// `<option>`.
+    pub option: Option<UrdfSection>,
+    /// `<size>`.
+    pub size: Option<UrdfSection>,
+}
+
+impl UrdfMujoco {
+    /// Whether `<compiler>` leaves the flag `name` true: its default, unless
+    /// written `"false"`.
+    fn compiler_flag(&self, name: &str) -> bool {
+        self.compiler.as_ref().is_none_or(|c| {
+            c.attributes
+                .iter()
+                .all(|(written, value)| written != name || value != "false")
+        })
+    }
+
+    /// Whether the importer discards visuals: true, its default for a URDF
+    /// (`xml.cc:301`), unless `<compiler discardvisual="false">`.
+    #[must_use]
+    pub fn discardvisual(&self) -> bool {
+        self.compiler_flag("discardvisual")
+    }
+
+    /// Whether the compiler limits an automatic range: true, MJCF's default,
+    /// unless `<compiler autolimits="false">`.
+    #[must_use]
+    pub fn autolimits(&self) -> bool {
+        self.compiler_flag("autolimits")
+    }
+
+    /// Whether a mesh file's path is stripped to its name: true, the
+    /// importer's default for a URDF (`xml.cc:299`), unless
+    /// `<compiler strippath="false">`.
+    #[must_use]
+    pub fn strippath(&self) -> bool {
+        self.compiler_flag("strippath")
+    }
+}
+
+// ============================================================================
 // Robot
 // ============================================================================
 
@@ -445,12 +566,15 @@ impl UrdfJoint {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct UrdfRobot {
-    /// Robot name.
-    pub name: String,
+    /// Robot name; `None` where the document writes none, which MuJoCo 3.5.0
+    /// tells apart from `name=""` (`xml_urdf.cc:115-117`).
+    pub name: Option<String>,
     /// All links in the robot.
     pub links: Vec<UrdfLink>,
     /// All joints in the robot.
     pub joints: Vec<UrdfJoint>,
+    /// MuJoCo's own sections, as its importer reads them.
+    pub mujoco: UrdfMujoco,
 }
 
 impl UrdfRobot {
@@ -458,9 +582,10 @@ impl UrdfRobot {
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            name: name.into(),
+            name: Some(name.into()),
             links: Vec::new(),
             joints: Vec::new(),
+            mujoco: UrdfMujoco::default(),
         }
     }
 
@@ -553,6 +678,40 @@ mod tests {
         assert_eq!(UrdfJointType::from_str("invalid"), None);
     }
 
+    /// A visual or collision pushed onto a link without `elements` comes after
+    /// those `elements` lists, visuals first, each once; an index past the end
+    /// is dropped.
+    #[test]
+    fn elements_not_listed_come_last_visuals_first() {
+        let geometry = UrdfGeometry::Sphere { radius: 1.0 };
+        let collision = UrdfCollision {
+            name: None,
+            origin: UrdfOrigin::default(),
+            geometry: geometry.clone(),
+            rgba: None,
+        };
+        let visual = UrdfVisual {
+            name: None,
+            origin: UrdfOrigin::default(),
+            geometry,
+            material: None,
+            rgba: None,
+        };
+        let mut link = UrdfLink::new("l").with_collision(collision.clone());
+        link.collisions.push(collision);
+        link.visuals.push(visual);
+        link.elements.push(UrdfElement::Collision(0));
+        link.elements.push(UrdfElement::Visual(9));
+        assert_eq!(
+            link.elements_in_order(),
+            [
+                UrdfElement::Collision(0),
+                UrdfElement::Visual(0),
+                UrdfElement::Collision(1),
+            ]
+        );
+    }
+
     #[test]
     fn test_robot_builder() {
         let robot = UrdfRobot::new("test_robot")
@@ -565,7 +724,7 @@ mod tests {
                 "link1",
             ));
 
-        assert_eq!(robot.name, "test_robot");
+        assert_eq!(robot.name.as_deref(), Some("test_robot"));
         assert_eq!(robot.links.len(), 2);
         assert_eq!(robot.joints.len(), 1);
         assert!(robot.link("base_link").is_some());
