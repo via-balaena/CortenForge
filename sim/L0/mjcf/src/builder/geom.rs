@@ -66,7 +66,7 @@ impl ModelBuilder {
         // mesh's frame, to which `process_mesh` moved the mesh, into their
         // own: the fitted shape's centre (a mesh or SDF geom's is the
         // origin) turned by the mesh's turn and added to its centre, then
-        // composed with the geom's frame (MuJoCo 3.5.0's `mjCGeom::Compile`,
+        // composed with the geom's own pose (MuJoCo 3.5.0's `mjCGeom::Compile`,
         // `user_objects.cc:3748-3754`). A mesh or SDF geom's size along each
         // axis is the larger magnitude of the mesh's bounds there
         // (`:3765-3769`); a fitted geom's is its fit's, which MuJoCo then
@@ -85,6 +85,18 @@ impl ModelBuilder {
                 let mut mesh_quat = UnitQuaternion::new_unchecked(Quaternion::new(w, x, y, z));
                 frame_accum_child(&pos, &quat, &mut mesh_pos, &mut mesh_quat);
                 (mesh_pos, mesh_quat)
+            }
+            None => (pos, quat),
+        };
+        // The `<frame>` holding the geom, composed last
+        // (`user_objects.cc:3831-3834`).
+        let (pos, quat) = match geom.frame {
+            Some((frame_pos, q)) => {
+                let frame_quat =
+                    UnitQuaternion::new_unchecked(Quaternion::new(q[0], q[1], q[2], q[3]));
+                let (mut pos, mut quat) = (pos, quat);
+                frame_accum_child(&frame_pos, &frame_quat, &mut pos, &mut quat);
+                (pos, quat)
             }
             None => (pos, quat),
         };
@@ -914,6 +926,7 @@ mod tests {
             axisangle: None,
             xyaxes: None,
             zaxis: None,
+            frame: None,
             size: Prefix::new(&[0.1, 0.5]), // radius=0.1, half-height=0.5
             fromto: None,
             density: Some(1000.0),

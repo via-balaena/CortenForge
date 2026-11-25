@@ -121,10 +121,24 @@ fn resolve_keyframe(mjcf_kf: &MjcfKeyframe, model: &Model) -> Result<Keyframe> {
     validate_field(&mjcf_kf.mquat, "mquat", 4 * model.nmocap)?;
 
     // Build resolved keyframe with model defaults for missing fields
-    let qpos = match mjcf_kf.qpos {
+    let mut qpos = match mjcf_kf.qpos {
         Some(ref v) => DVector::from_vec(v.clone()),
         None => model.qpos0.clone(),
     };
+    // Each ball and free joint's quaternion made unit as MuJoCo 3.5.0's
+    // compiler makes a keyframe's: `mjuu_normvec` (`user_model.cc:3896-3901`),
+    // then `mj_normalizeQuat` (`:5121-5123`).
+    for (j, kind) in model.jnt_type.iter().enumerate() {
+        let adr = match kind {
+            MjJointType::Ball => model.jnt_qpos_adr[j],
+            MjJointType::Free => model.jnt_qpos_adr[j] + 3,
+            MjJointType::Hinge | MjJointType::Slide => continue,
+        };
+        let mut q = [qpos[adr], qpos[adr + 1], qpos[adr + 2], qpos[adr + 3]];
+        orientation::normvec(&mut q);
+        orientation::normalize4(&mut q);
+        qpos.as_mut_slice()[adr..adr + 4].copy_from_slice(&q);
+    }
     let qvel = match mjcf_kf.qvel {
         Some(ref v) => DVector::from_vec(v.clone()),
         None => DVector::zeros(model.nv),
@@ -149,12 +163,15 @@ fn resolve_keyframe(mjcf_kf: &MjcfKeyframe, model: &Model) -> Result<Keyframe> {
             .collect(),
     };
 
-    // Mocap quaternions: reshape flat array into Vec<UnitQuaternion<f64>>
+    // Mocap quaternions, each made unit by `mjuu_normvec` as MuJoCo 3.5.0's
+    // compiler makes a keyframe's (`user_model.cc:3904-3906`).
     let mquat = match mjcf_kf.mquat {
         Some(ref v) => v
             .chunks_exact(4)
             .map(|c| {
-                UnitQuaternion::new_normalize(nalgebra::Quaternion::new(c[0], c[1], c[2], c[3]))
+                let mut q = [c[0], c[1], c[2], c[3]];
+                orientation::normvec(&mut q);
+                UnitQuaternion::new_unchecked(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]))
             })
             .collect(),
         None => (0..model.nbody)
@@ -542,7 +559,8 @@ pub fn front_end(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<FrontEnd>
         composite::expand_composites(&mut mjcf.worldbody, &resolver, &mjcf.compiler, base_path)?;
     mjcf.contact.excludes.extend(composite_excludes);
 
-    // Expand <frame> elements: compose transforms into children, lift onto parent bodies.
+    // Expand <frame> elements: compose transforms into children (a geom keeps its frame, which
+    // `process_geom` composes last), lift onto parent bodies.
     // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
     // visible to those passes. MuJoCo gives a frame's elements to its body as it reads
     // them (`mjs_setFrame`, `xml_native_reader.cc:3584`, `:3774`) and composes the frame

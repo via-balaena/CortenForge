@@ -1,0 +1,1 @@
+<mujoco><worldbody><body name="m" mocap="true" pos="0 0 1"><geom size="0.1"/></body></worldbody><keyframe><key name="k" mpos="0 0 1" mquat="1 0 0 4e-8"/></keyframe></mujoco>

@@ -1,0 +1,1 @@
+<mujoco><compiler alignfree="true"/><worldbody><body name="m" mocap="true" pos="0 0 1"><geom size="0.1" pos="0.2 0 0"/></body><body name="b" pos="0 1 1"><freejoint/><geom size="0.1" pos="0.2 0 0"/></body></worldbody><sensor><framepos objtype="xbody" objname="b"/><framequat objtype="xbody" objname="b"/><framepos objtype="body" objname="b"/></sensor></mujoco>

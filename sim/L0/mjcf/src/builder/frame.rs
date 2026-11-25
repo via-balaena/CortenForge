@@ -1,8 +1,9 @@
 //! Frame expansion for MJCF body trees.
 //!
 //! `<frame>` elements are coordinate-system wrappers that compose their SE(3)
-//! transform into each child element and then disappear.  This module expands
-//! all frames before the builder processes bodies.
+//! transform into each child element and then disappear; a geom keeps its
+//! frame, which the builder composes last (`MjcfGeom::frame`).  This module
+//! expands all frames before the builder processes bodies.
 //!
 //! Each element a frame holds reaches it with its class applied and its
 //! `fromto` resolved (`resolve::apply_defaults`), so a frame composes the
@@ -41,6 +42,22 @@ pub fn frame_accum_child(
     *child_quat = UnitQuaternion::new_unchecked(Quaternion::new(w, x, y, z));
 }
 
+/// A frame's inverse, in MuJoCo 3.5.0's arithmetic (`mjuu_frameinvert`,
+/// `user_util.cc:452-466`): its position turned by its quaternion's
+/// conjugate (`mjuu_localaxis`, `quat2mat`, `mulvecmat`) and negated, and
+/// that conjugate.
+pub fn frame_invert(
+    pos: &Vector3<f64>,
+    quat: &UnitQuaternion<f64>,
+) -> (Vector3<f64>, UnitQuaternion<f64>) {
+    let [w, x, y, z] = wxyz(quat);
+    let local = mulvecmat(&[pos.x, pos.y, pos.z], &quat2mat(&[w, -x, -y, -z]));
+    (
+        Vector3::new(-local[0], -local[1], -local[2]),
+        UnitQuaternion::new_unchecked(Quaternion::new(w, -x, -y, -z)),
+    )
+}
+
 /// `q`'s components, (w, x, y, z).
 fn wxyz(q: &UnitQuaternion<f64>) -> [f64; 4] {
     [q.w, q.i, q.j, q.k]
@@ -49,7 +66,8 @@ fn wxyz(q: &UnitQuaternion<f64>) -> [f64; 4] {
 /// Expand every `<frame>` of a body tree.
 ///
 /// Frames are coordinate-system wrappers that compose their transform into
-/// each element they hold and then disappear. A frame's contents take its
+/// each element they hold and then disappear; a geom keeps its frame, which
+/// the builder composes last (`MjcfGeom::frame`). A frame's contents take its
 /// place among its body's elements, in the order the document writes them
 /// (`MjcfBody::items`), as MuJoCo 3.5.0 adds each element to its body when it
 /// reads it. This runs before `discardvisual`/`fusestatic` and before
@@ -140,10 +158,10 @@ impl Faults {
 
 /// One frame's contents, in its document order, composed with its transform
 /// (itself composed with `outer`'s, the pose of the frame holding it, where a
-/// frame holds it) and added to `placed`, the elements of `body`; a nested
-/// frame's at its place. An orientation refused is kept in `faults`, and its
-/// element left out (a frame's with its contents), or, a body's, placed as
-/// written.
+/// frame holds it), a geom given it, and added to `placed`, the elements of
+/// `body`; a nested frame's at its place. An orientation refused is kept in
+/// `faults`, and its element left out (a frame's with its contents), or, a
+/// body's, placed as written.
 fn dissolve(
     mut frame: MjcfFrame,
     outer: Option<(&Vector3<f64>, &UnitQuaternion<f64>)>,
@@ -182,10 +200,14 @@ fn dissolve(
 
     for element in Contents::take_from_frame(&mut frame).into_elements() {
         let element = match element {
-            // Each geom's orientation (a `fromto` resolved already gives its
-            // `quat`), composed with the frame's.
+            // Each geom keeps its own pose and is given the frame, which the
+            // builder composes after the geom's orientation and its mesh's
+            // frame, as MuJoCo composes a geom's (`user_objects.cc:3831-3834`);
+            // its orientation alternative is checked here, where the frame's
+            // other elements' are (a `fromto` resolved already gives its
+            // `quat`).
             Element::Geom(mut g) => {
-                let geom_quat = match resolve_orientation(
+                if let Err(e) = resolve_orientation(
                     g.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
                     g.euler,
                     g.axisangle,
@@ -193,22 +215,11 @@ fn dissolve(
                     g.zaxis,
                     compiler,
                 ) {
-                    Ok(q) => q,
-                    Err(e) => {
-                        let at = in_body(ElementKind::Geom, g.name.as_deref());
-                        Faults::keep(&mut faults.geom, e.on("geom").at(at));
-                        continue;
-                    }
-                };
-                let mut gpos = g.pos.unwrap_or_else(Vector3::zeros);
-                let mut gquat = geom_quat;
-                frame_accum_child(&pos, &quat, &mut gpos, &mut gquat);
-                g.pos = Some(gpos);
-                g.quat = Some(quat_to_wxyz(&gquat));
-                g.euler = None;
-                g.axisangle = None;
-                g.xyaxes = None;
-                g.zaxis = None;
+                    let at = in_body(ElementKind::Geom, g.name.as_deref());
+                    Faults::keep(&mut faults.geom, e.on("geom").at(at));
+                    continue;
+                }
+                g.frame = Some((pos, quat_to_wxyz(&quat)));
                 Element::Geom(g)
             }
             // Each site's quaternion as written, composed with the frame's,

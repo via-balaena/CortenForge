@@ -22,7 +22,7 @@
     <geom name="ground" type="hfield" hfield="hf" pos="3 0 0"/>
     <camera name="watch" mode="targetbody" target="base" pos="2 2 2"/>
     <body name="base" pos="0 0 1" quat="1 0 0 0">
-      <freejoint name="root"/>
+      <freejoint name="root" align="true"/>
       <geom name="fitted" type="box" mesh="tet" fitscale="2"/>
       <site name="s0" pos="0 0 0.1" size="0.02"/>
       <body name="arm" childclass="arm" pos="0 0 0.3">

@@ -1,0 +1,1 @@
+<mujoco><asset><mesh name="m" vertex="0 0 0  0.3 0 0  0 0.2 0  0 0 0.1  0.25 0.18 0.05  0.1 0.05 0.12"/></asset><worldbody><geom type="plane" size="2 2 0.1"/><body name="b" pos="0 0 0.3"><freejoint/><frame pos="0.05 0 0" euler="20 30 40"><geom type="mesh" mesh="m" pos="0.02 0.01 0"/></frame></body></worldbody><sensor><framepos objtype="body" objname="b"/></sensor></mujoco>
