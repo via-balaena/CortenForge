@@ -43,9 +43,6 @@ pub fn parse_urdf_str(xml: &str) -> Result<UrdfRobot> {
         return Err(UrdfError::missing_element("robot", "URDF document"));
     }
     let mujoco = parse_mujoco(&root)?;
-    if mujoco != UrdfMujoco::default() {
-        crate::converter::check_sections(&mujoco)?;
-    }
     let mut robot = UrdfRobot::new("");
     robot.name = root.attr("name").map(str::to_owned);
     robot.mujoco = mujoco;
@@ -503,54 +500,96 @@ fn check_keyword(element: &Element, name: &'static str, keywords: &[&str]) -> Re
     }
 }
 
+/// Each attribute of `element` in `reads`, in that order, which is the order
+/// MuJoCo 3.5.0's reader reads them in (not the document's), checked alone by
+/// sim-mjcf's reader as the section `tag` (`converter::check_section`), or,
+/// where `child` names it, as that child of an empty `tag`.
+fn check_in_order(tag: &str, child: Option<&str>, element: &Element, reads: &[&str]) -> Result<()> {
+    for name in reads {
+        if let Some(value) = element.attr(name) {
+            let one = [((*name).to_owned(), value.to_owned())];
+            match child {
+                Some(child) => crate::converter::check_section(tag, &[], Some((child, &one)))?,
+                None => crate::converter::check_section(tag, &one, None)?,
+            }
+        }
+    }
+    Ok(())
+}
+
 /// MuJoCo's own sections in a URDF, read first, as MuJoCo 3.5.0's importer
 /// reads them (`xml_urdf.cc:93-111`): the root's one `<mujoco>`, and in it
 /// its one `<compiler>`, `<option>` and `<size>`, each by its reader's
 /// attributes ([`UrdfSection`]); a `<mujoco>` elsewhere, as in a link, is
-/// not read (measured). Three are checked here, as MuJoCo checks them, for
-/// the converter does not pass them on: `angle`'s keyword (then forced to
-/// radians, `:111`), `eulerseq`'s length (`rpy` is read as "XYZ" whatever it
-/// says, `:666`) and `discardvisual`'s keyword (it decides whether visuals
-/// are geoms). [`parse_urdf_str`] then has sim-mjcf's reader check the rest
-/// (`check_sections`) before the links, as MuJoCo's MJCF reader would; the
-/// converted model's own sections are read from them again.
+/// not read (measured). Each section is checked as MuJoCo meets it: looked up
+/// (a second one refused), its attributes in its reader's order, then its
+/// child looked up and its attributes, then the next section; so of two faults
+/// the one MuJoCo meets first is refused. Three attributes are checked here:
+/// `angle`'s keyword (MuJoCo then forces radians, `:111`, and the converter
+/// writes `radian`), `eulerseq`'s length (`rpy` is read as "XYZ" whatever it
+/// says, `:666`, and the converter writes `XYZ`) and `discardvisual`'s keyword
+/// (its value decides how strictly visuals are read; the converter passes it
+/// on). sim-mjcf's reader checks every other one ([`check_in_order`]); the
+/// converted model's sections are read from them again.
 fn parse_mujoco(root: &Element) -> Result<UrdfMujoco> {
     let Some(mujoco) = root.find_sub("mujoco", false)? else {
         return Ok(UrdfMujoco::default());
     };
     let compiler = match mujoco.find_sub("compiler", false)? {
         Some(compiler) => {
-            check_keyword(compiler, "angle", &["radian", "degree"])?;
-            if compiler.attr("eulerseq").is_some_and(|seq| seq.len() != 3) {
-                return Err(UrdfError::invalid_attribute(
-                    "eulerseq",
-                    "compiler",
-                    "euler format must have length 3",
-                ));
+            for name in COMPILER_READS {
+                match name {
+                    "angle" => check_keyword(compiler, "angle", &["radian", "degree"])?,
+                    "eulerseq" => {
+                        if compiler.attr("eulerseq").is_some_and(|seq| seq.len() != 3) {
+                            return Err(UrdfError::invalid_attribute(
+                                "eulerseq",
+                                "compiler",
+                                "euler format must have length 3",
+                            ));
+                        }
+                    }
+                    "discardvisual" => {
+                        check_keyword(compiler, "discardvisual", &["false", "true"])?;
+                    }
+                    _ => check_in_order("compiler", None, compiler, &[name])?,
+                }
             }
-            check_keyword(compiler, "discardvisual", &["false", "true"])?;
             let mut attributes = read_attributes(compiler, &COMPILER_READS);
             attributes.retain(|(name, _)| name != "angle" && name != "eulerseq");
-            let child = compiler
-                .find_sub("lengthrange", false)?
-                .map(|l| read_attributes(l, &LENGTHRANGE_READS));
+            let lengthrange = compiler.find_sub("lengthrange", false)?;
+            if let Some(l) = lengthrange {
+                check_in_order("compiler", Some("lengthrange"), l, &LENGTHRANGE_READS)?;
+            }
+            let child = lengthrange.map(|l| read_attributes(l, &LENGTHRANGE_READS));
             Some(UrdfSection { attributes, child })
         }
         None => None,
     };
     let option = match mujoco.find_sub("option", false)? {
-        Some(option) => Some(UrdfSection {
-            attributes: read_attributes(option, &OPTION_READS),
-            child: option
-                .find_sub("flag", false)?
-                .map(|f| read_attributes(f, &FLAG_READS)),
-        }),
+        Some(option) => {
+            check_in_order("option", None, option, &OPTION_READS)?;
+            let flag = option.find_sub("flag", false)?;
+            if let Some(f) = flag {
+                check_in_order("option", Some("flag"), f, &FLAG_READS)?;
+            }
+            Some(UrdfSection {
+                attributes: read_attributes(option, &OPTION_READS),
+                child: flag.map(|f| read_attributes(f, &FLAG_READS)),
+            })
+        }
         None => None,
     };
-    let size = mujoco.find_sub("size", false)?.map(|size| UrdfSection {
-        attributes: read_attributes(size, &SIZE_READS),
-        child: None,
-    });
+    let size = match mujoco.find_sub("size", false)? {
+        Some(size) => {
+            check_in_order("size", None, size, &SIZE_READS)?;
+            Some(UrdfSection {
+                attributes: read_attributes(size, &SIZE_READS),
+                child: None,
+            })
+        }
+        None => None,
+    };
     Ok(UrdfMujoco {
         compiler,
         option,
