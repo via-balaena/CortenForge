@@ -10,12 +10,15 @@
 //! is required; every number is read by MuJoCo's rules ([`read_numbers`], a
 //! mesh's scale by [`read_scale`]). A fixed joint's limit and dynamics and a
 //! geometry's shapes after the one it takes, which the importer does not
-//! read, are not read here; a visual's origin and geometry (it discards
-//! visuals under URDF's `discardvisual`) and a `velocity`, which it does not
-//! read either, are kept where they can be read and refused nowhere. A
-//! `<mimic>`, which it does not read, this crate makes a joint equality of
+//! read, are not read here; under URDF's `discardvisual`, its default, a
+//! visual's origin and geometry and a `velocity`, which it does not read
+//! either, are kept where they can be read and refused nowhere, and under
+//! `discardvisual="false"` a visual is read as a collision is. A `<mimic>`,
+//! which it does not read, this crate makes a joint equality of
 //! (`D-URDF-MIMIC`). Each visual and collision is given the colour MuJoCo
-//! gives its geom (`UrdfVisual::rgba`, `UrdfCollision::rgba`). What it reads otherwise than MuJoCo is registered in
+//! gives its geom (`UrdfVisual::rgba`, `UrdfCollision::rgba`), and MuJoCo's
+//! own `<mujoco>` sections are read ([`parse_mujoco`]). What it reads
+//! otherwise than MuJoCo is registered in
 //! `sim/L0/tests/assets/census/divergences.tsv`.
 
 use std::collections::{HashMap, HashSet};
@@ -459,7 +462,7 @@ const FLAG_READS: [&str; 25] = [
 ];
 
 /// The attributes MuJoCo 3.5.0's `<size>` reader reads (`mjXReader::Size`,
-/// `xml_native_reader.cc:1281-1423`).
+/// `xml_native_reader.cc:1279-1431`).
 const SIZE_READS: [&str; 14] = [
     "memory",
     "nuserdata",
@@ -723,7 +726,7 @@ fn parse_origin(element: &Element) -> Result<UrdfOrigin> {
 
 /// A `<visual>`, as MuJoCo 3.5.0's importer reads one under URDF's
 /// `discardvisual` (`xml_urdf.cc:299-338`; measured): its `<material>`, read
-/// by [`parse_link`] for its colour, gives the visual its name; its origin
+/// by [`parse_link`] for its colour, gives the visual its `material` name; its origin
 /// and geometry are not read, so a visual whose origin or geometry is not
 /// readable is dropped (`None`), where MuJoCo makes no geom. Its colour is
 /// [`parse_link`]'s to give.
@@ -745,7 +748,7 @@ fn parse_visual(element: &Element, material: Option<&Element>) -> Option<UrdfVis
 
 /// A `<visual>` the importer makes a geom (`mjXURDF::Geom`,
 /// `xml_urdf.cc:524-643`, as a collision): its required `<geometry>`, then
-/// its origin; its material, read by [`parse_link`], gives it its name.
+/// its origin; its material, read by [`parse_link`], gives its `material` name.
 fn parse_kept_visual(element: &Element, material: Option<&Element>) -> Result<UrdfVisual> {
     let geometry = parse_geometry(element.required_sub("geometry")?)?;
     Ok(UrdfVisual {

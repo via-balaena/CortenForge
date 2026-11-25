@@ -53,8 +53,10 @@
 //! - `<link name="...">` - Rigid body definition
 //! - `<inertial>` - Mass, center of mass, inertia tensor
 //! - `<collision>` - Collision geometry (box, sphere, cylinder, mesh)
-//! - `<visual>` - Not written: MuJoCo 3.5.0's importer discards visuals under
-//!   URDF's `discardvisual` (Layer 0 has no rendering)
+//! - `<visual>` - Not written under URDF's `discardvisual`, its default, as
+//!   MuJoCo 3.5.0's importer discards visuals; under a URDF's
+//!   `<mujoco><compiler discardvisual="false">`, a geom with no contacts in
+//!   group 1, as the importer makes one
 //!
 //! ## Joints
 //!

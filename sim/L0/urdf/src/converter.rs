@@ -24,7 +24,7 @@
 //! | `<joint>` | `<joint>` (inside child body; a planar one: two slides and a hinge) |
 //! | `<inertial>` | `<inertial>` |
 //! | `<collision>` | `<geom>` |
-//! | `<visual>` | not written (MuJoCo's importer discards visuals under URDF's `discardvisual`) |
+//! | `<visual>` | not written under URDF's `discardvisual`, its default; a `<geom>` of no contacts in group 1 under `discardvisual="false"` |
 //!
 //! ## Key Differences
 //!
@@ -57,7 +57,15 @@ const WORLD: &str = "world";
 /// written as entities, so the document the converter writes reads the text
 /// the URDF held.
 fn escape(text: &str) -> std::borrow::Cow<'_, str> {
-    quick_xml::escape::escape(text)
+    let escaped = quick_xml::escape::escape(text);
+    // A carriage return as a character reference: written as itself, the
+    // reader would take it for a line end and read `\n` (measured: a robot
+    // named `a&#13;b` is "a\rb" in MuJoCo 3.5.0).
+    if escaped.contains('\r') {
+        std::borrow::Cow::Owned(escaped.replace('\r', "&#13;"))
+    } else {
+        escaped
+    }
 }
 
 /// A mesh file's path as the converter writes it: under `strippath`, the
@@ -603,7 +611,13 @@ impl<'a> Converter<'a> {
         .into();
         let mujoco = &self.robot.mujoco;
         if let Some(section) = &mujoco.compiler {
-            for (name, value) in &section.attributes {
+            // `angle` and `eulerseq` stay as written above, whatever a robot
+            // built in code holds (the parser keeps neither).
+            let kept = section
+                .attributes
+                .iter()
+                .filter(|(name, _)| name != "angle" && name != "eulerseq");
+            for (name, value) in kept {
                 match compiler.iter_mut().find(|(written, _)| written == name) {
                     Some(slot) => slot.1.clone_from(value),
                     None => compiler.push((name.clone(), value.clone())),
@@ -982,9 +996,8 @@ impl<'a> Converter<'a> {
 
     /// Every mesh the geoms name ([`geom_elements`]), as MuJoCo 3.5.0's
     /// importer makes them (`xml_urdf.cc:576-626`), links and their geoms in
-    /// document order: one per file
-    /// stem and scale, the first scale of a stem named by the stem, each later
-    /// one by the stem and its index. A geom names the asset of its own stem
+    /// document order: one per file stem and scale, the first scale of a stem
+    /// named by the stem, each later one by the stem and its index. A geom names the asset of its own stem
     /// and scale, where MuJoCo gives a geom of a stem's later scale, met a
     /// second time, the stem's first mesh (`:604-616`, `:632`; measured:
     /// scales 1, 2, 2 give the third geom the scale-1 mesh;
@@ -1056,7 +1069,7 @@ mod tests {
 
     /// A robot without a name loads with MuJoCo 3.5.0's default name,
     /// "MuJoCo Model", as its importer gives it, and `name=""` with the empty
-    /// one (measured: RL-10c2's start documents `n01`, `n02`, `n03`).
+    /// one (measured on these three documents).
     #[test]
     fn a_robot_without_a_name_takes_mujocos_default_name() {
         for (head, want) in [
@@ -1068,6 +1081,38 @@ mod tests {
             let model = crate::load_urdf_model(&urdf).expect("loads");
             assert_eq!(model.name, want, "{urdf}");
         }
+    }
+
+    /// Text the URDF holds reaches the converted model as written, a carriage
+    /// return too, which written as itself the reader would take for a line
+    /// end (measured: a robot named `a&#13;b` is "a\rb" in MuJoCo 3.5.0).
+    #[test]
+    fn a_carriage_return_in_a_name_is_kept() {
+        let model = crate::load_urdf_model(r#"<robot name="a&#13;b"><link name="base"/></robot>"#)
+            .expect("loads");
+        assert_eq!(model.name, "a\rb");
+    }
+
+    /// A robot built in code whose `<compiler>` holds an `angle` or `eulerseq`
+    /// is converted in radians and "XYZ", as a parsed one is (the parser keeps
+    /// neither: MuJoCo 3.5.0's importer reads a URDF so whatever they say).
+    #[test]
+    fn a_built_robots_angle_and_eulerseq_are_not_written() {
+        let mut robot = UrdfRobot::new("r").with_link(crate::types::UrdfLink::new("base"));
+        robot.mujoco.compiler = Some(crate::types::UrdfSection {
+            attributes: vec![
+                ("angle".to_owned(), "degree".to_owned()),
+                ("eulerseq".to_owned(), "zyx".to_owned()),
+            ],
+            child: None,
+        });
+        let mjcf = robot_to_mjcf(&robot).expect("converts");
+        assert!(
+            mjcf.contains(r#"angle="radian" eulerseq="XYZ""#)
+                && !mjcf.contains("degree")
+                && !mjcf.contains("zyx"),
+            "{mjcf}"
+        );
     }
 
     #[test]
@@ -1582,7 +1627,7 @@ mod tests {
 
     /// Under `discardvisual="false"` a visual is a geom, made with its mesh in
     /// document order among the link's collisions, as MuJoCo 3.5.0's importer
-    /// makes them (measured, a visual, a collision and a visual of one file:
+    /// makes them (measured on this document, a visual and a collision of one file:
     /// meshes `tet` at scale 1 and `tet1` at scale 2, geoms `v` on `tet` with
     /// no contacts in group 1 and `c` on `tet1`).
     #[test]
