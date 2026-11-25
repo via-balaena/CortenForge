@@ -598,11 +598,12 @@ fn material_colour(
 /// A link's contents (`mjXURDF::Body`, `xml_urdf.cc:227-364`): its
 /// `<inertial>`, then its visuals and collisions in order, recorded in
 /// [`UrdfLink::elements`]. The link has one colour, unset at its start
-/// (`:291`): each visual's material sets it, and each visual and collision
-/// takes it as it is when read (`:322-323`, `:344-347`). A visual is read as
-/// a collision is where the importer keeps visuals (`discardvisual` false,
-/// `:318-319`: its geometry and origin, required), and otherwise as
-/// [`parse_visual`] reads it.
+/// (`:291`, a red of -1): each visual's material sets it, whatever its values,
+/// and each visual and collision takes it as it is when read where its red is
+/// not negative, and no colour otherwise (`:322-323`, `:344-347`). A visual is
+/// read as a collision is where the importer keeps visuals (`discardvisual`
+/// false, `:318-319`: its required geometry, then its origin), and otherwise
+/// as [`parse_visual`] reads it.
 fn parse_link(
     element: &Element,
     materials: &HashMap<String, [f64; 4]>,
@@ -612,6 +613,9 @@ fn parse_link(
     if let Some(inertial) = element.find_sub("inertial", false)? {
         link.inertial = Some(parse_inertial(inertial)?);
     }
+    // The link's colour, set by every visual's material; a geom is given it
+    // only where its red is not negative (`:322`, `:345`).
+    let given = |rgba: Option<[f64; 4]>| rgba.filter(|c| c[0] >= 0.0);
     let mut rgba = None;
     for child in &element.children {
         match child.tag.as_str() {
@@ -628,14 +632,14 @@ fn parse_link(
                     Some(parse_kept_visual(child, material)?)
                 };
                 if let Some(mut visual) = visual {
-                    visual.rgba = rgba;
+                    visual.rgba = given(rgba);
                     link.elements.push(UrdfElement::Visual(link.visuals.len()));
                     link.visuals.push(visual);
                 }
             }
             "collision" => {
                 let mut collision = parse_collision(child)?;
-                collision.rgba = rgba;
+                collision.rgba = given(rgba);
                 link.elements
                     .push(UrdfElement::Collision(link.collisions.len()));
                 link.collisions.push(collision);

@@ -181,9 +181,9 @@ pub struct UrdfVisual {
     /// Material name reference.
     pub material: Option<String>,
     /// The colour MuJoCo 3.5.0's importer gives the visual's geom, where it
-    /// keeps one: the colour its link's visuals last set, this one's included
-    /// (`xml_urdf.cc:291-323`), single-precision values; `None` where none
-    /// did.
+    /// keeps one: the colour its link's visuals last set, this one's included,
+    /// where its red is not negative (`xml_urdf.cc:291-323`), single-precision
+    /// values; `None` otherwise.
     pub rgba: Option<[f64; 4]>,
 }
 
@@ -198,9 +198,9 @@ pub struct UrdfCollision {
     /// Geometry shape.
     pub geometry: UrdfGeometry,
     /// The colour MuJoCo 3.5.0's importer gives the geom: the colour its
-    /// link's visuals last set before it (`xml_urdf.cc:291-316`, `:344-347`),
-    /// single-precision values; `None` where none did, for the geom's
-    /// default.
+    /// link's visuals last set before it, where its red is not negative
+    /// (`xml_urdf.cc:291-316`, `:344-347`), single-precision values; `None`
+    /// otherwise, for the geom's default.
     pub rgba: Option<[f64; 4]>,
 }
 
