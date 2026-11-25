@@ -650,7 +650,10 @@ impl<'a> Converter<'a> {
             .map(|link| link.name.as_str())
             .filter(|name| !self.child_to_joint.contains_key(name))
             .collect();
-        if roots.is_empty() {
+        // A robot without links is an empty world, as MuJoCo 3.5.0's importer
+        // loads it (measured: `<robot name="r"/>`, one body); with links, none
+        // a root, the parser has refused the loop already.
+        if roots.is_empty() && !self.robot.links.is_empty() {
             return Err(UrdfError::NoRootLink);
         }
         Ok(roots)
@@ -813,6 +816,9 @@ impl<'a> Converter<'a> {
             UrdfJointType::Prismatic => ("slide", true),
             UrdfJointType::Fixed => return Ok(()), // Fixed joints = no joint in MJCF
             UrdfJointType::Floating => ("free", false),
+            // A ball's axis is (0, 0, 1) whatever is written (MuJoCo's
+            // compiler fixes it), so none is written.
+            UrdfJointType::Spherical => ("ball", false),
             UrdfJointType::Planar => unreachable!("handled above"),
         };
 
@@ -833,7 +839,7 @@ impl<'a> Converter<'a> {
         if let Some(limit) = &joint.limit
             && (matches!(
                 joint.joint_type,
-                UrdfJointType::Revolute | UrdfJointType::Prismatic
+                UrdfJointType::Revolute | UrdfJointType::Prismatic | UrdfJointType::Spherical
             ) || (joint.joint_type == UrdfJointType::Continuous && !autolimits))
         {
             attrs.push_str(&limit_attrs(limit, autolimits));

@@ -310,6 +310,10 @@ pub enum UrdfJointType {
     Floating,
     /// Planar (2D translation + rotation) joint.
     Planar,
+    /// Spherical (3-DOF rotation) joint, not in URDF's specification; MuJoCo
+    /// 3.5.0's importer reads it, as Bullet does, as a ball joint
+    /// (`xml_urdf.cc:42`, `:479-484`).
+    Spherical,
 }
 
 impl UrdfJointType {
@@ -322,6 +326,7 @@ impl UrdfJointType {
             "fixed" => Some(Self::Fixed),
             "floating" => Some(Self::Floating),
             "planar" => Some(Self::Planar),
+            "spherical" => Some(Self::Spherical),
             _ => None,
         }
     }
@@ -332,7 +337,7 @@ impl UrdfJointType {
         match self {
             Self::Fixed => 0,
             Self::Revolute | Self::Continuous | Self::Prismatic => 1,
-            Self::Planar => 3,
+            Self::Planar | Self::Spherical => 3,
             Self::Floating => 6,
         }
     }
@@ -665,6 +670,7 @@ mod tests {
         assert_eq!(UrdfJointType::Continuous.dof(), 1);
         assert_eq!(UrdfJointType::Prismatic.dof(), 1);
         assert_eq!(UrdfJointType::Planar.dof(), 3);
+        assert_eq!(UrdfJointType::Spherical.dof(), 3);
         assert_eq!(UrdfJointType::Floating.dof(), 6);
     }
 
@@ -675,6 +681,12 @@ mod tests {
             Some(UrdfJointType::Revolute)
         );
         assert_eq!(UrdfJointType::from_str("fixed"), Some(UrdfJointType::Fixed));
+        assert_eq!(
+            UrdfJointType::from_str("spherical"),
+            Some(UrdfJointType::Spherical)
+        );
+        // MuJoCo's type map is case-sensitive (measured: "Spherical" refused).
+        assert_eq!(UrdfJointType::from_str("Spherical"), None);
         assert_eq!(UrdfJointType::from_str("invalid"), None);
     }
 
