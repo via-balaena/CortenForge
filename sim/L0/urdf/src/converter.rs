@@ -850,12 +850,19 @@ impl<'a> Converter<'a> {
         // (D-URDF-CONTINUOUS-LIMIT: MuJoCo limits it), but where
         // `autolimits="false"`, under which MuJoCo's compiler refuses a range
         // its importer left automatic (`checklimited`), its range is written
-        // so: refused, or loaded unlimited, as MuJoCo's is.
+        // so: refused, or loaded unlimited, as MuJoCo's is. A floating
+        // joint's range is written as the importer reads it
+        // (`xml_urdf.cc:498-503`, every joint's but a fixed one's), and limits
+        // nothing: MuJoCo's compiler makes a free joint unlimited before any
+        // check of its range (`user_objects.cc:2895-2898`).
         let autolimits = self.robot.mujoco.autolimits();
         if let Some(limit) = &joint.limit
             && (matches!(
                 joint.joint_type,
-                UrdfJointType::Revolute | UrdfJointType::Prismatic | UrdfJointType::Spherical
+                UrdfJointType::Revolute
+                    | UrdfJointType::Prismatic
+                    | UrdfJointType::Spherical
+                    | UrdfJointType::Floating
             ) || (joint.joint_type == UrdfJointType::Continuous && !autolimits))
         {
             attrs.push_str(&limit_attrs(limit, autolimits));
