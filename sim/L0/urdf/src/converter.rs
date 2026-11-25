@@ -24,7 +24,7 @@
 //! | `<joint>` | `<joint>` (inside child body; a planar one: two slides and a hinge) |
 //! | `<inertial>` | `<inertial>` |
 //! | `<collision>` | `<geom>` |
-//! | `<visual>` | not written under URDF's `discardvisual`, its default; a `<geom>` of no contacts in group 1 under `discardvisual="false"` |
+//! | `<visual>` | a `<geom>` of no contacts in group 1, only under `discardvisual="false"` |
 //!
 //! ## Key Differences
 //!
@@ -828,7 +828,7 @@ impl<'a> Converter<'a> {
         // (D-URDF-CONTINUOUS-LIMIT: MuJoCo limits it), but where
         // `autolimits="false"`, under which MuJoCo's compiler refuses a range
         // its importer left automatic (`checklimited`), its range is written
-        // so, and refused as MuJoCo's is.
+        // so: refused, or loaded unlimited, as MuJoCo's is.
         let autolimits = self.robot.mujoco.autolimits();
         if let Some(limit) = &joint.limit
             && (matches!(
@@ -997,9 +997,10 @@ impl<'a> Converter<'a> {
     /// Every mesh the geoms name ([`geom_elements`]), as MuJoCo 3.5.0's
     /// importer makes them (`xml_urdf.cc:576-626`), links and their geoms in
     /// document order: one per file stem and scale, the first scale of a stem
-    /// named by the stem, each later one by the stem and its index. A geom names the asset of its own stem
-    /// and scale, where MuJoCo gives a geom of a stem's later scale, met a
-    /// second time, the stem's first mesh (`:604-616`, `:632`; measured:
+    /// named by the stem, each later one by the stem and its index. A geom
+    /// names the asset of its own stem and scale, where MuJoCo gives a geom of
+    /// a stem's later scale, met a second time, the stem's first mesh
+    /// (`:604-616`, `:632`; measured:
     /// scales 1, 2, 2 give the third geom the scale-1 mesh;
     /// `D-URDF-MESH-SCALE`).
     fn collect_mesh_assets(&mut self) {
@@ -1385,8 +1386,9 @@ mod tests {
     }
 
     /// ★ A `continuous` joint is unbounded, so a `<limit>` on it must NOT
-    /// become an MJCF range — only revolute and prismatic are limited. Emitting
-    /// a range here would silently clamp a joint URDF says spins freely.
+    /// become an MJCF range, but under `autolimits="false"` (where MuJoCo
+    /// refuses it, D-URDF-CONTINUOUS-LIMIT). Emitting a range here would
+    /// silently clamp a joint URDF says spins freely.
     #[test]
     fn a_limit_on_a_continuous_joint_is_not_emitted_as_a_range() {
         let mjcf = urdf_to_mjcf(&robot_with_joint(
@@ -1398,8 +1400,8 @@ mod tests {
         .expect("conversion should succeed");
 
         assert!(mjcf.contains(r#"name="c" type="hinge""#));
-        // No range at all: an automatic one would be limited (since C3 no
-        // `limited` is written for it), clamping free rotation.
+        // No range at all: an automatic one, written without `limited`,
+        // would be limited, clamping free rotation.
         assert!(
             !mjcf.contains("range=") && !mjcf.contains("limited="),
             "continuous joints are unbounded; a range would clamp free rotation: {mjcf}"

@@ -11,15 +11,19 @@
 //! (`:318-319`, `:538-543`).
 //!
 //! Every expected value was printed on the census's oracle (2026-11-25):
-//! MuJoCo 3.5.0's URDF import's. What no case here can see: the mesh
-//! paths' attributes (`meshdir`, `assetdir`, `texturedir`, `strippath`,
-//! `fitaabb`; no case loads a mesh, ledger L458), the sizes no `Model`
+//! MuJoCo 3.5.0's URDF import's. Each option is compared as read; of what
+//! the five steps can show, the arm's centre of mass off its hinge, only the
+//! timestep, gravity, the RK4 integrator, wind, density and viscosity, and
+//! the gravity flag change them (measured in review). What no case here can
+//! see: the mesh paths' attributes (`meshdir`, `assetdir`, `texturedir`,
+//! `strippath`, `fitaabb`; no case loads a mesh, ledger L458), `usethread`
+//! and `saveinertial` (no `Model` field holds them), the sizes no `Model`
 //! holds (`memory`, `nuserdata`, `nconmax`, `njmax`, `nstack`, `nuser_cam`),
 //! `nuser_site`, `nuser_tendon`, `nuser_actuator` and `nuser_sensor` (a
 //! URDF makes no object of those kinds, and with none MuJoCo keeps the
 //! written count where sim-mjcf has 0: ledger L461), `nkey` (ledger L455),
-//! `<lengthrange>` (ledger L37), and the `nativeccd` flag (its step panics
-//! here, D-NATIVECCD).
+//! `<lengthrange>` (ledger L37), and the `nativeccd` flag (making its
+//! `Data` panics here, D-NATIVECCD).
 
 // The values are MuJoCo's, printed to the last digit.
 #![allow(clippy::unwrap_used, clippy::unreadable_literal)]
@@ -4608,6 +4612,16 @@ const CASES: &[(&str, Expect)] = &[
     (
         r#"<robot name="r"><mujoco><compiler autolimits="false"/></mujoco><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0.1"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="continuous"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5" rpy="0.3 0 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" velocity="1"/></joint></robot>"#,
         Expect::Refused("joint has `range` but not `limited`"),
+    ),
+    // MuJoCo: "XML Error: invalid keyword: 'aaa'"
+    (
+        r#"<robot name="r"><mujoco><option><flag energy="bbb" constraint="aaa"/></option></mujoco><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0.1"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5" rpy="0.3 0 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="2" velocity="1"/></joint></robot>"#,
+        Expect::Refused("invalid keyword \"aaa\" in attribute 'constraint' on <flag>"),
+    ),
+    // MuJoCo: "XML Error: nuser_body must be >= -1"
+    (
+        r#"<robot name="r"><mujoco><size nuser_jnt="-3" nuser_body="-2"/></mujoco><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0.1"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5" rpy="0.3 0 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="2" velocity="1"/></joint></robot>"#,
+        Expect::Refused("invalid nuser_body on <size>: must be >= -1, got -2"),
     ),
 ];
 

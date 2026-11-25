@@ -1,25 +1,24 @@
 //! URDF XML parser.
 //!
 //! Reads a URDF document as MuJoCo 3.5.0's importer reads it (`xml_urdf.cc`,
-//! `mjXURDF::Parse`): the document is read into a tree of elements, then in
-//! the importer's passes — every named material's colour (`MakeMaterials`),
-//! every link's name, every joint's parent and child links, then each link's
-//! contents, then each joint's — so that of two faults it refuses the one
-//! MuJoCo meets first. A sub-element the importer looks up by name
-//! (`FindSubElem`) is refused when written twice, and when missing where it
-//! is required; every number is read by MuJoCo's rules ([`read_numbers`], a
-//! mesh's scale by [`read_scale`]). A fixed joint's limit and dynamics and a
-//! geometry's shapes after the one it takes, which the importer does not
-//! read, are not read here; under URDF's `discardvisual`, its default, a
-//! visual's origin and geometry and a `velocity`, which it does not read
-//! either, are kept where they can be read and refused nowhere, and under
-//! `discardvisual="false"` a visual is read as a collision is. A `<mimic>`,
-//! which it does not read, this crate makes a joint equality of
-//! (`D-URDF-MIMIC`). Each visual and collision is given the colour MuJoCo
-//! gives its geom (`UrdfVisual::rgba`, `UrdfCollision::rgba`), and MuJoCo's
-//! own `<mujoco>` sections are read ([`parse_mujoco`]). What it reads
-//! otherwise than MuJoCo is registered in
-//! `sim/L0/tests/assets/census/divergences.tsv`.
+//! `mjXURDF::Parse`): the document is read into a tree of elements, then in the
+//! importer's passes — MuJoCo's own `<mujoco>` sections, every named material's
+//! colour (`MakeMaterials`), every link's name, every joint's parent and child
+//! links, then each link's contents, then each joint's — so that of two faults
+//! it refuses the one MuJoCo meets first. A sub-element the importer looks up
+//! by name (`FindSubElem`) is refused when written twice, and when missing
+//! where it is required; every number is read by MuJoCo's rules
+//! ([`read_numbers`], a mesh's scale by [`read_scale`]). A fixed joint's limit
+//! and dynamics and a geometry's shapes after the one it takes, which the
+//! importer does not read, are not read here; a `velocity`, which it does not
+//! read either, is kept where it can be read and refused nowhere, and so, under
+//! URDF's `discardvisual`, its default, are a visual's origin and geometry;
+//! under `discardvisual="false"` a visual is read as a collision is. A
+//! `<mimic>`, which it does not read, this crate makes a joint equality of
+//! (`D-URDF-MIMIC`). Each visual and collision is given the colour MuJoCo gives
+//! its geom (`UrdfVisual::rgba`, `UrdfCollision::rgba`), and MuJoCo's own
+//! `<mujoco>` sections are read ([`parse_mujoco`]). What it reads otherwise
+//! than MuJoCo is registered in `sim/L0/tests/assets/census/divergences.tsv`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -527,7 +526,11 @@ fn check_in_order(tag: &str, child: Option<&str>, element: &Element, reads: &[&s
 /// not read (measured). Each section is checked as MuJoCo meets it: looked up
 /// (a second one refused), its attributes in its reader's order, then its
 /// child looked up and its attributes, then the next section; so of two faults
-/// the one MuJoCo meets first is refused. Three attributes are checked here:
+/// the one MuJoCo meets first is refused, where both readers see a fault: a
+/// value only sim-mjcf refuses (a `NaN` or an infinity, D-NONFINITE; a
+/// hexadecimal float, D-HEX-FLOAT) is refused at its place in MuJoCo's order,
+/// and an attribute sim-mjcf does not read is not checked (ledger L315, L455,
+/// L37). Three attributes are checked here:
 /// `angle`'s keyword (MuJoCo then forces radians, `:111`, and the converter
 /// writes `radian`), `eulerseq`'s length (`rpy` is read as "XYZ" whatever it
 /// says, `:666`, and the converter writes `XYZ`) and `discardvisual`'s keyword
