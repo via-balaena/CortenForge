@@ -197,13 +197,13 @@ fn is_tinyxml2_space(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
 }
 
-/// The text of `xml` MuJoCo 3.5.0's XML reader (tinyxml2) parses: up to its
-/// first NUL, as tinyxml2 parses a NUL-terminated copy and every one of its
-/// loops stops at a NUL (`XMLDocument::Parse`, `tinyxml2.cpp:2459-2463`), and
-/// past leading whitespace, which it skips before anything else, then a
-/// byte-order mark (`:2557-2558`): the mark the whitespace leaves at the
-/// start, quick-xml drops (measured: a NUL after the root loads, one inside it
-/// is refused; whitespace, a mark and a declaration load).
+/// The text of `xml` MuJoCo 3.5.0's XML reader (tinyxml2) parses, as it
+/// parses a NUL-terminated copy (`XMLDocument::Parse`,
+/// `tinyxml2.cpp:2459-2463`) and skips leading whitespace and then a
+/// byte-order mark (`:2557-2558`): up to the first NUL, past the whitespace;
+/// the mark that leaves at the start, quick-xml drops (measured: a NUL after
+/// the root loads, one inside it or in an attribute is refused; whitespace, a
+/// mark and a declaration load).
 fn tinyxml2_text(xml: &str) -> &str {
     let xml = xml.split('\0').next().unwrap_or_default();
     xml.trim_start_matches(|c: char| u8::try_from(c).is_ok_and(is_tinyxml2_space))
@@ -254,9 +254,9 @@ fn misplaced_declaration() -> UrdfError {
     )
 }
 
-/// The document's root element, read without recursing. Outside attribute
-/// text it keeps these of MuJoCo 3.5.0's XML reader's (tinyxml2's) rules: the
-/// text read is [`tinyxml2_text`]'s; an element nested past
+/// The document's root element, read without recursing, from
+/// [`tinyxml2_text`]. Outside attribute text it keeps these of MuJoCo 3.5.0's
+/// XML reader's (tinyxml2's) rules: an element nested past
 /// [`XML_DEPTH_LIMIT`] is refused, and so are a declaration inside an element
 /// or after any other node and a document that ends in text
 /// ([`DocumentLevel`]; measured); an `&` that starts no reference is text, as

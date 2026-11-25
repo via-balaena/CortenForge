@@ -924,8 +924,7 @@ impl<'a> Converter<'a> {
     /// hinge and slide joints only, as MuJoCo 3.5.0's compiler requires of
     /// the MJCF it is written as ("only HINGE and SLIDE joint allowed in
     /// constraint", `user_objects.cc:6034-6041`), which sim-mjcf does not
-    /// check (ledger L465). A leader the converter writes no joint for (a
-    /// fixed or planar one, or none) is refused by sim-mjcf ("unknown joint").
+    /// check (ledger L465).
     fn check_mimic(&self, mimic: &MimicEntry) -> Result<()> {
         for name in [&mimic.follower, &mimic.leader] {
             let kind = match self.robot.joints.iter().find(|joint| &joint.name == name) {

@@ -1,19 +1,9 @@
-//! A URDF's reader and its refusals, as MuJoCo 3.5.0's own importer reads
-//! it (`xml_urdf.cc`, `xml.cc`): a `spherical` joint as a ball joint
-//! (`:42`, `:479-484`), and a robot without links as an empty world; the
-//! refusals of the model (MuJoCo's compiler's) and of a `<mujoco>` section
-//! (its XML reader's), each in its own words; the XML outside attribute text
-//! in the rules this crate keeps of tinyxml2's (the text up to its first NUL
-//! and past leading whitespace, the root's name in any case, a declaration
-//! only before every other node, a document ending in text refused, an `&`
-//! that starts no reference kept); the link named world's tensor; a floating
-//! joint's range; and a URDF with a mesh loaded from its file, the mesh's file
-//! found against the URDF's directory as `from_xml_path` finds it.
+//! A URDF's reader, its refusals and its file loader, against MuJoCo 3.5.0's
+//! own URDF import (`xml_urdf.cc`, `xml.cc`).
 //!
 //! Every expected value was printed on the census's oracle (2026-11-25):
-//! MuJoCo 3.5.0's URDF import's, but the world body's stored inertial in the
-//! world documents, which is this crate's (`D-URDF-WORLD-INERTIAL`, each case
-//! says so), and a refusal's words, which are this crate's.
+//! MuJoCo 3.5.0's URDF import's. Where a test expects otherwise, it names the
+//! registry row or ledger row that says why.
 
 // The values are MuJoCo's, printed to the last digit.
 #![allow(clippy::unwrap_used, clippy::unreadable_literal)]
@@ -3363,7 +3353,8 @@ const MESH_FILES: [(&str, f32); 5] = [
 
 /// Each URDF with a mesh, written into a directory of tetrahedra, loaded from
 /// its file as MuJoCo 3.5.0's `from_xml_path` loads it, so each mesh's file is
-/// found where MuJoCo finds it; each one MuJoCo refuses refused for its fault.
+/// found where MuJoCo finds it; each one MuJoCo refuses refused
+/// ([`Expect::Refused`]).
 #[test]
 fn each_mesh_urdf_loads_from_its_file_as_mujocos_import() {
     let mut wrong = Vec::new();

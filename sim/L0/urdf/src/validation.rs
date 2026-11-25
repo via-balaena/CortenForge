@@ -30,7 +30,9 @@ pub struct ValidationResult {
 /// things: a link of mass 0 fails here, where loading takes it on a fixed
 /// link, as MuJoCo 3.5.0's import does; a robot without links fails here
 /// ([`UrdfError::NoRootLink`]), where loading takes it as an empty world, as
-/// MuJoCo's import does; and it does not make loading's
+/// MuJoCo's import does; a `<mimic>` is not checked here, which loading
+/// refuses where it can make no joint equality of it (`D-URDF-MIMIC`); and it
+/// does not make loading's
 /// checks of a tensor (its triangle inequality, its eigenvalues), which
 /// loading refuses as MuJoCo does.
 ///

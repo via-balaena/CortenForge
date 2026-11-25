@@ -140,13 +140,11 @@ pub use validation::{ValidationResult, validate};
 /// 2. Converts to MJCF XML (single compilation path)
 /// 3. Compiles it with sim-mjcf (`parse_mjcf_str`, `model_from_mjcf`)
 ///
-/// Text has no directory to find a mesh's file against. A file name that is
-/// relative once `strippath` has applied (under URDF's default, every one) is
-/// refused here where no `meshdir` or `assetdir` places it (in sim-mjcf's
-/// words, "… is relative but no base path provided"), and looked for from the
-/// process's working directory where a relative one does; an absolute name
-/// or directory is used as it is (measured). A URDF whose meshes are found
-/// against its own directory loads with [`load_urdf_model_from_file`].
+/// Text has no directory: a mesh's relative file name (under URDF's
+/// `strippath`, every one) is refused here unless a `meshdir` or `assetdir`
+/// places it, where MuJoCo 3.5.0's string load looks for it from the working
+/// directory (ledger L467). A URDF whose meshes sit beside it loads with
+/// [`load_urdf_model_from_file`].
 ///
 /// # Example
 ///
