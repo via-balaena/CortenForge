@@ -42,7 +42,7 @@ use std::fmt::Write;
 
 use crate::error::{Result, UrdfError};
 use crate::parser::parse_urdf_str;
-use nalgebra::Vector3;
+use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 
 use crate::types::{
     UrdfGeometry, UrdfJoint, UrdfJointLimit, UrdfJointType, UrdfLink, UrdfOrigin, UrdfRobot,
@@ -74,6 +74,79 @@ fn strip_package_prefix(path: &str) -> String {
     } else {
         path.to_string()
     }
+}
+
+/// Whether a URDF `xyz` or `rpy` holds anything but `+0`s: MuJoCo 3.5.0's
+/// importer reads each one written, however small (`Origin`,
+/// `xml_urdf.cc:648-669`), and starts from the origin and the identity,
+/// which `+0`s are.
+fn written(v: &Vector3<f64>) -> bool {
+    v.iter().any(|x| x.to_bits() != 0)
+}
+
+/// The principal moments and the inertial frame of a link whose `<inertial>`
+/// origin turns (its `rpy` [`written`]), in the link's frame: the moments
+/// MuJoCo 3.5.0's `mjuu_fullInertia` makes of the tensor as written, and the
+/// frame the origin's turn composed with the tensor's principal axes, which is
+/// what MuJoCo's importer computes (`xml_urdf.cc:272-283`) before its compiler
+/// overwrites the frame with the unturned axes (ledger L372;
+/// D-URDF-INERTIAL-TURN). The tensor is R·I·Rᵀ, R the turn; its moments, and
+/// every check made of them, are MuJoCo's: a negative moment is raised to 0
+/// as MuJoCo's compiler raises it to `boundinertia` (`std::max`,
+/// `user_objects.cc:2450-2454`): one `mjuu_eig3`'s sort, which swaps only
+/// moments more than 1e-12 apart, does not place last.
+///
+/// `None` where nothing turns; where MuJoCo refuses the tensor (its last
+/// moment after that sort below mjEPS), which the converter then writes
+/// unturned for sim-mjcf to refuse in MuJoCo's words; and where the moments
+/// or the frame are not finite (a tensor near the largest double), which
+/// sim-mjcf then refuses unturned (D-INERTIA-NONFINITE). A component of the
+/// frame below the smallest normal double is written as a zero of its sign:
+/// MJCF's reader, as MuJoCo's, refuses a written subnormal, and the frame
+/// moves by less than 2.3e-308.
+fn turned_frame(moments: &[f64; 6], rpy: &Vector3<f64>) -> Option<([f64; 3], UnitQuaternion<f64>)> {
+    if !written(rpy) {
+        return None;
+    }
+    let (principal, [w, x, y, z]) = sim_mjcf::full_inertia(moments).ok()?;
+    let axes = UnitQuaternion::new_unchecked(Quaternion::new(w, x, y, z));
+    let frame = UnitQuaternion::from_euler_angles(rpy.x, rpy.y, rpy.z) * axes;
+    if !principal
+        .iter()
+        .chain(frame.coords.iter())
+        .all(|v| v.is_finite())
+    {
+        return None;
+    }
+    let normal = |v: f64| {
+        if v.abs() < f64::MIN_POSITIVE {
+            0.0_f64.copysign(v)
+        } else {
+            v
+        }
+    };
+    let frame = Quaternion::new(
+        normal(frame.w),
+        normal(frame.i),
+        normal(frame.j),
+        normal(frame.k),
+    );
+    let raised = principal.map(|moment| if moment < 0.0 { 0.0 } else { moment });
+    Some((raised, UnitQuaternion::new_unchecked(frame)))
+}
+
+/// A geom's ` pos` and ` euler` attributes for its URDF origin, each where
+/// [`written`].
+fn pose_attrs(origin: &UrdfOrigin) -> String {
+    let mut attrs = String::new();
+    let (pos, rpy) = (origin.xyz, origin.rpy);
+    if written(&pos) {
+        write!(attrs, r#" pos="{} {} {}""#, pos.x, pos.y, pos.z).ok();
+    }
+    if written(&rpy) {
+        write!(attrs, r#" euler="{} {} {}""#, rpy.x, rpy.y, rpy.z).ok();
+    }
+    attrs
 }
 
 /// Convert URDF XML string to MJCF XML string.
@@ -322,16 +395,17 @@ impl<'a> Converter<'a> {
         self.write_line(&format!(r#"<mujoco model="{}">"#, escape(&self.robot.name)));
         self.indent += 1;
 
-        // Write options
-        self.write_line(r#"<option gravity="0 0 -9.81" timestep="0.002">"#);
-        self.indent += 1;
-        self.write_line(r#"<flag energy="enable"/>"#);
-        self.indent -= 1;
-        self.write_line(r"</option>");
-        self.write_line("");
+        // No `<option>`: MuJoCo 3.5.0's importer sets no option of its own; it
+        // reads a URDF's `<mujoco><option>` (`xml_urdf.cc:101-103`), which
+        // this converter does not read yet (ledger L378). Without one, a
+        // converted model has MJCF's defaults, as MuJoCo's: gravity
+        // (0, 0, -9.81), a timestep of 0.002, energy not computed.
 
         // Write compiler settings for URDF compatibility
-        self.write_line(r#"<compiler angle="radian" eulerseq="xyz" fusestatic="true" discardvisual="true" strippath="true"/>"#);
+        // `eulerseq="XYZ"`: MuJoCo 3.5.0's importer reads a URDF `rpy` as
+        // extrinsic x-y-z (`mjs_resolveOrientation(quat, 0, "XYZ", …)`,
+        // `xml_urdf.cc:664-666`), whatever a compiler's own sequence.
+        self.write_line(r#"<compiler angle="radian" eulerseq="XYZ" fusestatic="true" discardvisual="true" strippath="true"/>"#);
         self.write_line("");
 
         // Pre-scan all links for mesh geometries and emit <asset> block
@@ -495,12 +569,12 @@ impl<'a> Converter<'a> {
         let euler_str = format!("{} {} {}", rpy.x, rpy.y, rpy.z);
 
         let name = escape(&name);
-        if rpy.norm() < 1e-10 {
-            self.write_line(&format!(r#"<body name="{name}" pos="{pos_str}">"#));
-        } else {
+        if written(&rpy) {
             self.write_line(&format!(
                 r#"<body name="{name}" pos="{pos_str}" euler="{euler_str}">"#
             ));
+        } else {
+            self.write_line(&format!(r#"<body name="{name}" pos="{pos_str}">"#));
         }
         self.indent += 1;
 
@@ -636,23 +710,34 @@ impl<'a> Converter<'a> {
         let pos = inertial.origin.xyz;
         let mass = inertial.mass;
         let inertia = &inertial.inertia;
-
-        // MJCF inertial uses diaginertia (ixx, iyy, izz) when the tensor is
-        // diagonal, or fullinertia (ixx, iyy, izz, ixy, ixz, iyz) when any
-        // off-diagonal term is present.
-        let inertia_attr = if inertia.ixy.abs() > 1e-10
-            || inertia.ixz.abs() > 1e-10
-            || inertia.iyz.abs() > 1e-10
-        {
+        let moments = [
+            inertia.ixx,
+            inertia.iyy,
+            inertia.izz,
+            inertia.ixy,
+            inertia.ixz,
+            inertia.iyz,
+        ];
+        // MuJoCo 3.5.0's importer fills the body's `fullinertia` with the six
+        // moments, a diagonal tensor's too (`xml_urdf.cc:252-258`), so its
+        // compiler takes the tensor's principal axes as the inertial frame,
+        // the moments in decreasing order but for moments within 1e-12 of each
+        // other (`mjuu_fullInertia`, `mjuu_eig3`).
+        let inertia_attr = if moments.iter().all(|&moment| moment == 0.0) {
+            // Six zeros are a tensor not given (`:260-270`), as `diaginertia`
+            // zeros are in MJCF. MuJoCo keeps the origin's turn as such a
+            // body's inertial frame, and its fusion turns the body's position
+            // by it (D-FUSESTATIC-INERTIA); this crate's fusion places the
+            // mass at its centre, which no frame moves, so none is written.
+            r#"diaginertia="0 0 0""#.to_string()
+        } else if let Some(([a, b, c], turn)) = turned_frame(&moments, &inertial.origin.rpy) {
             format!(
-                r#"fullinertia="{} {} {} {} {} {}""#,
-                inertia.ixx, inertia.iyy, inertia.izz, inertia.ixy, inertia.ixz, inertia.iyz
+                r#"diaginertia="{a} {b} {c}" quat="{} {} {} {}""#,
+                turn.w, turn.i, turn.j, turn.k
             )
         } else {
-            format!(
-                r#"diaginertia="{} {} {}""#,
-                inertia.ixx, inertia.iyy, inertia.izz
-            )
+            let [ixx, iyy, izz, ixy, ixz, iyz] = moments;
+            format!(r#"fullinertia="{ixx} {iyy} {izz} {ixy} {ixz} {iyz}""#)
         };
 
         // MJCF requires an inertial's `pos` (MuJoCo 3.5.0 refuses one without
@@ -662,11 +747,6 @@ impl<'a> Converter<'a> {
             pos.x, pos.y, pos.z
         );
 
-        // No orientation is written: MuJoCo 3.5.0's own URDF import drops an
-        // inertial origin's rotation, beside a full tensor and a diagonal one
-        // (measured: a link's tensor with `rpy="0.3 0.5 0.7"` is the one
-        // without, ledger L372), and `<inertial>` refuses a `fullinertia`
-        // beside one, as MuJoCo's reader does.
         self.write_line(&format!("<inertial {attrs}/>"));
 
         Ok(())
@@ -702,14 +782,7 @@ impl<'a> Converter<'a> {
                     if let Some(n) = name {
                         write!(attrs, r#" name="{}""#, escape(n)).ok();
                     }
-                    let pos = origin.xyz;
-                    if pos.norm() > 1e-10 {
-                        write!(attrs, r#" pos="{} {} {}""#, pos.x, pos.y, pos.z).ok();
-                    }
-                    let rpy = origin.rpy;
-                    if rpy.norm() > 1e-10 {
-                        write!(attrs, r#" euler="{} {} {}""#, rpy.x, rpy.y, rpy.z).ok();
-                    }
+                    attrs.push_str(&pose_attrs(origin));
                     self.write_line(&format!("<geom {attrs}/>"));
                 }
                 return Ok(());
@@ -723,17 +796,7 @@ impl<'a> Converter<'a> {
             write!(attrs, r#" name="{}""#, escape(n)).ok();
         }
 
-        // Add position if non-zero
-        let pos = origin.xyz;
-        if pos.norm() > 1e-10 {
-            write!(attrs, r#" pos="{} {} {}""#, pos.x, pos.y, pos.z).ok();
-        }
-
-        // Add orientation if non-zero
-        let rpy = origin.rpy;
-        if rpy.norm() > 1e-10 {
-            write!(attrs, r#" euler="{} {} {}""#, rpy.x, rpy.y, rpy.z).ok();
-        }
+        attrs.push_str(&pose_attrs(origin));
 
         self.write_line(&format!("<geom {attrs}/>"));
 
@@ -855,40 +918,6 @@ mod tests {
         assert!(mjcf.contains(r#"<inertial pos="0 0 0" mass="1""#), "{mjcf}");
     }
 
-    /// A link's full tensor in a turned inertial origin loads, as the same
-    /// tensor unturned: MuJoCo 3.5.0's URDF import drops the turn (measured,
-    /// both tensors (0.5, 0.4, 0.3, 0.05, 0.02, 0.01) in the link's frame),
-    /// and `<inertial>` refuses a `fullinertia` beside an `euler`.
-    #[test]
-    fn a_full_tensor_in_a_turned_origin_loads_as_mujocos_urdf_import() {
-        let urdf = |rpy: &str| {
-            format!(
-                r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="1"/><inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin xyz="0.1 0 0"{rpy}/><mass value="2"/><inertia ixx="0.5" iyy="0.4" izz="0.3" ixy="0.05" ixz="0.02" iyz="0.01"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 1"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint></robot>"#
-            )
-        };
-        let turned = crate::load_urdf_model(&urdf(r#" rpy="0.3 0.5 0.7""#)).expect("loads");
-        let plain = crate::load_urdf_model(&urdf("")).expect("loads");
-        assert_eq!(turned.body_inertia, plain.body_inertia);
-        assert_eq!(turned.body_iquat, plain.body_iquat);
-    }
-
-    /// A link's diagonal tensor in a turned inertial origin loads as the same
-    /// tensor unturned, as MuJoCo 3.5.0's URDF import loads it (measured: it
-    /// drops the turn beside a diagonal tensor as beside a full one, ledger
-    /// L372).
-    #[test]
-    fn a_diagonal_tensor_in_a_turned_origin_loads_as_mujocos_urdf_import() {
-        let urdf = |rpy: &str| {
-            format!(
-                r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="1"/><inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin xyz="0.1 0 0"{rpy}/><mass value="2"/><inertia ixx="0.5" iyy="0.4" izz="0.3" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 1"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint></robot>"#
-            )
-        };
-        let turned = crate::load_urdf_model(&urdf(r#" rpy="0.3 0.5 0.7""#)).expect("loads");
-        let plain = crate::load_urdf_model(&urdf("")).expect("loads");
-        assert_eq!(turned.body_inertia, plain.body_inertia);
-        assert_eq!(turned.body_iquat, plain.body_iquat);
-    }
-
     /// A link whose principal moments break A + B >= C is refused, as
     /// MuJoCo 3.5.0's own URDF import refuses it (measured, with its
     /// words): the tensor (0.1, 0.2, 0.3, 0.02, 0.01, 0.03) has moments
@@ -902,6 +931,23 @@ mod tests {
                 .as_deref()
                 .is_some_and(|e| e.contains("inertia must satisfy A + B >= C")),
             "{error:?}"
+        );
+    }
+
+    /// A mesh collision's origin is written as read, however small, and a -0
+    /// keeps its sign, as a primitive's is: MuJoCo 3.5.0's importer reads
+    /// each `xyz` and `rpy` written (`xml_urdf.cc:640`, `:648-669`).
+    #[test]
+    fn a_mesh_geoms_origin_is_written_as_read() {
+        let mjcf = urdf_to_mjcf(
+            r#"<robot name="r"><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="1e-11 -0 0" rpy="0.1 0.2 0.3"/><geometry><mesh filename="part.obj"/></geometry></collision></link></robot>"#,
+        )
+        .expect("converts");
+        assert!(
+            mjcf.contains(
+                r#"type="mesh" mesh="part" pos="0.00000000001 -0 0" euler="0.1 0.2 0.3""#
+            ),
+            "{mjcf}"
         );
     }
 

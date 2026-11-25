@@ -87,14 +87,23 @@ pub fn eig3(mat: &[f64; 9]) -> ([f64; 3], [f64; 4]) {
     (eigval, quat)
 }
 
-/// `mjuu_fullInertia` (`user_util.cc:785-814`): the principal moments, in
-/// decreasing order, and the frame (w, x, y, z) of the inertia
-/// `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]`; MuJoCo's refusal when the smallest moment
-/// is below mjEPS. Its first branch, which returns without writing when
+/// `mjuu_fullInertia` (`user_util.cc:785-814`): a full inertia's principal
+/// moments and axes.
+///
+/// The moments in `eig3`'s order (decreasing, but for moments within 1e-12 of
+/// each other, which it leaves as they come) and the frame (w, x, y, z) of the
+/// inertia `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]`; MuJoCo's refusal when the last
+/// moment is below mjEPS. Its first branch, which returns without writing when
 /// `full[0]` is NaN (`:786-788`), is the caller's: `inertia_from_geoms` keeps
 /// the body's moments and frame there; a document's `<inertial>`
 /// `fullinertia` cannot hold a NaN (the reader refuses one), a model built in
 /// code can.
+///
+/// # Errors
+///
+/// MuJoCo's words, "inertia must have positive eigenvalues", where the last
+/// moment in `eig3`'s order is below mjEPS (a smaller one within 1e-12 of it
+/// passes).
 pub fn full_inertia(full: &[f64; 6]) -> Result<([f64; 3], [f64; 4]), &'static str> {
     let mat = [
         full[0], full[3], full[4], //

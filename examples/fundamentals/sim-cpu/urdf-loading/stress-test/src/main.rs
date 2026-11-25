@@ -813,20 +813,33 @@ fn check_14_cylinder_conversion() -> (u32, u32) {
 fn check_15_diagonal_inertia() -> (u32, u32) {
     let model = sim_urdf::load_urdf_model(DIAG_INERTIA_URDF).expect("parse");
 
-    // body 0 is world, body 1 is "base"
+    // body 0 is world, body 1 is "body". As MuJoCo 3.5.0's URDF import
+    // makes it, the tensor's principal axes are the inertial frame and the
+    // moments come largest first, (0.3, 0.2, 0.1); that frame turns them back
+    // into the written diagonal tensor in the link's frame.
     let mass = model.body_mass[1];
     let inertia = model.body_inertia[1];
     let mass_ok = (mass - 2.0).abs() < 0.001;
-    let i_ok = (inertia.x - 0.1).abs() < 0.001
+    let i_ok = (inertia.x - 0.3).abs() < 0.001
         && (inertia.y - 0.2).abs() < 0.001
-        && (inertia.z - 0.3).abs() < 0.001;
+        && (inertia.z - 0.1).abs() < 0.001;
+    let turn = model.body_iquat[1].to_rotation_matrix();
+    let r = turn.matrix();
+    let moments = [inertia.x, inertia.y, inertia.z];
+    let written = [[0.1, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.3]];
+    let frame_ok = (0..3).all(|i| {
+        (0..3).all(|j| {
+            let link: f64 = (0..3).map(|k| r[(i, k)] * moments[k] * r[(j, k)]).sum();
+            (link - written[i][j]).abs() < 1e-9
+        })
+    });
 
-    let pass = mass_ok && i_ok;
+    let pass = mass_ok && i_ok && frame_ok;
     let p = check(
         "Diagonal inertia",
         pass,
         &format!(
-            "mass={mass:.3}, diaginertia=({:.3}, {:.3}, {:.3})",
+            "mass={mass:.3}, moments=({:.3}, {:.3}, {:.3}), the link's tensor the written one: {frame_ok}",
             inertia.x, inertia.y, inertia.z
         ),
     );
@@ -851,11 +864,14 @@ fn check_16_full_inertia_loads() -> (u32, u32) {
 
 fn check_17_full_inertia_mjcf_has_fullinertia() -> (u32, u32) {
     let mjcf = sim_urdf::urdf_to_mjcf(FULL_INERTIA_URDF).expect("convert");
-    let has_full = mjcf.contains("fullinertia");
+    // A tensor in an unturned origin is written as `fullinertia` (MuJoCo
+    // 3.5.0's importer's): its six moments, the off-diagonal three included,
+    // as written.
+    let has_full = mjcf.contains(r#"fullinertia="0.2 0.25 0.3 0.02 0.01 0.03""#);
     let p = check(
-        "Full inertia → fullinertia in MJCF",
+        "Full inertia → its six moments in MJCF",
         has_full,
-        &format!("MJCF contains 'fullinertia': {has_full}"),
+        &format!("MJCF writes the six moments: {has_full}"),
     );
     (u32::from(p), 1)
 }
@@ -1275,7 +1291,7 @@ fn main() {
     run!("15. Diagonal inertia", check_15_diagonal_inertia());
     run!("16. Full inertia loads", check_16_full_inertia_loads());
     run!(
-        "17. Full inertia → fullinertia",
+        "17. Full inertia → its six moments",
         check_17_full_inertia_mjcf_has_fullinertia()
     );
 
