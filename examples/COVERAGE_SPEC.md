@@ -184,7 +184,7 @@ fundamentals/
     contact-tuning/         # DONE — friction, condim, solref, solimp, margin/gap, pair override (7 examples)
     inverse-dynamics/       # DONE — gravity-comp, torque-profile, forward-replay, jacobian, stress-test (5 examples)
     energy-momentum/        # DONE — 4 visual + stress-test (12 checks)
-    urdf-loading/           # DONE — 9 examples: all joint types, geometry, mimic, inertia, dynamics, error handling (in stress-test)
+    urdf-loading/           # DONE — 9 examples: every URDF joint type, geometry, mimic, inertia, dynamics, error handling (in stress-test)
 ```
 
 ---
@@ -479,7 +479,7 @@ One concept per example, 8 visual (Bevy) + 1 headless stress-test
    (blue, swings forever), damped (green, decays smoothly), friction (red,
    decays then stops). URDF `<dynamics friction>` → MJCF `frictionloss`.
 9. **stress-test** — Headless. 35 checks: structural equivalence, dynamic
-   equivalence, all joint types, geometry sizes, inertia, limits, damping,
+   equivalence, every URDF joint type, geometry sizes, inertia, limits, damping,
    frictionloss, mimic tracking, planar DOF, mesh conversion, and error
    handling (missing robot, unknown-joint/undefined-link/duplicate-link
    variants, malformed XML, empty string, error-message context).

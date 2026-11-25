@@ -95,7 +95,7 @@ pub enum UrdfError {
     },
 
     /// No root link found.
-    #[error("no root link found (all links are children of joints)")]
+    #[error("no root link found (every link is a joint's child, or there is none)")]
     NoRootLink,
 
     /// Multiple root links found.

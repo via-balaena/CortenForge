@@ -28,7 +28,9 @@ pub struct ValidationResult {
 ///
 /// Loading ([`crate::load_urdf_model`]) does not call it, and it checks other
 /// things: a link of mass 0 fails here, where loading takes it on a fixed
-/// link, as MuJoCo 3.5.0's import does; and it does not make loading's
+/// link, as MuJoCo 3.5.0's import does; a robot without links fails here
+/// ([`UrdfError::NoRootLink`]), where loading takes it as an empty world, as
+/// MuJoCo's import does; and it does not make loading's
 /// checks of a tensor (its triangle inequality, its eigenvalues), which
 /// loading refuses as MuJoCo does.
 ///

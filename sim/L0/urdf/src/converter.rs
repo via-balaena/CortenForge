@@ -671,7 +671,8 @@ impl<'a> Converter<'a> {
             .collect();
         // A robot without links is an empty world, as MuJoCo 3.5.0's importer
         // loads it (measured: `<robot name="r"/>`, one body); with links, none
-        // a root, the parser has refused the loop already.
+        // a root, the joints make a loop, which the parser refuses before this
+        // in a document and this refuses in a robot built in code.
         if roots.is_empty() && !self.robot.links.is_empty() {
             return Err(UrdfError::NoRootLink);
         }
@@ -1657,8 +1658,9 @@ mod tests {
     /// makes it (measured: bodies `['world', 'base']`, geoms `['floor', 'b']`
     /// on bodies 0 and 1). `b8a6ffba` wrote it as a body named
     /// `world`, which only fusion folded into the world. Its `<inertial>` is
-    /// dropped, where MuJoCo stores it as the world body's mass, inertia,
-    /// centre and frame (measured: `body_mass[0]` 1; `D-URDF-WORLD-INERTIAL`).
+    /// not stored, where MuJoCo stores it as the world body's mass, inertia,
+    /// centre and frame (measured: `body_mass[0]` 1; `D-URDF-WORLD-INERTIAL`);
+    /// its tensor is checked (`check_world_tensor`).
     #[test]
     fn the_link_named_world_is_the_world_body() {
         let urdf = format!(
