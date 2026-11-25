@@ -76,6 +76,28 @@ fn strip_package_prefix(path: &str) -> String {
     }
 }
 
+/// Whether a URDF `xyz` or `rpy` holds anything but `+0`s: MuJoCo 3.5.0's
+/// importer reads each one written, however small (`Origin`,
+/// `xml_urdf.cc:648-669`), and starts from the origin and the identity,
+/// which `+0`s are.
+fn written(v: &Vector3<f64>) -> bool {
+    v.iter().any(|x| x.to_bits() != 0)
+}
+
+/// A geom's ` pos` and ` euler` attributes for its URDF origin, each where
+/// [`written`].
+fn pose_attrs(origin: &UrdfOrigin) -> String {
+    let mut attrs = String::new();
+    let (pos, rpy) = (origin.xyz, origin.rpy);
+    if written(&pos) {
+        write!(attrs, r#" pos="{} {} {}""#, pos.x, pos.y, pos.z).ok();
+    }
+    if written(&rpy) {
+        write!(attrs, r#" euler="{} {} {}""#, rpy.x, rpy.y, rpy.z).ok();
+    }
+    attrs
+}
+
 /// Convert URDF XML string to MJCF XML string.
 ///
 /// This is the primary conversion function. The resulting MJCF can be
@@ -331,7 +353,10 @@ impl<'a> Converter<'a> {
         self.write_line("");
 
         // Write compiler settings for URDF compatibility
-        self.write_line(r#"<compiler angle="radian" eulerseq="xyz" fusestatic="true" discardvisual="true" strippath="true"/>"#);
+        // `eulerseq="XYZ"`: MuJoCo 3.5.0's importer reads a URDF `rpy` as
+        // extrinsic x-y-z (`mjs_resolveOrientation(quat, 0, "XYZ", …)`,
+        // `xml_urdf.cc:664-666`), whatever a compiler's own sequence.
+        self.write_line(r#"<compiler angle="radian" eulerseq="XYZ" fusestatic="true" discardvisual="true" strippath="true"/>"#);
         self.write_line("");
 
         // Pre-scan all links for mesh geometries and emit <asset> block
@@ -495,12 +520,12 @@ impl<'a> Converter<'a> {
         let euler_str = format!("{} {} {}", rpy.x, rpy.y, rpy.z);
 
         let name = escape(&name);
-        if rpy.norm() < 1e-10 {
-            self.write_line(&format!(r#"<body name="{name}" pos="{pos_str}">"#));
-        } else {
+        if written(&rpy) {
             self.write_line(&format!(
                 r#"<body name="{name}" pos="{pos_str}" euler="{euler_str}">"#
             ));
+        } else {
+            self.write_line(&format!(r#"<body name="{name}" pos="{pos_str}">"#));
         }
         self.indent += 1;
 
@@ -705,14 +730,7 @@ impl<'a> Converter<'a> {
                     if let Some(n) = name {
                         write!(attrs, r#" name="{}""#, escape(n)).ok();
                     }
-                    let pos = origin.xyz;
-                    if pos.norm() > 1e-10 {
-                        write!(attrs, r#" pos="{} {} {}""#, pos.x, pos.y, pos.z).ok();
-                    }
-                    let rpy = origin.rpy;
-                    if rpy.norm() > 1e-10 {
-                        write!(attrs, r#" euler="{} {} {}""#, rpy.x, rpy.y, rpy.z).ok();
-                    }
+                    attrs.push_str(&pose_attrs(origin));
                     self.write_line(&format!("<geom {attrs}/>"));
                 }
                 return Ok(());
@@ -726,17 +744,7 @@ impl<'a> Converter<'a> {
             write!(attrs, r#" name="{}""#, escape(n)).ok();
         }
 
-        // Add position if non-zero
-        let pos = origin.xyz;
-        if pos.norm() > 1e-10 {
-            write!(attrs, r#" pos="{} {} {}""#, pos.x, pos.y, pos.z).ok();
-        }
-
-        // Add orientation if non-zero
-        let rpy = origin.rpy;
-        if rpy.norm() > 1e-10 {
-            write!(attrs, r#" euler="{} {} {}""#, rpy.x, rpy.y, rpy.z).ok();
-        }
+        attrs.push_str(&pose_attrs(origin));
 
         self.write_line(&format!("<geom {attrs}/>"));
 
