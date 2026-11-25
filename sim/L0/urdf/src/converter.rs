@@ -344,13 +344,9 @@ impl<'a> Converter<'a> {
         self.write_line(&format!(r#"<mujoco model="{}">"#, escape(&self.robot.name)));
         self.indent += 1;
 
-        // Write options
-        self.write_line(r#"<option gravity="0 0 -9.81" timestep="0.002">"#);
-        self.indent += 1;
-        self.write_line(r#"<flag energy="enable"/>"#);
-        self.indent -= 1;
-        self.write_line(r"</option>");
-        self.write_line("");
+        // No `<option>`: MuJoCo 3.5.0's importer sets none (`xml_urdf.cc`), so
+        // a converted model has MJCF's defaults, as MuJoCo's: gravity
+        // (0, 0, -9.81), a timestep of 0.002, energy not computed.
 
         // Write compiler settings for URDF compatibility
         // `eulerseq="XYZ"`: MuJoCo 3.5.0's importer reads a URDF `rpy` as

@@ -2,7 +2,8 @@
 //! every tensor its body's `fullinertia`, so a diagonal one takes its
 //! principal axes as the inertial frame, the moments largest first, and six
 //! zeros a tensor not given; every origin's `rpy` read as extrinsic x-y-z,
-//! and every `xyz` and `rpy` as written, however small.
+//! and every `xyz` and `rpy` as written, however small; and no option set,
+//! so energy is not computed.
 //!
 //! Every expected value was printed by MuJoCo 3.5.0's URDF import on the
 //! census's oracle (2026-11-25).
@@ -48,6 +49,11 @@ struct Model {
     qacc: &'static [f64],
     /// `qpos` after five steps.
     qpos5: &'static [f64],
+    /// The model's options: a URDF writes none, so MJCF's defaults.
+    enableflags: u32,
+    disableflags: u32,
+    timestep: f64,
+    gravity: [f64; 3],
 }
 
 /// What MuJoCo 3.5.0 makes of a document.
@@ -88,6 +94,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // an axis not written: x
@@ -120,6 +130,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a full tensor (MuJoCo's representation at main too)
@@ -160,6 +174,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a diagonal tensor (0.1, 0.3, 0.2): its principal axes the inertial frame, the moments largest first
@@ -197,6 +215,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a diagonal tensor written largest first: its own frame
@@ -226,6 +248,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // an isotropic tensor in a turned origin: no axes to take
@@ -255,6 +281,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a diagonal tensor with two equal moments
@@ -292,6 +322,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a diagonal tensor at an offset origin
@@ -324,6 +358,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.1, -0.2, 0.55]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // an off-diagonal moment of 1e-11, which the converter dropped
@@ -356,6 +394,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a root link's diagonal tensor, fused into the world
@@ -385,6 +427,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0]],
             qacc: &[],
             qpos5: &[],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a limit whose lower bound is above its upper: not limited
@@ -417,6 +463,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a limit with a lower bound alone: not limited
@@ -449,6 +499,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a limit with no bounds
@@ -481,6 +535,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a prismatic joint's limit
@@ -513,6 +571,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a joint's damping and friction
@@ -545,6 +607,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a planar joint's damping and friction on its three joints
@@ -577,6 +643,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0, 0.0, 0.0],
             qpos5: &[0.0, 0.0, 0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a limit of equal bounds
@@ -609,6 +679,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a fixed link of mass 0 and six zero moments: a tensor not given, fused
@@ -638,6 +712,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0]],
             qacc: &[],
             qpos5: &[],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a root link of mass 0
@@ -667,6 +745,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0]],
             qacc: &[],
             qpos5: &[],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a link with no inertial: its geom's mass and inertia
@@ -703,6 +785,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.05, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a fixed link of mass 0 and positive moments
@@ -732,6 +818,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0]],
             qacc: &[],
             qpos5: &[],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a fixed link fused into the root
@@ -761,6 +851,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0]],
             qacc: &[],
             qpos5: &[],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a fixed link's mass and inertia on a moving link (review RW, RL-10b)
@@ -790,6 +884,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.2, 0.0, 1.0]],
             qacc: &[43.599999999999994],
             qpos5: &[0.0026159994615996066],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a joint origin's rpy about three axes
@@ -838,6 +936,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a collision origin's rpy about three axes
@@ -875,6 +977,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // an rpy about one axis, the same in either order
@@ -913,6 +1019,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // an rpy about two axes
@@ -961,6 +1071,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // angles past pi
@@ -1014,6 +1128,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a floating joint's origin: its qpos0
@@ -1078,6 +1196,10 @@ const CASES: &[(&str, Expect)] = &[
                 0.10602051106179562,
                 0.03427079855048211,
             ],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a planar joint in a turned origin
@@ -1130,6 +1252,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[1.9489461350995507, 6.0857691043398905, 0.0],
             qpos5: &[0.00011693676810597305, 0.00036514614626039345, 0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a fixed link's turned origin, its geom fused into the parent
@@ -1168,6 +1294,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0]],
             qacc: &[],
             qpos5: &[],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a prismatic joint in a turned origin
@@ -1216,6 +1346,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[7.037263251724319],
             qpos5: &[0.00042223579510345917],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // three turned joints in a chain
@@ -1346,6 +1480,10 @@ const CASES: &[(&str, Expect)] = &[
                 -0.00026402472530273645,
                 7.799234723583309e-05,
             ],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // an rpy of 1e-11 and 2e-11, which the converter dropped
@@ -1384,6 +1522,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a geom's rpy of 1e-11, which the converter dropped
@@ -1416,6 +1558,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a geom's xyz of 1e-11, which the converter dropped
@@ -1448,6 +1594,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // an rpy of -0: the identity
@@ -1480,6 +1630,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a cylinder, a capsule and a sphere in turned origins
@@ -1547,6 +1701,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a root link's turned geom, fused into the world
@@ -1581,6 +1739,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0]],
             qacc: &[],
             qpos5: &[],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // a geom's xyz of -0: its sign kept, as MuJoCo keeps it
@@ -1613,6 +1775,10 @@ const CASES: &[(&str, Expect)] = &[
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             qacc: &[0.0],
             qpos5: &[0.0],
+            enableflags: 0,
+            disableflags: 0,
+            timestep: 0.002,
+            gravity: [0.0, 0.0, -9.81],
         }),
     ),
     // MuJoCo: "Error: mass and inertia of moving bodies must be larger than mjMINVAL"
@@ -1741,6 +1907,10 @@ fn differing(m: &sim_core::Model, want: &Model) -> Vec<&'static str> {
         ("xipos", close(&inertial, want.xipos.as_flattened())),
         ("qacc", close(&qacc, want.qacc)),
         ("qpos5", close(d.qpos.as_slice(), want.qpos5)),
+        ("enableflags", m.enableflags == want.enableflags),
+        ("disableflags", m.disableflags == want.disableflags),
+        ("timestep", close(&[m.timestep], &[want.timestep])),
+        ("gravity", close(m.gravity.as_slice(), &want.gravity)),
     ]
     .into_iter()
     .filter(|&(_, same)| !same)

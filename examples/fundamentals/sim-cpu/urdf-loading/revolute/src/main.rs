@@ -153,8 +153,11 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Load via the URDF pipeline: URDF → MJCF → Model
-    let model = sim_urdf::load_urdf_model(PENDULUM_URDF).expect("URDF should parse");
+    // Load via the URDF pipeline: URDF → MJCF → Model. A URDF's model, as
+    // MuJoCo's import makes it, does not compute energy, which the
+    // validation tracks: turned on here.
+    let mut model = sim_urdf::load_urdf_model(PENDULUM_URDF).expect("URDF should parse");
+    model.enableflags |= sim_core::ENABLE_ENERGY;
     let mut data = model.make_data();
 
     // Start at 30° from vertical
