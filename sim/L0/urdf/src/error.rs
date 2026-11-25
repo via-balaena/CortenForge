@@ -129,18 +129,21 @@ pub enum UrdfError {
         message: String,
     },
 
-    /// A URDF file could not be read.
+    /// A URDF file could not be read: the operating system's error, or that
+    /// the file is not UTF-8, which MuJoCo 3.5.0 reads (`D-URDF-FILE-UTF8`).
     #[error("cannot read '{}': {source}", path.display())]
     Io {
         /// The file, as the caller named it.
         path: PathBuf,
-        /// What the operating system reported.
+        /// What reading it reported.
         source: std::io::Error,
     },
 
-    /// The model the URDF converts to is refused by sim-mjcf, as MuJoCo
-    /// 3.5.0's compiler refuses the model its importer builds (a moving body
-    /// without mass, a tensor breaking the triangle, …), in sim-mjcf's words.
+    /// The model the URDF converts to is refused by sim-mjcf, in its words: as
+    /// MuJoCo 3.5.0's compiler refuses the model its importer builds (a moving
+    /// body without mass, a tensor breaking the triangle, …), or where a
+    /// divergence registered in `sim/L0/tests/assets/census/divergences.tsv`
+    /// refuses what MuJoCo loads.
     #[error("the model is refused: {0}")]
     Model(#[source] sim_mjcf::MjcfError),
 

@@ -135,14 +135,18 @@ pub use validation::{ValidationResult, validate};
 /// Load a URDF from its text and convert it directly to a MuJoCo-aligned
 /// Model.
 ///
-/// This is the recommended way to load URDF robots for simulation. It:
+/// It:
 /// 1. Parses the URDF XML
 /// 2. Converts to MJCF XML (single compilation path)
 /// 3. Compiles it with sim-mjcf (`parse_mjcf_str`, `model_from_mjcf`)
 ///
-/// Text has no directory, so a mesh's file is not found from it: a URDF with
-/// a mesh is refused here (in sim-mjcf's words, "… is relative but no base
-/// path provided") and loads with [`load_urdf_model_from_file`].
+/// Text has no directory to find a mesh's file against. A file name that is
+/// relative once `strippath` has applied (under URDF's default, every one) is
+/// refused here where no `meshdir` or `assetdir` places it (in sim-mjcf's
+/// words, "… is relative but no base path provided"), and looked for from the
+/// process's working directory where a relative one does; an absolute name
+/// or directory is used as it is (measured). A URDF whose meshes are found
+/// against its own directory loads with [`load_urdf_model_from_file`].
 ///
 /// # Example
 ///

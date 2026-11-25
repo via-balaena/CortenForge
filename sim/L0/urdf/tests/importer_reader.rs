@@ -1,15 +1,19 @@
 //! A URDF's reader and its refusals, as MuJoCo 3.5.0's own importer reads
 //! it (`xml_urdf.cc`, `xml.cc`): a `spherical` joint as a ball joint
 //! (`:42`, `:479-484`), and a robot without links as an empty world; the
-//! compiler's refusals of the model and of a `<mujoco>` section, each in its
-//! own words; and the XML outside attribute text as tinyxml2 reads it (the
-//! root's name in any case, a declaration only before every other node, a
-//! document ending in text refused, an `&` that starts no reference kept);
-//! and a URDF with a mesh loaded from its file, the mesh's file found against
-//! the URDF's directory as `from_xml_path` finds it.
+//! refusals of the model (MuJoCo's compiler's) and of a `<mujoco>` section
+//! (its XML reader's), each in its own words; the XML outside attribute text
+//! in the rules this crate keeps of tinyxml2's (the text up to its first NUL
+//! and past leading whitespace, the root's name in any case, a declaration
+//! only before every other node, a document ending in text refused, an `&`
+//! that starts no reference kept); the link named world's tensor; a floating
+//! joint's range; and a URDF with a mesh loaded from its file, the mesh's file
+//! found against the URDF's directory as `from_xml_path` finds it.
 //!
 //! Every expected value was printed on the census's oracle (2026-11-25):
-//! MuJoCo 3.5.0's URDF import's.
+//! MuJoCo 3.5.0's URDF import's, but the world body's stored inertial in the
+//! world documents, which is this crate's (`D-URDF-WORLD-INERTIAL`, each case
+//! says so), and a refusal's words, which are this crate's.
 
 // The values are MuJoCo's, printed to the last digit.
 #![allow(clippy::unwrap_used, clippy::unreadable_literal)]
@@ -67,7 +71,8 @@ struct Model {
 /// What MuJoCo 3.5.0 makes of a document.
 enum Expect {
     Loads(&'static Model),
-    /// Refused for MuJoCo's fault, in this crate's words.
+    /// Refused, in this crate's words: for MuJoCo's fault, or, where the
+    /// case says so, for the other of two faults (ledger L353).
     Refused(&'static str),
 }
 
@@ -212,7 +217,7 @@ const CASES: &[(&str, Expect)] = &[
             nuser: [0, 0, 0, 0, 0, 0, 0],
         }),
     ),
-    // a spherical joint's effort: no force range on a ball
+    // a spherical joint's effort loads (the unlimited force range MuJoCo stores is not compared: D-URDF-EFFORT)
     (
         r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><joint name="j" type="spherical"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/><limit lower="0" upper="0.5" effort="3" velocity="1"/></joint></robot>"#,
         Expect::Loads(&Model {
@@ -2079,6 +2084,44 @@ const CASES: &[(&str, Expect)] = &[
             nuser: [0, 0, 0, 0, 0, 0, 0],
         }),
     ),
+    // the world link's six -0 moments: zeros, not checked (the world body's <inertial> not stored: D-URDF-WORLD-INERTIAL)
+    (
+        r#"<robot name="r"><link name="world"><inertial><origin xyz="0.1 0.02 0.03" rpy="0.3 0.5 0.7"/><mass value="1"/><inertia ixx="-0" iyy="-0" izz="-0" ixy="-0" ixz="-0" iyz="-0"/></inertial></link><link name="base"><inertial><origin xyz="0.1 0.02 0.03"/><mass value="1"/><inertia ixx="0.1" iyy="0.2" izz="0.3" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="world"/><child link="base"/><origin xyz="0 0 0.5"/><axis xyz="0.3 0.4 0.866"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint></robot>"#,
+        Expect::Loads(&Model {
+            name: "r",
+            body_parent: &[0, 0],
+            body_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            body_mass: &[0.0, 1.0],
+            body_inertia: &[[0.0, 0.0, 0.0], [0.3, 0.2, 0.1]],
+            body_ipos: &[[0.0, 0.0, 0.0], [0.1, 0.02, 0.03]],
+            body_iquat: &[
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 0.7071067811865489, 0.0, 0.7071067811865489],
+            ],
+            geom_name: &[],
+            geom_type: &[],
+            geom_body: &[],
+            geom_pos: &[],
+            geom_quat: &[],
+            geom_size: &[],
+            geom_contype: &[],
+            geom_conaffinity: &[],
+            geom_group: &[],
+            geom_rgba: &[],
+            jnt_limited: &[true],
+            jnt_range: &[[-1.0, 1.0]],
+            key_qpos: &[],
+            qpos5: &[7.325150859816931e-05],
+            reals: [0.002, 1.0, 1e-08, 0.01, 1e-06, 1e-06, 0.0001, 0.0, 0.0, 0.0],
+            vectors: [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0],
+            contact_override: [
+                0.02, 1.0, 0.9, 0.95, 0.001, 0.5, 2.0, 1.0, 1.0, 0.005, 0.0001, 0.0001,
+            ],
+            counts: [0, 0, 2, 2, 100, 50, 0, 35, 10, 40],
+            flags: [0, 0, 0],
+            nuser: [0, 0, 0, 0, 0, 0, 0],
+        }),
+    ),
     // MuJoCo: "Error: range[0] should be 0 in ball joint"
     (
         r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><joint name="j" type="spherical"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/><limit lower="-0.5" upper="0.5" effort="0" velocity="1"/></joint></robot>"#,
@@ -2217,13 +2260,6 @@ const CASES: &[(&str, Expect)] = &[
             "invalid inertia tensor for link world: inertia must have positive eigenvalues",
         ),
     ),
-    // MuJoCo: "Error: Error opening file 'nowhere.stl'"
-    (
-        r#"<robot name="r"><link name="world"><inertial><mass value="1"/><inertia ixx="-1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="nowhere.stl"/></geometry></collision></link><joint name="j" type="revolute"><parent link="world"/><child link="arm"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="0" velocity="1"/></joint></robot>"#,
-        Expect::Refused(
-            "invalid inertia tensor for link world: inertia must have positive eigenvalues",
-        ),
-    ),
     // MuJoCo: "XML parse error 15: Error=XML_ERROR_PARSING ErrorID=15 (0xf) Line number=1"
     (
         "<robot name=\"r\"><link name=\"base\"><inertial><origin xyz=\"0 0 0\"/><mass value=\"2\"/><inertia ixx=\"0.5\" iyy=\"0.5\" izz=\"0.5\" ixy=\"0\" ixz=\"0\" iyz=\"0\"/></inertial><collision><geometry><box size=\"0.1 0.1 0.1\"/></geometry></collision></link><link name=\"arm\"><inertial><origin xyz=\"0.1 0 0\"/><mass value=\"1\"/><inertia ixx=\"0.1\" iyy=\"0.1\" izz=\"0.1\" ixy=\"0\" ixz=\"0\" iyz=\"0\"/></inertial><collision><geometry><box size=\"0.1 0.1 0.1\"/></geometry></collision></link><joint name=\"j\" type=\"revolute\"><parent link=\"base\"/><child link=\"arm\"/><origin xyz=\"0 0 0.5\"/><axis xyz=\"0 1 0\"/></joint>\u{0}</robot>",
@@ -2272,12 +2308,12 @@ const FILE_CASES: &[(&str, Expect)] = &[
     // m01_sf_package; MuJoCo: "Error: Error opening file 'package://pkg/meshes/tet.stl'"
     (
         r#"<robot name="r"><mujoco><compiler strippath="false"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="package://pkg/meshes/tet.stl"/></geometry></collision></link></robot>"#,
-        Expect::Refused("asset file not found"),
+        Expect::Refused("asset file not found: 'package://pkg/meshes/tet.stl'"),
     ),
     // m02_sf_file_abs; MuJoCo: "Error: Error opening file 'file://{D}/meshes/tet.stl'"
     (
         r#"<robot name="r"><mujoco><compiler strippath="false"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="file://{D}/meshes/tet.stl"/></geometry></collision></link></robot>"#,
-        Expect::Refused("asset file not found"),
+        Expect::Refused("asset file not found: 'file://{D}/meshes/tet.stl'"),
     ),
     // m03_sf_abs
     (
@@ -2522,7 +2558,7 @@ const FILE_CASES: &[(&str, Expect)] = &[
     // m09_sf_meshdir_package; MuJoCo: "Error: Error opening file 'package://pkg/tet.stl'"
     (
         r#"<robot name="r"><mujoco><compiler strippath="false" meshdir="meshes"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="package://pkg/tet.stl"/></geometry></collision></link></robot>"#,
-        Expect::Refused("asset file not found"),
+        Expect::Refused("asset file not found: 'package://pkg/tet.stl'"),
     ),
     // m10_sf_abs_meshdir
     (
@@ -2715,7 +2751,7 @@ const FILE_CASES: &[(&str, Expect)] = &[
     // m14_sf_kept_visual_package; MuJoCo: "Error: Error opening file 'package://pkg/meshes/tet.stl'"
     (
         r#"<robot name="r"><mujoco><compiler strippath="false" discardvisual="false"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><visual><geometry><mesh filename="package://pkg/meshes/tet.stl"/></geometry></visual><collision><geometry><mesh filename="meshes/tet.stl"/></geometry></collision></link></robot>"#,
-        Expect::Refused("asset file not found"),
+        Expect::Refused("asset file not found: 'package://pkg/meshes/tet.stl'"),
     ),
     // m16_sf_dot_relative
     (
@@ -2840,7 +2876,7 @@ const FILE_CASES: &[(&str, Expect)] = &[
     // m20_sf_file_relative; MuJoCo: "Error: Error opening file 'file://meshes/tet.stl'"
     (
         r#"<robot name="r"><mujoco><compiler strippath="false"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="file://meshes/tet.stl"/></geometry></collision></link></robot>"#,
-        Expect::Refused("asset file not found"),
+        Expect::Refused("asset file not found: 'file://meshes/tet.stl'"),
     ),
     // m21_st_two_dirs_same_scale
     (
@@ -2899,7 +2935,7 @@ const FILE_CASES: &[(&str, Expect)] = &[
     // m22_sf_package_no_pkg_path; MuJoCo: "Error: Error opening file 'package://tet.stl'"
     (
         r#"<robot name="r"><mujoco><compiler strippath="false"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="package://tet.stl"/></geometry></collision></link></robot>"#,
-        Expect::Refused("asset file not found"),
+        Expect::Refused("asset file not found: 'package://tet.stl'"),
     ),
     // m23_st_package_no_pkg_path
     (
@@ -3020,6 +3056,13 @@ const FILE_CASES: &[(&str, Expect)] = &[
             flags: [0, 0, 0],
             nuser: [0, 0, 0, 0, 0, 0, 0],
         }),
+    ),
+    // m26_world_tensor_and_missing_mesh; MuJoCo: "Error: Error opening file 'nowhere.stl'"; this crate names another fault first (ledger L353)
+    (
+        r#"<robot name="r"><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><mesh filename="nowhere.stl"/></geometry></collision></link><link name="world"><inertial><mass value="1"/><inertia ixx="-1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="jw" type="fixed"><parent link="world"/><child link="base"/></joint></robot>"#,
+        Expect::Refused(
+            "invalid inertia tensor for link world: inertia must have positive eigenvalues",
+        ),
     ),
 ];
 
@@ -3239,8 +3282,9 @@ fn check(loaded: Result<sim_core::Model, UrdfError>, expect: &Expect, doc: &str)
 }
 
 /// Each document's name, colours and the fields above, and five steps, as
-/// MuJoCo 3.5.0's URDF import makes them; each document MuJoCo refuses
-/// refused for its fault.
+/// MuJoCo 3.5.0's URDF import makes them (the world body's stored inertial
+/// as this crate stores it, `D-URDF-WORLD-INERTIAL`); each document MuJoCo
+/// refuses refused for its fault.
 #[test]
 fn each_urdf_loads_as_mujocos_import() {
     let wrong: Vec<String> = CASES
@@ -3331,12 +3375,22 @@ fn each_mesh_urdf_loads_from_its_file_as_mujocos_import() {
             std::fs::write(path, tetrahedron(size)).unwrap();
         }
         let name = dir.0.file_name().unwrap().to_str().unwrap();
-        let doc = template
-            .replace("{D}", dir.0.to_str().unwrap())
-            .replace("{N}", name);
+        let place = |text: &str| {
+            text.replace("{D}", dir.0.to_str().unwrap())
+                .replace("{N}", name)
+        };
         let urdf = dir.0.join("robot.urdf");
-        std::fs::write(&urdf, doc).unwrap();
-        wrong.extend(check(load_urdf_model_from_file(&urdf), expect, template));
+        std::fs::write(&urdf, place(template)).unwrap();
+        let loaded = load_urdf_model_from_file(&urdf);
+        wrong.extend(match expect {
+            // A refusal's words name the file, in the case's directory.
+            Expect::Refused(words) => match loaded {
+                Err(e) if e.to_string().contains(&place(words)) => None,
+                Err(e) => Some(format!("refused ({e}), not for {words}: {template}")),
+                Ok(_) => Some(format!("loads, MuJoCo refuses ({words}): {template}")),
+            },
+            loads @ Expect::Loads(_) => check(loaded, loads, template),
+        });
     }
     assert!(
         wrong.is_empty(),
@@ -3370,4 +3424,21 @@ fn a_mesh_urdf_loads_from_its_file_not_from_its_text() {
         error.to_string().contains("no base path provided"),
         "{error}"
     );
+}
+
+/// A URDF file not in UTF-8 is refused (`D-URDF-FILE-UTF8`): MuJoCo 3.5.0
+/// reads its bytes as they are and loads this one, a Latin-1 byte in a
+/// comment (measured).
+#[test]
+fn a_urdf_file_not_in_utf8_is_refused() {
+    let dir = ScratchDir::new("latin1");
+    let urdf = dir.0.join("robot.urdf");
+    std::fs::write(
+        &urdf,
+        b"<robot name=\"r\"><!-- caf\xe9 --><link name=\"base\"/></robot>",
+    )
+    .unwrap();
+    let error = load_urdf_model_from_file(&urdf).unwrap_err();
+    assert!(matches!(error, UrdfError::Io { .. }), "{error}");
+    assert!(error.to_string().contains("valid UTF-8"), "{error}");
 }
