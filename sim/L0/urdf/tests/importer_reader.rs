@@ -982,7 +982,7 @@ const CASES: &[(&str, Expect)] = &[
     ),
     // whitespace after the root
     (
-        r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint></robot>"#,
+        "<robot name=\"r\"><link name=\"base\"><inertial><origin xyz=\"0 0 0\"/><mass value=\"2\"/><inertia ixx=\"0.5\" iyy=\"0.5\" izz=\"0.5\" ixy=\"0\" ixz=\"0\" iyz=\"0\"/></inertial><collision><geometry><box size=\"0.1 0.1 0.1\"/></geometry></collision></link><link name=\"arm\"><inertial><origin xyz=\"0.1 0 0\"/><mass value=\"1\"/><inertia ixx=\"0.1\" iyy=\"0.1\" izz=\"0.1\" ixy=\"0\" ixz=\"0\" iyz=\"0\"/></inertial><collision><geometry><box size=\"0.1 0.1 0.1\"/></geometry></collision></link><joint name=\"j\" type=\"revolute\"><parent link=\"base\"/><child link=\"arm\"/><origin xyz=\"0 0 0.5\"/><axis xyz=\"0 1 0\"/></joint></robot>  \n ",
         Expect::Loads(&Model {
             name: "r",
             body_parent: &[0, 0],
@@ -1017,7 +1017,7 @@ const CASES: &[(&str, Expect)] = &[
     ),
     // a vertical tab after the root: isspace
     (
-        r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint></robot>"#,
+        "<robot name=\"r\"><link name=\"base\"><inertial><origin xyz=\"0 0 0\"/><mass value=\"2\"/><inertia ixx=\"0.5\" iyy=\"0.5\" izz=\"0.5\" ixy=\"0\" ixz=\"0\" iyz=\"0\"/></inertial><collision><geometry><box size=\"0.1 0.1 0.1\"/></geometry></collision></link><link name=\"arm\"><inertial><origin xyz=\"0.1 0 0\"/><mass value=\"1\"/><inertia ixx=\"0.1\" iyy=\"0.1\" izz=\"0.1\" ixy=\"0\" ixz=\"0\" iyz=\"0\"/></inertial><collision><geometry><box size=\"0.1 0.1 0.1\"/></geometry></collision></link><joint name=\"j\" type=\"revolute\"><parent link=\"base\"/><child link=\"arm\"/><origin xyz=\"0 0 0.5\"/><axis xyz=\"0 1 0\"/></joint></robot>\u{b}",
         Expect::Loads(&Model {
             name: "r",
             body_parent: &[0, 0],
@@ -1052,7 +1052,7 @@ const CASES: &[(&str, Expect)] = &[
     ),
     // a form feed after the root: isspace
     (
-        r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint></robot>"#,
+        "<robot name=\"r\"><link name=\"base\"><inertial><origin xyz=\"0 0 0\"/><mass value=\"2\"/><inertia ixx=\"0.5\" iyy=\"0.5\" izz=\"0.5\" ixy=\"0\" ixz=\"0\" iyz=\"0\"/></inertial><collision><geometry><box size=\"0.1 0.1 0.1\"/></geometry></collision></link><link name=\"arm\"><inertial><origin xyz=\"0.1 0 0\"/><mass value=\"1\"/><inertia ixx=\"0.1\" iyy=\"0.1\" izz=\"0.1\" ixy=\"0\" ixz=\"0\" iyz=\"0\"/></inertial><collision><geometry><box size=\"0.1 0.1 0.1\"/></geometry></collision></link><joint name=\"j\" type=\"revolute\"><parent link=\"base\"/><child link=\"arm\"/><origin xyz=\"0 0 0.5\"/><axis xyz=\"0 1 0\"/></joint></robot>\u{c}",
         Expect::Loads(&Model {
             name: "r",
             body_parent: &[0, 0],
@@ -1206,7 +1206,7 @@ const CASES: &[(&str, Expect)] = &[
     ),
     // MuJoCo: "XML parse error 8: Error=XML_ERROR_PARSING_TEXT ErrorID=8 (0x8) Line number=1"
     (
-        r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint></robot>junk"#,
+        "<robot name=\"r\"><link name=\"base\"><inertial><origin xyz=\"0 0 0\"/><mass value=\"2\"/><inertia ixx=\"0.5\" iyy=\"0.5\" izz=\"0.5\" ixy=\"0\" ixz=\"0\" iyz=\"0\"/></inertial><collision><geometry><box size=\"0.1 0.1 0.1\"/></geometry></collision></link><link name=\"arm\"><inertial><origin xyz=\"0.1 0 0\"/><mass value=\"1\"/><inertia ixx=\"0.1\" iyy=\"0.1\" izz=\"0.1\" ixy=\"0\" ixz=\"0\" iyz=\"0\"/></inertial><collision><geometry><box size=\"0.1 0.1 0.1\"/></geometry></collision></link><joint name=\"j\" type=\"revolute\"><parent link=\"base\"/><child link=\"arm\"/><origin xyz=\"0 0 0.5\"/><axis xyz=\"0 1 0\"/></joint></robot>junk \n",
         Expect::Refused("the document ends in text"),
     ),
 ];
