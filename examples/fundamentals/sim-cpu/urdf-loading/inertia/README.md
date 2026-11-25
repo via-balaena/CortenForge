@@ -14,10 +14,10 @@ due to cross-coupling terms in Euler's equations.
 
 ## What it tests
 
-URDF always specifies a full symmetric inertia tensor (6 values). The
-converter writes it as `fullinertia` in MJCF, a diagonal tensor too (six
-zero moments, a tensor not given, as `diaginertia="0 0 0"`), as MuJoCo
-3.5.0's URDF importer does. The two bodies here are MJCF written
+URDF always specifies a full symmetric inertia tensor (6 values). In an
+unturned inertial origin the converter writes it as `fullinertia` in MJCF,
+a diagonal tensor too (six zero moments, a tensor not given, as
+`diaginertia="0 0 0"`), as MuJoCo 3.5.0's URDF importer does. The two bodies here are MJCF written
 by hand, one with `diaginertia` and one with `fullinertia`. Both paths
 must produce correct dynamics.
 

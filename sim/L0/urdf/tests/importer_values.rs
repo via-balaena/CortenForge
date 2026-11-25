@@ -1,6 +1,7 @@
 //! A URDF's model as MuJoCo 3.5.0's own importer makes it (`xml_urdf.cc`):
 //! every tensor its body's `fullinertia`, so a diagonal one takes its
-//! principal axes as the inertial frame, the moments largest first, and six
+//! principal axes as the inertial frame, the moments in decreasing order
+//! (but for moments within 1e-12 of each other), and six
 //! zeros a tensor not given; every origin's `rpy` read as extrinsic x-y-z,
 //! and every `xyz` and `rpy` as written, however small; and no option set,
 //! so energy is not computed. One difference is deliberate: a link's tensor
@@ -1793,6 +1794,11 @@ const CASES: &[(&str, Expect)] = &[
         r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin rpy="0.3 0.5 0.7"/><mass value="1"/><inertia ixx="-0.1" iyy="0.2" izz="0.3" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0.05 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 0 1"/></joint></robot>"#,
         Expect::Refused("inertia must have positive eigenvalues"),
     ),
+    // MuJoCo: "Error: error 'inertia must have positive eigenvalues' in fullinertia"
+    (
+        r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin xyz="0 0 0" rpy="-1.60178 -2.90773 -0.648646"/><mass value="1"/><inertia ixx="9.999999999999998e-15" iyy="9.999999999999998e-15" izz="9.999999999999998e-15" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 0 1"/></joint></robot>"#,
+        Expect::Refused("inertia must have positive eigenvalues"),
+    ),
 ];
 
 /// Documents whose `<inertial>` origin turns, each with its link's principal
@@ -1866,6 +1872,18 @@ const TURNED: &[(&str, [f64; 3], [f64; 4])] = &[
             0.9545001852485764,
         ],
     ),
+    // an isotropic tensor turned by 3e-308: a component of its frame subnormal, written as zero (review FA)
+    (
+        r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin xyz="0.1 0.02 0.03" rpy="3e-308 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0.3 0.4 0.866"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint></robot>"#,
+        [0.1, 0.1, 0.1],
+        [1.0, 1.5000000000000004e-308, 0.0, 0.0],
+    ),
+    // a diagonal tensor written largest first, turned by 1e-160 about two axes (review FA)
+    (
+        r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin xyz="0.1 0.02 0.03" rpy="1e-160 1e-160 0"/><mass value="1"/><inertia ixx="0.3" iyy="0.2" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0.3 0.4 0.866"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint></robot>"#,
+        [0.3, 0.2, 0.1],
+        [1.0, 5e-161, 5e-161, -2.5e-321],
+    ),
 ];
 
 /// Documents with a link of negative mass, which MuJoCo 3.5.0's import
@@ -1873,6 +1891,22 @@ const TURNED: &[(&str, [f64; 3], [f64; 4])] = &[
 const NEGATIVE_MASS: &[&str] = &[
     r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="t"><inertial><mass value="-1"/><inertia ixx="0.1" iyy="0.2" izz="0.3" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="f" type="fixed"><parent link="base"/><child link="t"/><origin xyz="0 0 0.5"/></joint></robot>"#,
     r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><mass value="1"/><inertia ixx="0.3" iyy="0.2" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="t"><inertial><mass value="-0.25"/><inertia ixx="0.03" iyy="0.02" izz="0.01" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint><joint name="f" type="fixed"><parent link="arm"/><child link="t"/><origin xyz="0.2 0 0"/></joint></robot>"#,
+];
+
+/// Documents with a tensor in a turned origin whose principal moments hold a
+/// negative one `mjuu_eig3` does not sort last: each loads in MuJoCo, the
+/// moment raised to `boundinertia` (0).
+const RAISED: &[&str] = &[
+    r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="t"><inertial><origin rpy="0.3 0.5 0.7"/><mass value="1"/><inertia ixx="2e-14" iyy="-1e-15" izz="2e-14" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="f" type="fixed"><parent link="base"/><child link="t"/><origin xyz="0 0 0.5"/></joint></robot>"#,
+    r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><mass value="1"/><inertia ixx="0.3" iyy="0.2" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="t"><inertial><origin rpy="0.3 0.5 0.7"/><mass value="0.25"/><inertia ixx="2e-14" iyy="-1e-15" izz="2e-14" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint><joint name="f" type="fixed"><parent link="arm"/><child link="t"/><origin xyz="0.2 0 0"/></joint></robot>"#,
+    r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><mass value="1"/><inertia ixx="0.3" iyy="0.2" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="t"><inertial><origin rpy="0.3 0.5 0.7"/><mass value="0.25"/><inertia ixx="-1e-15" iyy="2e-14" izz="2e-14" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint><joint name="f" type="fixed"><parent link="arm"/><child link="t"/><origin xyz="0.2 0 0"/></joint></robot>"#,
+    r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><mass value="1"/><inertia ixx="0.3" iyy="0.2" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="t"><inertial><origin rpy="0.3 0.5 0.7"/><mass value="0.25"/><inertia ixx="-5e-13" iyy="5e-13" izz="5e-13" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint><joint name="f" type="fixed"><parent link="arm"/><child link="t"/><origin xyz="0.2 0 0"/></joint></robot>"#,
+];
+
+/// Documents with a turned tensor near the largest double, whose principal
+/// moments overflow: each loads in MuJoCo.
+const OVERFLOW: &[&str] = &[
+    r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin xyz="0.1 0.02 0.03" rpy="0.3 0.5 0.7"/><mass value="1"/><inertia ixx="1.7e+308" iyy="1.7e+308" izz="1e+308" ixy="1e+307" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0.3 0.4 0.866"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint></robot>"#,
 ];
 
 /// 0 on macOS arm64, where MuJoCo's values were printed, and 1e-12 of an
@@ -2026,7 +2060,7 @@ fn each_urdf_loads_as_mujocos_import() {
 }
 
 /// A link whose `<inertial>` origin turns keeps MuJoCo 3.5.0's principal
-/// moments, as `close` compares them, and takes the turn composed with
+/// moments, bit for bit, and takes the turn composed with
 /// MuJoCo's principal axes as its inertial frame, within 1e-12 on every
 /// platform (the turn's quaternion is this crate's arithmetic, the expected
 /// one MuJoCo's `mju_euler2Quat`): its tensor is R·I·Rᵀ in the link's frame,
@@ -2049,7 +2083,13 @@ fn an_inertial_origins_turn_turns_its_tensor() {
             .iter()
             .zip(frame)
             .all(|(a, b)| (a - b).abs() <= 1e-12);
-        if !close(inertia.as_slice(), moments) || !frame_ok {
+        // Bit for bit on every platform: `mjuu_eig3` is arithmetic and square
+        // roots, which round the same everywhere.
+        let moments_ok = inertia
+            .iter()
+            .zip(moments)
+            .all(|(a, b)| a.to_bits() == b.to_bits());
+        if !moments_ok || !frame_ok {
             wrong.push(format!(
                 "{inertia:?} {turned:?}, want {moments:?} {frame:?}: {doc}"
             ));
@@ -2070,6 +2110,37 @@ fn a_negative_mass_is_refused_where_mujocos_import_raises_it() {
                 .as_deref()
                 .is_some_and(|e| e.contains("invalid mass on <inertial>: must not be negative")),
             "{refused:?}: {doc}"
+        );
+    }
+}
+
+/// A turned tensor whose principal moments overflow is refused as the same
+/// tensor unturned is, in D-INERTIA-NONFINITE's words, where MuJoCo 3.5.0's
+/// import loads it.
+#[test]
+fn a_turned_tensor_whose_moments_overflow_is_refused_as_unturned() {
+    for doc in OVERFLOW {
+        let refused = load_urdf_model(doc).err().map(|e| e.to_string());
+        assert!(
+            refused
+                .as_deref()
+                .is_some_and(|e| e.contains("its principal moments or axes are not finite")),
+            "{refused:?}: {doc}"
+        );
+    }
+}
+
+/// A turned tensor whose principal moments hold a negative one that
+/// `mjuu_eig3` does not sort last (moments within 1e-12 of each other) loads,
+/// the moment raised to 0 as MuJoCo 3.5.0's compiler raises it to
+/// `boundinertia`, where MuJoCo's import loads it.
+#[test]
+fn a_turned_tensors_negative_principal_moment_is_raised_as_mujoco_raises_it() {
+    for doc in RAISED {
+        assert!(
+            load_urdf_model(doc).is_ok(),
+            "{:?}: {doc}",
+            load_urdf_model(doc).err()
         );
     }
 }

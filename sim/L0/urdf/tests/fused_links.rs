@@ -1,11 +1,12 @@
 //! A link on a fixed joint, which sim-urdf's `fusestatic` fuses into its
 //! parent, as MuJoCo 3.5.0's URDF import does: its mass and inertia added to
 //! the parent's, and its own checks made before it is fused (sim-mjcf's
-//! `fusestatic`, book Rigid-loading L42; ledger L373). Each expected value
-//! was printed by MuJoCo 3.5.0's own URDF import (review round 1 RW-4,
-//! 2026-11-24).
+//! `fusestatic`, book Rigid-loading L42; ledger L373). The expected values
+//! of `a_fixed_links_mass_is_its_parents` were printed by MuJoCo 3.5.0's own
+//! URDF import (review round 1 RW-4, 2026-11-24); those of
+//! `a_fused_links_mass_centre_and_tensor_are_physical` by numpy.
 
-// The expected values are numpy's, printed to the last digit.
+// The expected values are printed to the last digit.
 #![allow(clippy::unwrap_used, clippy::unreadable_literal)]
 
 use sim_urdf::load_urdf_model;
@@ -24,13 +25,15 @@ fn link_tensor(m: &sim_core::Model, body: usize) -> [f64; 6] {
 /// mass, centre and tensor, each link's tensor in its own inertial frame: the
 /// physics, computed in numpy from the written values. MuJoCo 3.5.0's import
 /// composes the fused link's inertial frame before its pose
-/// (D-FUSESTATIC-INERTIA): its centre for the first document is (0, 0, 0.1),
-/// the fused link's position turned by the principal axes of its unsorted
-/// diagonal tensor (measured, review RL-10c RW-5). The second document's
+/// (D-FUSESTATIC-INERTIA): its combined centre for the first document is
+/// (0, 0, 0.1), the fused link's centre taken as its inertial position plus
+/// its position turned by the principal axes of its unsorted diagonal tensor,
+/// (0, 0, 0.3) (measured, review RL-10c RW-5, FB-10). The second document's
 /// fused link has a turned inertial origin (D-URDF-INERTIAL-TURN). The tensor
-/// is rebuilt from the loaded frame and moments, within 1e-6 of its largest
-/// entry: `mjuu_eig3`'s round trip, measured up to 2.9e-7 on MuJoCo's own
-/// import of a full tensor (review RL-10c RA-4).
+/// is rebuilt from the loaded frame and moments, within 1e-5 of its largest
+/// entry: `mjuu_eig3` stops with a rotation left whose cosine is above
+/// 1 − 1e-12, and MuJoCo's own round trip reaches 1.4e-6 of the largest entry
+/// over 3000 random tensors (measured, review RL-10c FB-4); here it is 7e-9.
 #[test]
 fn a_fused_links_mass_centre_and_tensor_are_physical() {
     let cases: [(&str, [f64; 3], [f64; 6]); 2] = [
@@ -74,7 +77,7 @@ fn a_fused_links_mass_centre_and_tensor_are_physical() {
         assert!(
             got.iter()
                 .zip(tensor)
-                .all(|(a, b)| (a - b).abs() <= 1e-6 * scale),
+                .all(|(a, b)| (a - b).abs() <= 1e-5 * scale),
             "tensor {got:?}, want {tensor:?}: {doc}"
         );
     }

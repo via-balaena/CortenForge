@@ -91,19 +91,48 @@ fn written(v: &Vector3<f64>) -> bool {
 /// what MuJoCo's importer computes (`xml_urdf.cc:272-283`) before its compiler
 /// overwrites the frame with the unturned axes (ledger L372;
 /// D-URDF-INERTIAL-TURN). The tensor is R·I·Rᵀ, R the turn; its moments, and
-/// every check made of them, are MuJoCo's. `None` where nothing turns, and
-/// where MuJoCo refuses the tensor (its smallest moment below mjEPS), which the
-/// converter then writes unturned for sim-mjcf to refuse in MuJoCo's words.
+/// every check made of them, are MuJoCo's: a negative moment is raised to 0
+/// as MuJoCo's compiler raises it to `boundinertia` (`std::max`,
+/// `user_objects.cc:2450-2454`): one `mjuu_eig3`'s sort, which swaps only
+/// moments more than 1e-12 apart, does not place last.
+///
+/// `None` where nothing turns; where MuJoCo refuses the tensor (its last
+/// moment after that sort below mjEPS), which the converter then writes
+/// unturned for sim-mjcf to refuse in MuJoCo's words; and where the moments
+/// or the frame are not finite (a tensor near the largest double), which
+/// sim-mjcf then refuses unturned (D-INERTIA-NONFINITE). A component of the
+/// frame below the smallest normal double is written as a zero of its sign:
+/// MJCF's reader, as MuJoCo's, refuses a written subnormal, and the frame
+/// moves by less than 2.3e-308.
 fn turned_frame(moments: &[f64; 6], rpy: &Vector3<f64>) -> Option<([f64; 3], UnitQuaternion<f64>)> {
     if !written(rpy) {
         return None;
     }
     let (principal, [w, x, y, z]) = sim_mjcf::full_inertia(moments).ok()?;
     let axes = UnitQuaternion::new_unchecked(Quaternion::new(w, x, y, z));
-    Some((
-        principal,
-        UnitQuaternion::from_euler_angles(rpy.x, rpy.y, rpy.z) * axes,
-    ))
+    let frame = UnitQuaternion::from_euler_angles(rpy.x, rpy.y, rpy.z) * axes;
+    if !principal
+        .iter()
+        .chain(frame.coords.iter())
+        .all(|v| v.is_finite())
+    {
+        return None;
+    }
+    let normal = |v: f64| {
+        if v.abs() < f64::MIN_POSITIVE {
+            0.0_f64.copysign(v)
+        } else {
+            v
+        }
+    };
+    let frame = Quaternion::new(
+        normal(frame.w),
+        normal(frame.i),
+        normal(frame.j),
+        normal(frame.k),
+    );
+    let raised = principal.map(|moment| if moment < 0.0 { 0.0 } else { moment });
+    Some((raised, UnitQuaternion::new_unchecked(frame)))
 }
 
 /// A geom's ` pos` and ` euler` attributes for its URDF origin, each where
@@ -692,7 +721,8 @@ impl<'a> Converter<'a> {
         // MuJoCo 3.5.0's importer fills the body's `fullinertia` with the six
         // moments, a diagonal tensor's too (`xml_urdf.cc:252-258`), so its
         // compiler takes the tensor's principal axes as the inertial frame,
-        // the moments largest first (`mjuu_fullInertia`, `mjuu_eig3`).
+        // the moments in decreasing order but for moments within 1e-12 of each
+        // other (`mjuu_fullInertia`, `mjuu_eig3`).
         let inertia_attr = if moments.iter().all(|&moment| moment == 0.0) {
             // Six zeros are a tensor not given (`:260-270`), as `diaginertia`
             // zeros are in MJCF. MuJoCo keeps the origin's turn as such a

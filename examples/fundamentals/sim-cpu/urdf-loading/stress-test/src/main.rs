@@ -864,8 +864,9 @@ fn check_16_full_inertia_loads() -> (u32, u32) {
 
 fn check_17_full_inertia_mjcf_has_fullinertia() -> (u32, u32) {
     let mjcf = sim_urdf::urdf_to_mjcf(FULL_INERTIA_URDF).expect("convert");
-    // Every tensor is written as `fullinertia` (MuJoCo 3.5.0's importer's);
-    // its six moments, the off-diagonal three included, as written.
+    // A tensor in an unturned origin is written as `fullinertia` (MuJoCo
+    // 3.5.0's importer's): its six moments, the off-diagonal three included,
+    // as written.
     let has_full = mjcf.contains(r#"fullinertia="0.2 0.25 0.3 0.02 0.01 0.03""#);
     let p = check(
         "Full inertia → its six moments in MJCF",
