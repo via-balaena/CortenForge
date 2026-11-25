@@ -366,8 +366,10 @@ impl<'a> Converter<'a> {
         self.write_line(&format!(r#"<mujoco model="{}">"#, escape(&self.robot.name)));
         self.indent += 1;
 
-        // No `<option>`: MuJoCo 3.5.0's importer sets none (`xml_urdf.cc`), so
-        // a converted model has MJCF's defaults, as MuJoCo's: gravity
+        // No `<option>`: MuJoCo 3.5.0's importer sets no option of its own; it
+        // reads a URDF's `<mujoco><option>` (`xml_urdf.cc:101-103`), which
+        // this converter does not read yet (ledger L378). Without one, a
+        // converted model has MJCF's defaults, as MuJoCo's: gravity
         // (0, 0, -9.81), a timestep of 0.002, energy not computed.
 
         // Write compiler settings for URDF compatibility
@@ -899,6 +901,23 @@ mod tests {
                 .as_deref()
                 .is_some_and(|e| e.contains("inertia must satisfy A + B >= C")),
             "{error:?}"
+        );
+    }
+
+    /// A mesh collision's origin is written as read, however small, and a -0
+    /// keeps its sign, as a primitive's is: MuJoCo 3.5.0's importer reads
+    /// each `xyz` and `rpy` written (`xml_urdf.cc:640`, `:648-669`).
+    #[test]
+    fn a_mesh_geoms_origin_is_written_as_read() {
+        let mjcf = urdf_to_mjcf(
+            r#"<robot name="r"><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="1e-11 -0 0" rpy="0.1 0.2 0.3"/><geometry><mesh filename="part.obj"/></geometry></collision></link></robot>"#,
+        )
+        .expect("converts");
+        assert!(
+            mjcf.contains(
+                r#"type="mesh" mesh="part" pos="0.00000000001 -0 0" euler="0.1 0.2 0.3""#
+            ),
+            "{mjcf}"
         );
     }
 

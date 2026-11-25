@@ -1,8 +1,8 @@
 //! Inertia Tensor Handling
 //!
 //! Two free-floating boxes in zero gravity, side by side:
-//! - Left: diagonal inertia (symmetric) → `diaginertia` in MJCF
-//! - Right: off-diagonal inertia (asymmetric) → `fullinertia` in MJCF
+//! - Left: diagonal inertia (symmetric), `diaginertia` in this scene's MJCF
+//! - Right: off-diagonal inertia (asymmetric), `fullinertia` in this scene's MJCF
 //!
 //! Both start with the same angular velocity. Watch them precess
 //! differently — the asymmetric body wobbles more chaotically.
@@ -35,7 +35,7 @@ use sim_bevy::model_data::{
 };
 use sim_core::validation::{Check, print_report};
 
-// ── URDF for validation (separate models to check diaginertia vs fullinertia)
+// ── URDF for validation (the converter writes its six moments as fullinertia)
 
 const FULL_URDF: &str = r#"<?xml version="1.0"?>
 <robot name="full_inertia">
@@ -57,6 +57,10 @@ const FULL_URDF: &str = r#"<?xml version="1.0"?>
     </joint>
 </robot>
 "#;
+
+/// The six moments the converter writes for `FULL_URDF`'s body, the
+/// off-diagonal three included.
+const FULL_MOMENTS: &str = r#"fullinertia="0.2 0.25 0.3 0.02 0.01 0.03""#;
 
 /// Combined MJCF with both bodies for visual rendering.
 /// Left (x=-1): diagonal inertia, flat box.
@@ -148,11 +152,11 @@ fn setup(
     data.qvel[11] = 0.5;
     let _ = data.forward(&model);
 
-    // Verify the URDF fullinertia path works
+    // Verify the URDF fullinertia path writes the six moments
     let mjcf_check = sim_urdf::urdf_to_mjcf(FULL_URDF).expect("convert");
     println!(
         "  URDF fullinertia conversion: {}\n",
-        mjcf_check.contains("fullinertia")
+        mjcf_check.contains(FULL_MOMENTS)
     );
 
     spawn_model_geoms(
@@ -211,9 +215,9 @@ fn inertia_diagnostics(
     }
     val.reported = true;
 
-    // Check fullinertia path in URDF converter
+    // Check the URDF converter writes the six moments
     let mjcf = sim_urdf::urdf_to_mjcf(FULL_URDF).expect("convert");
-    let has_full = mjcf.contains("fullinertia");
+    let has_full = mjcf.contains(FULL_MOMENTS);
 
     // Check both spinning stably
     let diag_omega = (data.qvel[3].powi(2) + data.qvel[4].powi(2) + data.qvel[5].powi(2)).sqrt();

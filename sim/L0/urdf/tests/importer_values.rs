@@ -9,8 +9,9 @@
 //! (D-URDF-INERTIAL-TURN): its principal moments are MuJoCo's, its inertial
 //! frame turned.
 //!
-//! Every expected value was printed by MuJoCo 3.5.0's URDF import on the
-//! census's oracle (2026-11-25).
+//! Every expected value was printed on the census's oracle (2026-11-25):
+//! MuJoCo 3.5.0's URDF import's, and for a turned origin's frame its
+//! `mju_euler2Quat` and `mju_mulQuat`.
 
 // The values are MuJoCo's, printed to the last digit.
 #![allow(
@@ -335,18 +336,23 @@ const CASES: &[(&str, Expect)] = &[
             gravity: [0.0, 0.0, -9.81],
         }),
     ),
-    // an off-diagonal moment of 1e-11, which the converter dropped
+    // an off-diagonal moment of 1e-11 between two equal moments, which turns the principal axes and which the converter dropped
     (
-        r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.2" izz="0.3" ixy="1e-11" ixz="0" iyz="0"/></inertial><collision><origin xyz="0.05 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 0 1"/></joint></robot>"#,
+        r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><mass value="1"/><inertia ixx="0.2" iyy="0.2" izz="0.3" ixy="1e-11" ixz="0" iyz="0"/></inertial><collision><origin xyz="0.05 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 0 1"/></joint></robot>"#,
         Expect::Loads(&Model {
             body_pos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             body_quat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
             body_mass: &[0.0, 1.0],
-            body_inertia: &[[0.0, 0.0, 0.0], [0.3, 0.2, 0.1]],
+            body_inertia: &[[0.0, 0.0, 0.0], [0.3, 0.20000000001, 0.19999999999000004]],
             body_ipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
             body_iquat: &[
                 [1.0, 0.0, 0.0, 0.0],
-                [0.0, 0.7071067811865489, 0.0, 0.7071067811865489],
+                [
+                    0.2705980500730991,
+                    0.6532814824381896,
+                    -0.2705980500730991,
+                    0.6532814824381896,
+                ],
             ],
             body_simple: &[1, 0],
             dof_simplenum: &[0],
@@ -359,7 +365,7 @@ const CASES: &[(&str, Expect)] = &[
             dof_damping: &[0.0],
             dof_frictionloss: &[0.0],
             qpos0: &[0.0],
-            meaninertia: 0.30000000000000243,
+            meaninertia: 0.30000000000000254,
             xpos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
             xquat: &[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
             xipos: &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.5]],
