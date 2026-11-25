@@ -445,8 +445,9 @@ impl UrdfJoint {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct UrdfRobot {
-    /// Robot name.
-    pub name: String,
+    /// Robot name; `None` where the document writes none, which MuJoCo 3.5.0
+    /// tells apart from `name=""` (`xml_urdf.cc:115-117`).
+    pub name: Option<String>,
     /// All links in the robot.
     pub links: Vec<UrdfLink>,
     /// All joints in the robot.
@@ -458,7 +459,7 @@ impl UrdfRobot {
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            name: name.into(),
+            name: Some(name.into()),
             links: Vec::new(),
             joints: Vec::new(),
         }
@@ -565,7 +566,7 @@ mod tests {
                 "link1",
             ));
 
-        assert_eq!(robot.name, "test_robot");
+        assert_eq!(robot.name.as_deref(), Some("test_robot"));
         assert_eq!(robot.links.len(), 2);
         assert_eq!(robot.joints.len(), 1);
         assert!(robot.link("base_link").is_some());

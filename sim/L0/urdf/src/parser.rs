@@ -43,7 +43,8 @@ pub fn parse_urdf_str(xml: &str) -> Result<UrdfRobot> {
     // MuJoCo's own sections in a URDF (`<mujoco><compiler|option|size>`) are
     // not read (ledger L378); the element is looked up as MuJoCo looks it up.
     root.find_sub("mujoco", false)?;
-    let mut robot = UrdfRobot::new(root.attr("name").unwrap_or(""));
+    let mut robot = UrdfRobot::new("");
+    robot.name = root.attr("name").map(str::to_owned);
     make_materials(&root)?;
 
     let links: Vec<&Element> = root.children.iter().filter(|e| e.tag == "link").collect();
@@ -808,7 +809,7 @@ mod tests {
         "#;
 
         let robot = parse_urdf_str(xml).expect("should parse");
-        assert_eq!(robot.name, "test_robot");
+        assert_eq!(robot.name.as_deref(), Some("test_robot"));
         assert_eq!(robot.links.len(), 2);
 
         let base = robot.link("base_link").expect("base_link should exist");
@@ -1213,12 +1214,16 @@ mod tests {
     }
 
     /// A robot's name is optional, as MuJoCo 3.5.0's importer reads it
-    /// (`xml_urdf.cc:115`; measured: `<robot>` without a name loads).
+    /// (`xml_urdf.cc:115`; measured: `<robot>` without a name loads), and an
+    /// unwritten one is not `name=""`.
     #[test]
     fn a_robot_without_a_name_is_read() {
         let robot = parse_urdf_str(r#"<robot><link name="base"/></robot>"#).expect("parses");
-        assert_eq!(robot.name, "");
+        assert_eq!(robot.name, None);
         assert_eq!(robot.links.len(), 1);
+        let empty =
+            parse_urdf_str(r#"<robot name=""><link name="base"/></robot>"#).expect("parses");
+        assert_eq!(empty.name.as_deref(), Some(""));
     }
 
     #[test]

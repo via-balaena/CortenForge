@@ -392,7 +392,13 @@ impl<'a> Converter<'a> {
         let roots = self.root_links()?;
 
         // Write MJCF header
-        self.write_line(&format!(r#"<mujoco model="{}">"#, escape(&self.robot.name)));
+        // A robot without a name is written without one, so the model takes
+        // MuJoCo 3.5.0's default name, as its importer gives it
+        // (`xml_urdf.cc:115-117`: the name is set only where written).
+        match &self.robot.name {
+            Some(name) => self.write_line(&format!(r#"<mujoco model="{}">"#, escape(name))),
+            None => self.write_line("<mujoco>"),
+        }
         self.indent += 1;
 
         // No `<option>`: MuJoCo 3.5.0's importer sets no option of its own; it
@@ -865,6 +871,22 @@ impl<'a> Converter<'a> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A robot without a name loads with MuJoCo 3.5.0's default name,
+    /// "MuJoCo Model", as its importer gives it, and `name=""` with the empty
+    /// one (measured: RL-10c2's start documents `n01`, `n02`, `n03`).
+    #[test]
+    fn a_robot_without_a_name_takes_mujocos_default_name() {
+        for (head, want) in [
+            ("<robot>", "MuJoCo Model"),
+            (r#"<robot name="">"#, ""),
+            (r#"<robot name="r">"#, "r"),
+        ] {
+            let urdf = format!(r#"{head}<link name="base"/></robot>"#);
+            let model = crate::load_urdf_model(&urdf).expect("loads");
+            assert_eq!(model.name, want, "{urdf}");
+        }
+    }
 
     #[test]
     fn test_simple_urdf_to_mjcf() {
