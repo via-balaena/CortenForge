@@ -62,6 +62,8 @@
 //!
 //! - `<joint name="..." type="...">` - Joint constraint
 //! - Supported types: `fixed`, `revolute`, `continuous`, `prismatic`, `floating`, `planar`
+//!   and `spherical` (not in URDF's specification; a ball joint, as MuJoCo
+//!   3.5.0's importer reads it)
 //! - `<parent>`, `<child>` - Connected links
 //! - `<origin>` - Joint frame relative to parent
 //! - `<axis>` - Joint axis for revolute/prismatic
@@ -154,8 +156,7 @@ pub use validation::{ValidationResult, validate};
 /// ```
 pub fn load_urdf_model(urdf_xml: &str) -> Result<sim_core::Model> {
     let mjcf = urdf_to_mjcf(urdf_xml)?;
-    sim_mjcf::load_model(&mjcf)
-        .map_err(|e| UrdfError::Unsupported(format!("MJCF conversion error: {e}")))
+    sim_mjcf::load_model(&mjcf).map_err(UrdfError::Model)
 }
 
 #[cfg(test)]

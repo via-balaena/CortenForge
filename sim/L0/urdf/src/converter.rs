@@ -402,8 +402,7 @@ fn section_lines(
 ///
 /// # Errors
 ///
-/// [`UrdfError::Unsupported`] with sim-mjcf's error, as a converted model's
-/// own refusal is worded.
+/// [`UrdfError::Section`] with sim-mjcf's error.
 pub fn check_section(
     tag: &str,
     attributes: &[(String, String)],
@@ -415,7 +414,7 @@ pub fn check_section(
     lines.push("</mujoco>".to_owned());
     sim_mjcf::parse_mjcf_str(&lines.join("\n"))
         .map(drop)
-        .map_err(|e| UrdfError::Unsupported(format!("MJCF conversion error: {e}")))
+        .map_err(UrdfError::Section)
 }
 
 /// Internal converter state.

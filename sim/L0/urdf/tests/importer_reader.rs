@@ -431,6 +431,23 @@ const CASES: &[(&str, Expect)] = &[
         r#"<robot name="r"><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint></robot>"#,
         Expect::Refused("reference to undefined link: base in joint j"),
     ),
+    // MuJoCo: "Error: mass and inertia of moving bodies must be larger than mjMINVAL"
+    (
+        r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm"/><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint></robot>"#,
+        Expect::Refused(
+            "the model is refused: mass and inertia of moving bodies must be larger than mjMINVAL",
+        ),
+    ),
+    // MuJoCo: "Error: inertia must satisfy A + B >= C; use 'balanceinertia' to fix"
+    (
+        r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint></robot>"#,
+        Expect::Refused("the model is refused: inertia must satisfy A + B >= C"),
+    ),
+    // MuJoCo: "XML Error: bad format in attribute 'timestep'"
+    (
+        r#"<robot name="r"><mujoco><option timestep="x"/></mujoco><link name="base"><inertial><origin xyz="0 0 0"/><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint></robot>"#,
+        Expect::Refused("a <mujoco> section is refused: bad number"),
+    ),
 ];
 
 /// Documents whose load status this crate and MuJoCo 3.5.0's import do not

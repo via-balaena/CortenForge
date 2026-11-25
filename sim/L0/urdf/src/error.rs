@@ -131,9 +131,18 @@ pub enum UrdfError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Unsupported feature.
-    #[error("unsupported URDF feature: {0}")]
-    Unsupported(String),
+    /// The model the URDF converts to is refused by sim-mjcf, as MuJoCo
+    /// 3.5.0's compiler refuses the model its importer builds (a moving body
+    /// without mass, a tensor breaking the triangle, …), in sim-mjcf's words.
+    #[error("the model is refused: {0}")]
+    Model(#[source] sim_mjcf::MjcfError),
+
+    /// A URDF's own `<mujoco>` section refused by sim-mjcf's reader, as
+    /// MuJoCo 3.5.0's reader refuses it, in sim-mjcf's words. The location
+    /// it names is within the section, checked alone as a one-section
+    /// document, not the URDF's line.
+    #[error("a <mujoco> section is refused: {0}")]
+    Section(#[source] sim_mjcf::MjcfError),
 }
 
 impl UrdfError {
