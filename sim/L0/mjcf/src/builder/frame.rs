@@ -65,7 +65,8 @@ fn wxyz(q: &UnitQuaternion<f64>) -> [f64; 4] {
 /// Expand every `<frame>` of a body tree.
 ///
 /// Frames are coordinate-system wrappers that compose their transform into
-/// each element they hold and then disappear. A frame's contents take its
+/// each element they hold and then disappear; a geom keeps its frame, which
+/// the builder composes last (`MjcfGeom::frame`). A frame's contents take its
 /// place among its body's elements, in the order the document writes them
 /// (`MjcfBody::items`), as MuJoCo 3.5.0 adds each element to its body when it
 /// reads it. This runs before `discardvisual`/`fusestatic` and before
@@ -198,10 +199,14 @@ fn dissolve(
 
     for element in Contents::take_from_frame(&mut frame).into_elements() {
         let element = match element {
-            // Each geom's orientation (a `fromto` resolved already gives its
-            // `quat`), composed with the frame's.
+            // Each geom keeps its own pose and is given the frame, which the
+            // builder composes after the geom's orientation and its mesh's
+            // frame, as MuJoCo composes a geom's (`user_objects.cc:3831-3834`);
+            // its orientation alternative is checked here, where the frame's
+            // other elements' are (a `fromto` resolved already gives its
+            // `quat`).
             Element::Geom(mut g) => {
-                let geom_quat = match resolve_orientation(
+                if let Err(e) = resolve_orientation(
                     g.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
                     g.euler,
                     g.axisangle,
@@ -209,22 +214,11 @@ fn dissolve(
                     g.zaxis,
                     compiler,
                 ) {
-                    Ok(q) => q,
-                    Err(e) => {
-                        let at = in_body(ElementKind::Geom, g.name.as_deref());
-                        Faults::keep(&mut faults.geom, e.on("geom").at(at));
-                        continue;
-                    }
-                };
-                let mut gpos = g.pos.unwrap_or_else(Vector3::zeros);
-                let mut gquat = geom_quat;
-                frame_accum_child(&pos, &quat, &mut gpos, &mut gquat);
-                g.pos = Some(gpos);
-                g.quat = Some(quat_to_wxyz(&gquat));
-                g.euler = None;
-                g.axisangle = None;
-                g.xyaxes = None;
-                g.zaxis = None;
+                    let at = in_body(ElementKind::Geom, g.name.as_deref());
+                    Faults::keep(&mut faults.geom, e.on("geom").at(at));
+                    continue;
+                }
+                g.frame = Some((pos, quat_to_wxyz(&quat)));
                 Element::Geom(g)
             }
             // Each site's quaternion as written, composed with the frame's,

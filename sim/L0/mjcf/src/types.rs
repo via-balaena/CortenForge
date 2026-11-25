@@ -1358,6 +1358,14 @@ pub struct MjcfGeom {
     pub xyaxes: Option<[f64; 6]>,
     /// Alternative orientation as z-axis (minimal rotation from Z).
     pub zaxis: Option<Vector3<f64>>,
+    /// The `<frame>` holding this geom, composed with the frames holding that
+    /// one (its position, and its orientation made unit, w x y z), kept by
+    /// frame expansion and composed into the geom's pose last, after the
+    /// geom's own orientation and its mesh's frame, as MuJoCo 3.5.0's
+    /// `mjCGeom::Compile` composes it (`user_objects.cc:3831-3834`). `None`
+    /// as read.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub frame: Option<(Vector3<f64>, Vector4<f64>)>,
     /// Size parameters: one to three numbers as written, over its class's in
     /// the first places (`None`: none written); a place neither writes is
     /// MuJoCo's default 0 (`user_init.c:109-110`). The loader refuses a size
@@ -1436,6 +1444,7 @@ impl Default for MjcfGeom {
             axisangle: None,
             xyaxes: None,
             zaxis: None,
+            frame: None,
             size: None,
             fromto: None,
             friction: None,

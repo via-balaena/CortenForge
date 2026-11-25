@@ -88,6 +88,18 @@ impl ModelBuilder {
             }
             None => (pos, quat),
         };
+        // The `<frame>` holding the geom, composed last
+        // (`user_objects.cc:3831-3834`).
+        let (pos, quat) = match geom.frame {
+            Some((frame_pos, q)) => {
+                let frame_quat =
+                    UnitQuaternion::new_unchecked(Quaternion::new(q[0], q[1], q[2], q[3]));
+                let (mut pos, mut quat) = (pos, quat);
+                frame_accum_child(&frame_pos, &frame_quat, &mut pos, &mut quat);
+                (pos, quat)
+            }
+            None => (pos, quat),
+        };
         let size = match geom_mesh_ref {
             Some(mesh) => Vector3::from(self.mesh_data[mesh].origin_box()),
             None => size,
@@ -914,6 +926,7 @@ mod tests {
             axisangle: None,
             xyaxes: None,
             zaxis: None,
+            frame: None,
             size: Prefix::new(&[0.1, 0.5]), // radius=0.1, half-height=0.5
             fromto: None,
             density: Some(1000.0),

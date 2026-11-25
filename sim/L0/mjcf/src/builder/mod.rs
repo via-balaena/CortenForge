@@ -542,7 +542,8 @@ pub fn front_end(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<FrontEnd>
         composite::expand_composites(&mut mjcf.worldbody, &resolver, &mjcf.compiler, base_path)?;
     mjcf.contact.excludes.extend(composite_excludes);
 
-    // Expand <frame> elements: compose transforms into children, lift onto parent bodies.
+    // Expand <frame> elements: compose transforms into children (a geom keeps its frame, which
+    // `process_geom` composes last), lift onto parent bodies.
     // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
     // visible to those passes. MuJoCo gives a frame's elements to its body as it reads
     // them (`mjs_setFrame`, `xml_native_reader.cc:3584`, `:3774`) and composes the frame
