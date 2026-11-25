@@ -107,6 +107,20 @@ fn written(v: &Vector3<f64>) -> bool {
     v.iter().any(|x| x.to_bits() != 0)
 }
 
+/// A URDF tensor's six moments in the order MuJoCo 3.5.0's importer fills a
+/// body's `fullinertia` with them (`ixx iyy izz ixy ixz iyz`,
+/// `xml_urdf.cc:252-258`).
+fn full_moments(inertia: &crate::types::UrdfInertia) -> [f64; 6] {
+    [
+        inertia.ixx,
+        inertia.iyy,
+        inertia.izz,
+        inertia.ixy,
+        inertia.ixz,
+        inertia.iyz,
+    ]
+}
+
 /// The principal moments and the inertial frame of a link whose `<inertial>`
 /// origin turns (its `rpy` [`written`]), in the link's frame: the moments
 /// MuJoCo 3.5.0's `mjuu_fullInertia` makes of the tensor as written, and the
@@ -540,7 +554,10 @@ impl<'a> Converter<'a> {
                 // world body (`AddToTree`, `xml_urdf.cc:727`): its geoms are
                 // the world's, the links its joints enter are top-level
                 // bodies. Its `<inertial>`, which MuJoCo stores as the world
-                // body's mass, has no MJCF form under `<worldbody>`.
+                // body's mass, inertia, centre and frame, has no MJCF form
+                // under `<worldbody>` (D-URDF-WORLD-INERTIAL); its tensor is
+                // checked as MuJoCo checks the world body's.
+                self.check_world_tensor()?;
                 self.write_geoms(WORLD)?;
                 opened.insert(WORLD.to_string());
                 let children = self.child_links(WORLD);
@@ -891,18 +908,37 @@ impl<'a> Converter<'a> {
         Ok(())
     }
 
+    /// The link named `world`'s tensor, refused where MuJoCo 3.5.0's compiler
+    /// refuses the world body's: its `mjuu_fullInertia` runs on every body
+    /// whose `fullinertia` the importer defined, the world's too
+    /// (`user_objects.cc:2412-2416`), and the importer defines it for any
+    /// tensor but six zeros (`xml_urdf.cc:260-270`); nothing else about the
+    /// world's `<inertial>` is checked (measured: a negative mass, a tensor
+    /// breaking the triangle load). It is checked before sim-mjcf compiles
+    /// the rest, so of two faults the world's is named before a moving body's
+    /// and a bad `timestep`, as MuJoCo names it, and before a mesh's missing
+    /// file, which MuJoCo names first (ledger L353; all measured).
+    fn check_world_tensor(&self) -> Result<()> {
+        let Some(inertial) = self
+            .links
+            .get(WORLD)
+            .and_then(|link| link.inertial.as_ref())
+        else {
+            return Ok(());
+        };
+        let moments = full_moments(&inertial.inertia);
+        if moments.iter().all(|&moment| moment == 0.0) {
+            return Ok(());
+        }
+        sim_mjcf::full_inertia(&moments)
+            .map(|_| ())
+            .map_err(|message| UrdfError::invalid_inertia(WORLD, message))
+    }
+
     fn convert_inertial(&mut self, inertial: &crate::types::UrdfInertial) -> Result<()> {
         let pos = inertial.origin.xyz;
         let mass = inertial.mass;
-        let inertia = &inertial.inertia;
-        let moments = [
-            inertia.ixx,
-            inertia.iyy,
-            inertia.izz,
-            inertia.ixy,
-            inertia.ixz,
-            inertia.iyz,
-        ];
+        let moments = full_moments(&inertial.inertia);
         // MuJoCo 3.5.0's importer fills the body's `fullinertia` with the six
         // moments, a diagonal tensor's too (`xml_urdf.cc:252-258`), so its
         // compiler takes the tensor's principal axes as the inertial frame,
@@ -1588,8 +1624,8 @@ mod tests {
     /// makes it (measured: bodies `['world', 'base']`, geoms `['floor', 'b']`
     /// on bodies 0 and 1). `b8a6ffba` wrote it as a body named
     /// `world`, which only fusion folded into the world. Its `<inertial>` is
-    /// dropped, where MuJoCo stores it as the world body's mass (measured:
-    /// `body_mass[0]` 1; `D-URDF-WORLD-INERTIAL`).
+    /// dropped, where MuJoCo stores it as the world body's mass, inertia,
+    /// centre and frame (measured: `body_mass[0]` 1; `D-URDF-WORLD-INERTIAL`).
     #[test]
     fn the_link_named_world_is_the_world_body() {
         let urdf = format!(
