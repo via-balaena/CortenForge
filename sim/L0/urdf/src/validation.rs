@@ -26,6 +26,11 @@ pub struct ValidationResult {
 /// - Valid mass properties (if present)
 /// - Finite geometry dimensions on all visual and collision shapes
 ///
+/// Loading ([`crate::load_urdf_model`]) does not call it, and it is stricter
+/// than loading: a link of mass 0 fails here, where loading takes it on a
+/// fixed link, as MuJoCo 3.5.0's import does, and refuses it on a moving one
+/// below `mjMINVAL`, as MuJoCo does.
+///
 /// # Errors
 ///
 /// Returns an error if validation fails.

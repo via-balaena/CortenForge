@@ -1766,6 +1766,23 @@ const CASES: &[(&str, Expect)] = &[
         r#"<robot name="r"><link name="base"><inertial><origin xyz="0 0 0"/><mass value="1"/><inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><origin xyz="0 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="tip"><inertial><origin xyz="0 0 0"/><mass value="1"/><inertia ixx="1" iyy="1" izz="3" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 1"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint><joint name="f" type="fixed"><parent link="arm"/><child link="tip"/><origin xyz="0 0 0.5"/></joint></robot>"#,
         Expect::Refused("inertia must satisfy A + B >= C"),
     ),
+    // MuJoCo: "Error: error 'inertia must have positive eigenvalues' in fullinertia"
+    (
+        r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="t"><inertial><mass value="1"/><inertia ixx="-0.1" iyy="0.2" izz="0.3" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="f" type="fixed"><parent link="base"/><child link="t"/><origin xyz="0 0 0.5"/></joint></robot>"#,
+        Expect::Refused("inertia must have positive eigenvalues"),
+    ),
+    // MuJoCo: "Error: error 'inertia must have positive eigenvalues' in fullinertia"
+    (
+        r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><mass value="1"/><inertia ixx="-0.1" iyy="0.2" izz="0.3" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0.05 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 0 1"/></joint></robot>"#,
+        Expect::Refused("inertia must have positive eigenvalues"),
+    ),
+];
+
+/// Documents with a link of negative mass, which MuJoCo 3.5.0's import
+/// raises to `boundmass` (0) before fusing it: each loads in MuJoCo.
+const NEGATIVE_MASS: &[&str] = &[
+    r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="t"><inertial><mass value="-1"/><inertia ixx="0.1" iyy="0.2" izz="0.3" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="f" type="fixed"><parent link="base"/><child link="t"/><origin xyz="0 0 0.5"/></joint></robot>"#,
+    r#"<robot name="r"><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><mass value="1"/><inertia ixx="0.3" iyy="0.2" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="t"><inertial><mass value="-0.25"/><inertia ixx="0.03" iyy="0.02" izz="0.01" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5"/><axis xyz="0 1 0"/></joint><joint name="f" type="fixed"><parent link="arm"/><child link="t"/><origin xyz="0.2 0 0"/></joint></robot>"#,
 ];
 
 /// Documents whose `<inertial>` origin turns, each with its link's tensor
@@ -2022,4 +2039,20 @@ fn an_inertial_origins_turn_turns_its_tensor() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// A link's negative mass is refused, where MuJoCo 3.5.0's import raises it
+/// to `boundmass` (0) and fuses the fixed link into its parent, adding
+/// nothing (D-INERTIAL-NEGATIVE).
+#[test]
+fn a_negative_mass_is_refused_where_mujocos_import_raises_it() {
+    for doc in NEGATIVE_MASS {
+        let refused = load_urdf_model(doc).err().map(|e| e.to_string());
+        assert!(
+            refused
+                .as_deref()
+                .is_some_and(|e| e.contains("invalid mass on <inertial>: must not be negative")),
+            "{refused:?}: {doc}"
+        );
+    }
 }
