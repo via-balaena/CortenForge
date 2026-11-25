@@ -3989,3 +3989,5 @@ c667527185e7e61e	sim/L0/mjcf/tests/alignfree.rs:2845
 cfe5f83e093a67e1	sim/L0/mjcf/tests/alignfree.rs:3169
 edecb6ae36540cc2	sim/L0/mjcf/tests/geom_frame.rs:3437
 e610d7735e896770	sim/L0/mjcf/tests/alignfree.rs:4055
+08fb0d047154f448	sim/L0/mjcf/tests/alignfree.rs:4158
+576e241e55ca70f2	sim/L0/mjcf/tests/alignfree.rs:4246

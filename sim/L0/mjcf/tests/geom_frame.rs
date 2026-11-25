@@ -3634,14 +3634,18 @@ fn close(ours: &[f64], mujoco: &[f64]) -> bool {
             .all(|(a, b)| a.to_bits() == b.to_bits());
     }
     // Equal bits pass; otherwise both entries are finite and within the
-    // tolerance of the array's largest finite entry.
+    // tolerance of the array's largest finite entry, and two zeros have one
+    // sign.
     let scale = mujoco
         .iter()
         .filter(|v| v.is_finite())
         .fold(0.0_f64, |m, v| m.max(v.abs()));
     ours.iter().zip(mujoco).all(|(a, b)| {
         a.to_bits() == b.to_bits()
-            || (a.is_finite() && b.is_finite() && (a - b).abs() <= TOLERANCE * scale)
+            || (a.is_finite()
+                && b.is_finite()
+                && (a - b).abs() <= TOLERANCE * scale
+                && !(*a == 0.0 && *b == 0.0))
     })
 }
 

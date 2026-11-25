@@ -159,10 +159,9 @@ impl Faults {
 /// One frame's contents, in its document order, composed with its transform
 /// (itself composed with `outer`'s, the pose of the frame holding it, where a
 /// frame holds it), a geom given it, and added to `placed`, the elements of
-/// `body`; a nested
-/// frame's at its place. An orientation refused is kept in `faults`, and its
-/// element left out (a frame's with its contents), or, a body's, placed as
-/// written.
+/// `body`; a nested frame's at its place. An orientation refused is kept in
+/// `faults`, and its element left out (a frame's with its contents), or, a
+/// body's, placed as written.
 fn dissolve(
     mut frame: MjcfFrame,
     outer: Option<(&Vector3<f64>, &UnitQuaternion<f64>)>,

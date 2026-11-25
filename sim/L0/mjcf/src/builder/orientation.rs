@@ -41,7 +41,8 @@ pub fn normvec<const N: usize>(v: &mut [f64; N]) -> f64 {
 /// MuJoCo's `mju_normalize4` (`engine_util_blas.c:255-272`), which its
 /// compiler applies to a keyframe's quaternions through `mj_normalizeQuat`:
 /// `q` scaled by its norm's inverse, unless the norm lies within mjMINVAL of
-/// 1; a norm below mjMINVAL makes it (1, 0, 0, 0). Returns the norm.
+/// 1; a norm below mjMINVAL makes it (1, 0, 0, 0). Returns the norm. The same
+/// routine as sim-core's `quat::normalize4`, which that crate keeps private.
 pub fn normalize4(q: &mut [f64; 4]) -> f64 {
     let norm = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
     if norm < super::mass::MJ_MINVAL {

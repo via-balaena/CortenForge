@@ -230,7 +230,6 @@ pub(super) fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
     Ok(body)
 }
 
-/// Parse joint attributes only.
 /// Parse joint attributes; `align` refused where MuJoCo 3.5.0's schema
 /// checks the joint (`schema_checked`, [`parse_body`]).
 pub(super) fn parse_joint_attrs(e: &BytesStart, schema_checked: bool) -> Result<MjcfJoint> {
