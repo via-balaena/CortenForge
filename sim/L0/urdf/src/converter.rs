@@ -45,8 +45,8 @@ use crate::parser::parse_urdf_str;
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 
 use crate::types::{
-    UrdfElement, UrdfGeometry, UrdfJoint, UrdfJointLimit, UrdfJointType, UrdfLink, UrdfOrigin,
-    UrdfRobot,
+    UrdfElement, UrdfGeometry, UrdfJoint, UrdfJointLimit, UrdfJointType, UrdfLink, UrdfMujoco,
+    UrdfOrigin, UrdfRobot,
 };
 
 /// The link name MuJoCo 3.5.0's importer reads as the world body
@@ -370,6 +370,49 @@ fn section_lines(
         ],
         None => vec![format!("{open}/>")],
     }
+}
+
+/// A URDF's own sections as MJCF, alone in a model: its attributes as
+/// [`UrdfMujoco`] holds them, without the converter's defaults.
+fn sections_mjcf(mujoco: &UrdfMujoco) -> String {
+    let mut lines = vec!["<mujoco>".to_owned()];
+    if let Some(c) = &mujoco.compiler {
+        lines.extend(section_lines(
+            "compiler",
+            &c.attributes,
+            "lengthrange",
+            c.child.as_deref(),
+        ));
+    }
+    if let Some(o) = &mujoco.option {
+        lines.extend(section_lines(
+            "option",
+            &o.attributes,
+            "flag",
+            o.child.as_deref(),
+        ));
+    }
+    if let Some(s) = &mujoco.size {
+        lines.extend(section_lines("size", &s.attributes, "", None));
+    }
+    lines.push("</mujoco>".to_owned());
+    lines.join("\n")
+}
+
+/// A URDF's own sections checked as sim-mjcf's reader checks the converted
+/// model's, which reads them as MuJoCo 3.5.0's MJCF reader does: a fault in
+/// one is refused here, in sim-mjcf's words, so it is refused before a fault
+/// in a link, as MuJoCo's importer, which reads the sections first
+/// (`xml_urdf.cc:93-108`), refuses it.
+///
+/// # Errors
+///
+/// [`UrdfError::Unsupported`] with sim-mjcf's error, as a converted model's
+/// own refusal is worded.
+pub fn check_sections(mujoco: &UrdfMujoco) -> Result<()> {
+    sim_mjcf::parse_mjcf_str(&sections_mjcf(mujoco))
+        .map(drop)
+        .map_err(|e| UrdfError::Unsupported(format!("MJCF conversion error: {e}")))
 }
 
 /// Internal converter state.

@@ -3458,6 +3458,31 @@ const CASES: &[(&str, Expect)] = &[
         r#"<robot name="r"><mujoco><compiler discardvisual="false"/></mujoco><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><link name="arm"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><visual><origin xyz="1 2"/><geometry><box size="0.1 0.1 0.1"/></geometry></visual><collision><origin xyz="0 0 0.1"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5" rpy="0.3 0 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="2" velocity="1"/></joint></robot>"#,
         Expect::Refused("invalid value for xyz on origin: does not have enough data"),
     ),
+    // MuJoCo: "XML Error: bad format in attribute 'timestep'"
+    (
+        r#"<robot name="r"><mujoco><option timestep="x"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><axis xyz="0 1 0"/></joint></robot>"#,
+        Expect::Refused("bad number \"x\" in attribute 'timestep' on <option>"),
+    ),
+    // MuJoCo: "XML Error: bad format in attribute 'boundmass'"
+    (
+        r#"<robot name="r"><mujoco><compiler boundmass="x"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><axis xyz="0 1 0"/></joint></robot>"#,
+        Expect::Refused("bad number \"x\" in attribute 'boundmass' on <compiler>"),
+    ),
+    // MuJoCo: "XML Error: nuser_body must be >= -1"
+    (
+        r#"<robot name="r"><mujoco><size nuser_body="-2"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><axis xyz="0 1 0"/></joint></robot>"#,
+        Expect::Refused("invalid nuser_body on <size>: must be >= -1, got -2"),
+    ),
+    // MuJoCo: "XML Error: invalid keyword: 'maybe'"
+    (
+        r#"<robot name="r"><mujoco><option><flag energy="maybe"/></option></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><axis xyz="0 1 0"/></joint></robot>"#,
+        Expect::Refused("invalid keyword \"maybe\" in attribute 'energy' on <flag>"),
+    ),
+    // MuJoCo: "XML Error: invalid keyword: 'grad'"
+    (
+        r#"<robot name="r"><mujoco><compiler angle="grad"/></mujoco><link name="base"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><link name="arm"><inertial><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><axis xyz="0 1 0"/></joint></robot>"#,
+        Expect::Refused("invalid value for angle on compiler: invalid keyword: 'grad'"),
+    ),
 ];
 
 /// Documents whose load status this crate and MuJoCo 3.5.0's import do not

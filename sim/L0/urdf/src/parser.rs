@@ -43,6 +43,9 @@ pub fn parse_urdf_str(xml: &str) -> Result<UrdfRobot> {
         return Err(UrdfError::missing_element("robot", "URDF document"));
     }
     let mujoco = parse_mujoco(&root)?;
+    if mujoco != UrdfMujoco::default() {
+        crate::converter::check_sections(&mujoco)?;
+    }
     let mut robot = UrdfRobot::new("");
     robot.name = root.attr("name").map(str::to_owned);
     robot.mujoco = mujoco;
@@ -508,8 +511,9 @@ fn check_keyword(element: &Element, name: &'static str, keywords: &[&str]) -> Re
 /// the converter does not pass them on: `angle`'s keyword (then forced to
 /// radians, `:111`), `eulerseq`'s length (`rpy` is read as "XYZ" whatever it
 /// says, `:666`) and `discardvisual`'s keyword (it decides whether visuals
-/// are geoms). sim-mjcf reads the rest from the converter's sections, as
-/// MuJoCo's MJCF reader does, after the links are read here.
+/// are geoms). [`parse_urdf_str`] then has sim-mjcf's reader check the rest
+/// (`check_sections`) before the links, as MuJoCo's MJCF reader would; the
+/// converted model's own sections are read from them again.
 fn parse_mujoco(root: &Element) -> Result<UrdfMujoco> {
     let Some(mujoco) = root.find_sub("mujoco", false)? else {
         return Ok(UrdfMujoco::default());
