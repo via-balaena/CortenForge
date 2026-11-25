@@ -607,9 +607,10 @@ impl<'a> Converter<'a> {
     }
 
     /// Write a link's collision geoms, named as [`collision_names`] names
-    /// them. Its visual geoms are not written: MuJoCo 3.5.0's importer makes
-    /// none under URDF's `discardvisual` (`xml_urdf.cc:317`), which this
-    /// converter writes.
+    /// them, each with the colour MuJoCo 3.5.0's importer gives it
+    /// (`UrdfCollision::rgba`). Its visual geoms are not written: MuJoCo's
+    /// importer makes none under URDF's `discardvisual` (`xml_urdf.cc:317`),
+    /// which this converter writes.
     fn write_geoms(&mut self, link_name: &str) -> Result<()> {
         let link = self.link(link_name)?;
         let names = self
@@ -618,7 +619,12 @@ impl<'a> Converter<'a> {
             .cloned()
             .unwrap_or_default();
         for (collision, name) in link.collisions.iter().zip(names) {
-            self.convert_geom(&collision.geometry, &collision.origin, name.as_ref())?;
+            self.convert_geom(
+                &collision.geometry,
+                &collision.origin,
+                name.as_ref(),
+                collision.rgba.as_ref(),
+            )?;
         }
         Ok(())
     }
@@ -758,12 +764,19 @@ impl<'a> Converter<'a> {
         Ok(())
     }
 
+    /// Write one geom: its shape, its name, its colour where one is set
+    /// (each a single-precision value, which sim-mjcf reads back exactly), its
+    /// pose.
     fn convert_geom(
         &mut self,
         geometry: &UrdfGeometry,
         origin: &UrdfOrigin,
         name: Option<&String>,
+        rgba: Option<&[f64; 4]>,
     ) -> Result<()> {
+        let colour = rgba.map_or_else(String::new, |[r, g, b, a]| {
+            format!(r#" rgba="{r} {g} {b} {a}""#)
+        });
         let (geom_type, size) = match geometry {
             UrdfGeometry::Box { size } => {
                 // URDF box size is full dimensions, MJCF uses half-extents
@@ -788,6 +801,7 @@ impl<'a> Converter<'a> {
                     if let Some(n) = name {
                         write!(attrs, r#" name="{}""#, escape(n)).ok();
                     }
+                    attrs.push_str(&colour);
                     attrs.push_str(&pose_attrs(origin));
                     self.write_line(&format!("<geom {attrs}/>"));
                 }
@@ -801,6 +815,7 @@ impl<'a> Converter<'a> {
         if let Some(n) = name {
             write!(attrs, r#" name="{}""#, escape(n)).ok();
         }
+        attrs.push_str(&colour);
 
         attrs.push_str(&pose_attrs(origin));
 

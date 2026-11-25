@@ -14,10 +14,11 @@
 //! visuals under URDF's `discardvisual`) and a `velocity`, which it does not
 //! read either, are kept where they can be read and refused nowhere. A
 //! `<mimic>`, which it does not read, this crate makes a joint equality of
-//! (`D-URDF-MIMIC`). What it reads otherwise than MuJoCo is registered in
+//! (`D-URDF-MIMIC`). Each visual and collision is given the colour MuJoCo
+//! gives its geom (`UrdfVisual::rgba`, `UrdfCollision::rgba`). What it reads otherwise than MuJoCo is registered in
 //! `sim/L0/tests/assets/census/divergences.tsv`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use nalgebra::Vector3;
 use quick_xml::Reader;
@@ -45,7 +46,7 @@ pub fn parse_urdf_str(xml: &str) -> Result<UrdfRobot> {
     root.find_sub("mujoco", false)?;
     let mut robot = UrdfRobot::new("");
     robot.name = root.attr("name").map(str::to_owned);
-    make_materials(&root)?;
+    let materials = make_materials(&root)?;
 
     let links: Vec<&Element> = root.children.iter().filter(|e| e.tag == "link").collect();
     let joints: Vec<&Element> = root.children.iter().filter(|e| e.tag == "joint").collect();
@@ -95,7 +96,7 @@ pub fn parse_urdf_str(xml: &str) -> Result<UrdfRobot> {
                 "link '{name}' is reached from no root link: its parent joints lead into a loop"
             )));
         }
-        robot.links.push(parse_link(link)?);
+        robot.links.push(parse_link(link, &materials)?);
     }
     for joint in joints {
         robot.joints.push(parse_joint(joint)?);
@@ -359,39 +360,69 @@ fn character_reference(after_amp: &str) -> Reference {
 /// them (`xml_urdf.cc:741-768`): every `<material>` in the document, at any
 /// depth, in document order; one whose name no earlier material with a
 /// colour registered has its `<color>`'s `rgba` read, four single-precision
-/// numbers, required, and registers the name.
-fn make_materials(root: &Element) -> Result<()> {
-    let mut registered = HashSet::new();
+/// numbers, required, and registers the name with that colour.
+fn make_materials(root: &Element) -> Result<HashMap<String, [f64; 4]>> {
+    let mut registered = HashMap::new();
     let mut stack = vec![root];
     while let Some(element) = stack.pop() {
         if element.tag == "material"
             && let Some(name) = element.attr("name")
-            && !registered.contains(name)
+            && !registered.contains_key(name)
             && let Some(color) = element.find_sub("color", false)?
+            && let Some(rgba) = read_floats::<4>(color, "rgba", true)?
         {
-            read_floats::<4>(color, "rgba", true)?;
-            registered.insert(name);
+            registered.insert(name.to_owned(), rgba);
         }
         stack.extend(element.children.iter().rev());
     }
-    Ok(())
+    Ok(registered)
+}
+
+/// The colour a visual's `<material>` sets, as MuJoCo 3.5.0's importer reads
+/// it (`xml_urdf.cc:301-316`): its `<color>`'s `rgba`, four single-precision
+/// numbers, required; without one, its `name`, required, and that name's
+/// colour in the material table ([`make_materials`]), none where the table
+/// does not hold the name.
+fn material_colour(
+    material: &Element,
+    table: &HashMap<String, [f64; 4]>,
+) -> Result<Option<[f64; 4]>> {
+    if let Some(color) = material.find_sub("color", false)? {
+        return read_floats::<4>(color, "rgba", true);
+    }
+    Ok(table.get(material.required_text("name")?).copied())
 }
 
 /// A link's contents (`mjXURDF::Body`, `xml_urdf.cc:227-364`): its
-/// `<inertial>`, then its visuals and collisions in order.
-fn parse_link(element: &Element) -> Result<UrdfLink> {
+/// `<inertial>`, then its visuals and collisions in order. The link has one
+/// colour, unset at its start (`:291`): each visual's material sets it, and
+/// each visual and collision takes it as it is when read (`:322-323`,
+/// `:344-347`).
+fn parse_link(element: &Element, materials: &HashMap<String, [f64; 4]>) -> Result<UrdfLink> {
     let mut link = UrdfLink::new(element.required_text("name")?);
     if let Some(inertial) = element.find_sub("inertial", false)? {
         link.inertial = Some(parse_inertial(inertial)?);
     }
+    let mut rgba = None;
     for child in &element.children {
         match child.tag.as_str() {
             "visual" => {
-                if let Some(visual) = parse_visual(child)? {
+                let material = child.find_sub("material", false)?;
+                if let Some(material) = material
+                    && let Some(colour) = material_colour(material, materials)?
+                {
+                    rgba = Some(colour);
+                }
+                if let Some(mut visual) = parse_visual(child, material) {
+                    visual.rgba = rgba;
                     link.visuals.push(visual);
                 }
             }
-            "collision" => link.collisions.push(parse_collision(child)?),
+            "collision" => {
+                let mut collision = parse_collision(child)?;
+                collision.rgba = rgba;
+                link.collisions.push(collision);
+            }
             _ => {}
         }
     }
@@ -431,34 +462,25 @@ fn parse_origin(element: &Element) -> Result<UrdfOrigin> {
 }
 
 /// A `<visual>`, as MuJoCo 3.5.0's importer reads one under URDF's
-/// `discardvisual` (`xml_urdf.cc:299-338`; measured): its `<material>` is
-/// read — a `<color>`'s `rgba`, four numbers, required, else the material's
-/// `name` — and its origin and geometry are not, so a visual whose origin or
-/// geometry is not readable is dropped (`None`), where MuJoCo makes no geom.
-fn parse_visual(element: &Element) -> Result<Option<UrdfVisual>> {
-    let material = match element.find_sub("material", false)? {
-        Some(m) => {
-            if let Some(color) = m.find_sub("color", false)? {
-                read_floats::<4>(color, "rgba", true)?;
-            } else {
-                m.required_text("name")?;
-            }
-            m.attr("name").map(str::to_owned)
-        }
-        None => None,
-    };
+/// `discardvisual` (`xml_urdf.cc:299-338`; measured): its `<material>`, read
+/// by [`parse_link`] for its colour, gives the visual its name; its origin
+/// and geometry are not read, so a visual whose origin or geometry is not
+/// readable is dropped (`None`), where MuJoCo makes no geom. Its colour is
+/// [`parse_link`]'s to give.
+fn parse_visual(element: &Element, material: Option<&Element>) -> Option<UrdfVisual> {
     let origin = parse_origin(element).ok();
     let geometry = element
         .find_sub("geometry", true)
         .ok()
         .flatten()
         .and_then(|g| parse_geometry(g).ok());
-    Ok(origin.zip(geometry).map(|(origin, geometry)| UrdfVisual {
+    origin.zip(geometry).map(|(origin, geometry)| UrdfVisual {
         name: element.attr("name").map(str::to_owned),
         origin,
         geometry,
-        material,
-    }))
+        material: material.and_then(|m| m.attr("name")).map(str::to_owned),
+        rgba: None,
+    })
 }
 
 /// A `<collision>` (`mjXURDF::Geom`, `xml_urdf.cc:524-643`): its required
@@ -469,6 +491,7 @@ fn parse_collision(element: &Element) -> Result<UrdfCollision> {
         name: element.attr("name").map(str::to_owned),
         origin: parse_origin(element)?,
         geometry,
+        rgba: None,
     })
 }
 
