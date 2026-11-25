@@ -186,13 +186,22 @@ struct MimicEntry {
 }
 
 /// A `<limit>`'s MJCF attributes, as MuJoCo 3.5.0's URDF importer reads it
-/// (`xml_urdf.cc`): one bound written, or a lower above the upper, leaves the
-/// joint unlimited; otherwise its limit is automatic, which limits it only
-/// where lower < upper. A bound not written is 0.
-fn limit_attrs(limit: &UrdfJointLimit) -> String {
+/// (`xml_urdf.cc:500-508`): one bound written, or a lower above the upper,
+/// leaves the joint unlimited (`limited="false"`); otherwise the importer
+/// leaves `limited` to the compiler (`mjLIMITED_AUTO`). Under `autolimits`
+/// the compiler limits such a range only where lower < upper (`islimited`,
+/// `user_objects.cc:184-189`), and sim-mjcf refuses an automatic one with
+/// lower >= upper (D-AUTO-RANGE), so that range is written
+/// `limited="false"`, which limits it no more. Without `autolimits` every
+/// range the importer leaves automatic is written so, for the compiler to
+/// refuse a written range as MuJoCo's does (`checklimited`, `:171-181`). A
+/// bound not written is 0.
+fn limit_attrs(limit: &UrdfJointLimit, autolimits: bool) -> String {
     let (lower, upper) = (limit.lower.unwrap_or(0.0), limit.upper.unwrap_or(0.0));
-    let limited = limit.lower.is_some() && limit.upper.is_some() && lower < upper;
-    format!(r#" limited="{limited}" range="{lower} {upper}""#)
+    let bad = limit.lower.is_some() != limit.upper.is_some() || lower > upper;
+    let automatic = !bad && (lower < upper || !autolimits);
+    let limited = if automatic { "" } else { r#" limited="false""# };
+    format!(r#"{limited} range="{lower} {upper}""#)
 }
 
 /// A `<dynamics>`'s damping and friction as MJCF attributes, each where
@@ -313,6 +322,34 @@ fn collision_names(robot: &UrdfRobot) -> HashMap<&str, Vec<Option<String>>> {
     names
 }
 
+/// Attributes as written in an MJCF start tag, each value escaped.
+fn attribute_text(attributes: &[(String, String)]) -> String {
+    let mut text = String::new();
+    for (name, value) in attributes {
+        write!(text, r#" {name}="{}""#, escape(value)).ok();
+    }
+    text
+}
+
+/// One section's MJCF lines: `tag` with its attributes, and its child
+/// `child_tag` with the child's where written.
+fn section_lines(
+    tag: &str,
+    attributes: &[(String, String)],
+    child_tag: &str,
+    child: Option<&[(String, String)]>,
+) -> Vec<String> {
+    let open = format!("<{tag}{}", attribute_text(attributes));
+    match child {
+        Some(child) => vec![
+            format!("{open}>"),
+            format!("  <{child_tag}{}/>", attribute_text(child)),
+            format!("</{tag}>"),
+        ],
+        None => vec![format!("{open}/>")],
+    }
+}
+
 /// Internal converter state.
 struct Converter<'a> {
     robot: &'a UrdfRobot,
@@ -401,17 +438,7 @@ impl<'a> Converter<'a> {
         }
         self.indent += 1;
 
-        // No `<option>`: MuJoCo 3.5.0's importer sets no option of its own; it
-        // reads a URDF's `<mujoco><option>` (`xml_urdf.cc:101-103`), which
-        // this converter does not read yet (ledger L378). Without one, a
-        // converted model has MJCF's defaults, as MuJoCo's: gravity
-        // (0, 0, -9.81), a timestep of 0.002, energy not computed.
-
-        // Write compiler settings for URDF compatibility
-        // `eulerseq="XYZ"`: MuJoCo 3.5.0's importer reads a URDF `rpy` as
-        // extrinsic x-y-z (`mjs_resolveOrientation(quat, 0, "XYZ", …)`,
-        // `xml_urdf.cc:664-666`), whatever a compiler's own sequence.
-        self.write_line(r#"<compiler angle="radian" eulerseq="XYZ" fusestatic="true" discardvisual="true" strippath="true"/>"#);
+        self.write_sections();
         self.write_line("");
 
         // Pre-scan all links for mesh geometries and emit <asset> block
@@ -496,6 +523,51 @@ impl<'a> Converter<'a> {
 
     /// Every link no joint enters, in document order: MuJoCo 3.5.0's importer
     /// writes each one's tree under the world (`xml_urdf.cc`).
+    /// Write the model's sections as MuJoCo 3.5.0's importer sets them up.
+    /// The `<compiler>`: radians and `eulerseq="XYZ"`, as the importer reads a
+    /// URDF (`xml_urdf.cc:111`; it resolves `rpy` as extrinsic x-y-z,
+    /// `mjs_resolveOrientation(quat, 0, "XYZ", …)`, `:664-666`, whatever a
+    /// compiler's own sequence), `fusestatic`, `discardvisual` and
+    /// `strippath` true, its URDF defaults (`xml.cc:299-301`), then the URDF's
+    /// own `<compiler>`'s attributes over them, in its order, and its
+    /// `<lengthrange>`. The URDF's `<option>` and `<size>` as written; without
+    /// an `<option>`, the model has MJCF's defaults, as MuJoCo's: gravity
+    /// (0, 0, -9.81), a timestep of 0.002, energy not computed.
+    fn write_sections(&mut self) {
+        let mut compiler: Vec<(String, String)> = [
+            ("angle", "radian"),
+            ("eulerseq", "XYZ"),
+            ("fusestatic", "true"),
+            ("discardvisual", "true"),
+            ("strippath", "true"),
+        ]
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .into();
+        let mujoco = &self.robot.mujoco;
+        if let Some(section) = &mujoco.compiler {
+            for (name, value) in &section.attributes {
+                match compiler.iter_mut().find(|(written, _)| written == name) {
+                    Some(slot) => slot.1.clone_from(value),
+                    None => compiler.push((name.clone(), value.clone())),
+                }
+            }
+        }
+        let lengthrange = mujoco.compiler.as_ref().and_then(|c| c.child.clone());
+        let lines = [
+            section_lines("compiler", &compiler, "lengthrange", lengthrange.as_deref()),
+            mujoco.option.as_ref().map_or_else(Vec::new, |o| {
+                section_lines("option", &o.attributes, "flag", o.child.as_deref())
+            }),
+            mujoco
+                .size
+                .as_ref()
+                .map_or_else(Vec::new, |s| section_lines("size", &s.attributes, "", None)),
+        ];
+        for line in lines.iter().flatten() {
+            self.write_line(line);
+        }
+    }
+
     fn root_links(&self) -> Result<Vec<&'a str>> {
         let roots: Vec<&'a str> = self
             .robot
@@ -673,7 +745,7 @@ impl<'a> Converter<'a> {
                 UrdfJointType::Revolute | UrdfJointType::Prismatic
             )
         {
-            attrs.push_str(&limit_attrs(limit));
+            attrs.push_str(&limit_attrs(limit, self.robot.mujoco.autolimits()));
         }
         attrs.push_str(&dynamics_attrs(joint));
 
@@ -700,7 +772,12 @@ impl<'a> Converter<'a> {
     fn convert_planar_joint(&mut self, joint: &UrdfJoint) -> Result<()> {
         let (tx, ty) = planar_axes(&joint.axis);
         let normal = joint.axis;
-        let limit = joint.limit.as_ref().map(limit_attrs).unwrap_or_default();
+        let autolimits = self.robot.mujoco.autolimits();
+        let limit = joint
+            .limit
+            .as_ref()
+            .map(|l| limit_attrs(l, autolimits))
+            .unwrap_or_default();
         let dynamics = dynamics_attrs(joint);
         let name = escape(&joint.name);
         self.write_line(&format!(
@@ -937,7 +1014,9 @@ mod tests {
         assert!(mjcf.contains(r#"<body name="link1""#));
         assert!(mjcf.contains(r#"<joint name="joint1" type="hinge""#));
         assert!(mjcf.contains(r#"axis="0 1 0""#));
-        assert!(mjcf.contains(r#"limited="true" range="-3.14 3.14""#));
+        // A limit of two bounds, lower below upper, is left to the
+        // compiler's `autolimits`, as MuJoCo's importer leaves it.
+        assert!(mjcf.contains(r#" range="-3.14 3.14""#) && !mjcf.contains("limited="));
     }
 
     /// MJCF requires an inertial's `pos` (MuJoCo 3.5.0 refuses one without

@@ -119,7 +119,8 @@ pub use error::{Result, UrdfError};
 pub use parser::parse_urdf_str;
 pub use types::{
     UrdfCollision, UrdfGeometry, UrdfInertia, UrdfInertial, UrdfJoint, UrdfJointDynamics,
-    UrdfJointLimit, UrdfJointType, UrdfLink, UrdfMimic, UrdfOrigin, UrdfRobot, UrdfVisual,
+    UrdfJointLimit, UrdfJointType, UrdfLink, UrdfMimic, UrdfMujoco, UrdfOrigin, UrdfRobot,
+    UrdfSection, UrdfVisual,
 };
 pub use validation::{ValidationResult, validate};
 

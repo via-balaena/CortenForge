@@ -27,7 +27,8 @@ use quick_xml::events::{BytesStart, Event};
 use crate::error::{Result, UrdfError};
 use crate::types::{
     UrdfCollision, UrdfGeometry, UrdfInertia, UrdfInertial, UrdfJoint, UrdfJointDynamics,
-    UrdfJointLimit, UrdfJointType, UrdfLink, UrdfMimic, UrdfOrigin, UrdfRobot, UrdfVisual,
+    UrdfJointLimit, UrdfJointType, UrdfLink, UrdfMimic, UrdfMujoco, UrdfOrigin, UrdfRobot,
+    UrdfSection, UrdfVisual,
 };
 
 /// Parse a URDF string into a robot model.
@@ -41,11 +42,10 @@ pub fn parse_urdf_str(xml: &str) -> Result<UrdfRobot> {
     if root.tag != "robot" {
         return Err(UrdfError::missing_element("robot", "URDF document"));
     }
-    // MuJoCo's own sections in a URDF (`<mujoco><compiler|option|size>`) are
-    // not read (ledger L378); the element is looked up as MuJoCo looks it up.
-    root.find_sub("mujoco", false)?;
+    let mujoco = parse_mujoco(&root)?;
     let mut robot = UrdfRobot::new("");
     robot.name = root.attr("name").map(str::to_owned);
+    robot.mujoco = mujoco;
     let materials = make_materials(&root)?;
 
     let links: Vec<&Element> = root.children.iter().filter(|e| e.tag == "link").collect();
@@ -355,6 +355,202 @@ fn character_reference(after_amp: &str) -> Reference {
 // ============================================================================
 // The importer's passes
 // ============================================================================
+
+/// The attributes MuJoCo 3.5.0's `<compiler>` reader reads
+/// (`mjXReader::Compiler`, `xml_native_reader.cc:1094-1152`).
+const COMPILER_READS: [&str; 20] = [
+    "autolimits",
+    "boundmass",
+    "boundinertia",
+    "settotalmass",
+    "balanceinertia",
+    "strippath",
+    "fitaabb",
+    "coordinate",
+    "angle",
+    "eulerseq",
+    "assetdir",
+    "meshdir",
+    "texturedir",
+    "discardvisual",
+    "usethread",
+    "fusestatic",
+    "inertiafromgeom",
+    "inertiagrouprange",
+    "alignfree",
+    "saveinertial",
+];
+
+/// The attributes it reads on `<compiler>`'s `<lengthrange>` (`:1155-1176`).
+const LENGTHRANGE_READS: [&str; 10] = [
+    "mode",
+    "useexisting",
+    "uselimit",
+    "accel",
+    "maxforce",
+    "timeconst",
+    "timestep",
+    "inttotal",
+    "interval",
+    "tolrange",
+];
+
+/// The attributes MuJoCo 3.5.0's `<option>` reader reads
+/// (`mjXReader::Option`, `xml_native_reader.cc:1187-1230`).
+const OPTION_READS: [&str; 27] = [
+    "timestep",
+    "impratio",
+    "tolerance",
+    "ls_tolerance",
+    "noslip_tolerance",
+    "ccd_tolerance",
+    "sleep_tolerance",
+    "gravity",
+    "wind",
+    "magnetic",
+    "density",
+    "viscosity",
+    "o_margin",
+    "o_solref",
+    "o_solimp",
+    "o_friction",
+    "integrator",
+    "cone",
+    "jacobian",
+    "solver",
+    "iterations",
+    "ls_iterations",
+    "noslip_iterations",
+    "ccd_iterations",
+    "sdf_iterations",
+    "sdf_initpoints",
+    "actuatorgroupdisable",
+];
+
+/// The flags it reads on `<option>`'s `<flag>` (`:1233-1273`).
+const FLAG_READS: [&str; 25] = [
+    "constraint",
+    "equality",
+    "frictionloss",
+    "limit",
+    "contact",
+    "spring",
+    "damper",
+    "gravity",
+    "clampctrl",
+    "warmstart",
+    "filterparent",
+    "actuation",
+    "refsafe",
+    "sensor",
+    "midphase",
+    "eulerdamp",
+    "autoreset",
+    "nativeccd",
+    "island",
+    "override",
+    "energy",
+    "fwdinv",
+    "invdiscrete",
+    "multiccd",
+    "sleep",
+];
+
+/// The attributes MuJoCo 3.5.0's `<size>` reader reads (`mjXReader::Size`,
+/// `xml_native_reader.cc:1281-1423`).
+const SIZE_READS: [&str; 14] = [
+    "memory",
+    "nuserdata",
+    "nkey",
+    "nconmax",
+    "nstack",
+    "njmax",
+    "nuser_body",
+    "nuser_jnt",
+    "nuser_geom",
+    "nuser_site",
+    "nuser_cam",
+    "nuser_tendon",
+    "nuser_actuator",
+    "nuser_sensor",
+];
+
+/// Of `element`'s attributes, those in `reads`, as written, in order.
+fn read_attributes(element: &Element, reads: &[&str]) -> Vec<(String, String)> {
+    element
+        .attrs
+        .iter()
+        .filter(|(name, _)| reads.contains(&name.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// A keyword attribute's text, which must be one of `keywords` where
+/// written (MuJoCo's `MapValue`: "invalid keyword").
+fn check_keyword(element: &Element, name: &'static str, keywords: &[&str]) -> Result<()> {
+    match element.attr(name) {
+        Some(value) if !keywords.contains(&value) => Err(UrdfError::invalid_attribute(
+            name,
+            &element.tag,
+            format!("invalid keyword: '{value}'"),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// MuJoCo's own sections in a URDF, read first, as MuJoCo 3.5.0's importer
+/// reads them (`xml_urdf.cc:93-111`): the root's one `<mujoco>`, and in it
+/// its one `<compiler>`, `<option>` and `<size>`, each by its reader's
+/// attributes ([`UrdfSection`]); a `<mujoco>` elsewhere, as in a link, is
+/// not read (measured). Three are checked here, as MuJoCo checks them, for
+/// the converter does not pass them on: `angle`'s keyword (then forced to
+/// radians, `:111`), `eulerseq`'s length (`rpy` is read as "XYZ" whatever it
+/// says, `:666`) and `discardvisual`'s keyword (it decides whether visuals
+/// are geoms). sim-mjcf reads the rest from the converter's sections, as
+/// MuJoCo's MJCF reader does, after the links are read here.
+fn parse_mujoco(root: &Element) -> Result<UrdfMujoco> {
+    let Some(mujoco) = root.find_sub("mujoco", false)? else {
+        return Ok(UrdfMujoco::default());
+    };
+    let compiler = match mujoco.find_sub("compiler", false)? {
+        Some(compiler) => {
+            check_keyword(compiler, "angle", &["radian", "degree"])?;
+            if compiler.attr("eulerseq").is_some_and(|seq| seq.len() != 3) {
+                return Err(UrdfError::invalid_attribute(
+                    "eulerseq",
+                    "compiler",
+                    "euler format must have length 3",
+                ));
+            }
+            check_keyword(compiler, "discardvisual", &["false", "true"])?;
+            let mut attributes = read_attributes(compiler, &COMPILER_READS);
+            attributes.retain(|(name, _)| name != "angle" && name != "eulerseq");
+            let child = compiler
+                .find_sub("lengthrange", false)?
+                .map(|l| read_attributes(l, &LENGTHRANGE_READS));
+            Some(UrdfSection { attributes, child })
+        }
+        None => None,
+    };
+    let option = match mujoco.find_sub("option", false)? {
+        Some(option) => Some(UrdfSection {
+            attributes: read_attributes(option, &OPTION_READS),
+            child: option
+                .find_sub("flag", false)?
+                .map(|f| read_attributes(f, &FLAG_READS)),
+        }),
+        None => None,
+    };
+    let size = mujoco.find_sub("size", false)?.map(|size| UrdfSection {
+        attributes: read_attributes(size, &SIZE_READS),
+        child: None,
+    });
+    Ok(UrdfMujoco {
+        compiler,
+        option,
+        size,
+    })
+}
 
 /// Every named material's colour, as MuJoCo 3.5.0's `MakeMaterials` reads
 /// them (`xml_urdf.cc:741-768`): every `<material>` in the document, at any

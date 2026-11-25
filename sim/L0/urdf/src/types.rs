@@ -448,6 +448,68 @@ impl UrdfJoint {
 }
 
 // ============================================================================
+// MuJoCo's sections
+// ============================================================================
+
+/// One of MuJoCo's own sections in a URDF (`<mujoco><compiler>`, `<option>`
+/// or `<size>`), as MuJoCo 3.5.0's importer reads it (`xml_urdf.cc:93-108`).
+///
+/// It holds the attributes MuJoCo's reader of that section reads, as
+/// written, in document order, and the one child that reader reads
+/// (`<compiler>`'s `<lengthrange>`, `<option>`'s `<flag>`) with the
+/// attributes it reads there. MuJoCo checks no schema here: it ignores every
+/// other attribute and child (measured).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct UrdfSection {
+    /// The section's attributes, `(name, text)`.
+    pub attributes: Vec<(String, String)>,
+    /// Its child's attributes, where the child is written.
+    pub child: Option<Vec<(String, String)>>,
+}
+
+/// MuJoCo's own sections in a URDF, each where written
+/// (`xml_urdf.cc:93-108`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct UrdfMujoco {
+    /// `<compiler>`. Its `angle` and `eulerseq` are checked by the parser
+    /// and not kept: MuJoCo's importer reads a URDF in radians and its `rpy`
+    /// as "XYZ" whatever they say (`xml_urdf.cc:111`, `:664-666`).
+    pub compiler: Option<UrdfSection>,
+    /// `<option>`.
+    pub option: Option<UrdfSection>,
+    /// `<size>`.
+    pub size: Option<UrdfSection>,
+}
+
+impl UrdfMujoco {
+    /// Whether `<compiler>` leaves the flag `name` true: its default, unless
+    /// written `"false"`.
+    fn compiler_flag(&self, name: &str) -> bool {
+        self.compiler.as_ref().is_none_or(|c| {
+            c.attributes
+                .iter()
+                .all(|(written, value)| written != name || value != "false")
+        })
+    }
+
+    /// Whether the importer discards visuals: true, its default for a URDF
+    /// (`xml.cc:301`), unless `<compiler discardvisual="false">`.
+    #[must_use]
+    pub fn discardvisual(&self) -> bool {
+        self.compiler_flag("discardvisual")
+    }
+
+    /// Whether the compiler limits an automatic range: true, MJCF's default,
+    /// unless `<compiler autolimits="false">`.
+    #[must_use]
+    pub fn autolimits(&self) -> bool {
+        self.compiler_flag("autolimits")
+    }
+}
+
+// ============================================================================
 // Robot
 // ============================================================================
 
@@ -462,6 +524,8 @@ pub struct UrdfRobot {
     pub links: Vec<UrdfLink>,
     /// All joints in the robot.
     pub joints: Vec<UrdfJoint>,
+    /// MuJoCo's own sections, as its importer reads them.
+    pub mujoco: UrdfMujoco,
 }
 
 impl UrdfRobot {
@@ -472,6 +536,7 @@ impl UrdfRobot {
             name: Some(name.into()),
             links: Vec::new(),
             joints: Vec::new(),
+            mujoco: UrdfMujoco::default(),
         }
     }
 
