@@ -191,6 +191,24 @@ impl Element {
 /// recurses.
 const XML_DEPTH_LIMIT: usize = 498;
 
+/// tinyxml2's whitespace (`XMLUtil::IsWhiteSpace`, `tinyxml2.h:567-569`):
+/// `isspace` in the C locale, so a vertical tab and a form feed too.
+fn is_tinyxml2_space(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
+}
+
+/// The text of `xml` MuJoCo 3.5.0's XML reader (tinyxml2) parses: up to its
+/// first NUL, as tinyxml2 parses a NUL-terminated copy and every one of its
+/// loops stops at a NUL (`XMLDocument::Parse`, `tinyxml2.cpp:2459-2463`), and
+/// past leading whitespace, which it skips before anything else, then a
+/// byte-order mark (`:2557-2558`): the mark the whitespace leaves at the
+/// start, quick-xml drops (measured: a NUL after the root loads, one inside it
+/// is refused; whitespace, a mark and a declaration load).
+fn tinyxml2_text(xml: &str) -> &str {
+    let xml = xml.split('\0').next().unwrap_or_default();
+    xml.trim_start_matches(|c: char| u8::try_from(c).is_ok_and(is_tinyxml2_space))
+}
+
 /// What MuJoCo 3.5.0's XML reader (tinyxml2, as MuJoCo 3.5.0 builds it) has
 /// read at the document's level, outside the root, for the two rules it keeps
 /// there: a declaration (`<?…?>`) is allowed only before every other node
@@ -206,16 +224,15 @@ struct DocumentLevel {
 
 impl DocumentLevel {
     /// One event at the document's level. Whitespace makes no node
-    /// (`XMLUtil::IsWhiteSpace`, `tinyxml2.h:567-569`: `isspace`, so a
-    /// vertical tab and a form feed too; measured); a reference is text, and a
-    /// CDATA section a node that is not (measured: `&amp;` after the root is
-    /// refused, `<![CDATA[ c ]]>` loads).
+    /// ([`is_tinyxml2_space`]; measured: a vertical tab and a form feed after
+    /// the root load); a reference is text, and a CDATA section a node that is
+    /// not (measured: `&amp;` after the root is refused, `<![CDATA[ c ]]>`
+    /// loads).
     fn read(&mut self, event: &Event<'_>) -> Result<()> {
-        let space = |b: &u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c);
         match event {
             Event::Decl(_) | Event::PI(_) if self.other_node => return Err(misplaced_declaration()),
             Event::Decl(_) | Event::PI(_) | Event::Eof => {}
-            Event::Text(text) if text.iter().all(space) => {}
+            Event::Text(text) if text.iter().all(|&byte| is_tinyxml2_space(byte)) => {}
             Event::Text(_) | Event::GeneralRef(_) => {
                 self.other_node = true;
                 self.text_last = true;
@@ -237,15 +254,18 @@ fn misplaced_declaration() -> UrdfError {
     )
 }
 
-/// The document's root element, read without recursing, as MuJoCo 3.5.0's
-/// XML reader (tinyxml2) reads a document outside attribute text: an element
-/// nested past [`XML_DEPTH_LIMIT`] is refused, and so are a declaration
-/// inside an element or after any other node and a document that ends in
-/// text ([`DocumentLevel`]; measured); an `&` that starts no reference is
-/// text, as tinyxml2 keeps it (measured: `a & b` and `x &amp y` in a link
-/// load).
+/// The document's root element, read without recursing. Outside attribute
+/// text it keeps these of MuJoCo 3.5.0's XML reader's (tinyxml2's) rules: the
+/// text read is [`tinyxml2_text`]'s; an element nested past
+/// [`XML_DEPTH_LIMIT`] is refused, and so are a declaration inside an element
+/// or after any other node and a document that ends in text
+/// ([`DocumentLevel`]; measured); an `&` that starts no reference is text, as
+/// tinyxml2 keeps it (measured: `a & b` and `x &amp y` in a link load).
+/// Elsewhere the reading is quick-xml's, which differs from tinyxml2's (ledger
+/// L463: a stray end tag after the root, a DOCTYPE's internal subset holding a
+/// `>`, a name starting with a digit, …).
 fn read_tree(xml: &str) -> Result<Element> {
-    let mut reader = Reader::from_str(xml);
+    let mut reader = Reader::from_str(tinyxml2_text(xml));
     reader.config_mut().allow_dangling_amp = true;
     let mut stack: Vec<Element> = Vec::new();
     let mut root = None;
