@@ -42,7 +42,7 @@ use std::fmt::Write;
 
 use crate::error::{Result, UrdfError};
 use crate::parser::parse_urdf_str;
-use nalgebra::{Matrix3, Rotation3, Vector3};
+use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 
 use crate::types::{
     UrdfGeometry, UrdfJoint, UrdfJointLimit, UrdfJointType, UrdfLink, UrdfOrigin, UrdfRobot,
@@ -84,25 +84,26 @@ fn written(v: &Vector3<f64>) -> bool {
     v.iter().any(|x| x.to_bits() != 0)
 }
 
-/// A link's six moments `(ixx, iyy, izz, ixy, ixz, iyz)`, written in its
-/// `<inertial>` origin's frame, in the link's frame: R·I·Rᵀ, R the turn
-/// the origin's `rpy` names (extrinsic x-y-z, as URDF and MuJoCo read it).
-fn turned(moments: [f64; 6], rpy: &Vector3<f64>) -> [f64; 6] {
+/// The principal moments and the inertial frame of a link whose `<inertial>`
+/// origin turns (its `rpy` [`written`]), in the link's frame: the moments
+/// MuJoCo 3.5.0's `mjuu_fullInertia` makes of the tensor as written, and the
+/// frame the origin's turn composed with the tensor's principal axes, which is
+/// what MuJoCo's importer computes (`xml_urdf.cc:272-283`) before its compiler
+/// overwrites the frame with the unturned axes (ledger L372;
+/// D-URDF-INERTIAL-TURN). The tensor is R·I·Rᵀ, R the turn; its moments, and
+/// every check made of them, are MuJoCo's. `None` where nothing turns, and
+/// where MuJoCo refuses the tensor (its smallest moment below mjEPS), which the
+/// converter then writes unturned for sim-mjcf to refuse in MuJoCo's words.
+fn turned_frame(moments: &[f64; 6], rpy: &Vector3<f64>) -> Option<([f64; 3], UnitQuaternion<f64>)> {
     if !written(rpy) {
-        return moments;
+        return None;
     }
-    let [ixx, iyy, izz, ixy, ixz, iyz] = moments;
-    let tensor = Matrix3::new(ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz);
-    let turn = Rotation3::from_euler_angles(rpy.x, rpy.y, rpy.z);
-    let t = turn.matrix() * tensor * turn.matrix().transpose();
-    [
-        t[(0, 0)],
-        t[(1, 1)],
-        t[(2, 2)],
-        t[(0, 1)],
-        t[(0, 2)],
-        t[(1, 2)],
-    ]
+    let (principal, [w, x, y, z]) = sim_mjcf::full_inertia(moments).ok()?;
+    let axes = UnitQuaternion::new_unchecked(Quaternion::new(w, x, y, z));
+    Some((
+        principal,
+        UnitQuaternion::from_euler_angles(rpy.x, rpy.y, rpy.z) * axes,
+    ))
 }
 
 /// A geom's ` pos` and ` euler` attributes for its URDF origin, each where
@@ -686,21 +687,22 @@ impl<'a> Converter<'a> {
             inertia.ixz,
             inertia.iyz,
         ];
-        // The tensor turned by its origin's `rpy` into the link's frame
-        // (ledger L372, Jon 2026-11-19): MuJoCo 3.5.0's import drops the
-        // turn, its compiler taking the inertial frame from the unturned
-        // tensor (`mjCBody::Compile`'s `mjuu_fullInertia`;
-        // D-URDF-INERTIAL-TURN).
-        let moments = turned(moments, &inertial.origin.rpy);
-
         // MuJoCo 3.5.0's importer fills the body's `fullinertia` with the six
         // moments, a diagonal tensor's too (`xml_urdf.cc:252-258`), so its
         // compiler takes the tensor's principal axes as the inertial frame,
-        // the moments largest first (`mjuu_fullInertia`, `mjuu_eig3`); six
-        // zeros are a tensor not given (`:260-270`), as `diaginertia` zeros
-        // are in MJCF.
+        // the moments largest first (`mjuu_fullInertia`, `mjuu_eig3`).
         let inertia_attr = if moments.iter().all(|&moment| moment == 0.0) {
+            // Six zeros are a tensor not given (`:260-270`), as `diaginertia`
+            // zeros are in MJCF. MuJoCo keeps the origin's turn as such a
+            // body's inertial frame, and its fusion turns the body's position
+            // by it (D-FUSESTATIC-INERTIA); this crate's fusion places the
+            // mass at its centre, which no frame moves, so none is written.
             r#"diaginertia="0 0 0""#.to_string()
+        } else if let Some(([a, b, c], turn)) = turned_frame(&moments, &inertial.origin.rpy) {
+            format!(
+                r#"diaginertia="{a} {b} {c}" quat="{} {} {} {}""#,
+                turn.w, turn.i, turn.j, turn.k
+            )
         } else {
             let [ixx, iyy, izz, ixy, ixz, iyz] = moments;
             format!(r#"fullinertia="{ixx} {iyy} {izz} {ixy} {ixz} {iyz}""#)
@@ -713,9 +715,6 @@ impl<'a> Converter<'a> {
             pos.x, pos.y, pos.z
         );
 
-        // No orientation is written: the origin's turn is in the tensor, and
-        // `<inertial>` refuses a `fullinertia` beside one, as MuJoCo's reader
-        // does.
         self.write_line(&format!("<inertial {attrs}/>"));
 
         Ok(())

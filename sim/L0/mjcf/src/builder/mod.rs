@@ -13,7 +13,7 @@ mod build;
 mod composite;
 pub mod contact;
 mod discard;
-mod eig3;
+pub mod eig3;
 pub mod equality;
 mod fit;
 pub mod flex;

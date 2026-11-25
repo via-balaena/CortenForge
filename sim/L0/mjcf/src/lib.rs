@@ -223,6 +223,10 @@ pub use validation::{ValidationResult, validate};
 // MuJoCo-aligned Model conversion (primary API)
 pub use builder::{load_model, load_model_from_file, model_from_mjcf};
 
+// MuJoCo 3.5.0's principal moments and axes of a full inertia, which
+// sim-urdf's converter takes for a link whose inertial origin turns.
+pub use builder::eig3::full_inertia;
+
 // MJB binary format support (requires "mjb" feature)
 #[cfg(feature = "mjb")]
 pub use mjb::{
