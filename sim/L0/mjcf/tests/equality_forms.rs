@@ -42,9 +42,9 @@ struct Want {
 enum Expect {
     /// Load as MuJoCo 3.5.0's model, and step as it does.
     Loads(Want),
-    /// Be refused as MuJoCo 3.5.0 refuses it, in words holding these: MuJoCo's,
-    /// but where this crate names the attribute a form lacks, or words its
-    /// schema's refusal of an attribute its own way.
+    /// Be refused, as MuJoCo 3.5.0 refuses it, in words holding these: MuJoCo's,
+    /// or this crate's own for the same fault; or, in a document with two
+    /// faults, for the other one, which this crate names first (ledger L353).
     Refused(&'static str),
 }
 
@@ -1454,6 +1454,66 @@ const CASES: &[(&str, &str, Expect)] = &[
         "n06_weld_body2_and_anchor",
         r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body></worldbody><equality><weld body2="a" anchor="0.1 0 0"/></equality></mujoco>"#,
         Expect::Refused("required attribute missing: 'body1' on <weld>"),
+    ),
+    // a ball joint's coupling beside a sensor's negative noise: the coupling first, as MuJoCo's (the late block's order)
+    (
+        "q1_ball_eq_and_sensor_noise",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="ball"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02"/><site name="s1" pos="0.1 0 0"/></body><body name="b" pos="0.6 0 1"><joint name="j2" type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.3 0.05 0" size="0.02"/><site name="s2" pos="0.1 0 0"/></body></worldbody><equality><joint joint1="j1" joint2="j2"/></equality><sensor><jointpos joint="j2" noise="-1"/></sensor></mujoco>"#,
+        Expect::Refused(
+            "invalid joint1 on <joint>: only HINGE and SLIDE joint allowed in constraint",
+        ),
+    ),
+    // beside a free joint below the top level: the coupling first
+    (
+        "q2_ball_eq_and_nested_free",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="ball"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02"/><site name="s1" pos="0.1 0 0"/></body><body name="b" pos="0.6 0 1"><joint name="j2" type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.3 0.05 0" size="0.02"/><site name="s2" pos="0.1 0 0"/><body name="c" pos="0 0 -0.3"><freejoint/><geom size="0.05"/></body></body></worldbody><equality><joint joint1="j1" joint2="j2"/></equality></mujoco>"#,
+        Expect::Refused(
+            "invalid joint1 on <joint>: only HINGE and SLIDE joint allowed in constraint",
+        ),
+    ),
+    // beside a tendon's negative armature: the coupling first
+    (
+        "q3_ball_eq_and_tendon_armature",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="ball"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02"/><site name="s1" pos="0.1 0 0"/></body><body name="b" pos="0.6 0 1"><joint name="j2" type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.3 0.05 0" size="0.02"/><site name="s2" pos="0.1 0 0"/></body></worldbody><equality><joint joint1="j1" joint2="j2"/></equality><tendon><spatial armature="-1"><site site="s1"/><site site="s2"/></spatial></tendon></mujoco>"#,
+        Expect::Refused(
+            "invalid joint1 on <joint>: only HINGE and SLIDE joint allowed in constraint",
+        ),
+    ),
+    // beside a massless moving body: the coupling first
+    (
+        "q4_ball_eq_and_massless",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="ball"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02"/><site name="s1" pos="0.1 0 0"/></body><body name="b" pos="0.6 0 1"><joint name="j2" type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.3 0.05 0" size="0.02"/><site name="s2" pos="0.1 0 0"/><body name="c" pos="0 0 -0.3"><joint type="hinge" axis="1 0 0"/></body></body></worldbody><equality><joint joint1="j1" joint2="j2"/></equality></mujoco>"#,
+        Expect::Refused(
+            "invalid joint1 on <joint>: only HINGE and SLIDE joint allowed in constraint",
+        ),
+    ),
+    // before a rigid flex's equality: the coupling first, one equality at a time as MuJoCo's
+    (
+        "q5_ball_eq_then_rigid_flex",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="ball"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02"/></body><body name="b" pos="0.6 0 1"><joint name="j2" type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.3 0.05 0" size="0.02"/></body><flexcomp name="f" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" radius="0.01" rigid="true"/></worldbody><equality><joint joint1="j1" joint2="j2"/><flex flex="f"/></equality></mujoco>"#,
+        Expect::Refused(
+            "invalid joint1 on <joint>: only HINGE and SLIDE joint allowed in constraint",
+        ),
+    ),
+    // before an unknown flex's equality: the coupling first
+    (
+        "q6_ball_eq_then_unknown_flex",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="ball"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02"/></body><body name="b" pos="0.6 0 1"><joint name="j2" type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.3 0.05 0" size="0.02"/></body><flexcomp name="f" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" radius="0.01" rigid="true"/></worldbody><equality><joint joint1="j1" joint2="j2"/><flex flex="nope"/></equality></mujoco>"#,
+        Expect::Refused(
+            "invalid joint1 on <joint>: only HINGE and SLIDE joint allowed in constraint",
+        ),
+    ),
+    // two foreign attributes: the first written, as MuJoCo's schema names it
+    (
+        "s11_connect_polycoef_then_relpose",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom name="g" type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body><body name="c" pos="0 0 2"><joint name="h" type="hinge"/><geom size="0.05"/></body></worldbody><equality><connect body1="a" anchor="0 0 0" polycoef="0 1" relpose="0 0 0 1 0 0 0"/></equality></mujoco>"#,
+        Expect::Refused("unrecognized attribute 'polycoef' on <connect>"),
+    ),
+    // torquescale written before relpose on a connect
+    (
+        "s12_connect_torquescale_then_relpose",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom name="g" type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body><body name="c" pos="0 0 2"><joint name="h" type="hinge"/><geom size="0.05"/></body></worldbody><equality><connect body1="a" anchor="0 0 0" torquescale="1" relpose="0 0 0 1 0 0 0"/></equality></mujoco>"#,
+        Expect::Refused("unrecognized attribute 'torquescale' on <connect>"),
     ),
     // a connect with site1 alone: this names the attribute missing
     (

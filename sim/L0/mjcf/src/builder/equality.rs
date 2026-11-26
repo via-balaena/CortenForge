@@ -21,7 +21,7 @@ use crate::types::{
 use sim_core::{EqualityType, MjJointType, MjObjectType};
 
 /// A document's flex equality, kept for
-/// [`ModelBuilder::check_flex_equalities`]: its equality id, its position in
+/// [`ModelBuilder::check_equalities`]: its equality id, its position in
 /// `<equality>`, its name and its flex's, and whether its empty `flex` stands
 /// beside an unnamed flex, which MuJoCo binds it to (`user_objects.cc:6005`).
 #[derive(Debug, Clone)]
@@ -507,7 +507,7 @@ impl ModelBuilder {
     /// Process a flex equality constraint (MuJoCo's `mjEQ_FLEX`): one row
     /// for each edge of the flex it names that is not rigid, with the
     /// equality's `solref` and `solimp`. A name no flex in `flexes` has, and
-    /// a rigid flex, are refused by [`Self::check_flex_equalities`] once the
+    /// a rigid flex, are refused by [`Self::check_equalities`] once the
     /// flexes are built. A `<flexvert>`, and an empty `flex` beside an
     /// unnamed flex, are refused after the keyframes
     /// ([`ModelBuilder::flex_equality_fault`]).
@@ -556,7 +556,7 @@ impl ModelBuilder {
     /// (`mjXReader::Parse`), and none for one its `Make` takes as rigid
     /// (`user_flexcomp.cc:463-466`, `:643-649`): Make has dropped it. One
     /// whose compiled flex alone is rigid (an unused free point dropped) keeps
-    /// it, and `check_flex_equalities` refuses it, as MuJoCo's compiler does.
+    /// it, and `check_equalities` refuses it, as MuJoCo's compiler does.
     /// Unnamed and active, with MuJoCo's default `solref` and `solimp` unless
     /// the `<edge>` writes them.
     /// One `equality="vert"` asks for is made so, and refused after the
@@ -574,7 +574,7 @@ impl ModelBuilder {
                         .at(Location::nth(ElementKind::Flex, Some(&flex.name), flex_id)),
                     );
                 }
-                // Checked with the document's (`check_flex_equalities`): one on
+                // Checked with the document's (`check_equalities`): one on
                 // a flex its compiled form makes rigid is MuJoCo's refusal too
                 // (`user_objects.cc:6056`).
                 self.flex_equalities.push(FlexEqualityRef {
@@ -619,61 +619,69 @@ impl ModelBuilder {
         self.eq_name.push(name);
     }
 
-    /// MuJoCo's checks of a flex equality, in its order for each equality:
-    /// the flex it names exists (`mjCEquality::ResolveReferences`,
-    /// `user_objects.cc:6006-6009`), and is not rigid (`Compile`,
-    /// `:6055-6057`).
-    pub(crate) fn check_flex_equalities(&self) -> Result<()> {
-        for r in &self.flex_equalities {
-            let at = || Location::nth(ElementKind::Equality, r.name.as_deref(), r.index);
-            let flex_id = self.eq_obj1id[r.eq_id];
-            if flex_id == usize::MAX && r.unnamed {
-                // Refused after the keyframes (registry `D-FLEX-EQ-NO-NAME`).
-                continue;
-            }
-            if flex_id == usize::MAX {
-                return Err(MjcfError::undefined(ElementKind::Flex, &r.flex).at(at()));
-            }
-            if self.flex_rigid[flex_id] {
-                return Err(MjcfError::invalid_model(format!(
-                    "rigid flex '{}' in equality constraint {}",
-                    r.flex, r.eq_id
-                ))
-                .at(at()));
+    /// MuJoCo's checks of each equality, one equality at a time in their
+    /// order, as its compiler makes them (`user_model.cc:4955`;
+    /// `mjCEquality`, `user_objects.cc:5978-6058`): a flex equality's flex
+    /// exists (`:6006-6009`) and is not rigid (`:6055-6057`); a joint
+    /// equality's two joints are scalar, a ball or free joint refused, naming
+    /// the attribute of the joint refused (`:6034-6042`, after the check that
+    /// they are not one, which the build makes). Made in
+    /// [`super::model_from_mjcf`]'s late block, by its rule since RL-6a:
+    /// after the checks the build makes, in MuJoCo's order among the late
+    /// checks.
+    pub(crate) fn check_equalities(&self) -> Result<()> {
+        let scalar =
+            |jnt: usize| matches!(self.jnt_type[jnt], MjJointType::Hinge | MjJointType::Slide);
+        for eq in 0..self.eq_type.len() {
+            match self.eq_type[eq] {
+                EqualityType::Flex => {
+                    if let Some(r) = self.flex_equalities.iter().find(|r| r.eq_id == eq) {
+                        self.check_flex_equality(r)?;
+                    }
+                }
+                EqualityType::Joint => {
+                    let (joint1, joint2) = (self.eq_obj1id[eq], self.eq_obj2id[eq]);
+                    let not_scalar = if scalar(joint1) {
+                        (joint2 != usize::MAX && !scalar(joint2)).then_some("joint2")
+                    } else {
+                        Some("joint1")
+                    };
+                    if let Some(attribute) = not_scalar {
+                        return Err(MjcfError::invalid_value(
+                            "joint",
+                            attribute,
+                            "only HINGE and SLIDE joint allowed in constraint",
+                        )
+                        .at(Location::nth(
+                            ElementKind::Equality,
+                            self.eq_name[eq].as_deref(),
+                            eq,
+                        )));
+                    }
+                }
+                _ => {}
             }
         }
         Ok(())
     }
 
-    /// Each joint equality's two joints scalar, as MuJoCo 3.5.0's compiler
-    /// requires after its check that they are not one
-    /// (`user_objects.cc:6034-6042`): a ball or free joint is refused,
-    /// naming the attribute of the joint refused. Made after every check
-    /// this crate made before RL-10d, as the other late checks are
-    /// ([`super::model_from_mjcf`]'s order), so that a document refused before
-    /// is refused for the same fault.
-    pub(crate) fn check_joint_equalities(&self) -> Result<()> {
-        let scalar =
-            |jnt: usize| matches!(self.jnt_type[jnt], MjJointType::Hinge | MjJointType::Slide);
-        for eq in (0..self.eq_type.len()).filter(|&eq| self.eq_type[eq] == EqualityType::Joint) {
-            let (joint1, joint2) = (self.eq_obj1id[eq], self.eq_obj2id[eq]);
-            let not_scalar = if scalar(joint1) {
-                (joint2 != usize::MAX && !scalar(joint2)).then_some("joint2")
-            } else {
-                Some("joint1")
-            };
-            if let Some(attribute) = not_scalar {
-                return Err(MjcfError::invalid_value(
-                    "joint",
-                    attribute,
-                    "only HINGE and SLIDE joint allowed in constraint",
-                )
-                .at(Location::nth(
-                    ElementKind::Equality,
-                    self.eq_name[eq].as_deref(),
-                    eq,
-                )));
-            }
+    /// A flex equality's checks ([`Self::check_equalities`]).
+    fn check_flex_equality(&self, r: &FlexEqualityRef) -> Result<()> {
+        let at = || Location::nth(ElementKind::Equality, r.name.as_deref(), r.index);
+        let flex_id = self.eq_obj1id[r.eq_id];
+        if flex_id == usize::MAX && r.unnamed {
+            // Refused after the keyframes (registry `D-FLEX-EQ-NO-NAME`).
+            return Ok(());
+        }
+        if flex_id == usize::MAX {
+            return Err(MjcfError::undefined(ElementKind::Flex, &r.flex).at(at()));
+        }
+        if self.flex_rigid[flex_id] {
+            return Err(MjcfError::invalid_model(format!(
+                "rigid flex '{}' in equality constraint {}",
+                r.flex, r.eq_id
+            ))
+            .at(at()));
         }
         Ok(())
     }

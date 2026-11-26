@@ -923,7 +923,8 @@ pub struct Model {
     pub eq_obj1id: Vec<usize>,
     /// Second object ID, as the first's (the world body for a connect's or
     /// a weld's unwritten `body2`), or `usize::MAX` for none (a joint's or
-    /// tendon's coupling to a constant, the world origin in Distance).
+    /// tendon's coupling to a constant, the world origin in Distance, every
+    /// flex equality).
     pub eq_obj2id: Vec<usize>,
     /// The objects' type, MuJoCo's `eq_objtype`: a connect's or a weld's
     /// `Body` or `Site`, the two ids then naming sites, whose positions are

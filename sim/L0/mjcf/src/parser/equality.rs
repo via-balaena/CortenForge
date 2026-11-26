@@ -132,16 +132,17 @@ const FLEX_TAKES: &[&str] = &["name", "class", "flex", "active", "solref", "soli
 
 /// Refuses an attribute another element of `<equality>` takes and `element`
 /// does not ([`EQUALITY_ATTRIBUTES`], `takes`), as MuJoCo 3.5.0's schema
-/// refuses it before its reader reads the element ("Schema violation:
-/// unrecognized attribute", measured on each element), and as this crate
-/// refuses an actuator kind's (`actuator_spec.rs`). An attribute no element of
+/// refuses it ("Schema violation: unrecognized attribute", measured on each
+/// element), the first such one written. An attribute no element of
 /// `<equality>` takes is not checked here.
 fn refuse_foreign_attributes(a: &Attrs, element: &str, takes: &[&str]) -> Result<()> {
-    match EQUALITY_ATTRIBUTES
+    let foreign: Vec<&str> = EQUALITY_ATTRIBUTES
         .iter()
-        .find(|attribute| !takes.contains(attribute) && a.has(attribute))
-    {
-        Some(attribute) => Err(MjcfError::unknown_attribute(element, *attribute)),
+        .copied()
+        .filter(|attribute| !takes.contains(attribute))
+        .collect();
+    match a.first_of(&foreign) {
+        Some(attribute) => Err(MjcfError::unknown_attribute(element, attribute)),
         None => Ok(()),
     }
 }

@@ -273,31 +273,40 @@ fn a_fused_models_site_weld_holds_the_sites_it_names() {
     }
 }
 
-/// A site connect or weld whose two sites sit on one body holds nothing:
-/// its rows are 0 and so is its force, at the dense size as MuJoCo's dense
-/// rows (measured: `qfrc_constraint` 0) and at the sparse size too, where
-/// MuJoCo's connect counts each dof twice and its weld stops the process
-/// (D-SITE-EQUALITY-ONE-BODY). The sparse documents are made here from the
-/// dense ones, outside the census: MuJoCo stops on the weld's, and its
-/// connect's moves its census record by 9.5e-2 under a 1e-15 change (measured).
+/// A site connect or weld whose two sites sit on one body has at the sparse
+/// size the rows it has at the dense size, bit for bit: their count,
+/// Jacobian, errors and forces, at rest and turning. The census holds the
+/// dense documents, MuJoCo's
+/// at the dense size; at the sparse size MuJoCo's connect counts each dof
+/// twice and its weld stops the process (D-SITE-EQUALITY-ONE-BODY), so the
+/// sparse documents are made here from the dense ones, outside the census.
 #[test]
 fn a_site_equality_on_one_body_has_its_dense_rows_at_the_sparse_size() {
-    let connect_dense = r#"<mujoco><option jacobian="dense"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s1" pos="-0.1 0 0"/><site name="s2" pos="0.1 0 0" quat="0.9238795 0.3826834 0 0"/></body></worldbody><equality><connect site1="s1" site2="s2"/></equality></mujoco>"#;
-    let weld_dense = r#"<mujoco><option jacobian="dense"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s1" pos="-0.1 0 0"/><site name="s2" pos="0.1 0 0" quat="0.9238795 0.3826834 0 0"/></body></worldbody><equality><weld site1="s1" site2="s2"/></equality></mujoco>"#;
+    let connect_dense = r#"<mujoco><option jacobian="dense"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s1" pos="-0.1 0.03 0.02" quat="0.8660254 0 0.5 0"/><site name="s2" pos="0.1 -0.02 0.01" quat="0.9238795 0.3826834 0 0"/></body></worldbody><equality><connect site1="s1" site2="s2"/></equality></mujoco>"#;
+    let weld_dense = r#"<mujoco><option jacobian="dense"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s1" pos="-0.1 0.03 0.02" quat="0.8660254 0 0.5 0"/><site name="s2" pos="0.1 -0.02 0.01" quat="0.9238795 0.3826834 0 0"/></body></worldbody><equality><weld site1="s1" site2="s2"/></equality></mujoco>"#;
     let sparse = |dense: &str| dense.replace(r#"jacobian="dense""#, r#"jacobian="sparse""#);
-    let force = |xml: &str| {
+    // At rest, and turning about z (the force then not 0).
+    let rows = |xml: &str, spin: f64| {
         let model = load_model(xml).expect("loads");
         let mut data = model.make_data();
+        data.qvel[5] = spin;
         data.forward(&model).expect("forward");
-        data.qfrc_constraint
-            .iter()
-            .map(|x| x.to_bits())
-            .collect::<Vec<_>>()
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let n = data.efc_pos.len();
+        (
+            n,
+            bits(&data.efc_pos),
+            bits(data.efc_force.as_slice()),
+            bits(data.efc_J.rows(0, n).transpose().as_slice()),
+            bits(data.qfrc_constraint.as_slice()),
+        )
     };
     for dense in [connect_dense, weld_dense] {
-        let (d, s) = (force(dense), force(&sparse(dense)));
-        assert!(d.iter().all(|&bits| bits == 0), "{d:?}");
-        assert_eq!(d, s);
+        for spin in [0.0, 1.0] {
+            let at_dense = rows(dense, spin);
+            assert!(at_dense.0 > 0, "rows at the dense size");
+            assert_eq!(at_dense, rows(&sparse(dense), spin));
+        }
     }
 }
 

@@ -400,8 +400,8 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Among themselves in MuJoCo's order: each body's inertia, geoms and
     // joints, a bending flex's thickness, the height fields' sizes
     // (`user_model.cc:4948-4950` compiles the flexes before the height
-    // fields), the flex equalities, the joint equalities' joints (RL-10d),
-    // the tendons, the actuators, the sensors,
+    // fields), the equalities (each in turn: a flex equality's flex, a joint
+    // equality's joints since RL-10d), the tendons, the actuators, the sensors,
     // a moving body's mass and inertia, then the free joint below the world's
     // children, as MuJoCo's `CopyTree` refuses it. An automatic range that
     // does not increase is refused after the keyframes (`D-AUTO-RANGE`).
@@ -411,8 +411,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     builder.check_bodies(tree_end)?;
     flex::check_flex_bending_thickness(&mjcf.flex)?;
     builder.check_hfield_sizes()?;
-    builder.check_flex_equalities()?;
-    builder.check_joint_equalities()?;
+    builder.check_equalities()?;
     builder.check_tendons()?;
     builder.check_actuators()?;
     builder.check_sensors()?;
@@ -906,7 +905,7 @@ pub struct ModelBuilder {
     // Sensor/equality name lookup (§59)
     pub(crate) sensor_name_to_id: HashMap<String, usize>,
     pub(crate) eq_name_to_id: HashMap<String, usize>,
-    /// Each document flex equality, for [`Self::check_flex_equalities`].
+    /// Each document flex equality, for [`Self::check_equalities`].
     pub(crate) flex_equalities: Vec<equality::FlexEqualityRef>,
     /// The first flex equality, in index order, that MuJoCo makes and this
     /// crate refuses after the keyframes: a vertex equality (registry

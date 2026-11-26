@@ -3535,3 +3535,133 @@ fn a_fromto_beside_a_missing_mesh_is_named_as_ledgered() {
     }
     assert!(moved.is_empty(), "{}", moved.join("\n"));
 }
+
+/// Two faults, one an equality's refusal Rigid-loading PR RL-10d made, where
+/// this crate names the other fault than MuJoCo 3.5.0 (ledger L353): the
+/// scalar-joint refusal, made in the builder's late block by its rule since
+/// RL-6a, after the build's check of an element MuJoCo checks after it; an
+/// equality's attribute that another element of `<equality>` takes, refused
+/// where the parser reads it, before a fault this crate finds when it builds
+/// an element written earlier (an actuator kind's attribute, which MuJoCo's
+/// schema, walking the document in order, names first), or after a fault the
+/// parser meets earlier where MuJoCo's schema names the later schema fault;
+/// and a weld's form, checked where the parser reads it, before its class is
+/// looked up. `(what, document, MuJoCo's reason, this crate's error)`,
+/// measured 2026-11-26 (RL-10d's fix-diff pass).
+const EQUALITY_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "a ball joint's coupling before a joint equality naming an unknown joint",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="ball"/><geom name="ga" type="capsule" fromto="0 0 0 0.3 0 0" size="0.02"/><site name="s1" pos="0.1 0 0"/></body><body name="b" pos="0.6 0 1"><joint name="j2" type="hinge" axis="0 1 0"/><geom name="gb" type="capsule" fromto="0 0 0 0.3 0.05 0" size="0.02"/><site name="s2" pos="0.1 0 0"/></body></worldbody><equality><joint joint1="j1" joint2="j2"/><joint joint1="nope"/></equality></mujoco>"#,
+        "only HINGE and SLIDE joint allowed in constraint",
+        "unknown joint 'nope' (equality #1)",
+    ),
+    (
+        "a ball joint's coupling beside a sensor naming an unknown joint",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="ball"/><geom name="ga" type="capsule" fromto="0 0 0 0.3 0 0" size="0.02"/><site name="s1" pos="0.1 0 0"/></body><body name="b" pos="0.6 0 1"><joint name="j2" type="hinge" axis="0 1 0"/><geom name="gb" type="capsule" fromto="0 0 0 0.3 0.05 0" size="0.02"/><site name="s2" pos="0.1 0 0"/></body></worldbody><equality><joint joint1="j1" joint2="j2"/></equality><sensor><jointpos joint="nope"/></sensor></mujoco>"#,
+        "only HINGE and SLIDE joint allowed in constraint",
+        "unknown joint 'nope' (sensor #0)",
+    ),
+    (
+        "a ball joint's coupling before a tendon equality naming an unknown tendon",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="ball"/><geom name="ga" type="capsule" fromto="0 0 0 0.3 0 0" size="0.02"/><site name="s1" pos="0.1 0 0"/></body><body name="b" pos="0.6 0 1"><joint name="j2" type="hinge" axis="0 1 0"/><geom name="gb" type="capsule" fromto="0 0 0 0.3 0.05 0" size="0.02"/><site name="s2" pos="0.1 0 0"/></body></worldbody><equality><joint joint1="j1" joint2="j2"/><tendon tendon1="nope"/></equality></mujoco>"#,
+        "only HINGE and SLIDE joint allowed in constraint",
+        "unknown tendon 'nope' (equality #1)",
+    ),
+    (
+        "a ball joint's coupling before a weld naming an unknown body",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="ball"/><geom name="ga" type="capsule" fromto="0 0 0 0.3 0 0" size="0.02"/><site name="s1" pos="0.1 0 0"/></body><body name="b" pos="0.6 0 1"><joint name="j2" type="hinge" axis="0 1 0"/><geom name="gb" type="capsule" fromto="0 0 0 0.3 0.05 0" size="0.02"/><site name="s2" pos="0.1 0 0"/></body></worldbody><equality><joint joint1="j1" joint2="j2"/><weld body1="nope"/></equality></mujoco>"#,
+        "only HINGE and SLIDE joint allowed in constraint",
+        "unknown body 'nope' (equality #1)",
+    ),
+    (
+        "a ball joint's coupling before a connect naming an unknown site",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="ball"/><geom name="ga" type="capsule" fromto="0 0 0 0.3 0 0" size="0.02"/><site name="s1" pos="0.1 0 0"/></body><body name="b" pos="0.6 0 1"><joint name="j2" type="hinge" axis="0 1 0"/><geom name="gb" type="capsule" fromto="0 0 0 0.3 0.05 0" size="0.02"/><site name="s2" pos="0.1 0 0"/></body></worldbody><equality><joint joint1="j1" joint2="j2"/><connect site1="s1" site2="nope"/></equality></mujoco>"#,
+        "only HINGE and SLIDE joint allowed in constraint",
+        "unknown site 'nope' (equality #1)",
+    ),
+    (
+        "a ball joint's coupling beside a tendon's user data too long",
+        r#"<mujoco model="m"><option timestep="0.002"/><size nuser_tendon="1"/><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="ball"/><geom name="ga" type="capsule" fromto="0 0 0 0.3 0 0" size="0.02"/><site name="s1" pos="0.1 0 0"/></body><body name="b" pos="0.6 0 1"><joint name="j2" type="hinge" axis="0 1 0"/><geom name="gb" type="capsule" fromto="0 0 0 0.3 0.05 0" size="0.02"/><site name="s2" pos="0.1 0 0"/></body></worldbody><equality><joint joint1="j1" joint2="j2"/></equality><tendon><spatial user="1 2"><site site="s1"/><site site="s2"/></spatial></tendon></mujoco>"#,
+        "only HINGE and SLIDE joint allowed in constraint",
+        "invalid user on <tendon>: user data exceeds nuser_tendon=1",
+    ),
+    (
+        "a connect's unknown attribute written before its relpose",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom name="g" type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body><body name="c" pos="0 0 2"><joint name="h" type="hinge"/><geom size="0.05"/></body></worldbody><equality><connect body1="a" anchor="0 0 0" foo="1" relpose="0 0 0 1 0 0 0"/></equality></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'foo'",
+        "unrecognized attribute 'relpose' on <connect> (line 1: equality > connect)",
+    ),
+    (
+        "a connect's mixed form before a weld's polycoef",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom name="g" type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body><body name="c" pos="0 0 2"><joint name="h" type="hinge"/><geom size="0.05"/></body></worldbody><equality><connect body1="a" site2="s"/><weld body1="a" polycoef="0 1"/></equality></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'polycoef'",
+        "invalid site2 on <connect>: body and site semantics cannot be mixed (line 1: equality > connect)",
+    ),
+    (
+        "a geom's bad mass before a connect's relpose",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom name="g" type="box" size="0.1 0.05 0.02" mass="x"/><site name="s" pos="-0.1 0 0"/></body><body name="c" pos="0 0 2"><joint name="h" type="hinge"/><geom size="0.05"/></body></worldbody><equality><connect body1="a" anchor="0 0 0" relpose="0 0 0 1 0 0 0"/></equality></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'relpose'",
+        "bad number \"x\" in attribute 'mass' on <geom> (line 1: worldbody > body 'a' > geom 'g')",
+    ),
+    (
+        "a geom's unknown attribute before a connect's relpose",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom name="g" type="box" size="0.1 0.05 0.02" mass="1" foo="1"/><site name="s" pos="-0.1 0 0"/></body><body name="c" pos="0 0 2"><joint name="h" type="hinge"/><geom size="0.05"/></body></worldbody><equality><connect body1="a" anchor="0 0 0" relpose="0 0 0 1 0 0 0"/></equality></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'foo'",
+        "unrecognized attribute 'relpose' on <connect> (line 1: equality > connect)",
+    ),
+    (
+        "a motor's kp before a connect's relpose",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom name="g" type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body><body name="c" pos="0 0 2"><joint name="h" type="hinge"/><geom size="0.05"/></body></worldbody><actuator><motor joint="h" kp="1"/></actuator><equality><connect body1="a" anchor="0 0 0" relpose="0 0 0 1 0 0 0"/></equality></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'kp'",
+        "unrecognized attribute 'relpose' on <connect> (line 1: equality > connect)",
+    ),
+    (
+        "a default class's motor kp before a connect's relpose",
+        r#"<mujoco model="m"><option timestep="0.002"/><default><motor kp="1"/></default><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom name="g" type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body><body name="c" pos="0 0 2"><joint name="h" type="hinge"/><geom size="0.05"/></body></worldbody><equality><connect body1="a" anchor="0 0 0" relpose="0 0 0 1 0 0 0"/></equality></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'kp'",
+        "unrecognized attribute 'relpose' on <connect> (line 1: equality > connect)",
+    ),
+    (
+        "a general actuator's kp before a connect's relpose",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom name="g" type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body><body name="c" pos="0 0 2"><joint name="h" type="hinge"/><geom size="0.05"/></body></worldbody><actuator><general joint="h" kp="1"/></actuator><equality><connect body1="a" anchor="0 0 0" relpose="0 0 0 1 0 0 0"/></equality></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'kp'",
+        "unrecognized attribute 'relpose' on <connect> (line 1: equality > connect)",
+    ),
+    (
+        "a position actuator's area before a connect's relpose",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom name="g" type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body><body name="c" pos="0 0 2"><joint name="h" type="hinge"/><geom size="0.05"/></body></worldbody><actuator><position joint="h" area="1"/></actuator><equality><connect body1="a" anchor="0 0 0" relpose="0 0 0 1 0 0 0"/></equality></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'area'",
+        "unrecognized attribute 'relpose' on <connect> (line 1: equality > connect)",
+    ),
+    (
+        "a motor's kp before a weld's polycoef",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom name="g" type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body><body name="c" pos="0 0 2"><joint name="h" type="hinge"/><geom size="0.05"/></body></worldbody><actuator><motor joint="h" kp="1"/></actuator><equality><weld body1="a" polycoef="1"/></equality></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'kp'",
+        "unrecognized attribute 'polycoef' on <weld> (line 1: equality > weld)",
+    ),
+    (
+        "a motor's kp before a joint equality's torquescale",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom name="g" type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body><body name="c" pos="0 0 2"><joint name="h" type="hinge"/><geom size="0.05"/></body></worldbody><actuator><motor joint="h" kp="1"/></actuator><equality><joint joint1="h" torquescale="1"/></equality></mujoco>"#,
+        "Schema violation: unrecognized attribute: 'kp'",
+        "unrecognized attribute 'torquescale' on <joint> (line 1: equality > joint)",
+    ),
+    (
+        "a weld's unknown class beside its mixed form",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><site name="w" pos="0 0 1"/><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body></worldbody><equality><weld class="nope" body1="a" site1="s"/></equality></mujoco>"#,
+        "unknown default class name 'nope'",
+        "invalid site1 on <weld>: body and site semantics cannot be mixed (line 1: equality > weld)",
+    ),
+];
+
+#[test]
+fn a_fault_beside_an_equalitys_refusal_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in EQUALITY_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
