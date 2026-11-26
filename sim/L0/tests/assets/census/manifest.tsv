@@ -4309,3 +4309,16 @@ b687c20f47138487	sim/L0/mjcf/tests/length_range.rs:794
 c12472b56e3e16a3	sim/L0/mjcf/tests/length_range.rs:893
 d4001e56e71c3b71	sim/L0/mjcf/tests/length_range.rs:921
 fbc62f5aa7c0a686	sim/L0/mjcf/tests/length_range.rs:949
+02a625ccb28e0f13	sim/L0/mjcf/tests/length_range.rs:1009
+05e8ffad0231a246	sim/L0/mjcf/tests/length_range.rs:1285
+09ee76c10825caee	sim/L0/mjcf/tests/length_range.rs:1135
+3032abc58e03de8c	sim/L0/mjcf/tests/length_range.rs:1149
+32a787055996532f	sim/L0/mjcf/tests/length_range.rs:1121
+4a83df48ed47f6c5	sim/L0/mjcf/tests/length_range.rs:1051
+71e7d8b626b8a02e	sim/L0/mjcf/tests/length_range.rs:1107
+8f37569ec8b069c0	sim/L0/mjcf/tests/length_range.rs:1277
+92bcd5d2d6a85b8e	sim/L0/mjcf/tests/length_range.rs:1023
+a999299b89bf4446	sim/L0/mjcf/tests/length_range.rs:1079
+ad702f6483da56c6	sim/L0/mjcf/tests/length_range.rs:1037
+d1bce51d8db2d0a5	sim/L0/mjcf/tests/length_range.rs:1093
+e444799b96854463	sim/L0/mjcf/tests/length_range.rs:1065

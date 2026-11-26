@@ -3,7 +3,11 @@
 //! compiler computes it after `mj_setConst`, a written one kept (book L44;
 //! ledgers L37, L74, L116, L272); `<compiler><lengthrange>`'s options read
 //! (book L49); a site and refsite transmission's rotational length from each
-//! site's quaternion times its body's, as MuJoCo's `mj_transmission` makes it.
+//! site's quaternion times its body's, as MuJoCo's `mj_transmission` makes it;
+//! the rules round 1 found no document for: the velocity time constant and its
+//! floor, the mode filter's user and bias-only branches, the flags the run
+//! turns off, a run timestep of 0, a later actuator's and side 1's words, a
+//! second `<compiler>`'s options.
 //!
 //! Every expected value was printed by MuJoCo 3.5.0 on the census's unfused
 //! oracle (2026-11-26).
@@ -999,6 +1003,160 @@ const CASES: &[(&str, &str, Expect)] = &[
             act: &[0.03664940596049435],
         }),
     ),
+    // an unlimited hinge's run under a velocity time constant of 0.5: the range moves with it
+    (
+        "u01_timeconst_half",
+        r#"<mujoco model="m"><compiler><lengthrange tolrange="0.5" timeconst="0.5"/></compiler><option timestep="0.002"/><worldbody><body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+        Expect::Loads(Want {
+            lengthrange: &[-96.0034999847495, 96.0034999847495],
+            acc0: &[30.8616761520936],
+            length: &[0.0],
+            force: &[0.0],
+            qpos: &[-0.0157417224646403],
+            qvel: &[-1.1430056941944284],
+            act: &[0.4928973829054284],
+        }),
+    ),
+    // a velocity time constant below 0.01: the run takes 0.01
+    (
+        "u02_timeconst_below_floor",
+        r#"<mujoco model="m"><compiler><lengthrange tolrange="0.5" timeconst="0.001"/></compiler><option timestep="0.002"/><worldbody><body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+        Expect::Loads(Want {
+            lengthrange: &[-3.1621120665503177, 3.1621120665503177],
+            acc0: &[30.8616761520936],
+            length: &[0.0],
+            force: &[0.0],
+            qpos: &[-0.015103506472144434],
+            qvel: &[-1.07163152499918],
+            act: &[0.4928973829054284],
+        }),
+    ),
+    // a velocity time constant of 0.01: the range u02's
+    (
+        "u03_timeconst_at_floor",
+        r#"<mujoco model="m"><compiler><lengthrange tolrange="0.5" timeconst="0.01"/></compiler><option timestep="0.002"/><worldbody><body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+        Expect::Loads(Want {
+            lengthrange: &[-3.1621120665503177, 3.1621120665503177],
+            acc0: &[30.8616761520936],
+            length: &[0.0],
+            force: &[0.0],
+            qpos: &[-0.015103506472144434],
+            qvel: &[-1.07163152499918],
+            act: &[0.4928973829054284],
+        }),
+    ),
+    // a user gain under mode muscleuser: computed
+    (
+        "u04_user_gain_muscleuser",
+        r#"<mujoco model="m"><compiler><lengthrange mode="muscleuser"/></compiler><option timestep="0.002"/><worldbody><body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0" limited="true" range="-30 60"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody><actuator><general joint="h" gaintype="user"/></actuator></mujoco>"#,
+        Expect::Loads(Want {
+            lengthrange: &[-0.524168713951565, 1.0477674895498639],
+            acc0: &[30.8616761520936],
+            length: &[0.0],
+            force: &[0.5],
+            qpos: &[0.05110549001205765],
+            qvel: &[2.4333232668807234],
+            act: &[],
+        }),
+    ),
+    // a user gain under the default mode: left (0, 0)
+    (
+        "u05_user_gain_default",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0" limited="true" range="-30 60"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody><actuator><general joint="h" gaintype="user"/></actuator></mujoco>"#,
+        Expect::Loads(Want {
+            lengthrange: &[0.0, 0.0],
+            acc0: &[30.8616761520936],
+            length: &[0.0],
+            force: &[0.5],
+            qpos: &[0.05110549001205765],
+            qvel: &[2.4333232668807234],
+            act: &[],
+        }),
+    ),
+    // a user bias under mode muscleuser: computed
+    (
+        "u06_user_bias_muscleuser",
+        r#"<mujoco model="m"><compiler><lengthrange mode="muscleuser"/></compiler><option timestep="0.002"/><worldbody><body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0" limited="true" range="-30 60"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody><actuator><general joint="h" biastype="user"/></actuator></mujoco>"#,
+        Expect::Loads(Want {
+            lengthrange: &[-0.524168713951565, 1.0477674895498639],
+            acc0: &[30.8616761520936],
+            length: &[0.0],
+            force: &[0.5],
+            qpos: &[0.05110549001205765],
+            qvel: &[2.4333232668807234],
+            act: &[],
+        }),
+    ),
+    // a <general> whose bias alone is a muscle's: MuJoCo's filter takes it
+    (
+        "u07_bias_only_muscle",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0" limited="true" range="-30 60"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody><actuator><general joint="h" biastype="muscle" dyntype="muscle" ctrllimited="true" ctrlrange="0 1" gainprm="1" biasprm="0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2" dynprm="0.01 0.04"/></actuator></mujoco>"#,
+        Expect::Loads(Want {
+            lengthrange: &[-0.524168713951565, 1.0477674895498639],
+            acc0: &[30.8616761520936],
+            length: &[0.0],
+            force: &[0.0],
+            qpos: &[0.047186509563694023],
+            qvel: &[2.312978812056379],
+            act: &[0.4928973829054284],
+        }),
+    ),
+    // an unlimited hinge with damping: dampers are off in the run
+    (
+        "u08_damping_off_in_run",
+        r#"<mujoco model="m"><compiler><lengthrange tolrange="0.5"/></compiler><option timestep="0.002"/><worldbody><body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0" damping="1"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+        Expect::Loads(Want {
+            lengthrange: &[-181.0027413207507, 181.0027413207507],
+            acc0: &[30.8616761520936],
+            length: &[0.0],
+            force: &[0.0],
+            qpos: &[-0.012056134627887762],
+            qvel: &[-0.7724223563660977],
+            act: &[0.4928973829054284],
+        }),
+    ),
+    // an unlimited hinge with friction loss: friction loss is off in the run
+    (
+        "u09_frictionloss_off_in_run",
+        r#"<mujoco model="m"><compiler><lengthrange tolrange="0.5"/></compiler><option timestep="0.002"/><worldbody><body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0" frictionloss="0.1"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+        Expect::Loads(Want {
+            lengthrange: &[-181.0027413207507, 181.0027413207507],
+            acc0: &[30.8616761520936],
+            length: &[0.0],
+            force: &[0.0],
+            qpos: &[-0.01456802023235904],
+            qvel: &[-1.057891989076717],
+            act: &[0.4928973829054284],
+        }),
+    ),
+    // a run timestep of 0 on an unlimited hinge: the run takes the model's
+    (
+        "u10_run_timestep_zero",
+        r#"<mujoco model="m"><compiler><lengthrange tolrange="0.5" timestep="0"/></compiler><option timestep="0.002"/><worldbody><body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0" /><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+        Expect::Loads(Want {
+            lengthrange: &[-180.16094313609756, 180.16094313609756],
+            acc0: &[30.8616761520936],
+            length: &[0.0],
+            force: &[0.0],
+            qpos: &[-0.015752231546234282],
+            qvel: &[-1.1441986007861153],
+            act: &[0.4928973829054284],
+        }),
+    ),
+    // a second <compiler>'s <lengthrange> options taking effect beside the first's mode
+    (
+        "k33_second_compiler_options",
+        "<mujoco model=\"m\"><compiler><lengthrange mode=\"all\"/></compiler><compiler><lengthrange inttotal=\"0.5\" interval=\"0.1\"/></compiler><option timestep=\"0.002\"/><worldbody><body name=\"arm\" pos=\"0 0 1\"><joint name=\"h\" type=\"hinge\" axis=\"0 1 0\" limited=\"true\" range=\"-30 60\"/><geom type=\"capsule\" fromto=\"0 0 0 0.3 0 0\" size=\"0.03\" mass=\"1\"/></body></worldbody><actuator><motor joint=\"h\"/></actuator></mujoco>\n",
+        Expect::Loads(Want {
+            lengthrange: &[-0.5244349583492071, 1.0527977532533574],
+            acc0: &[30.8616761520936],
+            length: &[0.0],
+            force: &[0.5],
+            qpos: &[0.05110549001205765],
+            qvel: &[2.4333232668807234],
+            act: &[],
+        }),
+    ),
     // a muscle on an unlimited hinge: the run's length still moves
     (
         "m16_unlimited_hinge",
@@ -1112,6 +1270,22 @@ const CASES: &[(&str, &str, Expect)] = &[
         "k23_two_values",
         "<mujoco model=\"m\"><compiler><lengthrange accel=\"10 20\"/></compiler><option timestep=\"0.002\"/><worldbody><body name=\"arm\" pos=\"0 0 1\"><joint name=\"h\" type=\"hinge\" axis=\"0 1 0\" limited=\"true\" range=\"-30 60\"/><geom type=\"capsule\" fromto=\"0 0 0 0.3 0 0\" size=\"0.03\" mass=\"1\"/></body></worldbody><actuator><muscle joint=\"h\"/></actuator></mujoco>\n",
         Expect::Refused("expected exactly 1 values, found 2 in attribute 'accel' on <lengthrange>"),
+    ),
+    // a motor, then a muscle on an unlimited hinge: the muscle, actuator 1, named
+    (
+        "u11_second_actuator_refused",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody><actuator><motor joint="h"/><muscle joint="h"/></actuator></mujoco>"#,
+        Expect::Refused(
+            "Lengthrange computation did not converge in actuator 1:\n  eval (-181.003, -140.808)\n  range (-181.003, 181.003)",
+        ),
+    ),
+    // a muscle on a hinge limited far past one side: side 1 does not converge, its range line one space in
+    (
+        "u12_side1_not_converged",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0" limited="true" range="-30 100000"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>"#,
+        Expect::Refused(
+            "Lengthrange computation did not converge in actuator 0:\n  eval (140.808, 181.003)\n range (-0.524169, 181.003)",
+        ),
     ),
     // a force cap so small the arm creeps and the run does not converge
     (
