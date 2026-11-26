@@ -45,8 +45,8 @@ use sim_core::{
     DISABLE_REFSAFE, DISABLE_SENSOR, DISABLE_SPRING, DISABLE_WARMSTART, ENABLE_ENERGY,
     ENABLE_FWDINV, ENABLE_INVDISCRETE, ENABLE_MULTICCD, ENABLE_OVERRIDE, ENABLE_SLEEP,
     EqualityType, FlexBendingType, FlexSelfCollide, GainType, GeomType, Integrator,
-    InterpolationType, JacobianType, Keyframe, MjJointType, MjObjectType, MjSensorDataType,
-    MjSensorType, Model, SleepPolicy, SolverType, TendonType, WrapType,
+    InterpolationType, JacobianType, Keyframe, LengthRangeOpt, MjJointType, MjObjectType,
+    MjSensorDataType, MjSensorType, Model, SleepPolicy, SolverType, TendonType, WrapType,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -505,6 +505,18 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     flex::check_flex_condims(&mjcf.flex)?;
     flex::check_flex_elasticity(&mjcf.flex)?;
     contact::check_pair_geom_names(&mjcf.contact)?;
+
+    // Each actuator's length range, as MuJoCo's compiler computes it after
+    // `mj_setConst` (`user_model.cc:5132`), with every tendon's length at
+    // `qpos0` made: on a model this crate takes, so where a document also
+    // holds one of the refusals above this crate names that one (ledger
+    // L353). The run steps the model, so a joint layout or a range
+    // `try_make_data` refuses skips it, as the derivations in `build` do.
+    if model.check_joint_layout().is_ok() && model.check_ranges().is_ok() {
+        model
+            .set_length_range(&LengthRangeOpt::default())
+            .map_err(MjcfError::length_range)?;
+    }
 
     Ok(model)
 }

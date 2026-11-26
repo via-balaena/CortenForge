@@ -243,8 +243,8 @@ number is accounted for.
 | DT-56 | `dampratio` for position actuators (requires `acc0`) | Phase 5 Spec A |
 | DT-57 | `acc0` computation for non-muscle actuators | Phase 5 Spec A |
 | DT-58 | Hill-type muscle model as `ActuatorDynamics::HillMuscle` variant | Phase 5 Spec C |
-| DT-59 | Bisection-based `lengthrange` for unlimited slide joints | Phase 5 Spec A |
-| DT-106 | Gear-scaling in `uselimit` lengthrange (intentional MuJoCo deviation) | Phase 5 Spec A |
+| DT-59 | Bisection-based `lengthrange` for unlimited slide joints | Phase 5 Spec A; since Rigid-loading PR RL-11a refused, as MuJoCo's run does not converge |
+| DT-106 | Gear-scaling in `uselimit` lengthrange (intentional MuJoCo deviation) | Phase 5 Spec A; retired by Rigid-loading PR RL-11a: the range copied as written, as MuJoCo's |
 
 ### Sensor Completeness (Phase 6)
 
@@ -265,7 +265,7 @@ number is accounted for.
 | DT-35 | Tendon spring/damper forces in implicit mode (non-diagonal K/D coupling) | Phase 8 |
 | DT-74 | Canonical `mj_jac` -- full body Jacobian API | Phase 4 |
 | DT-75 | `add_body_jacobian` free joint bug (world-frame vs body-frame) | Phase 4 |
-| DT-78 | `actuator_lengthrange` for unlimited spatial tendons | Phase 1 |
+| DT-78 | `actuator_lengthrange` for unlimited spatial tendons | Phase 1; (0, 0) until Rigid-loading PR RL-11a, which computes it as MuJoCo's run |
 | DT-79 | User callbacks `mjcb_*` Rust equivalents | Phase 4 |
 
 ### Tendon (Phase 8)
@@ -323,7 +323,7 @@ number is accounted for.
 
 | DT | Description | Resolved In |
 |----|-------------|-------------|
-| DT-77 | Length-range auto-estimation for site-transmission actuators | Phase 5 Spec A |
+| DT-77 | Length-range auto-estimation for site-transmission actuators | Phase 5 Spec A; (0, 0) until Rigid-loading PR RL-11a, which computes it as MuJoCo's run |
 | DT-97 | Golden file generation for per-flag trajectory conformance | Phase 12 |
 
 ### Retired

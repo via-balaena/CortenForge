@@ -240,6 +240,10 @@ pub use types::{
     JointLayoutError,
     // Keyframe (extracted to types/keyframe.rs)
     Keyframe,
+    // An actuator's length range (types/length_range.rs)
+    LengthRangeError,
+    LengthRangeMode,
+    LengthRangeOpt,
     // Numeric validation (§41 S8a)
     MAX_VAL,
     MIN_AWAKE,

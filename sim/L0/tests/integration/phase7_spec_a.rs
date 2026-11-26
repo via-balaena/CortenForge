@@ -275,7 +275,7 @@ fn t9_muscle_range_defaults_cascade() {
             </default>
             <worldbody>
                 <body name="b1" pos="0 0 1">
-                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <joint name="j1" type="hinge" axis="0 1 0" limited="true" range="-60 60"/>
                     <geom type="sphere" size="0.1" mass="1.0"/>
                 </body>
             </worldbody>

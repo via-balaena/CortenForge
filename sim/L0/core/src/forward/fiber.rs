@@ -9,21 +9,22 @@ use crate::dynamics::crba::mj_crba;
 use crate::dynamics::factor::mj_solve_m;
 use crate::forward::position::mj_fwd_position;
 use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
-use crate::types::{ActuatorTransmission, LengthRangeOpt, Model, TendonType};
+use crate::types::{ActuatorTransmission, Model};
 use nalgebra::{DVector, Vector3};
 
 impl Model {
-    /// Compute actuator parameters: lengthrange, acc0 and dampratio.
+    /// Compute actuator parameters: acc0 and dampratio.
     ///
     /// For each actuator:
-    ///   1. Computes `actuator_lengthrange` from tendon/joint limits (gear-scaled).
-    ///   2. Runs a forward pass at `qpos0` to get M, then computes
+    ///   1. Runs a forward pass at `qpos0` to get M, then computes
     ///      `acc0 = ||M^{-1} * moment||` for **every** actuator (not just muscles).
-    ///   3. Converts positive `biasprm[2]` (dampratio) to negative damping for
+    ///   2. Converts positive `biasprm[2]` (dampratio) to negative damping for
     ///      position-like actuators using reflected inertia.
     ///
     /// A muscle's negative force stays in the model, as MuJoCo's does:
-    /// [`muscle_f0`](crate::forward::muscle_f0) resolves it at each call.
+    /// [`muscle_f0`](crate::forward::muscle_f0) resolves it at each call. The
+    /// length range is [`Self::set_length_range`]'s, which MuJoCo's compiler
+    /// runs after `mj_setConst`.
     ///
     /// Must be called after `compute_ancestors()` and `compute_implicit_params()`,
     /// and after all tendon/actuator fields are populated.
@@ -32,108 +33,7 @@ impl Model {
             return;
         }
 
-        // --- Phase 1: Compute actuator_lengthrange from limits ---
-        // This applies to all actuator types (not just muscles). MuJoCo's
-        // `mj_setLengthRange` skips an actuator its mode filter excludes, a
-        // non-muscle by default, before it copies a limit
-        // (`engine_setconst.c:1157-1172`): this copy is ledger L37's.
-        for i in 0..self.nu {
-            let gear = self.actuator_gear[i][0];
-
-            // ── Intentional MuJoCo deviation (DT-106) ──────────────────────
-            // MuJoCo's `mj_setLengthRange` uselimit path copies raw `jnt_range`
-            // directly to `actuator_lengthrange` WITHOUT gear scaling. But its
-            // simulation-based path measures `actuator_length` at joint extremes,
-            // and `actuator_length = gear * qpos`, so that path DOES produce
-            // gear-scaled range. For gear != 1, these two MuJoCo paths disagree.
-            //
-            // We gear-scale in both paths. This is dimensionally correct:
-            //   actuator_length   = gear * qpos
-            //   actuator_lengthrange = gear * jnt_range
-            // Both live in actuator-length units, which is required for muscle
-            // normalization: `norm_len = prm[0] + (actuator_length - lr[0]) / L0`
-            // where L0 = lr[1] - lr[0]. If lr were in joint-space but
-            // actuator_length in actuator-space, the division would be
-            // dimensionally wrong for gear != 1.
-            //
-            // Verified empirically with MuJoCo 3.5.0 — see verify_spec_a.py.
-            // ─────────────────────────────────────────────────────────────────
-            // actuator_length = gear * transmission_length,
-            // so lengthrange = gear * transmission_lengthrange.
-            // If gear < 0, min/max swap.
-            let scale_range = |lo: f64, hi: f64| -> (f64, f64) {
-                let a = gear * lo;
-                let b = gear * hi;
-                (a.min(b), a.max(b))
-            };
-
-            match self.actuator_trntype[i] {
-                ActuatorTransmission::Tendon => {
-                    let tid = self.actuator_trnid[i][0];
-                    if tid < self.ntendon {
-                        if self.tendon_limited[tid] {
-                            let (lo, hi) = self.tendon_range[tid];
-                            self.actuator_lengthrange[i] = scale_range(lo, hi);
-                        } else {
-                            // For unlimited spatial tendons, wrap-array DOF lookup is
-                            // semantically wrong (wrap_objid holds site/geom IDs, not
-                            // DOFs). Skip estimation and leave lengthrange = (0, 0).
-                            if self.tendon_type[tid] == TendonType::Spatial {
-                                log::warn!(
-                                    "Unlimited spatial tendon {tid}: cannot \
-                                     estimate actuator_lengthrange from joint ranges. \
-                                     Specify explicit lengthrange in MJCF for muscle \
-                                     actuators."
-                                );
-                                continue;
-                            }
-                            // For unlimited fixed tendons: estimate from joint ranges.
-                            // Fixed tendon length = Σ coef_i * q_i, so extremes come
-                            // from each limited joint at its range limit (sign-aware);
-                            // an unlimited joint's range bounds nothing, and an MJCF
-                            // one keeps it as written (or 0 0), as MuJoCo stores it,
-                            // so it adds nothing.
-                            let adr = self.tendon_adr[tid];
-                            let num = self.tendon_num[tid];
-                            let (mut lmin, mut lmax) = (0.0, 0.0);
-                            for w in adr..(adr + num) {
-                                let dof = self.wrap_objid[w];
-                                let coef = self.wrap_prm[w];
-                                if let Some(jid) = (0..self.njnt)
-                                    .find(|&j| self.jnt_dof_adr[j] == dof)
-                                    .filter(|&j| self.jnt_limited[j])
-                                {
-                                    let (qlo, qhi) = self.jnt_range[jid];
-                                    if coef >= 0.0 {
-                                        lmin += coef * qlo;
-                                        lmax += coef * qhi;
-                                    } else {
-                                        lmin += coef * qhi;
-                                        lmax += coef * qlo;
-                                    }
-                                }
-                            }
-                            self.actuator_lengthrange[i] = scale_range(lmin, lmax);
-                        }
-                    }
-                }
-                ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
-                    let jid = self.actuator_trnid[i][0];
-                    if jid < self.njnt && self.jnt_limited[jid] {
-                        let (lo, hi) = self.jnt_range[jid];
-                        self.actuator_lengthrange[i] = scale_range(lo, hi);
-                    }
-                }
-                ActuatorTransmission::Site
-                | ActuatorTransmission::Body
-                | ActuatorTransmission::SliderCrank => {
-                    // Site/SliderCrank: configuration-dependent (full FK required).
-                    // Body: no length concept. All: no-op, leave at (0, 0).
-                }
-            }
-        }
-
-        // --- Phase 2: Forward pass at qpos0 for acc0 (ALL actuators) ---
+        // --- Phase 1: Forward pass at qpos0 for acc0 (ALL actuators) ---
         // FK populates cinert (body spatial inertias) and tendon Jacobians (ten_J).
         // CRBA builds M and factors it (L^T D L). A tendon's J, fixed or spatial,
         // is read from data.ten_J[tid] (made by mj_fwd_tendon during FK).
@@ -161,7 +61,7 @@ impl Model {
             moment_vecs.push(j_vec);
         }
 
-        // --- Phase 3: dampratio → damping for position-like actuators ---
+        // --- Phase 2: dampratio → damping for position-like actuators ---
         // MuJoCo's set0() in engine_setconst.c converts positive biasprm[2]
         // (interpreted as dampratio) to negative damping using reflected inertia.
 
@@ -202,22 +102,6 @@ impl Model {
             // Store as negative (bias convention: b2 * velocity opposes motion)
             self.actuator_biasprm[i][2] = -damping;
         }
-
-        // --- Phase 3b: Simulation-based lengthrange for actuators that need it ---
-        // Must run AFTER Phase 2 (acc0) because the muscle force model in
-        // mj_fwd_actuation resolves F0 = scale / acc0 during the simulation.
-        // With acc0 = 0, F0 would be ~2e17, causing massive passive muscle
-        // forces and numerical instability.
-        //
-        // This matches MuJoCo's execution order: mj_setConst() → set0() computes
-        // acc0 first, then the compiler calls mj_setLengthRange() separately.
-        //
-        // The `useexisting: true` default causes the LR simulation to skip any
-        // actuator whose lengthrange was already set (lo < hi) by Phase 1.
-        let lr_opt = LengthRangeOpt::default();
-        // mj_set_length_range never fails — individual actuator convergence
-        // failures are silently skipped (matching MuJoCo's behavior).
-        super::muscle::mj_set_length_range(self, &lr_opt);
     }
 }
 
@@ -227,7 +111,7 @@ impl Model {
 /// a unit actuator force to generalized forces: `qfrc = moment * force`.
 ///
 /// Shared between `compute_actuator_params` (acc0, dampratio) and
-/// `mj_set_length_range` (simulation-based estimation).
+/// `Model::set_length_range` (the length-range runs).
 pub fn build_actuator_moment(
     model: &Model,
     data: &crate::types::Data,
@@ -389,12 +273,11 @@ pub fn build_actuator_moment(
     clippy::while_float
 )]
 mod tests {
-    use super::*;
     use crate::forward::actuation::mj_fwd_actuation;
     use crate::forward::hill::{muscle_activation_dynamics, muscle_f0};
     use crate::types::{
-        ActuatorDynamics, ActuatorTransmission, BiasType, GainType, Integrator, LengthRangeMode,
-        MjJointType, Model,
+        ActuatorDynamics, ActuatorTransmission, BiasType, GainType, Integrator, LengthRangeError,
+        LengthRangeMode, LengthRangeOpt, MjJointType, Model,
     };
     use nalgebra::{DVector, UnitQuaternion, Vector3};
 
@@ -468,7 +351,9 @@ mod tests {
         model.actuator_dynprm = vec![[0.01, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]; // default tau_act, tau_deact
         model.actuator_gainprm = vec![[0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2]];
         model.actuator_biasprm = vec![[0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2]];
-        model.actuator_lengthrange = vec![(0.0, 0.0)]; // will be computed
+        // The joint's range in actuator length, as a written `lengthrange`
+        // would give it (the loader computes a muscle's by a run).
+        model.actuator_lengthrange = vec![(-gear.abs(), gear.abs())];
         model.actuator_acc0 = vec![0.0]; // will be computed
         // An activation limited to [0, 1].
         model.actuator_actlimited = vec![true];
@@ -547,7 +432,7 @@ mod tests {
         data.ctrl[0] = 1.0;
 
         // Set qpos so that actuator_length maps to normalized L=1.0
-        // lengthrange = gear * jnt_range = 1.0 * (-1.0, 1.0)
+        // lengthrange = (-1.0, 1.0), the helper's
         // L0 = (1 - (-1)) / (1.05 - 0.75) = 2/0.3 = 6.667
         // norm_len = 0.75 + (len - (-1)) / L0
         // For norm_len = 1.0: len = (-1) + (1.0 - 0.75) * L0 = -1 + 0.25*6.667 = 0.667
@@ -1460,21 +1345,15 @@ mod tests {
         model.compute_implicit_params();
         model.compute_dof_patterns();
 
-        // Run Phase 2 manually to get acc0 (needed by simulation)
         model.compute_actuator_params();
 
-        // Phase 1 already set lengthrange from limits: (-1, 1)
-        // Clear it to force the simulation path
-        model.actuator_lengthrange[0] = (0.0, 0.0);
-
-        // Call mj_set_length_range with mode=All, useexisting=false
+        // A motor's range is computed under mode=All only.
         let opt = LengthRangeOpt {
             mode: LengthRangeMode::All,
             useexisting: false,
-            uselimit: false, // skip limit copy — force simulation
             ..LengthRangeOpt::default()
         };
-        super::super::muscle::mj_set_length_range(&mut model, &opt);
+        model.set_length_range(&opt).expect("the run converges");
 
         let (lo, hi) = model.actuator_lengthrange[0];
 
@@ -1829,57 +1708,88 @@ mod tests {
     // ---- T12: Length-range mode filtering (AC14) ----
     #[test]
     fn test_hill_lengthrange_mode_filter() {
-        // Verify that HillMuscle actuators pass the is_muscle filter in
-        // mj_set_length_range() when mode = LengthRangeMode::Muscle.
-        //
-        // Build a model with a HillMuscle actuator on a limited hinge joint.
-        // Phase 1 of compute_actuator_params() copies joint limits to
-        // lengthrange unconditionally. Phase 3b (mj_set_length_range) with
-        // mode=Muscle, useexisting=true will skip it because Phase 1 already
-        // set lr. To test the filter, we call mj_set_length_range directly
-        // with useexisting=false, forcing re-estimation. The key assertion:
-        // after re-estimation, lengthrange must still be nonzero (the filter
-        // included HillMuscle, so estimation ran and produced a valid range).
+        // MuJoCo's filter takes a gain or bias type of `Muscle` as a muscle
+        // (`engine_setconst.c:1152-1162`): a HillMuscle on a limited hinge is
+        // left out under mode=Muscle and computed under mode=All.
         let mut model = build_hill_model(1000.0, 0.10, 0.20, 10.0, 0.0, 35.0, 1.0);
+        assert_eq!(model.actuator_lengthrange[0], (0.0, 0.0));
 
-        // Phase 1 already set lengthrange from joint limits. Verify.
-        assert!(
-            model.actuator_lengthrange[0].0 < model.actuator_lengthrange[0].1,
-            "Phase 1 should have set lengthrange from joint limits"
-        );
-
-        // Clear lengthrange to force re-estimation via simulation.
-        model.actuator_lengthrange[0] = (0.0, 0.0);
-
-        // Call mj_set_length_range with mode=Muscle, useexisting=false.
-        let opt = LengthRangeOpt {
+        let muscle = LengthRangeOpt {
             mode: LengthRangeMode::Muscle,
             useexisting: false,
             ..LengthRangeOpt::default()
         };
-        super::super::muscle::mj_set_length_range(&mut model, &opt);
+        model.set_length_range(&muscle).expect("nothing to compute");
+        assert_eq!(model.actuator_lengthrange[0], (0.0, 0.0));
 
-        // If HillMuscle was excluded by the filter, lengthrange would remain (0, 0).
+        let all = LengthRangeOpt {
+            mode: LengthRangeMode::All,
+            ..muscle.clone()
+        };
+        model.set_length_range(&all).expect("the run converges");
         let (lo, hi) = model.actuator_lengthrange[0];
         assert!(
             lo < hi,
-            "HillMuscle should pass is_muscle filter in mode=Muscle, \
-             but lengthrange is ({lo}, {hi}) — was the actuator skipped?"
+            "mode=All computes the HillMuscle's range: ({lo}, {hi})"
         );
 
-        // Contrast: mode=None should skip all actuators.
         model.actuator_lengthrange[0] = (0.0, 0.0);
-        let opt_none = LengthRangeOpt {
+        let none = LengthRangeOpt {
             mode: LengthRangeMode::None,
+            ..muscle
+        };
+        model.set_length_range(&none).expect("nothing to compute");
+        assert_eq!(model.actuator_lengthrange[0], (0.0, 0.0));
+    }
+
+    /// A step of the run that resets the state (an acceleration past
+    /// `MAX_VAL`, `mj_check_acc`'s reset) refuses the run as unstable, where
+    /// MuJoCo restarts the side from `qpos0` and, each step resetting, never
+    /// returns (registry `D-LENGTHRANGE-RESET`; measured on MuJoCo 3.5.0 with a
+    /// muscle on a limited hinge under `<lengthrange accel="1e12"/>`, killed
+    /// at 120 s).
+    #[test]
+    fn a_step_of_the_run_that_resets_is_unstable() {
+        let mut model = build_muscle_model_joint(1.0);
+        let opt = LengthRangeOpt {
             useexisting: false,
+            accel: 1e12,
             ..LengthRangeOpt::default()
         };
-        super::super::muscle::mj_set_length_range(&mut model, &opt_none);
-        let (lo2, hi2) = model.actuator_lengthrange[0];
         assert_eq!(
-            (lo2, hi2),
-            (0.0, 0.0),
-            "mode=None should skip all actuators, but lengthrange was set"
+            model.set_length_range(&opt),
+            Err(LengthRangeError::Unstable { actuator: 0 })
+        );
+    }
+
+    /// Under `uselimit` a limited joint's range is copied as written, not
+    /// scaled by the gear, as MuJoCo's `mj_setLengthRange` copies it.
+    #[test]
+    fn uselimit_copies_the_joint_range_as_written() {
+        let mut model = build_muscle_model_joint(2.0);
+        let opt = LengthRangeOpt {
+            useexisting: false,
+            uselimit: true,
+            ..LengthRangeOpt::default()
+        };
+        model.set_length_range(&opt).expect("copied");
+        assert_eq!(model.actuator_lengthrange[0], (-1.0, 1.0));
+    }
+
+    /// A zero timestep, the model's where the run's is not positive, leaves
+    /// the time at 0: MuJoCo's "Unstable".
+    #[test]
+    fn a_zero_timestep_is_unstable() {
+        let mut model = build_muscle_model_joint(1.0);
+        model.timestep = 0.0;
+        let opt = LengthRangeOpt {
+            useexisting: false,
+            timestep: 0.0,
+            ..LengthRangeOpt::default()
+        };
+        assert_eq!(
+            model.set_length_range(&opt),
+            Err(LengthRangeError::Unstable { actuator: 0 })
         );
     }
 

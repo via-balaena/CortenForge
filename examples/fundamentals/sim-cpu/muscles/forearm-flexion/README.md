@@ -32,7 +32,8 @@ Where:
 - **FV** = force-velocity curve (reduces force during shortening)
 - **FP** = passive force (resists over-stretch beyond optimal length)
 
-Length normalization uses `lengthrange` (computed from joint limits) so the
+Length normalization uses `lengthrange` (computed as MuJoCo's compiler does:
+a run pushing the joint to each limit) so the
 curves work correctly across the full joint range. F0 is auto-computed from
 `scale / acc0`.
 

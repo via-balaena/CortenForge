@@ -1,9 +1,9 @@
 //! Muscle force-length-velocity curves and parameter precomputation — entry point.
 //!
 //! This module re-exports from siblings [`hill`](super::hill) and
-//! [`fiber`](super::fiber), and houses the simulation-based length-range
-//! estimation (`mj_set_length_range`, `eval_length_range`). Corresponds to
-//! `engine_setconst.c` (`mj_setLengthRange`).
+//! [`fiber`](super::fiber), and houses an actuator's length range as MuJoCo
+//! 3.5.0's compiler computes it ([`Model::set_length_range`]: its
+//! `mjCModel::LengthRange` and `mj_setLengthRange`).
 
 // Re-export hill.rs — muscle curves and activation dynamics.
 pub use super::hill::{
@@ -13,237 +13,199 @@ pub use super::hill::{
 
 use super::fiber::build_actuator_moment;
 use crate::dynamics::factor::mj_solve_m;
+use crate::linalg::mju_norm;
 use crate::types::{
-    ActuatorTransmission, BiasType, ENABLE_SLEEP, GainType, LengthRangeError, LengthRangeMode,
-    LengthRangeOpt, Model,
+    ActuatorTransmission, BiasType, DISABLE_ACTUATION, DISABLE_CONTACT, DISABLE_DAMPER,
+    DISABLE_FRICTIONLOSS, DISABLE_GRAVITY, DISABLE_SPRING, Data, ENABLE_SLEEP, GainType,
+    LengthRangeError, LengthRangeMode, LengthRangeOpt, MIN_VAL, Model, StepError,
 };
 
-// ============================================================================
-// Simulation-based length-range estimation (DT-59, DT-77)
-// ============================================================================
+/// The forces MuJoCo's compiler turns off while it computes the length
+/// ranges, replacing the model's disable flags (`user_model.cc:2411-2412`):
+/// every other force and constraint the model disables is on for the run.
+const LENGTH_RANGE_DISABLE: u32 = DISABLE_FRICTIONLOSS
+    | DISABLE_CONTACT
+    | DISABLE_SPRING
+    | DISABLE_DAMPER
+    | DISABLE_GRAVITY
+    | DISABLE_ACTUATION;
 
-/// Estimate actuator length ranges via simulation.
-///
-/// For each actuator that passes mode filtering:
-/// 1. If `useexisting` and range already set, skip.
-/// 2. If `uselimit` and joint/tendon is limited, copy limits (already handled
-///    by Phase 1 of `compute_actuator_params`; skipped here via `useexisting`).
-/// 3. Otherwise, run two-sided simulation to find min/max length.
-///
-/// Matches MuJoCo's `mj_setLengthRange()` in `engine_setconst.c`.
-pub fn mj_set_length_range(model: &mut Model, opt: &LengthRangeOpt) {
-    for i in 0..model.nu {
-        // Step 1: Mode filtering
-        let is_muscle = matches!(
-            model.actuator_gaintype[i],
-            GainType::Muscle | GainType::HillMuscle
-        ) || matches!(
-            model.actuator_biastype[i],
-            BiasType::Muscle | BiasType::HillMuscle
-        );
-        let is_user = model.actuator_gaintype[i] == GainType::User
-            || model.actuator_biastype[i] == BiasType::User;
+/// C's `mjMAX(a, b)`, `a > b ? a : b`: `b` where either is NaN.
+fn mj_max(a: f64, b: f64) -> f64 {
+    if a > b { a } else { b }
+}
 
+impl Model {
+    /// Each actuator's length range, as MuJoCo 3.5.0's compiler computes it
+    /// after `mj_setConst` (`mjCModel::LengthRange`, `user_model.cc:2408-2507`,
+    /// and `mj_setLengthRange`, `engine_setconst.c:1145-1272`), actuator by
+    /// actuator, stopping at the first that fails.
+    ///
+    /// An actuator `opt.mode` leaves out keeps its range, as does one whose
+    /// range increases under `opt.useexisting`. Under `opt.uselimit` a joint
+    /// or tendon transmission whose joint or tendon is limited takes its range
+    /// as written. Otherwise two runs from `qpos0`, one pushing the length
+    /// down and one up, each with the force that gives an acceleration of
+    /// `opt.accel`, find the range: the least length of the first run's last
+    /// `opt.interval` and the greatest of the second's. Each run steps a copy
+    /// of the model whose disable flags are friction loss, contacts, springs,
+    /// dampers, gravity and actuation (in place of the model's), with sleep
+    /// off and the timestep `opt.timestep` where it is positive.
+    ///
+    /// Not part of [`Self::compute_actuator_params`] nor
+    /// [`Self::recompute_derived`], as MuJoCo's `mj_setConst` leaves the
+    /// length range out (`engine_setconst.c:1088`).
+    ///
+    /// # Errors
+    ///
+    /// The first actuator's [`LengthRangeError`]; that actuator's range is
+    /// then the range its runs found, as MuJoCo's model holds it, and the
+    /// actuators after it keep theirs.
+    pub fn set_length_range(&mut self, opt: &LengthRangeOpt) -> Result<(), LengthRangeError> {
+        let mut run = self.clone();
+        run.disableflags = LENGTH_RANGE_DISABLE;
+        // The compiler's `mjData` is made with sleep off (`user_model.cc:5111-5112`).
+        run.enableflags &= !ENABLE_SLEEP;
+        if opt.timestep > 0.0 {
+            run.timestep = opt.timestep;
+        }
+        for i in 0..self.nu {
+            self.set_actuator_length_range(&run, i, opt)?;
+        }
+        Ok(())
+    }
+
+    /// One actuator's [`Self::set_length_range`], its runs stepping `run`.
+    fn set_actuator_length_range(
+        &mut self,
+        run: &Self,
+        i: usize,
+        opt: &LengthRangeOpt,
+    ) -> Result<(), LengthRangeError> {
+        let is_muscle = self.actuator_gaintype[i] == GainType::Muscle
+            || self.actuator_biastype[i] == BiasType::Muscle;
+        let is_user = self.actuator_gaintype[i] == GainType::User
+            || self.actuator_biastype[i] == BiasType::User;
         let skip = match opt.mode {
             LengthRangeMode::None => true,
             LengthRangeMode::Muscle => !is_muscle,
             LengthRangeMode::MuscleUser => !is_muscle && !is_user,
             LengthRangeMode::All => false,
         };
-        if skip {
-            continue;
+        let (lo, hi) = self.actuator_lengthrange[i];
+        if skip || (opt.useexisting && lo < hi) {
+            return Ok(());
         }
-
-        // Step 2: Use existing range (already set by Phase 1 limit copy)
-        let (lo, hi) = model.actuator_lengthrange[i];
-        if opt.useexisting && lo < hi {
-            continue;
-        }
-
-        // Step 3: Copy from limits (with uselimit)
-        // This is largely redundant with Phase 1 but matches MuJoCo's structure.
-        // NOTE (DT-106): gear scaling here is an intentional deviation from
-        // MuJoCo's uselimit path — see Phase 1 comment block for full rationale.
         if opt.uselimit {
-            let gear = model.actuator_gear[i][0];
-            let scale = |a: f64, b: f64| -> (f64, f64) {
-                let x = gear * a;
-                let y = gear * b;
-                (x.min(y), x.max(y))
-            };
-
-            match model.actuator_trntype[i] {
-                ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
-                    let jid = model.actuator_trnid[i][0];
-                    if jid < model.njnt && model.jnt_limited[jid] {
-                        let (jlo, jhi) = model.jnt_range[jid];
-                        model.actuator_lengthrange[i] = scale(jlo, jhi);
-                        continue;
-                    }
+            let id = self.actuator_trnid[i][0];
+            match self.actuator_trntype[i] {
+                ActuatorTransmission::Joint | ActuatorTransmission::JointInParent
+                    if self.jnt_limited[id] =>
+                {
+                    self.actuator_lengthrange[i] = self.jnt_range[id];
+                    return Ok(());
                 }
-                ActuatorTransmission::Tendon => {
-                    let tid = model.actuator_trnid[i][0];
-                    if tid < model.ntendon && model.tendon_limited[tid] {
-                        let (tlo, thi) = model.tendon_range[tid];
-                        model.actuator_lengthrange[i] = scale(tlo, thi);
-                        continue;
-                    }
+                ActuatorTransmission::Tendon if self.tendon_limited[id] => {
+                    self.actuator_lengthrange[i] = self.tendon_range[id];
+                    return Ok(());
                 }
-                ActuatorTransmission::Site
-                | ActuatorTransmission::Body
-                | ActuatorTransmission::SliderCrank => {
-                    // Site/SliderCrank: configuration-dependent, no static limits to copy.
-                    // Body: no length concept. Skip.
-                }
+                _ => {}
             }
         }
 
-        // Step 4: Simulation-based estimation. A run that does not converge
-        // leaves the range at (0, 0); MuJoCo refuses the model there ("did
-        // not converge", A11 §1), which Rigid-loading L44 ports.
-        if let Ok(range) = eval_length_range(model, i, opt) {
-            model.actuator_lengthrange[i] = range;
+        let (mut lmin, mut lmax) = ([0.0_f64; 2], [0.0_f64; 2]);
+        for side in 0..2 {
+            let mut data = run.make_data_for_derivation();
+            let mut updated = false;
+            // MuJoCo's loop, on the time each step advances.
+            #[allow(clippy::while_float)]
+            while data.time < opt.inttotal {
+                let len = eval_act(run, &mut data, i, side, opt)?;
+                // A step that reset the state (registry `D-LENGTHRANGE-RESET`).
+                // MuJoCo's own "Unstable", a step that leaves the time at 0,
+                // is a zero timestep's, which `eval_act` refuses so.
+                if data.divergence_detected() {
+                    return Err(LengthRangeError::Unstable { actuator: i });
+                }
+                if data.time > opt.inttotal - opt.interval {
+                    if len < lmin[side] || !updated {
+                        lmin[side] = len;
+                    }
+                    if len > lmax[side] || !updated {
+                        lmax[side] = len;
+                    }
+                    updated = true;
+                }
+            }
+            if side == 0 {
+                self.actuator_lengthrange[i].0 = lmin[0];
+            } else {
+                self.actuator_lengthrange[i].1 = lmax[1];
+            }
         }
+
+        let range = self.actuator_lengthrange[i];
+        let dif = range.1 - range.0;
+        if dif <= 0.0 {
+            return Err(LengthRangeError::InvalidRange { actuator: i, range });
+        }
+        for side in 0..2 {
+            if lmax[side] - lmin[side] > opt.tolrange * dif {
+                return Err(LengthRangeError::NotConverged {
+                    actuator: i,
+                    side,
+                    eval: (lmin[side], lmax[side]),
+                    range,
+                });
+            }
+        }
+        Ok(())
     }
 }
 
-/// Run two-sided simulation to estimate actuator length range.
-///
-/// Side 0: apply negative force → find minimum length.
-/// Side 1: apply positive force → find maximum length.
-///
-/// Runs the step1/step2 pipeline on a clone with the length-range timestep and
-/// sleep disabled, as MuJoCo's compiler disables sleep (`user_model.cc:5111-5112`);
-/// the run precedes sim-mjcf's kinematic trees. MuJoCo's `mjCModel::LengthRange`
-/// also replaces the disable flags, turning frictionloss, contacts, springs,
-/// dampers, gravity and actuation off for the run (`user_model.cc:2410-2411`);
-/// this keeps the model's own until Rigid-loading L44 ports that.
-fn eval_length_range(
-    model: &Model,
-    actuator_idx: usize,
+/// One step of a length-range run, MuJoCo's `evalAct`
+/// (`engine_setconst.c:1107-1141`): the velocity damped by
+/// `exp(-h / max(0.01, timeconst))`, the position and velocity stages, the
+/// force along the actuator's moment that gives an acceleration of
+/// `opt.accel` (pushing the length down on side 0, up on side 1) capped at
+/// `opt.maxforce`, then the acceleration stage and the advance. Returns the
+/// actuator's length at the position stage, before the advance.
+fn eval_act(
+    run: &Model,
+    data: &mut Data,
+    i: usize,
+    side: usize,
     opt: &LengthRangeOpt,
-) -> Result<(f64, f64), LengthRangeError> {
-    let nv = model.nv;
-    if nv == 0 {
-        return Err(LengthRangeError::InvalidRange {
-            actuator: actuator_idx,
-        });
-    }
-
-    let mut lr_model = model.clone();
-    lr_model.timestep = opt.timestep;
-    lr_model.enableflags &= !ENABLE_SLEEP;
-
-    let mut lengthrange = [0.0f64; 2];
-    let mut lmin_sides = [f64::MAX; 2];
-    let mut lmax_sides = [f64::MIN; 2];
-
-    for side in 0..2usize {
-        let mut data = lr_model.make_data_for_derivation(); // init at qpos0
-        let sign: f64 = if side == 0 { -1.0 } else { 1.0 };
-
-        let mut updated = false;
-        // Muscle activation samples are clamped to a finite LUT range upstream; the f64 → usize cast sits behind the bounds check.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let total_steps = (opt.inttotal / opt.timestep).ceil() as usize;
-        let measure_start = opt.inttotal - opt.interval;
-
-        for step_idx in 0..total_steps {
-            // LUT length is a small compile-time constant; usize → f64 is exact.
-            #[allow(clippy::cast_precision_loss)]
-            let time = step_idx as f64 * opt.timestep;
-
-            // 1. Velocity damping: qvel *= exp(-dt / max(0.01, timeconst))
-            let decay = (-opt.timestep / opt.timeconst.max(0.01)).exp();
-            for dof in 0..nv {
-                data.qvel[dof] *= decay;
-            }
-
-            // 2. Full forward pass (FK, collision, CRBA, gravity, passive, actuation)
-            if data.step1(&lr_model).is_err() {
-                return Err(LengthRangeError::ConvergenceFailed {
-                    actuator: actuator_idx,
-                });
-            }
-
-            // 3. Build actuator moment vector (transmission Jacobian).
-            // build_actuator_moment uses current data state (site_xmat, ten_J)
-            // so it reflects the current configuration after step1.
-            let j_vec = build_actuator_moment(&lr_model, &data, actuator_idx);
-
-            let mut x = j_vec.clone();
-            mj_solve_m(&lr_model, &data, x.as_mut_slice());
-            let nrm = x.norm().max(1e-15);
-
-            // qfrc_applied = sign * accel * moment / ||M^{-1} moment||
-            for dof in 0..nv {
-                data.qfrc_applied[dof] = sign * opt.accel * j_vec[dof] / nrm;
-            }
-
-            // 4. Force capping
-            if opt.maxforce > 0.0 {
-                let fnrm = data.qfrc_applied.norm();
-                if fnrm > opt.maxforce {
-                    let scale = opt.maxforce / fnrm;
-                    for dof in 0..nv {
-                        data.qfrc_applied[dof] *= scale;
-                    }
-                }
-            }
-
-            // 5. Acceleration + integration (step2)
-            if data.step2(&lr_model).is_err() {
-                return Err(LengthRangeError::ConvergenceFailed {
-                    actuator: actuator_idx,
-                });
-            }
-
-            // 5b. Instability detection (matching MuJoCo's `if (d->time == 0) return 0`).
-            // If the step caused NaN/Inf, mj_check_pos auto-resets data (including time=0).
-            // Detect this by checking if divergence occurred.
-            if data.divergence_detected() {
-                return Err(LengthRangeError::ConvergenceFailed {
-                    actuator: actuator_idx,
-                });
-            }
-
-            // 6. Read actuator length (populated by step1's transmission stage)
-            let len = data.actuator_length[actuator_idx];
-
-            // 7. Track min/max during measurement interval
-            if time >= measure_start {
-                if len < lmin_sides[side] || !updated {
-                    lmin_sides[side] = len;
-                }
-                if len > lmax_sides[side] || !updated {
-                    lmax_sides[side] = len;
-                }
-                updated = true;
-            }
+) -> Result<f64, LengthRangeError> {
+    let refused = |error: StepError| match error {
+        // A zero timestep leaves the time at 0, MuJoCo's "Unstable".
+        StepError::InvalidTimestep if run.timestep == 0.0 => {
+            LengthRangeError::Unstable { actuator: i }
         }
-
-        lengthrange[side] = if side == 0 {
-            lmin_sides[side]
-        } else {
-            lmax_sides[side]
-        };
+        error => LengthRangeError::Step { actuator: i, error },
+    };
+    let decay = (-run.timestep / mj_max(0.01, opt.timeconst)).exp();
+    for v in data.qvel.iter_mut() {
+        *v *= decay;
     }
+    data.step1(run).map_err(refused)?;
 
-    // Step 5: Convergence check
-    let dif = lengthrange[1] - lengthrange[0];
-    if dif <= 0.0 {
-        return Err(LengthRangeError::InvalidRange {
-            actuator: actuator_idx,
-        });
+    let moment = build_actuator_moment(run, data, i);
+    let mut x = moment.clone();
+    mj_solve_m(run, data, x.as_mut_slice());
+    let sign = if side == 0 { -1.0 } else { 1.0 };
+    let scale = sign * opt.accel / mj_max(MIN_VAL, mju_norm(x.as_slice()));
+    for (f, m) in data.qfrc_applied.iter_mut().zip(moment.iter()) {
+        *f = m * scale;
     }
-    for side in 0..2 {
-        let oscillation = lmax_sides[side] - lmin_sides[side];
-        if oscillation > opt.tolrange * dif {
-            return Err(LengthRangeError::ConvergenceFailed {
-                actuator: actuator_idx,
-            });
+    let nrm = mju_norm(data.qfrc_applied.as_slice());
+    if opt.maxforce > 0.0 && nrm > opt.maxforce {
+        let scale = opt.maxforce / mj_max(MIN_VAL, nrm);
+        for f in data.qfrc_applied.iter_mut() {
+            *f *= scale;
         }
     }
 
-    Ok(<(f64, f64)>::from(lengthrange))
+    data.step2_stages(run).map_err(refused)?;
+    Ok(data.actuator_length[i])
 }

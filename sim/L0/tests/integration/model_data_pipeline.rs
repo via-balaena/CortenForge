@@ -793,10 +793,10 @@ fn compute_dof_lengths_sizes_dof_length() {
 }
 
 /// Two hinged links with explicit inertials, a fixed tendon, a spatial tendon,
-/// a muscle and a position actuator with a damping ratio: every derivation but
-/// the muscle's length range has work to do (the build leaves it at (0, 0),
-/// where MuJoCo 3.5.0 computes [0.197, 0.609]; book L44 computes it as MuJoCo),
-/// and each edit below is one `Model` field.
+/// a muscle and a position actuator with a damping ratio: every derivation has
+/// work to do, and each edit below is one `Model` field. The muscle's length
+/// range is the loader's (`Model::set_length_range`), which `recompute_derived`
+/// leaves, as MuJoCo's `mj_setConst` leaves it.
 const DERIVED: &str = r#"<mujoco model="derived">
   <worldbody>
     <body name="a" pos="0 0 1">
@@ -848,10 +848,6 @@ fn derived_fields(m: &sim_core::Model) -> Vec<(&'static str, String)> {
         ("tendon_invweight0", format!("{:?}", m.tendon_invweight0)),
         ("stat_meaninertia", format!("{:?}", m.stat_meaninertia)),
         ("actuator_acc0", format!("{:?}", m.actuator_acc0)),
-        (
-            "actuator_lengthrange",
-            format!("{:?}", m.actuator_lengthrange),
-        ),
         ("tendon_length0", format!("{:?}", m.tendon_length0)),
         ("geom_rbound", format!("{:?}", m.geom_rbound)),
         ("geom_aabb", format!("{:?}", m.geom_aabb)),
@@ -908,7 +904,12 @@ fn recompute_derived_after_an_edit_matches_building_the_edited_model() {
         let mut edited = load_model(DERIVED).unwrap();
         edit(&mut edited);
         edited.recompute_derived().unwrap();
-        let unedited = derived_fields(&load_model(DERIVED).unwrap());
+        let unedited_model = load_model(DERIVED).unwrap();
+        assert_eq!(
+            edited.actuator_lengthrange, unedited_model.actuator_lengthrange,
+            "{what}: recompute_derived keeps the length range"
+        );
+        let unedited = derived_fields(&unedited_model);
         let (want, got) = (derived_fields(&built), derived_fields(&edited));
         assert!(
             want != unedited,

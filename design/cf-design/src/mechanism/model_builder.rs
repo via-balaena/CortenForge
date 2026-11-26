@@ -80,6 +80,9 @@ impl Mechanism {
     ///   for `to_shapes`/`to_mjcf`/`to_stl_kit`, which do not voxelize.)
     /// - [`MechanismError::PartNotReachable`] if a part cannot be placed in
     ///   the kinematic tree because its joints form a cycle.
+    /// - [`MechanismError::LengthRange`] if an actuator's length range refuses
+    ///   the model, as MuJoCo's compiler refuses it: a muscle on an unlimited
+    ///   joint.
     ///
     /// # Panics
     ///
@@ -959,6 +962,13 @@ fn generate(
     discover_kinematic_trees(&mut model);
     sim_core::compute_dof_lengths(&mut model);
 
+    // Each actuator's length range, as MuJoCo's compiler computes it on the
+    // whole model, linkages included (a muscle's; the MJCF this mechanism
+    // writes gets the same from the loader).
+    model
+        .set_length_range(&sim_core::LengthRangeOpt::default())
+        .map_err(MechanismError::LengthRange)?;
+
     Ok(model)
 }
 
@@ -1216,6 +1226,49 @@ mod tests {
             ),
             "expected PartNotReachable for a joint cycle"
         );
+    }
+
+    /// A muscle's length range is the build's, as MuJoCo's compiler computes
+    /// it (`Model::set_length_range`, which the build calls last): a muscle on
+    /// a tendon across a limited knuckle gets a range that increases, where it
+    /// had (0, 0) before the build called it.
+    #[test]
+    fn a_muscle_gets_its_length_range() {
+        let mechanism = Mechanism::builder("muscle")
+            .part(cuboid_part("palm"))
+            .part(cuboid_part("finger"))
+            .joint(
+                JointDef::new(
+                    "knuckle",
+                    "palm",
+                    "finger",
+                    JointKind::Revolute,
+                    Point3::new(5.0, 0.0, 0.0),
+                    Vector3::x(),
+                )
+                .with_range(-0.5, 0.5),
+            )
+            .tendon(TendonDef::new(
+                "flexor",
+                vec![
+                    TendonWaypoint::new("palm", Point3::new(0.0, 0.0, 4.0)),
+                    // Off the palm's point's line through the knuckle: at the
+                    // rest pose a moment arm, where in line the run's force is
+                    // 0 and MuJoCo refuses the empty range.
+                    TendonWaypoint::new("finger", Point3::new(0.0, 2.0, 4.0)),
+                ],
+                1.0,
+            ))
+            .actuator(ActuatorDef::new(
+                "muscle",
+                "flexor",
+                ActuatorKind::Muscle,
+                (0.0, 200.0),
+            ))
+            .build();
+        let model = mechanism.to_model(2.0, 2.0).unwrap();
+        let (lo, hi) = model.actuator_lengthrange[0];
+        assert!(lo < hi, "({lo}, {hi})");
     }
 
     /// The builder derives what `Model::recompute_derived` derives from the

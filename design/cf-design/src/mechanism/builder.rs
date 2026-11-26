@@ -172,6 +172,10 @@ pub enum MechanismError {
         /// The finest this tried before giving up, in mm.
         finest_mm: f64,
     },
+    /// An actuator's length range, as MuJoCo's compiler computes it
+    /// ([`sim_core::Model::set_length_range`]), refuses the model: a muscle on
+    /// an unlimited joint, whose range does not converge, is one.
+    LengthRange(sim_core::LengthRangeError),
 }
 
 impl fmt::Display for MechanismError {
@@ -238,14 +242,15 @@ impl fmt::Display for MechanismError {
                 "part \"{name}\" is not reachable from any root body; \
                  check for a joint cycle"
             ),
+            Self::LengthRange(error) => write!(f, "{error}"),
         }
     }
 }
 
 /// ⛔ Hand-written rather than derived, matching the workspace's other error
 /// types (`sim_core::StepError`, `sim_gpu::GpuError`): `Display` above carries
-/// the message and there is no wrapped cause to surface, so the default
-/// `source()` is correct.
+/// the message, `LengthRange`'s wrapped error's included, so the default
+/// `source()` is kept.
 ///
 /// ★ It exists because a consumer cannot otherwise write `let xml =
 /// mechanism.to_mjcf(20.0)?;` — the `?` needs this to reach `anyhow::Error`

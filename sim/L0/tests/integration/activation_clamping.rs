@@ -60,7 +60,9 @@ fn build_integrator_model(actlimited: bool, actrange: (f64, f64), actearly: bool
     sim_mjcf::load_model(&mjcf).expect("Failed to load integrator model")
 }
 
-/// Build a minimal hinge model with one muscle actuator.
+/// Build a minimal hinge model with one muscle actuator, the hinge limited so
+/// that MuJoCo 3.5.0 loads it (on an unlimited hinge the length range's run
+/// does not converge, and it refuses the model).
 /// If `actrange_override` is Some, sets explicit actlimited + actrange.
 fn build_muscle_model(actrange_override: Option<(f64, f64)>) -> Model {
     let actlimited_attr = match actrange_override {
@@ -72,7 +74,7 @@ fn build_muscle_model(actrange_override: Option<(f64, f64)>) -> Model {
   <option timestep="0.001"/>
   <worldbody>
     <body>
-      <joint name="hinge" type="hinge"/>
+      <joint name="hinge" type="hinge" limited="true" range="-60 60"/>
       <geom size="0.1"/>
     </body>
   </worldbody>
@@ -211,8 +213,7 @@ fn test_integrator_unbounded_without_actlimited() {
 
 /// A `<muscle>` with no activation limit written has none, as MuJoCo 3.5.0
 /// builds one (`actuator_actlimited` 0, measured on a muscle on a limited
-/// hinge, `tests/limits.rs`; A5-Q6). This fixture's hinge is not limited, so
-/// MuJoCo refuses it for its length range (book L44).
+/// hinge, `tests/limits.rs`; A5-Q6).
 #[test]
 fn test_muscle_default_actrange() {
     let model = build_muscle_model(None);
