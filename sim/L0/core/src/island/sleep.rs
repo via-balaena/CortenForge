@@ -213,6 +213,12 @@ pub fn equality_asleep(model: &Model, data: &Data, eq: usize) -> bool {
     let tendon_awake = |t: usize| tendon_sleep_state(model, data, t) == SleepState::Awake;
     let awake = |id: usize| -> bool {
         match model.eq_type[eq] {
+            // A site's state is its body's (`engine_sleep.c:733-734`).
+            EqualityType::Connect | EqualityType::Weld
+                if model.eq_objtype[eq] == MjObjectType::Site =>
+            {
+                model.site_body.get(id).is_some_and(|&b| body_awake(b))
+            }
             EqualityType::Connect | EqualityType::Weld => body_awake(id),
             EqualityType::Joint => model.jnt_body.get(id).is_some_and(|&b| body_awake(b)),
             EqualityType::Distance => model.geom_body.get(id).is_some_and(|&b| body_awake(b)),
@@ -573,7 +579,11 @@ pub fn mj_wake_equality(model: &Model, data: &mut Data) -> bool {
         }
         let (id1, id2) = (model.eq_obj1id[eq], model.eq_obj2id[eq]);
         let (tree1, tree2) = match model.eq_type[eq] {
-            EqualityType::Connect | EqualityType::Weld => (tree_of_body(id1), tree_of_body(id2)),
+            // Its sites' bodies under the site semantic (`engine_sleep.c:384-392`).
+            EqualityType::Connect | EqualityType::Weld => {
+                let (b1, b2) = model.eq_bodies(eq);
+                (tree_of_body(b1), tree_of_body(b2))
+            }
             EqualityType::Joint => {
                 let tree_of_joint = |j: usize| model.jnt_body.get(j).and_then(|&b| tree_of_body(b));
                 (tree_of_joint(id1), tree_of_joint(id2))

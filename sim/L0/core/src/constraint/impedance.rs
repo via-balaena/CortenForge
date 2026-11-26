@@ -269,7 +269,8 @@ pub fn compute_diag_approx_exact(j_row: &[f64], nv: usize, model: &Model, data: 
 /// constraint `id`, as MuJoCo's `mj_diagApprox` (`engine_core_constraint.c:1093-1287`):
 /// an O(1) approximation of `diag(J · M⁻¹ · J^T)` from the inverse weights at
 /// `qpos0` instead of solving `M · w = J^T`. A connect's rows take its two
-/// bodies' translational weights, a weld's first three rows those and its
+/// bodies' ([`Model::eq_bodies`]: its sites' under the site semantic)
+/// translational weights, a weld's first three rows those and its
 /// last three their rotational ones, a joint or tendon equality its first
 /// object's `dof_invweight0` or `tendon_invweight0` plus its second's when it
 /// has one. No floor: MuJoCo floors only `R` (`mj_makeImpedance`).
@@ -294,10 +295,14 @@ pub fn compute_diag_approx_bodyweight(model: &Model, id: usize, row_offset: usiz
     let tendon = |t: usize| model.tendon_invweight0.get(t).copied().unwrap_or(0.0);
     let (obj1, obj2) = (model.eq_obj1id[id], model.eq_obj2id[id]);
     match model.eq_type[id] {
-        EqualityType::Connect => body(obj1, 0) + body(obj2, 0),
+        EqualityType::Connect => {
+            let (b1, b2) = model.eq_bodies(id);
+            body(b1, 0) + body(b2, 0)
+        }
         EqualityType::Weld => {
+            let (b1, b2) = model.eq_bodies(id);
             let comp = usize::from(row_offset >= 3);
-            body(obj1, comp) + body(obj2, comp)
+            body(b1, comp) + body(b2, comp)
         }
         EqualityType::Joint => {
             let w = dof(obj1);

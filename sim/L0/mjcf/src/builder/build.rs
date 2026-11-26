@@ -12,7 +12,6 @@ use sim_core::{Model, SleepPolicy, compute_dof_lengths};
 use tracing::warn;
 
 use super::ModelBuilder;
-use super::equality::site_connect_point;
 use super::flex::{
     compute_flex_address_table, compute_flex_count_table, compute_flexedge_crosssection,
 };
@@ -23,7 +22,6 @@ impl ModelBuilder {
     /// Orchestrates model assembly and all post-construction computations.
     pub(crate) fn build(self) -> Model {
         let body_sleep_policy = self.body_sleep_policy.clone();
-        let site_connects = self.site_connects.clone();
         let mut model = self.assemble_model();
 
         // Structural pre-computation
@@ -57,16 +55,6 @@ impl ModelBuilder {
         // loader passes, moves no point.
         if model.check_joint_layout().is_ok() {
             model.compute_equality_data0();
-        }
-        // A site-form connect's points, now the sites' frames are known: over
-        // what `compute_equality_data0` made of it as a body form.
-        for &(eq, site1, site2) in &site_connects {
-            let (p1, p2) = (
-                site_connect_point(&model, site1),
-                site_connect_point(&model, site2),
-            );
-            model.eq_data[eq][..3].copy_from_slice(p1.as_slice());
-            model.eq_data[eq][3..6].copy_from_slice(p2.as_slice());
         }
 
         // Bounding geometry and tendon rest lengths
@@ -448,6 +436,7 @@ impl ModelBuilder {
             eq_type: self.eq_type,
             eq_obj1id: self.eq_obj1id,
             eq_obj2id: self.eq_obj2id,
+            eq_objtype: self.eq_objtype,
             eq_data: self.eq_data,
             eq_active: self.eq_active,
             eq_solimp: self.eq_solimp,

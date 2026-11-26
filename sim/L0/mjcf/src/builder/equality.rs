@@ -16,7 +16,7 @@ use crate::types::{
     EqualityKind, MjcfConnect, MjcfDistance, MjcfEquality, MjcfFlex, MjcfFlexEquality,
     MjcfJointEquality, MjcfTendonEquality, MjcfWeld,
 };
-use sim_core::{EqualityType, MjJointType, Model, SameFrame};
+use sim_core::{EqualityType, MjJointType, MjObjectType};
 
 /// A document's flex equality, kept for
 /// [`ModelBuilder::check_flex_equalities`]: its equality id, its position in
@@ -86,25 +86,6 @@ pub fn connect_form(connect: &MjcfConnect) -> Result<ConnectForm<'_>> {
 /// it: `data[1]` 1 (a polynomial's linear coefficient) and `data[10]` 1 (a
 /// weld's torquescale).
 const DEFAULT_EQ_DATA: [f64; 11] = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
-
-/// Where MuJoCo's `mj_local2Global` places a site, in its body's frame, as a
-/// point the connect's body form maps as `xmat·p + xpos`
-/// (`engine_core_util.c:849-865`): a site in its body's frame (`site_sameframe`
-/// body) at the body's position, so 0; one in its body's inertial frame
-/// (inertia) at `xipos`, so 0 when that frame is the body's
-/// (`body_sameframe` body) and the body's `ipos` else, which sim-core maps
-/// to `xipos` the same way; any other at its own position. The model's
-/// `site_sameframe` and `body_sameframe` classify the frames as MuJoCo's
-/// compiler does, within 1e-6.
-pub fn site_connect_point(model: &Model, site: usize) -> Vector3<f64> {
-    let body = model.site_body[site];
-    match model.site_sameframe[site] {
-        SameFrame::Body => Vector3::zeros(),
-        SameFrame::Inertia if model.body_sameframe[body] == SameFrame::Body => Vector3::zeros(),
-        SameFrame::Inertia => model.body_ipos[body],
-        SameFrame::None | SameFrame::BodyRot | SameFrame::InertiaRot => model.site_pos[site],
-    }
-}
 
 /// MuJoCo refuses an equality whose two objects are one, the world standing
 /// for a connect's or a weld's unwritten `body2` ("element 'a' is repeated
@@ -176,14 +157,12 @@ impl ModelBuilder {
     ///   `[3..6]` = the point in body2's local frame
     ///
     /// In the body form the first is the anchor written and the second is
-    /// made at `qpos0` where the first lands ([`Model::compute_equality_data0`],
-    /// MuJoCo's `mj_setConst`). The site form is kept as the
-    /// sites' bodies, sim-core's equality rows naming bodies where MuJoCo's
-    /// name the sites (D-CONNECT-SITE): MuJoCo's site connect is
-    /// `site_xpos1 − site_xpos2` (`engine_core_constraint.c:438-443`), and
-    /// each point is set, once the build knows the sites' frames, to where
-    /// `mj_local2Global` places its site, in its body's frame
-    /// ([`site_connect_point`]).
+    /// made at `qpos0` where the first lands
+    /// ([`sim_core::Model::compute_equality_data0`], MuJoCo's `mj_setConst`).
+    /// The site form keeps its two sites, as
+    /// MuJoCo's model does (`eq_objtype` site): its points are the sites'
+    /// positions (`engine_core_constraint.c:438-443`) and its row 0, unused
+    /// (`engine_setconst.c:800-803`).
     fn process_connect(&mut self, connect: &MjcfConnect) -> Result<()> {
         let body_id = |name: &str| {
             self.body_name_to_id
@@ -198,9 +177,9 @@ impl ModelBuilder {
                 .ok_or_else(|| MjcfError::undefined(ElementKind::Site, name))
         };
         // A site-form connect's row is MuJoCo's zeros (`mj_setConst`,
-        // `engine_setconst.c:801-804`) until its points are set.
+        // `engine_setconst.c:801-804`).
         let mut data = [0.0; 11];
-        let (body1_id, body2_id) = match connect_form(connect)? {
+        let (obj1_id, obj2_id, objtype) = match connect_form(connect)? {
             ConnectForm::Bodies {
                 body1,
                 body2,
@@ -216,24 +195,23 @@ impl ModelBuilder {
                 // at `qpos0` (`Model::compute_equality_data0`).
                 data = DEFAULT_EQ_DATA;
                 data[..3].copy_from_slice(anchor.as_slice());
-                (body1_id, body2_id)
+                (body1_id, body2_id, MjObjectType::Body)
             }
             ConnectForm::Sites { site1, site2 } => {
                 let (s1, s2) = (site_id(site1)?, site_id(site2)?);
                 if s1 == s2 {
                     return Err(repeated("connect", "site2", site1, self.eq_type.len()));
                 }
-                // The points are set when the sites' frames are known (`build`).
-                self.site_connects.push((self.eq_type.len(), s1, s2));
-                (self.site_body[s1], self.site_body[s2])
+                (s1, s2, MjObjectType::Site)
             }
         };
 
         let (active, solref, solimp) = (connect.active, connect.solref, connect.solimp);
 
         self.eq_type.push(EqualityType::Connect);
-        self.eq_obj1id.push(body1_id);
-        self.eq_obj2id.push(body2_id);
+        self.eq_obj1id.push(obj1_id);
+        self.eq_obj2id.push(obj2_id);
+        self.eq_objtype.push(objtype);
         self.eq_data.push(data);
         self.eq_active.push(active.unwrap_or(true));
         self.eq_solimp.push(written_over(solimp, DEFAULT_SOLIMP));
@@ -256,8 +234,8 @@ impl ModelBuilder {
     ///   `[10]` = `torquescale`, MuJoCo's default 1 (`user_init.c:307`)
     ///
     /// A relative quaternion of all 0 is made at `qpos0` with body1's anchor,
-    /// any other normalized ([`Model::compute_equality_data0`], MuJoCo's
-    /// `mj_setConst`).
+    /// any other normalized ([`sim_core::Model::compute_equality_data0`],
+    /// MuJoCo's `mj_setConst`).
     fn process_weld(&mut self, weld: &MjcfWeld) -> Result<()> {
         let body1_id = self
             .body_name_to_id
@@ -292,6 +270,7 @@ impl ModelBuilder {
         self.eq_type.push(EqualityType::Weld);
         self.eq_obj1id.push(*body1_id);
         self.eq_obj2id.push(body2_id);
+        self.eq_objtype.push(MjObjectType::Body);
         self.eq_data.push(data);
         self.eq_active.push(active.unwrap_or(true));
         self.eq_solimp.push(written_over(solimp, DEFAULT_SOLIMP));
@@ -362,6 +341,7 @@ impl ModelBuilder {
         self.eq_type.push(EqualityType::Joint);
         self.eq_obj1id.push(*joint1_id);
         self.eq_obj2id.push(joint2_id);
+        self.eq_objtype.push(MjObjectType::None);
         self.eq_data.push(data);
         self.eq_active.push(active.unwrap_or(true));
         self.eq_solimp.push(written_over(solimp, DEFAULT_SOLIMP));
@@ -406,6 +386,7 @@ impl ModelBuilder {
         self.eq_type.push(EqualityType::Distance);
         self.eq_obj1id.push(geom1_id);
         self.eq_obj2id.push(geom2_id);
+        self.eq_objtype.push(MjObjectType::None);
         self.eq_data.push(data);
         self.eq_active.push(active.unwrap_or(true));
         self.eq_solimp.push(written_over(solimp, DEFAULT_SOLIMP));
@@ -455,6 +436,7 @@ impl ModelBuilder {
         self.eq_type.push(EqualityType::Tendon);
         self.eq_obj1id.push(t1_id);
         self.eq_obj2id.push(t2_id);
+        self.eq_objtype.push(MjObjectType::None);
         self.eq_data.push(data);
         self.eq_active.push(active.unwrap_or(true));
         self.eq_solimp.push(written_over(solimp, DEFAULT_SOLIMP));
@@ -570,6 +552,7 @@ impl ModelBuilder {
         self.eq_type.push(EqualityType::Flex);
         self.eq_obj1id.push(flex_id);
         self.eq_obj2id.push(usize::MAX);
+        self.eq_objtype.push(MjObjectType::None);
         self.eq_data.push(DEFAULT_EQ_DATA);
         self.eq_active.push(active);
         self.eq_solimp.push(solimp);

@@ -44,7 +44,7 @@ use std::sync::Arc;
 use nalgebra::{Matrix3, Point3, Rotation3, UnitQuaternion, Vector3};
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, GainType, GeomType,
-    MjJointType, Model, PhysicsShape, SolverType, TendonType, WrapType,
+    MjJointType, MjObjectType, Model, PhysicsShape, SolverType, TendonType, WrapType,
 };
 
 use crate::mechanism::analytical_shape::AnalyticalShape;
@@ -245,6 +245,7 @@ fn emit_linkages(
         });
         model.eq_obj1id.push(body_a);
         model.eq_obj2id.push(body_b);
+        model.eq_objtype.push(MjObjectType::Body);
         model.eq_data.push(data);
         model.eq_active.push(true);
         model.eq_solimp.push(LINKAGE_SOLIMP);

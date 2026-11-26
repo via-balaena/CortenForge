@@ -47,9 +47,7 @@ impl Model {
     /// from them; a later edit of the input is not derived again. Not
     /// recomputed here: the tree's own tables `body_rootid` and `dof_parent`,
     /// which an edit of the tree sets; the connects' and welds' `eq_data`
-    /// [`Self::compute_equality_data0`] makes, which reads every connect as
-    /// its body form, where this crate keeps a site-form connect as its
-    /// sites' bodies and points (registry `D-CONNECT-SITE`); and the flex
+    /// [`Self::compute_equality_data0`] makes; and the flex
     /// edge Jacobian's pattern
     /// (`flexedge_J_rownnz`, `flexedge_J_rowadr`, `flexedge_J_colind`), the
     /// MJCF builder's, from each end body's own dofs, where MuJoCo's `set0`

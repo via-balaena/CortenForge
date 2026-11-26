@@ -97,14 +97,18 @@ pub(super) fn assemble_equality_rows(model: &Model, data: &mut Data, nv: usize, 
 
 /// Equality `eq_id`'s dof chain, as MuJoCo forms it at the sparse size
 /// (`mj_instantiateEquality`, `engine_core_constraint.c:375-687`): the two
-/// bodies' merged chain for a connect or a weld (`mj_jacDifPair`), and for
+/// bodies' merged chain for a connect or a weld (`mj_jacDifPair`; its sites'
+/// bodies under the site semantic, `:1687-1716`), and for
 /// this crate's distance equality its geoms' bodies'; the union of its
 /// joints' dofs for a joint equality, of its tendons' chains for a tendon
 /// equality. A flex equality's rows each take their edge's chain.
 fn equality_chain(model: &Model, data: &Data, eq_id: usize) -> Vec<usize> {
     let (obj1, obj2) = (model.eq_obj1id[eq_id], model.eq_obj2id[eq_id]);
     match model.eq_type[eq_id] {
-        EqualityType::Connect | EqualityType::Weld => body_pair_chain(model, obj1, obj2),
+        EqualityType::Connect | EqualityType::Weld => {
+            let (body1, body2) = model.eq_bodies(eq_id);
+            body_pair_chain(model, body1, body2)
+        }
         EqualityType::Distance => {
             let body2 = if obj2 == usize::MAX {
                 0

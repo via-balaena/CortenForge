@@ -4133,3 +4133,12 @@ d2d16c1b78c6c859	sim/L0/mjcf/tests/equality_forms.rs:148
 0bc121493d2020d3	sim/L0/mjcf/tests/equality_forms.rs:170
 275e57e4d83cfa28	sim/L0/mjcf/tests/equality_forms.rs:176
 749393b9d879d2f9	sim/L0/mjcf/tests/equality_forms.rs:164
+2a35e68d1dfcea53	sim/L0/mjcf/tests/equality_forms.rs:212
+6b4d5c59b195961d	sim/L0/mjcf/tests/equality_forms.rs:345
+88dc63fe34849261	sim/L0/mjcf/tests/equality_forms.rs:174
+b16c368e66ac411f	sim/L0/mjcf/tests/equality_forms.rs:383
+b7e92b2275d9dcf4	sim/L0/mjcf/tests/equality_forms.rs:250
+cc46beb00c65e8f9	sim/L0/mjcf/tests/equality_forms.rs:288
+087b43081c606baf	sim/L0/mjcf/tests/equality_forms.rs:445
+f1c73428af4f5c70	sim/L0/mjcf/tests/equality_forms.rs:492
+d5d704dfc95c7c62	sim/L0/mjcf/tests/connect_forms.rs:106

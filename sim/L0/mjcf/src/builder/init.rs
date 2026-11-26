@@ -37,8 +37,7 @@ impl ModelBuilder {
             body_name: vec![Some("world".to_string())],
             body_mocapid: vec![None],      // world body is not mocap
             body_sleep_policy: vec![None], // world body has no sleep policy
-            site_connects: vec![],
-            body_gravcomp: vec![0.0], // world body has no gravcomp
+            body_gravcomp: vec![0.0],      // world body has no gravcomp
             body_faults: vec![super::body::BodyFaults::default()], // the world has none of these
             kept_negative_inertial: None,
             nmocap: 0,
@@ -235,6 +234,7 @@ impl ModelBuilder {
             eq_type: vec![],
             eq_obj1id: vec![],
             eq_obj2id: vec![],
+            eq_objtype: vec![],
             eq_data: vec![],
             eq_active: vec![],
             eq_solimp: vec![],

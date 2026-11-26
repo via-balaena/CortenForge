@@ -20,7 +20,7 @@ use crate::linalg::{
 use crate::types::flags::disabled;
 use crate::types::{
     ConstraintType, DISABLE_GRAVITY, DISABLE_SPRING, Data, ENABLE_SLEEP, EqualityType, Integrator,
-    Model, StepError,
+    MjObjectType, Model, StepError,
 };
 use nalgebra::DVector;
 
@@ -540,7 +540,8 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
     // Connect and weld forces (`:2562-2651`): the rows' force, and a weld's
     // torque, at each body's anchor, placed by `mj_local2Global` (the body's
     // `xmat`), `+` on body1 and `−` on body2. MuJoCo's anchors: a connect's
-    // `eq_data[0..3]` on body1 and `[3..6]` on body2, a weld's the other way.
+    // `eq_data[0..3]` on body1 and `[3..6]` on body2, a weld's the other way;
+    // under the site semantic each site's `site_pos` on its body.
     {
         let nefc = data.efc_type.len();
         let mut i = 0;
@@ -578,14 +579,20 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
                 data.efc_force[i + 1],
                 data.efc_force[i + 2],
             );
-            let ed = &model.eq_data[eq_id];
-            let lo = nalgebra::Vector3::new(ed[0], ed[1], ed[2]);
-            let hi = nalgebra::Vector3::new(ed[3], ed[4], ed[5]);
-            let (anchor1, anchor2) = if weld { (hi, lo) } else { (lo, hi) };
-            for (body, anchor, add) in [
-                (model.eq_obj1id[eq_id], anchor1, true),
-                (model.eq_obj2id[eq_id], anchor2, false),
-            ] {
+            let (obj1, obj2) = (model.eq_obj1id[eq_id], model.eq_obj2id[eq_id]);
+            let ([body1, body2], [anchor1, anchor2]) =
+                if model.eq_objtype[eq_id] == MjObjectType::Site {
+                    (
+                        [model.site_body[obj1], model.site_body[obj2]],
+                        [model.site_pos[obj1], model.site_pos[obj2]],
+                    )
+                } else {
+                    let ed = &model.eq_data[eq_id];
+                    let lo = nalgebra::Vector3::new(ed[0], ed[1], ed[2]);
+                    let hi = nalgebra::Vector3::new(ed[3], ed[4], ed[5]);
+                    ([obj1, obj2], if weld { [hi, lo] } else { [lo, hi] })
+                };
+            for (body, anchor, add) in [(body1, anchor1, true), (body2, anchor2, false)] {
                 if body == 0 {
                     continue;
                 }

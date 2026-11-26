@@ -917,9 +917,6 @@ pub struct ModelBuilder {
     /// The jointless bodies made for pinned flexcomp points, in id order:
     /// MuJoCo has no such body, so the mass pipeline's bounds skip them.
     pub(crate) flex_stand_ins: Vec<usize>,
-    /// Each site-form connect's equality id and its two sites, whose points
-    /// `build` sets once the sites' frames are known.
-    pub(crate) site_connects: Vec<(usize, usize, usize)>,
 
     // Tendon arrays (populated by process_tendons)
     pub(crate) tendon_name_to_id: HashMap<String, usize>,
@@ -957,6 +954,7 @@ pub struct ModelBuilder {
     pub(crate) eq_type: Vec<EqualityType>,
     pub(crate) eq_obj1id: Vec<usize>,
     pub(crate) eq_obj2id: Vec<usize>,
+    pub(crate) eq_objtype: Vec<MjObjectType>,
     pub(crate) eq_data: Vec<[f64; 11]>,
     pub(crate) eq_active: Vec<bool>,
     pub(crate) eq_solimp: Vec<[f64; 5]>,

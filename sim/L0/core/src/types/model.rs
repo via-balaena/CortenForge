@@ -922,6 +922,11 @@ pub struct Model {
     pub eq_obj1id: Vec<usize>,
     /// Second object ID (body/joint/geom, or `usize::MAX` for world origin in Distance).
     pub eq_obj2id: Vec<usize>,
+    /// The objects' type, MuJoCo's `eq_objtype`: a connect's or a weld's
+    /// `Body` or `Site`, the two ids then naming sites, whose positions are
+    /// the points and whose bodies carry the rows ([`Model::eq_bodies`]);
+    /// `None` on every other kind, as MuJoCo leaves it unknown there.
+    pub eq_objtype: Vec<MjObjectType>,
     /// Constraint parameters (meaning depends on type).
     /// - Connect: a point in body1's frame in `[0..3]`, one in body2's in
     ///   `[3..6]`
@@ -1324,6 +1329,20 @@ impl Model {
             JacobianType::Dense => false,
             JacobianType::Sparse => true,
             JacobianType::Auto => self.nv >= 60,
+        }
+    }
+
+    /// The two bodies connect or weld `eq` acts on, as MuJoCo 3.5.0 reads
+    /// them: its objects, or under the site semantic (`eq_objtype` `Site`)
+    /// their sites' bodies (`site_bodyid`, `engine_core_constraint.c:438-443`,
+    /// `:1113-1117`).
+    #[must_use]
+    pub fn eq_bodies(&self, eq: usize) -> (usize, usize) {
+        let (obj1, obj2) = (self.eq_obj1id[eq], self.eq_obj2id[eq]);
+        if self.eq_objtype[eq] == MjObjectType::Site {
+            (self.site_body[obj1], self.site_body[obj2])
+        } else {
+            (obj1, obj2)
         }
     }
 

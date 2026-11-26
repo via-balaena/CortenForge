@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 use super::body_wrench::BodyWrench;
 use super::enums::{
     ActuatorDynamics, ActuatorError, DISABLE_NATIVECCD, ENABLE_SLEEP, EqualityType, Integrator,
-    JacobianType, JointLayoutError, MakeDataError, MjJointType, MjSensorType, RangeError,
-    ResetError, SleepPolicy, SleepState, SolverType, StepError, TendonError, WrapType,
+    JacobianType, JointLayoutError, MakeDataError, MjJointType, MjObjectType, MjSensorType,
+    RangeError, ResetError, SleepPolicy, SleepState, SolverType, StepError, TendonError, WrapType,
 };
 use super::model::Model;
 
@@ -439,6 +439,7 @@ impl Model {
             eq_type: vec![],
             eq_obj1id: vec![],
             eq_obj2id: vec![],
+            eq_objtype: vec![],
             eq_data: vec![],
             eq_active: vec![],
             eq_solimp: vec![],
@@ -1341,8 +1342,8 @@ impl Model {
     /// - any other weld: its quaternion normalized (`mju_normalize4`), its
     ///   `eq_data[3..6]` kept as written.
     ///
-    /// Every connect and weld is read as its body form; a site-form
-    /// connect's points are its builder's to set after this.
+    /// A site-form connect's row is made 0, as MuJoCo leaves it unused, and a
+    /// site-form weld's kept as its reader wrote it.
     pub fn compute_equality_data0(&mut self) {
         let completes = |t: &EqualityType| matches!(t, EqualityType::Connect | EqualityType::Weld);
         if !self.eq_type.iter().any(completes) {
@@ -1363,6 +1364,14 @@ impl Model {
         for i in 0..self.neq {
             let (id1, id2) = (self.eq_obj1id[i], self.eq_obj2id[i]);
             let row = &mut self.eq_data[i];
+            // The site semantic (`engine_setconst.c:800-803`, `:832-834`): a
+            // site connect's row is unused, made 0; a site weld's is kept.
+            if self.eq_objtype[i] == MjObjectType::Site {
+                if self.eq_type[i] == EqualityType::Connect {
+                    *row = [0.0; 11];
+                }
+                continue;
+            }
             match self.eq_type[i] {
                 EqualityType::Connect => {
                     let pos = place(id1, [row[0], row[1], row[2]]);
