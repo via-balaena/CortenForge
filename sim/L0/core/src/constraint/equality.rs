@@ -170,7 +170,7 @@ fn eval_poly_and_deriv(coef: &[f64], q: f64) -> (f64, f64) {
 /// second's. MuJoCo 3.5.0's coupling is a quartic, and the error
 /// `x1 − data[0] − (data[1]·dif + … + data[4]·dif⁴)`, in this arithmetic
 /// (`engine_core_constraint.c:589-594`); where a coefficient past the quartic
-/// is written (registry `D-POLYCOEF-DEGREE`), `x1 −` the whole polynomial by
+/// is not 0 (registry `D-POLYCOEF-DEGREE`), `x1 −` the whole polynomial by
 /// [`eval_poly_and_deriv`].
 fn joint_error(coef: &[f64; 11], x1: f64, dif: f64) -> (f64, f64) {
     if coef[5..].iter().any(|&c| c != 0.0) {

@@ -229,7 +229,7 @@ impl ModelBuilder {
                 .ok_or_else(|| MjcfError::undefined(ElementKind::Site, name))
         };
         // A site-form connect's row is MuJoCo's zeros (`mj_setConst`,
-        // `engine_setconst.c:801-804`).
+        // `engine_setconst.c:800-803`).
         let mut data = [0.0; 11];
         let (obj1_id, obj2_id, objtype) = match connect_form(connect)? {
             ConnectForm::Bodies {
@@ -328,7 +328,7 @@ impl ModelBuilder {
                     return Err(repeated("weld", "site2", site1, self.eq_type.len()));
                 }
                 // MuJoCo's default row, `torquescale` written over its last
-                // entry (`xml_native_reader.cc:2191`): its points and turns
+                // entry (`xml_native_reader.cc:2192`): its points and turns
                 // are the sites'.
                 let mut data = DEFAULT_EQ_DATA;
                 data[10] = weld.torquescale.unwrap_or(1.0);

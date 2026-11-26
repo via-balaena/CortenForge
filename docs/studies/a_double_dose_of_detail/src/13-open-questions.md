@@ -162,7 +162,7 @@ Every open question the 21 research sections raise, deduplicated, with the secti
 | Q86 | hex floats | A4 Q6 | refuse / implement | refuse | (a) | stated limitation |
 | Q87 | `freejoint damping` in 3 examples | A4 Q7 | remove / `<joint type="free" damping>` | remove | (b) | adopted |
 | Q88 | visual-only and capacity-hint elements | A4 Q8 | refuse / accept with no effect | none (Jon's) | (a) | 01-decisions: accepted with no effect |
-| Q89 | weld `site1`/`site2` | A4 Q9 | refuse / implement | refuse | (a) | stated limitation |
+| Q89 | weld `site1`/`site2` | A4 Q9 | refuse / implement | refuse | (a) | stated limitation; replaced in Rigid-loading PR RL-10d: implemented (11-settled A4-Q9) |
 | Q90 | `<compiler><lengthrange>` | A4 §4; A11 LR-4 | refuse / implement | A4: refuse; A11: implement | **(c)** | C2 |
 | Q91 | weld `torquescale` | A4 §4, §8.6; A13 §1.9; A18 §8.2 | refuse / implement | A4: refuse; A18: implement | **(c)** | C2 |
 | Q92 | flex `elastic2d` | A4 §4; A9 F3 | refuse / implement `bend` | A4: refuse; A9: implement | **(c)** | C2 |

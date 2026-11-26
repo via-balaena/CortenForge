@@ -797,8 +797,7 @@ fn test_invalid_joint_name_returns_error() {
 /// normalized into the row, the first constraint force pulling the two boxes
 /// together, and the boxes' position and velocity after ten steps, each
 /// printed by MuJoCo on the census's unfused oracle for this model
-/// (2026-11-25; the gap between the boxes then 0.4571915721671053). Bit for
-/// bit on macOS arm64, where MuJoCo's values were printed; elsewhere within
+/// (2026-11-25). Bit for bit on macOS arm64, where MuJoCo's values were printed; elsewhere within
 /// 1e-9 of each array's largest entry.
 #[test]
 fn test_weld_constraint_with_relpose() {
