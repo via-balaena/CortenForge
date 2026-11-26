@@ -4122,3 +4122,14 @@ cc6fd7fe690b9ed8	sim/L0/urdf/tests/importer_reader.rs:1475
 d9aa8b9c8ed73e38	sim/L0/urdf/tests/importer_reader.rs:1668
 dacb65095575b909	sim/L0/urdf/tests/importer_reader.rs:1937
 dcb3977860b0c231	sim/L0/urdf/tests/importer_reader.rs:1550
+23fb89cc35d247d8	sim/L0/mjcf/tests/equality_forms.rs:43
+4691f0ca93fa446a	sim/L0/mjcf/tests/equality_forms.rs:88
+5668e56c59a49ecb	sim/L0/mjcf/tests/equality_forms.rs:73
+67dd3e49fcc7ab4b	sim/L0/mjcf/tests/equality_forms.rs:58
+7cb4f97729dfbcc3	sim/L0/mjcf/tests/equality_forms.rs:133
+8d8d6e0c0e4eba19	sim/L0/mjcf/tests/equality_forms.rs:118
+b261306c936b2d3e	sim/L0/mjcf/tests/equality_forms.rs:103
+d2d16c1b78c6c859	sim/L0/mjcf/tests/equality_forms.rs:148
+0bc121493d2020d3	sim/L0/mjcf/tests/equality_forms.rs:170
+275e57e4d83cfa28	sim/L0/mjcf/tests/equality_forms.rs:176
+749393b9d879d2f9	sim/L0/mjcf/tests/equality_forms.rs:164

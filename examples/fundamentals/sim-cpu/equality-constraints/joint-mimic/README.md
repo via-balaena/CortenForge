@@ -42,7 +42,8 @@ two joint positions:
 joint1 = polycoef[0] + polycoef[1] * joint2
 ```
 
-With `polycoef="0 1"`, this becomes `j1 = j2` — a 1:1 mimic. The constraint
+Each joint is measured from its `ref` (0 here). With `polycoef="0 1"`, this
+becomes `j1 = j2` — a 1:1 mimic. The constraint
 penalizes the position error `j1 - j2` and the velocity error via Baumgarte
 stabilization.
 

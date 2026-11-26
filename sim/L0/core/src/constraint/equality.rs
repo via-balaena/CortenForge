@@ -113,12 +113,10 @@ pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> Equali
 
 /// Evaluate `poly(q)` and `poly'(q)` for a joint-equality polynomial in one Horner
 /// pass. `coef[k]` is the coefficient of `qᵏ`, so the full degree-`N` polynomial is
-/// `Σ coef[k]·qᵏ` over all slots (trailing zeros contribute nothing — a degree-4
-/// constraint with `coef[5..]=0` is algebraically the old fixed quartic; the legacy
-/// linear/constant couplings, like gear/mimic, also evaluate bit-identically).
-/// gait2392's coupled knee needs degree-8 to track the tibiofemoral roll-glide
-/// SimmSpline to ≤0.17 mm (G3 spike); `eq_data` carries up to 11 coefficients
-/// (degree-10 ceiling).
+/// `Σ coef[k]·qᵏ` over all slots. Used for a polynomial past MuJoCo's quartic
+/// ([`joint_error`]): gait2392's coupled knee needs degree-8 to track the
+/// tibiofemoral roll-glide SimmSpline to ≤0.17 mm (G3 spike); `eq_data` carries up
+/// to 11 coefficients (degree-10 ceiling).
 fn eval_poly_and_deriv(coef: &[f64], q: f64) -> (f64, f64) {
     // Horner with synthetic derivative: walk coefficients high → low.
     let n = coef.len();
@@ -131,13 +129,33 @@ fn eval_poly_and_deriv(coef: &[f64], q: f64) -> (f64, f64) {
     (p, d)
 }
 
-/// Extract joint equality constraint Jacobian (1 row).
-///
-/// MuJoCo convention: `joint1 = poly(joint2)`.
-/// Two-joint: constraint is `q1 − poly(q2) = 0`, Jacobian has +1 at dof1 and -poly'(q2) at dof2.
-/// Single-joint: constraint is `q1 − c0 = 0`, Jacobian has +1 at dof1.
-/// The polynomial degree is whatever `eq_data` carries (up to degree 10) — see
+/// A two-joint equality's error and its coupling's derivative in `dif`, from
+/// each joint's offset from its `qpos0`: `x1` the first's, `dif` the
+/// second's. MuJoCo 3.5.0's coupling is a quartic, and the error
+/// `x1 − data[0] − (data[1]·dif + … + data[4]·dif⁴)`, in this arithmetic
+/// (`engine_core_constraint.c:589-594`); where a coefficient past the quartic
+/// is written (registry `D-POLYCOEF-DEGREE`), `x1 −` the whole polynomial by
 /// [`eval_poly_and_deriv`].
+fn joint_error(coef: &[f64; 11], x1: f64, dif: f64) -> (f64, f64) {
+    if coef[5..].iter().any(|&c| c != 0.0) {
+        let (poly, deriv) = eval_poly_and_deriv(coef, dif);
+        return (x1 - poly, deriv);
+    }
+    let poly = coef[1] * dif
+        + coef[2] * dif * dif
+        + coef[3] * dif * dif * dif
+        + coef[4] * dif * dif * dif * dif;
+    let deriv =
+        coef[1] + 2.0 * coef[2] * dif + 3.0 * coef[3] * dif * dif + 4.0 * coef[4] * dif * dif * dif;
+    (x1 - coef[0] - poly, deriv)
+}
+
+/// A joint equality's row, as MuJoCo 3.5.0's `mj_instantiateEquality` builds
+/// it (`engine_core_constraint.c:535-614`): each joint's position measured
+/// from its `qpos0` (a hinge's or a slide's `ref`), the error
+/// [`joint_error`], the row `+1` at the first joint's dof and the coupling's
+/// derivative, negated, at the second's; with one joint, `q1 − qpos0₁ −
+/// data[0]` and `+1`.
 pub fn extract_joint_equality_jacobian(
     model: &Model,
     data: &Data,
@@ -146,47 +164,23 @@ pub fn extract_joint_equality_jacobian(
     let joint1_id = model.eq_obj1id[eq_id];
     let joint2_id = model.eq_obj2id[eq_id];
     let eq_data = &model.eq_data[eq_id];
-    let nv = model.nv;
-
-    let c0 = eq_data[0];
-
     let qpos1_adr = model.jnt_qpos_adr[joint1_id];
-    let dof1_adr = model.jnt_dof_adr[joint1_id];
-    let q1 = data.qpos[qpos1_adr];
+    let x1 = data.qpos[qpos1_adr] - model.qpos0[qpos1_adr];
 
-    let mut j = DMatrix::zeros(1, nv);
-
-    if joint2_id < model.njnt {
-        // Two-joint equality: constraint = q1 - poly(q2) = 0
-        // MuJoCo convention: joint1 is the dependent joint, joint2 is independent.
+    let mut j = DMatrix::zeros(1, model.nv);
+    j[(0, model.jnt_dof_adr[joint1_id])] = 1.0;
+    let pos_error = if joint2_id < model.njnt {
         let qpos2_adr = model.jnt_qpos_adr[joint2_id];
-        let dof2_adr = model.jnt_dof_adr[joint2_id];
-        let q2 = data.qpos[qpos2_adr];
-
-        // poly(q2) = Σ eq_data[k]·q2ᵏ ; poly'(q2) = Σ k·eq_data[k]·q2ᵏ⁻¹ (degree ≤ 10).
-        let (q1_target, dpoly_dq2) = eval_poly_and_deriv(eq_data, q2);
-
-        let pos_error = q1 - q1_target;
-
-        // Jacobian: d(q1 - poly(q2))/d_qvel = +1 at dof1, -poly'(q2) at dof2
-        j[(0, dof1_adr)] = 1.0;
-        j[(0, dof2_adr)] = -dpoly_dq2;
-
-        EqualityConstraintRows {
-            j_rows: j,
-            pos: vec![pos_error],
-        }
+        let dif = data.qpos[qpos2_adr] - model.qpos0[qpos2_adr];
+        let (error, deriv) = joint_error(eq_data, x1, dif);
+        j[(0, model.jnt_dof_adr[joint2_id])] = -deriv;
+        error
     } else {
-        // Single-joint: lock q1 to c0
-        let pos_error = q1 - c0;
-
-        // Jacobian: d(q1 - c0)/d_qvel = +1 at dof1
-        j[(0, dof1_adr)] = 1.0;
-
-        EqualityConstraintRows {
-            j_rows: j,
-            pos: vec![pos_error],
-        }
+        x1 - eq_data[0]
+    };
+    EqualityConstraintRows {
+        j_rows: j,
+        pos: vec![pos_error],
     }
 }
 

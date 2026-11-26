@@ -368,8 +368,9 @@ pub enum EqualityType {
     /// Weld: constrains two body frames to be identical.
     /// Removes 6 DOF (translation + rotation).
     Weld,
-    /// Joint: polynomial constraint between two joints.
-    /// q2 = poly(q1) where poly = c0 + c1*q1 + c2*q1^2 + ...
+    /// Joint: polynomial constraint between two joints, each measured from
+    /// its `qpos0`: `q1 − qpos0₁ = poly(q2 − qpos0₂)`, `poly` = `c0 + c1·x +
+    /// c2·x² + …`; with one joint, `q1 = qpos0₁ + c0`.
     Joint,
     /// Tendon: polynomial constraint between two tendons.
     /// len2 = poly(len1).

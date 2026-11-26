@@ -14,7 +14,7 @@ inherent to the penalty approach.
 | **Connect** | 3 (translation) | Locks a point on body1 to body2 (or world). Rotation free. | Ball-and-socket joint |
 | **Weld** | 6 (all) | Locks full pose of body1 relative to body2 (or world). | Rigid glue / fixed joint |
 | **Distance** | 1 (scalar) | Maintains fixed distance between two geom centers. | Rigid rod |
-| **Joint** | 1 per constraint | Couples joint positions: `q1 = poly(q2)`. | Gear train, mimic joint |
+| **Joint** | 1 per constraint | Couples joint positions, each from its `ref`: `q1 = poly(q2)`. | Gear train, mimic joint |
 
 ## Examples
 
@@ -44,7 +44,8 @@ a specific point, constraining the full 3D position vector.
 
 **Joint constraints:** Unlike the spatial constraints above, joint equality
 constraints operate in **joint space** — they couple scalar joint positions via
-a polynomial `q1 = c0 + c1*q2 + c2*q2² + ...`. The simplest cases are mimic
+a polynomial `q1 = c0 + c1*q2 + c2*q2² + ...`, each joint measured from its
+`ref` (0 in these examples). The simplest cases are mimic
 (1:1) and gear ratios (1:N).
 
 **Penalty method:** All equality constraints use spring-damper penalties

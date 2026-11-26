@@ -16,7 +16,7 @@ use crate::types::{
     EqualityKind, MjcfConnect, MjcfDistance, MjcfEquality, MjcfFlex, MjcfFlexEquality,
     MjcfJointEquality, MjcfTendonEquality, MjcfWeld,
 };
-use sim_core::{EqualityType, Model, SameFrame};
+use sim_core::{EqualityType, MjJointType, Model, SameFrame};
 
 /// A document's flex equality, kept for
 /// [`ModelBuilder::check_flex_equalities`]: its equality id, its position in
@@ -306,7 +306,8 @@ impl ModelBuilder {
 
     /// Process a single Joint equality constraint (polynomial coupling).
     ///
-    /// `eq_data[0..11]` = polynomial coefficients (q1 = c0 + c1*q2 + c2*q2² + ...).
+    /// `eq_data[0..11]` = polynomial coefficients (`q1 − qpos0₁ = c0 + c1·x +
+    /// c2·x² + …`, `x = q2 − qpos0₂`, each joint from its `ref`).
     /// MuJoCo's own joint equality is a quartic (5 coefficients); we accept up to
     /// degree 10 (11 coefficients) because gait2392's coupled-knee roll-glide
     /// SimmSpline needs degree 8 to track to ≤0.17 mm (the G3 forward-dynamics arc).
@@ -330,6 +331,22 @@ impl ModelBuilder {
                 "joint2",
                 &joint_eq.joint1,
                 self.eq_type.len(),
+            ));
+        }
+        // MuJoCo couples scalar joints only, after the check above
+        // (`user_objects.cc:6036-6043`): a ball or free joint is refused.
+        let scalar =
+            |jnt: usize| matches!(self.jnt_type[jnt], MjJointType::Hinge | MjJointType::Slide);
+        let not_scalar = if scalar(*joint1_id) {
+            (joint2_id != usize::MAX && !scalar(joint2_id)).then_some("joint2")
+        } else {
+            Some("joint1")
+        };
+        if let Some(attribute) = not_scalar {
+            return Err(MjcfError::invalid_value(
+                "joint",
+                attribute,
+                "only HINGE and SLIDE joint allowed in constraint",
             ));
         }
 

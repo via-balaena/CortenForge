@@ -487,7 +487,7 @@ All equality constraints use solver-based constraint rows:
 |------|------|-------------|
 | Connect | 3 | Two body points coincide (translation only) |
 | Weld | 6 | Two body frames identical (translation + rotation) |
-| Joint | varies | Polynomial coupling: `q2 = c0 + c1*q1 + c2*q1^2 + ...` |
+| Joint | 1 | Polynomial coupling, each joint from its `qpos0`: `q1 - qpos0_1 = c0 + c1*x + c2*x^2 + ...`, `x = q2 - qpos0_2` |
 | Tendon | 1 | Polynomial coupling between tendon lengths (two-tendon coupling or single-tendon lock) |
 | Distance | 1 | Fixed distance between two geom centers |
 

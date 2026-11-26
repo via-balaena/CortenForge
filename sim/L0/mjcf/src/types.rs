@@ -2004,7 +2004,8 @@ impl MjcfWeld {
 /// A joint equality constraint from `<joint>` element within `<equality>`.
 ///
 /// Constrains a joint to maintain a specific position, or couples two joints
-/// with a linear relationship: `q2 = polycoef\[0\] + polycoef\[1\]*q1 + ...`
+/// by a polynomial, each joint measured from its reference position:
+/// `q1 − ref1 = polycoef\[0\] + polycoef\[1\]·(q2 − ref2) + …`
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfJointEquality {
