@@ -476,11 +476,14 @@ pub struct MjcfCompiler {
     /// the mesh's bounding box in its own frame, rather than to its
     /// equivalent inertia box (MuJoCo's `fitaabb`).
     pub fitaabb: bool,
+    /// The options of the actuators' length range, `<lengthrange>`'s
+    /// (MuJoCo's `mjLROpt`, its defaults).
+    pub lengthrange: sim_core::LengthRangeOpt,
+    /// Align free joints to body frame.
+    pub alignfree: bool,
     // Deferred attributes (stored, no behavior yet):
     /// Enable multi-threaded compilation.
     pub usethread: bool,
-    /// Align free joints to body frame.
-    pub alignfree: bool,
     /// Use exact mesh inertia computation (signed tetrahedron decomposition).
     /// When false, same exact algorithm is used (CortenForge always uses exact).
     /// Parsed for MJCF round-trip fidelity.
@@ -506,6 +509,7 @@ impl Default for MjcfCompiler {
             discardvisual: false,
             fusestatic: false,
             fitaabb: false,
+            lengthrange: sim_core::LengthRangeOpt::default(),
             usethread: true,
             alignfree: false,
             exactmeshinertia: false,

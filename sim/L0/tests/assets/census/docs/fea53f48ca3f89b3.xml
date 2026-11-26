@@ -1,0 +1,9 @@
+<mujoco model="test">
+                <compiler>
+                    <lengthrange mode="all" useexisting="false" uselimit="true" accel="10"
+                                 maxforce="2" timeconst="0.5" timestep="0.005" inttotal="4"
+                                 interval="1" tolrange="0.1"/>
+                </compiler>
+                <compiler><lengthrange mode="muscleuser"/></compiler>
+                <worldbody/>
+            </mujoco>

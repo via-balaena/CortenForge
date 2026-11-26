@@ -9,6 +9,7 @@ use super::enums::StepError;
 /// The options of the length-range computation, MuJoCo 3.5.0's `mjLROpt`
 /// (`mjmodel.h:477-491`), with its defaults (`engine_init.c:234-246`).
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LengthRangeOpt {
     /// Which actuators get a computed range.
     pub mode: LengthRangeMode,
@@ -52,6 +53,7 @@ impl Default for LengthRangeOpt {
 
 /// Which actuators get a computed range, MuJoCo's `mjtLRMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LengthRangeMode {
     /// None.
     None,

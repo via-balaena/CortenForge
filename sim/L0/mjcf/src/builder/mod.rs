@@ -45,8 +45,8 @@ use sim_core::{
     DISABLE_REFSAFE, DISABLE_SENSOR, DISABLE_SPRING, DISABLE_WARMSTART, ENABLE_ENERGY,
     ENABLE_FWDINV, ENABLE_INVDISCRETE, ENABLE_MULTICCD, ENABLE_OVERRIDE, ENABLE_SLEEP,
     EqualityType, FlexBendingType, FlexSelfCollide, GainType, GeomType, Integrator,
-    InterpolationType, JacobianType, Keyframe, LengthRangeOpt, MjJointType, MjObjectType,
-    MjSensorDataType, MjSensorType, Model, SleepPolicy, SolverType, TendonType, WrapType,
+    InterpolationType, JacobianType, Keyframe, MjJointType, MjObjectType, MjSensorDataType,
+    MjSensorType, Model, SleepPolicy, SolverType, TendonType, WrapType,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -514,7 +514,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // `try_make_data` refuses skips it, as the derivations in `build` do.
     if model.check_joint_layout().is_ok() && model.check_ranges().is_ok() {
         model
-            .set_length_range(&LengthRangeOpt::default())
+            .set_length_range(&mjcf.compiler.lengthrange)
             .map_err(MjcfError::length_range)?;
     }
 

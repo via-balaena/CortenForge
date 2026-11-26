@@ -42,7 +42,7 @@ use self::deformable::parse_deformable;
 use self::equality::parse_equality;
 use self::extension::parse_extension;
 use self::keyframe::parse_keyframes;
-use self::options::{parse_compiler_attrs, parse_option, parse_size_attrs};
+use self::options::{parse_compiler, parse_option, parse_size_attrs};
 use self::sensor::parse_sensors;
 use self::tendon::parse_tendons;
 
@@ -298,8 +298,7 @@ fn parse_section<R: BufRead>(
             parse_option(reader, e, &mut model.option, empty)?;
         }
         b"compiler" => {
-            parse_compiler_attrs(e, &mut model.compiler)?;
-            skip_element(reader, b"compiler", empty)?;
+            parse_compiler(reader, e, &mut model.compiler, empty)?;
         }
         b"default" => {
             let defaults = parse_default(reader, e, None, empty)?;
