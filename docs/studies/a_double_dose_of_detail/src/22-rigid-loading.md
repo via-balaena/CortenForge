@@ -245,6 +245,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Must-fail:** A4 §8.6's measured cases.
 - **Flips:** class G connect: `equality_constraints.rs` ×2 plus the six parse-only connect tests (A4 §9).
 - **Order:** before L15 (A20 §2.10). **Breaking:** `MjcfConnect` fields (A4 §8.6).
+- **Also (from Rigid-loading PR RL-10d, ledger L445):** the site form is no longer lowered to bodies. Since RL-10d sim-core keeps a site connect's and a site weld's sites, as MuJoCo's model does (`Model::eq_objtype`), and reads their positions and their bodies; a weld's site form loads, its forms checked as MuJoCo's reader checks them. Registry `D-CONNECT-SITE` and `D-WELD-SITE` are closed.
 
 ### L13 · M14 part · `fix(sim-mjcf): an unnamed mesh or hfield takes MuJoCo's name from its file`
 - **Closes:** mjcf-S15. **Implements:** A4 §8.6 (file stem; "empty name in mesh" when neither). **Must-fail:** A4 §8.6's measured case.
