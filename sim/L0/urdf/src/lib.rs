@@ -5,7 +5,8 @@
 //!
 //! # Features
 //!
-//! - Parse URDF XML from files or strings
+//! - Load a URDF from a file ([`load_urdf_model_from_file`], each mesh's file
+//!   found against the URDF's directory) or from its text ([`load_urdf_model`])
 //! - Convert to MuJoCo-aligned Model/Data architecture
 //! - Support for box, sphere, cylinder, and mesh collision geometry
 //! - Kinematic tree validation
@@ -62,6 +63,8 @@
 //!
 //! - `<joint name="..." type="...">` - Joint constraint
 //! - Supported types: `fixed`, `revolute`, `continuous`, `prismatic`, `floating`, `planar`
+//!   and `spherical` (not in URDF's specification; a ball joint, as MuJoCo
+//!   3.5.0's importer reads it)
 //! - `<parent>`, `<child>` - Connected links
 //! - `<origin>` - Joint frame relative to parent
 //! - `<axis>` - Joint axis for revolute/prismatic
@@ -74,7 +77,8 @@
 //! - `<sphere radius="r"/>` - Sphere collision shape
 //! - `<cylinder radius="r" length="l"/>` - Native cylinder collision shape
 //! - `<mesh filename="..."/>` - Emitted as an MJCF `<mesh>` asset + geom; the
-//!   mesh file itself is resolved by the MJCF compiler, not loaded here
+//!   mesh file is read by sim-mjcf, found against the URDF's directory
+//!   ([`load_urdf_model_from_file`])
 //!
 //! # Limitations
 //!
@@ -109,6 +113,8 @@
     clippy::redundant_pattern_matching
 )]
 
+use std::path::Path;
+
 mod converter;
 mod error;
 mod parser;
@@ -126,12 +132,19 @@ pub use types::{
 };
 pub use validation::{ValidationResult, validate};
 
-/// Load a URDF file and convert it directly to a MuJoCo-aligned Model.
+/// Load a URDF from its text and convert it directly to a MuJoCo-aligned
+/// Model.
 ///
-/// This is the recommended way to load URDF robots for simulation. It:
+/// It:
 /// 1. Parses the URDF XML
 /// 2. Converts to MJCF XML (single compilation path)
-/// 3. Loads via `sim_mjcf::load_model()`
+/// 3. Compiles it with sim-mjcf (`parse_mjcf_str`, `model_from_mjcf`)
+///
+/// Text has no directory: a mesh's relative file name (under URDF's
+/// `strippath`, every one) is refused here unless a `meshdir` or `assetdir`
+/// places it, where MuJoCo 3.5.0's string load looks for it from the working
+/// directory (ledger L467). A URDF whose meshes sit beside it loads with
+/// [`load_urdf_model_from_file`].
 ///
 /// # Example
 ///
@@ -153,9 +166,35 @@ pub use validation::{ValidationResult, validate};
 /// data.step(&model).expect("step failed");
 /// ```
 pub fn load_urdf_model(urdf_xml: &str) -> Result<sim_core::Model> {
-    let mjcf = urdf_to_mjcf(urdf_xml)?;
-    sim_mjcf::load_model(&mjcf)
-        .map_err(|e| UrdfError::Unsupported(format!("MJCF conversion error: {e}")))
+    compile(&urdf_to_mjcf(urdf_xml)?, None)
+}
+
+/// Load a URDF file and convert it to a MuJoCo-aligned Model, as
+/// [`load_urdf_model`] does.
+///
+/// Each mesh's file is found against the URDF's directory as MuJoCo 3.5.0's
+/// `MjModel.from_xml_path` finds it (`tests/importer_reader.rs`:
+/// `package://`, `file://`, absolute, relative, `..`, `meshdir` and
+/// `assetdir` paths, under `strippath` true and false).
+///
+/// # Errors
+///
+/// [`UrdfError::Io`] if the file cannot be read; otherwise as
+/// [`load_urdf_model`].
+pub fn load_urdf_model_from_file(path: impl AsRef<Path>) -> Result<sim_core::Model> {
+    let path = path.as_ref();
+    let urdf = std::fs::read_to_string(path).map_err(|source| UrdfError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    compile(&urdf_to_mjcf(&urdf)?, path.parent())
+}
+
+/// The converted MJCF compiled by sim-mjcf, a relative asset file found
+/// against `dir`.
+fn compile(mjcf: &str, dir: Option<&Path>) -> Result<sim_core::Model> {
+    let mjcf = sim_mjcf::parse_mjcf_str(mjcf).map_err(UrdfError::Model)?;
+    sim_mjcf::model_from_mjcf(&mjcf, dir).map_err(UrdfError::Model)
 }
 
 #[cfg(test)]

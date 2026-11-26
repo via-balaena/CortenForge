@@ -41,7 +41,9 @@ use crate::types::{
 /// refuses the document.
 pub fn parse_urdf_str(xml: &str) -> Result<UrdfRobot> {
     let root = read_tree(xml)?;
-    if root.tag != "robot" {
+    // MuJoCo 3.5.0 takes a root named `robot` in any case for a URDF
+    // (`strcasecmp`, `xml.cc:293`; measured: `<ROBOT>`, `<rObOt>` load).
+    if !root.tag.eq_ignore_ascii_case("robot") {
         return Err(UrdfError::missing_element("robot", "URDF document"));
     }
     let mujoco = parse_mujoco(&root)?;
@@ -189,17 +191,95 @@ impl Element {
 /// recurses.
 const XML_DEPTH_LIMIT: usize = 498;
 
-/// The document's root element, read without recursing; an element nested
-/// past [`XML_DEPTH_LIMIT`] is refused.
+/// tinyxml2's whitespace (`XMLUtil::IsWhiteSpace`, `tinyxml2.h:567-569`):
+/// `isspace` in the C locale, so a vertical tab and a form feed too.
+fn is_tinyxml2_space(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
+}
+
+/// The text of `xml` MuJoCo 3.5.0's XML reader (tinyxml2) parses, as it
+/// parses a NUL-terminated copy (`XMLDocument::Parse`,
+/// `tinyxml2.cpp:2459-2463`) and skips leading whitespace and then a
+/// byte-order mark (`:2557-2558`): up to the first NUL, past the whitespace;
+/// the mark that leaves at the start, quick-xml drops (measured: a NUL after
+/// the root loads, one inside it or in an attribute is refused; whitespace, a
+/// mark and a declaration load).
+fn tinyxml2_text(xml: &str) -> &str {
+    let xml = xml.split('\0').next().unwrap_or_default();
+    xml.trim_start_matches(|c: char| u8::try_from(c).is_ok_and(is_tinyxml2_space))
+}
+
+/// What MuJoCo 3.5.0's XML reader (tinyxml2, as MuJoCo 3.5.0 builds it) has
+/// read at the document's level, outside the root, for the two rules it keeps
+/// there: a declaration (`<?…?>`) is allowed only before every other node
+/// (`XMLNode::ParseDeep`, `tinyxml2.cpp:1120-1146`), and text that no `<`
+/// ends is refused (`XMLText::ParseDeep`, `:1246-1253`).
+#[derive(Default)]
+struct DocumentLevel {
+    /// A node other than a declaration has been read.
+    other_node: bool,
+    /// The last node read is text.
+    text_last: bool,
+}
+
+impl DocumentLevel {
+    /// One event at the document's level. Whitespace makes no node
+    /// ([`is_tinyxml2_space`]; measured: a vertical tab and a form feed after
+    /// the root load); a reference is text, and a CDATA section a node that is
+    /// not (measured: `&amp;` after the root is refused, `<![CDATA[ c ]]>`
+    /// loads).
+    fn read(&mut self, event: &Event<'_>) -> Result<()> {
+        match event {
+            Event::Decl(_) | Event::PI(_) if self.other_node => return Err(misplaced_declaration()),
+            Event::Decl(_) | Event::PI(_) | Event::Eof => {}
+            Event::Text(text) if text.iter().all(|&byte| is_tinyxml2_space(byte)) => {}
+            Event::Text(_) | Event::GeneralRef(_) => {
+                self.other_node = true;
+                self.text_last = true;
+            }
+            _ => {
+                self.other_node = true;
+                self.text_last = false;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A declaration where tinyxml2 refuses one (`XML_ERROR_PARSING_DECLARATION`).
+fn misplaced_declaration() -> UrdfError {
+    UrdfError::XmlParse(
+        "a declaration (`<?...?>`) is allowed only at the document's level, before every other node"
+            .into(),
+    )
+}
+
+/// The document's root element, read without recursing, from
+/// [`tinyxml2_text`]. Outside attribute text it keeps these of MuJoCo 3.5.0's
+/// XML reader's (tinyxml2's) rules: an element nested past
+/// [`XML_DEPTH_LIMIT`] is refused, and so are a declaration inside an element
+/// or after any other node and a document that ends in text
+/// ([`DocumentLevel`]; measured); an `&` that starts no reference is text, as
+/// tinyxml2 keeps it (measured: `a & b` and `x &amp y` in a link load).
+/// Elsewhere the reading is quick-xml's, which differs from tinyxml2's (ledger
+/// L463: a stray end tag after the root, a DOCTYPE's internal subset holding a
+/// `>`, a name starting with a digit, …).
 fn read_tree(xml: &str) -> Result<Element> {
-    let mut reader = Reader::from_str(xml);
+    let mut reader = Reader::from_str(tinyxml2_text(xml));
+    reader.config_mut().allow_dangling_amp = true;
     let mut stack: Vec<Element> = Vec::new();
     let mut root = None;
+    let mut document = DocumentLevel::default();
     let mut buf = Vec::new();
     loop {
         let event = reader
             .read_event_into(&mut buf)
             .map_err(|e| UrdfError::XmlParse(e.to_string()))?;
+        if stack.is_empty() {
+            document.read(&event)?;
+        } else if matches!(event, Event::Decl(_) | Event::PI(_)) {
+            return Err(misplaced_declaration());
+        }
         match event {
             Event::Start(ref e) => {
                 stack.push(Element::new(e)?);
@@ -232,6 +312,9 @@ fn read_tree(xml: &str) -> Result<Element> {
     }
     if !stack.is_empty() {
         return Err(UrdfError::XmlParse("unexpected end of the document".into()));
+    }
+    if document.text_last {
+        return Err(UrdfError::XmlParse("the document ends in text".into()));
     }
     root.ok_or_else(|| UrdfError::missing_element("robot", "URDF document"))
 }
@@ -1391,6 +1474,15 @@ mod tests {
         ] {
             let err = parse_urdf_str(&urdf("revolute", mimics)).expect_err(mimics);
             assert!(err.to_string().contains(words), "{mimics}: {err}");
+        }
+        for leader in ["spherical", "floating"] {
+            let doc = urdf(leader, r#"<mimic joint="j1"/>"#);
+            let err = crate::load_urdf_model(&doc).expect_err(leader);
+            assert!(
+                err.to_string()
+                    .contains(&format!("joint 'j1' is {leader}: a mimic couples")),
+                "{leader}: {err}"
+            );
         }
         for (leader, mimic) in [("revolute", "nope"), ("fixed", "j1"), ("planar", "j1")] {
             let doc = urdf(leader, &format!(r#"<mimic joint="{mimic}"/>"#));

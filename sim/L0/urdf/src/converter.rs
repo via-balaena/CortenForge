@@ -107,6 +107,20 @@ fn written(v: &Vector3<f64>) -> bool {
     v.iter().any(|x| x.to_bits() != 0)
 }
 
+/// A URDF tensor's six moments in the order MuJoCo 3.5.0's importer fills a
+/// body's `fullinertia` with them (`ixx iyy izz ixy ixz iyz`,
+/// `xml_urdf.cc:252-258`).
+fn full_moments(inertia: &crate::types::UrdfInertia) -> [f64; 6] {
+    [
+        inertia.ixx,
+        inertia.iyy,
+        inertia.izz,
+        inertia.ixy,
+        inertia.ixz,
+        inertia.iyz,
+    ]
+}
+
 /// The principal moments and the inertial frame of a link whose `<inertial>`
 /// origin turns (its `rpy` [`written`]), in the link's frame: the moments
 /// MuJoCo 3.5.0's `mjuu_fullInertia` makes of the tensor as written, and the
@@ -402,8 +416,7 @@ fn section_lines(
 ///
 /// # Errors
 ///
-/// [`UrdfError::Unsupported`] with sim-mjcf's error, as a converted model's
-/// own refusal is worded.
+/// [`UrdfError::Section`] with sim-mjcf's error.
 pub fn check_section(
     tag: &str,
     attributes: &[(String, String)],
@@ -415,7 +428,7 @@ pub fn check_section(
     lines.push("</mujoco>".to_owned());
     sim_mjcf::parse_mjcf_str(&lines.join("\n"))
         .map(drop)
-        .map_err(|e| UrdfError::Unsupported(format!("MJCF conversion error: {e}")))
+        .map_err(UrdfError::Section)
 }
 
 /// Internal converter state.
@@ -541,7 +554,10 @@ impl<'a> Converter<'a> {
                 // world body (`AddToTree`, `xml_urdf.cc:727`): its geoms are
                 // the world's, the links its joints enter are top-level
                 // bodies. Its `<inertial>`, which MuJoCo stores as the world
-                // body's mass, has no MJCF form under `<worldbody>`.
+                // body's mass, inertia, centre and frame, has no MJCF form
+                // under `<worldbody>` (D-URDF-WORLD-INERTIAL); its tensor is
+                // checked as MuJoCo checks the world body's.
+                self.check_world_tensor()?;
                 self.write_geoms(WORLD)?;
                 opened.insert(WORLD.to_string());
                 let children = self.child_links(WORLD);
@@ -564,6 +580,9 @@ impl<'a> Converter<'a> {
         self.write_line("</worldbody>");
 
         // Write equality constraints for mimic joints
+        for mimic in &self.mimic_constraints {
+            self.check_mimic(mimic)?;
+        }
         if !self.mimic_constraints.is_empty() {
             self.write_line("");
             self.write_line("<equality>");
@@ -650,7 +669,11 @@ impl<'a> Converter<'a> {
             .map(|link| link.name.as_str())
             .filter(|name| !self.child_to_joint.contains_key(name))
             .collect();
-        if roots.is_empty() {
+        // A robot without links is an empty world, as MuJoCo 3.5.0's importer
+        // loads it (measured: `<robot name="r"/>`, one body); with links, none
+        // a root, the joints make a loop, which the parser refuses before this
+        // in a document and this refuses in a robot built in code.
+        if roots.is_empty() && !self.robot.links.is_empty() {
             return Err(UrdfError::NoRootLink);
         }
         Ok(roots)
@@ -813,6 +836,9 @@ impl<'a> Converter<'a> {
             UrdfJointType::Prismatic => ("slide", true),
             UrdfJointType::Fixed => return Ok(()), // Fixed joints = no joint in MJCF
             UrdfJointType::Floating => ("free", false),
+            // A ball's axis is (0, 0, 1) whatever is written (MuJoCo's
+            // compiler fixes it), so none is written.
+            UrdfJointType::Spherical => ("ball", false),
             UrdfJointType::Planar => unreachable!("handled above"),
         };
 
@@ -828,12 +854,19 @@ impl<'a> Converter<'a> {
         // (D-URDF-CONTINUOUS-LIMIT: MuJoCo limits it), but where
         // `autolimits="false"`, under which MuJoCo's compiler refuses a range
         // its importer left automatic (`checklimited`), its range is written
-        // so: refused, or loaded unlimited, as MuJoCo's is.
+        // so: refused, or loaded unlimited, as MuJoCo's is. A floating
+        // joint's range is written as the importer reads it
+        // (`xml_urdf.cc:498-503`, every joint's but a fixed one's), and limits
+        // nothing: MuJoCo's compiler makes a free joint unlimited before any
+        // check of its range (`user_objects.cc:2895-2898`).
         let autolimits = self.robot.mujoco.autolimits();
         if let Some(limit) = &joint.limit
             && (matches!(
                 joint.joint_type,
-                UrdfJointType::Revolute | UrdfJointType::Prismatic
+                UrdfJointType::Revolute
+                    | UrdfJointType::Prismatic
+                    | UrdfJointType::Spherical
+                    | UrdfJointType::Floating
             ) || (joint.joint_type == UrdfJointType::Continuous && !autolimits))
         {
             attrs.push_str(&limit_attrs(limit, autolimits));
@@ -886,18 +919,59 @@ impl<'a> Converter<'a> {
         Ok(())
     }
 
+    /// A `<mimic>`'s two joints, refused where either is spherical or floating:
+    /// the joint equality this crate makes of a mimic (D-URDF-MIMIC) couples
+    /// hinge and slide joints only, as MuJoCo 3.5.0's compiler requires of
+    /// the MJCF it is written as ("only HINGE and SLIDE joint allowed in
+    /// constraint", `user_objects.cc:6034-6041`), which sim-mjcf does not
+    /// check (ledger L465).
+    fn check_mimic(&self, mimic: &MimicEntry) -> Result<()> {
+        for name in [&mimic.follower, &mimic.leader] {
+            let kind = match self.robot.joints.iter().find(|joint| &joint.name == name) {
+                Some(joint) if joint.joint_type == UrdfJointType::Spherical => "spherical",
+                Some(joint) if joint.joint_type == UrdfJointType::Floating => "floating",
+                _ => continue,
+            };
+            return Err(UrdfError::invalid_attribute(
+                "joint",
+                format!("mimic in joint {}", mimic.follower),
+                format!("joint '{name}' is {kind}: a mimic couples hinge and slide joints only"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The link named `world`'s tensor, refused where MuJoCo 3.5.0's compiler
+    /// refuses the world body's: its `mjuu_fullInertia` runs on every body
+    /// whose `fullinertia` the importer defined, the world's too
+    /// (`user_objects.cc:2412-2416`), and the importer defines it for any
+    /// tensor but six zeros (`xml_urdf.cc:260-270`); nothing else about the
+    /// world's `<inertial>` is checked (measured: a negative mass, a tensor
+    /// breaking the triangle load). It is checked before sim-mjcf compiles
+    /// the rest, so of two faults the world's is named before a moving body's
+    /// and a bad `timestep`, as MuJoCo names it, and before a mesh's missing
+    /// file, which MuJoCo names first (ledger L353; all measured).
+    fn check_world_tensor(&self) -> Result<()> {
+        let Some(inertial) = self
+            .links
+            .get(WORLD)
+            .and_then(|link| link.inertial.as_ref())
+        else {
+            return Ok(());
+        };
+        let moments = full_moments(&inertial.inertia);
+        if moments.iter().all(|&moment| moment == 0.0) {
+            return Ok(());
+        }
+        sim_mjcf::full_inertia(&moments)
+            .map(|_| ())
+            .map_err(|message| UrdfError::invalid_inertia(WORLD, message))
+    }
+
     fn convert_inertial(&mut self, inertial: &crate::types::UrdfInertial) -> Result<()> {
         let pos = inertial.origin.xyz;
         let mass = inertial.mass;
-        let inertia = &inertial.inertia;
-        let moments = [
-            inertia.ixx,
-            inertia.iyy,
-            inertia.izz,
-            inertia.ixy,
-            inertia.ixz,
-            inertia.iyz,
-        ];
+        let moments = full_moments(&inertial.inertia);
         // MuJoCo 3.5.0's importer fills the body's `fullinertia` with the six
         // moments, a diagonal tensor's too (`xml_urdf.cc:252-258`), so its
         // compiler takes the tensor's principal axes as the inertial frame,
@@ -1583,8 +1657,9 @@ mod tests {
     /// makes it (measured: bodies `['world', 'base']`, geoms `['floor', 'b']`
     /// on bodies 0 and 1). `b8a6ffba` wrote it as a body named
     /// `world`, which only fusion folded into the world. Its `<inertial>` is
-    /// dropped, where MuJoCo stores it as the world body's mass (measured:
-    /// `body_mass[0]` 1; `D-URDF-WORLD-INERTIAL`).
+    /// not stored, where MuJoCo stores it as the world body's mass, inertia,
+    /// centre and frame (measured: `body_mass[0]` 1; `D-URDF-WORLD-INERTIAL`);
+    /// its tensor is checked (`check_world_tensor`).
     #[test]
     fn the_link_named_world_is_the_world_body() {
         let urdf = format!(

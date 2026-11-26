@@ -4,7 +4,9 @@ Nine examples covering the full `sim-urdf` pipeline: parsing URDF XML,
 converting to MJCF, and compiling to a `sim-core::Model`. Each example
 isolates a single URDF feature.
 
-The pipeline is: URDF XML → `urdf_to_mjcf()` → MJCF XML → `load_model()` → Model/Data.
+The pipeline is: URDF XML → `urdf_to_mjcf()` → MJCF XML → sim-mjcf's compiler → Model/Data
+(`load_urdf_model` from the URDF's text, `load_urdf_model_from_file` from its file, which finds each mesh's
+file against the URDF's directory).
 
 ## Examples
 
@@ -31,7 +33,8 @@ headless validator:
 | `continuous` | `hinge` + `limited="false"` | No limits |
 | `prismatic` | `slide` + range from `<limit>` | Limited as `revolute` |
 | `fixed` | eliminated by `fusestatic="true"` | Body merges into parent |
-| `floating` | `free` | 6 DOF (3 translate + 3 rotate) |
+| `floating` | `free` + range from `<limit>` | 6 DOF (3 translate + 3 rotate); the range is stored, never limits |
+| `spherical` | `ball` + range from `<limit>` | 3 DOF; not in URDF's specification, read as MuJoCo's importer reads it |
 | `planar` | slides `_TX`, `_TY` + hinge `_RZ` | 3 DOF in plane, built as MuJoCo's importer builds it; `<limit>` limits `_TX` |
 | `box size="x y z"` | `box size="x/2 y/2 z/2"` | Full → half extents |
 | `cylinder r l` | `cylinder size="r l/2"` | Full → half length |

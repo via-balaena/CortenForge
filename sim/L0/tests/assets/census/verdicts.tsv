@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 2212
+# agree_floor 2219
 0011dca4f1300086	agree
 001bc4149d608b24	agree
 00234df43ca929fd	agree
@@ -649,6 +649,7 @@
 2952359d8c087c2f	both-refuse
 29661ba2fd5620f9	agree
 2972c7b00362d221	agree
+298aff029f2d1c0e	agree
 298b4dbc9bd6c9f6	agree
 299d3cf076a05d83	agree
 29a49ee0efa8996e	agree
@@ -789,6 +790,7 @@
 31bace11e35e2d03	agree
 31d4f56e91d15c49	agree
 31dece6797510ed8	agree
+31e44f8e947280cc	agree
 31ef3436971651f5	agree
 31fe9796893b55d5	both-refuse
 320274394e0aa6e9	agree
@@ -1761,6 +1763,7 @@
 6eb6894967271a4d	mj-refuses
 6ec064d9db083bdb	agree
 6ec286a39c213a19	agree
+6ecf728ec4b36c85	agree
 6ed9774f4e41b67a	both-refuse
 6f0d8b1530fab29b	both-refuse
 6f0e43e00ee48a07	both-refuse
@@ -2418,6 +2421,7 @@
 9b33406e322b4890	agree
 9b5189ae92332b61	agree
 9b9a607b1081c201	mj-refuses
+9ba8f29f6b98c9b2	agree
 9bafbf26622bd9f9	agree
 9bca383b7f07274e	both-refuse
 9bcd53db275a07de	both-refuse
@@ -3182,6 +3186,7 @@ cc24287a964cb513	both-refuse
 cc56ed180bc81143	agree
 cc5e6acdb07e29c4	agree
 cc62c807a03b7910	both-refuse
+cc6fd7fe690b9ed8	agree
 cc7f70229dee6393	agree
 cc83c6c76bf48cdb	agree
 cc88f3f8e309672a	agree
@@ -3390,6 +3395,7 @@ d94f75dbc0510e71	agree
 d9719dfce438910a	agree
 d985f32c6d905e89	agree
 d997cb5b91477365	agree
+d9aa8b9c8ed73e38	agree
 d9b2dfa7b1fd3aa5	both-refuse
 d9bebd8c179a03e0	both-refuse
 d9ddc00a8b14d4a1	agree
@@ -3409,6 +3415,7 @@ daa5f9ecc3aca204	agree
 daae429936ec8440	agree
 daaf81f9be4983e8	agree
 dab68e7bac6e63d8	both-refuse
+dacb65095575b909	agree
 daf35beb5382df00	agree
 dafd04e3e2ba137f	agree
 db024f1c16f72463	both-refuse
@@ -3438,6 +3445,7 @@ dc899a13eda08a6d	agree
 dc94f4a80dfea95e	agree
 dc960c6ac9cae4f8	agree
 dc9fc30466a090b8	both-refuse
+dcb3977860b0c231	ours-refused	divergence=D-OPTION-TIMESTEP
 dcd76824d776169d	agree
 dcd9a43af9d2bfe9	both-refuse
 dcf0dcea87949bf5	both-refuse

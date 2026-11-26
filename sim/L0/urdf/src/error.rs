@@ -1,5 +1,7 @@
 //! Error types for URDF parsing and loading.
 
+use std::path::PathBuf;
+
 use thiserror::Error;
 
 /// Errors that can occur during URDF parsing and loading.
@@ -93,7 +95,7 @@ pub enum UrdfError {
     },
 
     /// No root link found.
-    #[error("no root link found (all links are children of joints)")]
+    #[error("no root link found (every link is a joint's child, or there is none)")]
     NoRootLink,
 
     /// Multiple root links found.
@@ -127,13 +129,30 @@ pub enum UrdfError {
         message: String,
     },
 
-    /// File I/O error.
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
+    /// A URDF file could not be read: the operating system's error, or that
+    /// the file is not UTF-8, which MuJoCo 3.5.0 reads (`D-URDF-FILE-UTF8`).
+    #[error("cannot read '{}': {source}", path.display())]
+    Io {
+        /// The file, as the caller named it.
+        path: PathBuf,
+        /// What reading it reported.
+        source: std::io::Error,
+    },
 
-    /// Unsupported feature.
-    #[error("unsupported URDF feature: {0}")]
-    Unsupported(String),
+    /// The model the URDF converts to is refused by sim-mjcf, in its words: as
+    /// MuJoCo 3.5.0's compiler refuses the model its importer builds (a moving
+    /// body without mass, a tensor breaking the triangle, …), or where a
+    /// divergence registered in `sim/L0/tests/assets/census/divergences.tsv`
+    /// refuses what MuJoCo loads.
+    #[error("the model is refused: {0}")]
+    Model(#[source] sim_mjcf::MjcfError),
+
+    /// A URDF's own `<mujoco>` section refused by sim-mjcf's reader, as
+    /// MuJoCo 3.5.0's reader refuses it, in sim-mjcf's words. The location
+    /// it names is within the section, checked alone as a one-section
+    /// document, not the URDF's line.
+    #[error("a <mujoco> section is refused: {0}")]
+    Section(#[source] sim_mjcf::MjcfError),
 }
 
 impl UrdfError {
