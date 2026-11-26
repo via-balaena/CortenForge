@@ -263,8 +263,8 @@ fn row_tree_pair(model: &Model, data: &Data, row: usize) -> Option<(Option<usize
                 EqualityType::Connect | EqualityType::Weld
             ) =>
         {
-            let b1 = model.eq_obj1id[id];
-            let b2 = model.eq_obj2id[id];
+            // Its sites' bodies under the site semantic (`engine_island.c:247-251`).
+            let (b1, b2) = model.eq_bodies(id);
             Some((tree_of_body(b1), tree_of_body(b2)))
         }
         _ => None,

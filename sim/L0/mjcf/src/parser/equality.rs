@@ -81,9 +81,76 @@ pub(super) fn parse_equality<R: BufRead>(
     Ok(equality)
 }
 
+/// Every attribute MuJoCo 3.5.0's schema gives an element of `<equality>`
+/// (`xml_native_reader.cc:356-368`).
+const EQUALITY_ATTRIBUTES: [&str; 18] = [
+    "name",
+    "class",
+    "body1",
+    "body2",
+    "anchor",
+    "site1",
+    "site2",
+    "relpose",
+    "torquescale",
+    "joint1",
+    "joint2",
+    "polycoef",
+    "tendon1",
+    "tendon2",
+    "flex",
+    "active",
+    "solref",
+    "solimp",
+];
+
+/// The attributes MuJoCo 3.5.0's schema gives each element of `<equality>`.
+const CONNECT_TAKES: &[&str] = &[
+    "name", "class", "body1", "body2", "anchor", "site1", "site2", "active", "solref", "solimp",
+];
+const WELD_TAKES: &[&str] = &[
+    "name",
+    "class",
+    "body1",
+    "body2",
+    "relpose",
+    "anchor",
+    "site1",
+    "site2",
+    "active",
+    "solref",
+    "solimp",
+    "torquescale",
+];
+const JOINT_TAKES: &[&str] = &[
+    "name", "class", "joint1", "joint2", "polycoef", "active", "solref", "solimp",
+];
+const TENDON_TAKES: &[&str] = &[
+    "name", "class", "tendon1", "tendon2", "polycoef", "active", "solref", "solimp",
+];
+const FLEX_TAKES: &[&str] = &["name", "class", "flex", "active", "solref", "solimp"];
+
+/// Refuses an attribute another element of `<equality>` takes and `element`
+/// does not ([`EQUALITY_ATTRIBUTES`], `takes`), as MuJoCo 3.5.0's schema
+/// refuses it ("Schema violation: unrecognized attribute", measured on each
+/// element), the first such one written. An attribute no element of
+/// `<equality>` takes is not checked here.
+fn refuse_foreign_attributes(a: &Attrs, element: &str, takes: &[&str]) -> Result<()> {
+    let foreign: Vec<&str> = EQUALITY_ATTRIBUTES
+        .iter()
+        .copied()
+        .filter(|attribute| !takes.contains(attribute))
+        .collect();
+    match a.first_of(&foreign) {
+        Some(attribute) => Err(MjcfError::unknown_attribute(element, attribute)),
+        None => Ok(()),
+    }
+}
+
 /// Parse connect constraint attributes.
 pub(super) fn parse_connect_attrs(e: &BytesStart) -> Result<MjcfConnect> {
     let a = Attrs::new(e)?;
+    refuse_foreign_attributes(&a, "connect", CONNECT_TAKES)?;
     let mut connect = MjcfConnect::default();
 
     connect.name = a.string("name");
@@ -109,26 +176,20 @@ pub(super) fn parse_connect_attrs(e: &BytesStart) -> Result<MjcfConnect> {
 /// Parse weld constraint attributes.
 pub(super) fn parse_weld_attrs(e: &BytesStart) -> Result<MjcfWeld> {
     let a = Attrs::new(e)?;
+    refuse_foreign_attributes(&a, "weld", WELD_TAKES)?;
     let mut weld = MjcfWeld::default();
 
     weld.name = a.string("name");
     weld.class = a.string("class");
 
-    // body1 is required
-    weld.body1 = a
-        .string("body1")
-        .ok_or_else(|| MjcfError::missing_attribute("weld", "body1"))?;
-
-    // body2 is optional (defaults to world)
+    weld.body1 = a.string("body1");
     weld.body2 = a.string("body2");
-
-    // Parse anchor point
-    if let Some(anchor) = a.vec3("anchor")? {
-        weld.anchor = anchor;
-    }
-
-    // Parse relpose [x y z qw qx qy qz]
+    weld.site1 = a.string("site1");
+    weld.site2 = a.string("site2");
+    weld.anchor = a.vec3("anchor")?;
+    // relpose: [x y z qw qx qy qz]
     weld.relpose = a.array("relpose")?;
+    crate::builder::equality::weld_form(&weld)?;
     weld.torquescale = a.real("torquescale")?;
 
     // Parse solver parameters
@@ -144,6 +205,7 @@ pub(super) fn parse_weld_attrs(e: &BytesStart) -> Result<MjcfWeld> {
 /// Parse joint equality constraint attributes.
 pub(super) fn parse_joint_equality_attrs(e: &BytesStart) -> Result<MjcfJointEquality> {
     let a = Attrs::new(e)?;
+    refuse_foreign_attributes(&a, "joint", JOINT_TAKES)?;
     let mut joint_eq = MjcfJointEquality::default();
 
     joint_eq.name = a.string("name");
@@ -204,6 +266,7 @@ pub(super) fn parse_distance_attrs(e: &BytesStart) -> Result<MjcfDistance> {
 /// Parse tendon equality constraint attributes.
 pub(super) fn parse_tendon_equality_attrs(e: &BytesStart) -> Result<MjcfTendonEquality> {
     let a = Attrs::new(e)?;
+    refuse_foreign_attributes(&a, "tendon", TENDON_TAKES)?;
     let mut ten_eq = MjcfTendonEquality::default();
 
     ten_eq.name = a.string("name");
@@ -241,6 +304,7 @@ pub(super) fn parse_flex_equality_attrs(
 ) -> Result<MjcfFlexEquality> {
     let a = Attrs::new(e)?;
     let element = if vertices { "flexvert" } else { "flex" };
+    refuse_foreign_attributes(&a, element, FLEX_TAKES)?;
     Ok(MjcfFlexEquality {
         name: a.string("name"),
         class: a.string("class"),

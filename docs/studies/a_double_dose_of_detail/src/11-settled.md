@@ -33,7 +33,7 @@ Each line: the call, why, and where the appendix records what would differ if it
 | A4-Q5 | `MjcfBody` drop recursion | measure drop alone first; iterative `Drop` if > 512 KB | A4 §11 |
 | A4-Q6 | hex floats | refused, limitation (0 uses) | MuJoCo accepts them via `strtod` |
 | A4-Q7 | `freejoint damping` (3 examples) | removed from the docs (it was never read; behaviour unchanged) | dead attribute |
-| A4-Q9 | weld `site1`/`site2` | refused, limitation (0 uses) | orientation part not worked through |
+| A4-Q9 | weld `site1`/`site2` | refused, limitation (0 uses). **Replaced in Rigid-loading PR RL-10d**: loaded as MuJoCo 3.5.0 loads it, its sites kept (`Model::eq_objtype`), its rows the sites' positions and turns (22-rigid-loading L12) | orientation part not worked through |
 | A5-Q1 | rotation fit | moot: replaced by C6, MuJoCo's `eig3` in plain arithmetic (C1) | A10 §2.4 |
 | A5-Q2 | automatic `lo == hi` | refused with lo > hi | MuJoCo treats it as silently unlimited |
 | A5-Q3 | stored range of an unlimited joint | MuJoCo's stored values | behaviour-free; check `traj_fp` unchanged |

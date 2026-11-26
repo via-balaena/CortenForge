@@ -1,0 +1,1 @@
+<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/></body></worldbody><equality><weld body1="a"/></equality></mujoco>

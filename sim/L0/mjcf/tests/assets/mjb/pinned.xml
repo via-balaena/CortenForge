@@ -53,6 +53,8 @@
   </contact>
   <equality>
     <joint joint1="shoulder" joint2="wrist" polycoef="0 1 0 0 0"/>
+    <weld body1="hand" body2="arm" anchor="0.1 0 0" relpose="0 0 0.1 1 0 0 0" torquescale="0.5"/>
+    <weld site1="s0" site2="tip" active="false"/>
   </equality>
   <tendon>
     <fixed name="ft">

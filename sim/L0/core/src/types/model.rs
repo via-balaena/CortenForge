@@ -917,19 +917,29 @@ pub struct Model {
     pub neq: usize,
     /// Equality constraint type (Connect, Weld, Joint, Tendon, Distance, Flex).
     pub eq_type: Vec<EqualityType>,
-    /// First object ID (body for Connect/Weld, joint for Joint, geom for
-    /// Distance, flex for Flex).
+    /// First object ID: a body for Connect/Weld, or a site under the site
+    /// semantic ([`Self::eq_objtype`]); a joint for Joint, a tendon for
+    /// Tendon, a geom for Distance, a flex for Flex.
     pub eq_obj1id: Vec<usize>,
-    /// Second object ID (body/joint/geom, or `usize::MAX` for world origin in Distance).
+    /// Second object ID, as the first's (the world body for a connect's or
+    /// a weld's unwritten `body2`), or `usize::MAX` for none (a joint's or
+    /// tendon's coupling to a constant, the world origin in Distance, every
+    /// flex equality).
     pub eq_obj2id: Vec<usize>,
+    /// The objects' type, MuJoCo's `eq_objtype`: a connect's or a weld's
+    /// `Body` or `Site`, the two ids then naming sites, whose positions are
+    /// the points and whose bodies carry the rows ([`Model::eq_bodies`]);
+    /// `None` on every other kind, as MuJoCo leaves it unknown there.
+    pub eq_objtype: Vec<MjObjectType>,
     /// Constraint parameters (meaning depends on type).
     /// - Connect: a point in body1's frame in `[0..3]`, one in body2's in
-    ///   `[3..6]`
+    ///   `[3..6]`; under the site semantic 0, unused (the points are the
+    ///   sites')
     /// - Weld: the anchor in body2's frame in `[0..3]`, in body1's in `[3..6]`,
     ///   the relative orientation `[qw, qx, qy, qz]` in `[6..10]`, and the
     ///   torque scale in `[10]` (MuJoCo's `torquescale`, which scales the
     ///   rotational error and rows; 1 where none is written, MuJoCo's
-    ///   default)
+    ///   default); under the site semantic `[10]` alone is read
     /// - Joint: polycoef[0..11] for polynomial coupling (degree ≤ 10; trailing zeros
     ///   give a lower degree, e.g. a quartic uses [0..5])
     /// - Tendon: polycoef[0..5] for polynomial coupling
@@ -1324,6 +1334,20 @@ impl Model {
             JacobianType::Dense => false,
             JacobianType::Sparse => true,
             JacobianType::Auto => self.nv >= 60,
+        }
+    }
+
+    /// The two bodies connect or weld `eq` acts on, as MuJoCo 3.5.0 reads
+    /// them: its objects, or under the site semantic (`eq_objtype` `Site`)
+    /// their sites' bodies (`site_bodyid`, `engine_core_constraint.c:438-443`,
+    /// `:1113-1117`).
+    #[must_use]
+    pub fn eq_bodies(&self, eq: usize) -> (usize, usize) {
+        let (obj1, obj2) = (self.eq_obj1id[eq], self.eq_obj2id[eq]);
+        if self.eq_objtype[eq] == MjObjectType::Site {
+            (self.site_body[obj1], self.site_body[obj2])
+        } else {
+            (obj1, obj2)
         }
     }
 

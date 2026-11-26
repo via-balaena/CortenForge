@@ -3,7 +3,8 @@
 //! These tests verify the correctness of equality constraint enforcement:
 //! - **Connect**: Ball-and-socket constraint (3 DOF position lock)
 //! - **Weld**: Fixed frame constraint (6 DOF pose lock)
-//! - **Joint**: Polynomial joint coupling (θ₂ = poly(θ₁))
+//! - **Joint**: Polynomial joint coupling, each joint from its `ref`
+//!   (θ₁ − ref₁ = poly(θ₂ − ref₂))
 //! - **Distance**: Scalar distance constraint between geom centers (1 DOF)
 //!
 //! # Implementation Notes
@@ -792,12 +793,14 @@ fn test_invalid_joint_name_returns_error() {
 // Weld Relpose Test
 // ============================================================================
 
-/// Test: Weld constraint with custom relative pose.
-///
-/// The relpose parameter specifies the target relative pose between bodies.
+/// A weld's `relpose` as MuJoCo 3.5.0 holds it (ledger L448): its quaternion
+/// normalized into the row, the first constraint force pulling the two boxes
+/// together, and the boxes' position and velocity after ten steps, each
+/// printed by MuJoCo on the census's unfused oracle for this model
+/// (2026-11-25). Bit for bit on macOS arm64, where MuJoCo's values were printed; elsewhere within
+/// 1e-9 of each array's largest entry.
 #[test]
 fn test_weld_constraint_with_relpose() {
-    // Two bodies where body2 should maintain a 90-degree rotation relative to body1
     let mjcf = r#"
         <mujoco model="weld_relpose">
             <option gravity="0 0 0" timestep="0.001"/>
@@ -819,65 +822,86 @@ fn test_weld_constraint_with_relpose() {
 
     let model = load_model(mjcf).expect("should load");
     let mut data = model.make_data();
-
-    // Verify relpose was loaded (quaternion w=0.707, x=0, y=0.707, z=0 ≈ 90° about Y)
-    // New eq_data layout: [0..3]=anchor_body2, [3..6]=anchor_body1, [6..10]=relpose_quat
-    assert_relative_eq!(model.eq_data[0][6], 0.707, epsilon = 0.01); // qw
-    assert_relative_eq!(model.eq_data[0][8], 0.707, epsilon = 0.01); // qy
-
-    // Debug: print initial state and constraint forces
-    eprintln!("=== Initial state ===");
-    eprintln!("nv={}, nq={}", model.nv, model.nq);
-    eprintln!("qpos = {:?}", data.qpos.as_slice());
-    eprintln!("qvel = {:?}", data.qvel.as_slice());
-
-    // Step simulation with diagnostics
-    for step in 0..10 {
-        // Run forward to compute constraint forces
-        data.forward(&model).expect("forward failed");
-
-        eprintln!("\n=== Step {} ===", step);
-        eprintln!("qfrc_constraint = {:?}", data.qfrc_constraint.as_slice());
-        eprintln!("qvel = {:?}", data.qvel.as_slice());
-        eprintln!("qacc = {:?}", data.qacc.as_slice());
-
-        // Check for numerical issues
-        let max_force = data
-            .qfrc_constraint
-            .iter()
-            .map(|x| x.abs())
-            .fold(0.0_f64, f64::max);
-        let max_vel = data.qvel.iter().map(|x| x.abs()).fold(0.0_f64, f64::max);
-        let max_acc = data.qacc.iter().map(|x| x.abs()).fold(0.0_f64, f64::max);
-
-        eprintln!(
-            "max_force={:.2e}, max_vel={:.2e}, max_acc={:.2e}",
-            max_force, max_vel, max_acc
-        );
-
-        if let Err(e) = data.step(&model) {
-            panic!("Step {} failed: {}", step, e);
-        }
-    }
-
-    // Bodies should maintain relative orientation (approximately 90° about Y)
-    let rel_quat = data.xquat[1].inverse() * data.xquat[2];
-    let target_quat = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-        0.707, 0.0, 0.707, 0.0,
-    ));
-    let error_quat = rel_quat * target_quat.inverse();
-
-    // Check angle error is small
-    let angle_error = 2.0
-        * error_quat
-            .quaternion()
-            .i
-            .atan2(error_quat.quaternion().w)
-            .abs();
-    assert!(
-        angle_error < 0.3,
-        "Weld relpose should be maintained, got angle error {angle_error} rad"
+    let half = 0.7071067811865475;
+    assert_close(
+        &model.eq_data[0],
+        &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, half, 0.0, half, 0.0, 1.0],
     );
+
+    data.forward(&model).expect("forward");
+    let pull = 624.9999999999983;
+    let turn = 12.34567901234567;
+    assert_close(
+        data.qfrc_constraint.as_slice(),
+        &[
+            pull, 0.0, 0.0, 0.0, -turn, 0.0, -pull, 0.0, 0.0, 0.0, turn, 0.0,
+        ],
+    );
+
+    for step in 0..10 {
+        data.step(&model)
+            .unwrap_or_else(|e| panic!("step {step}: {e}"));
+    }
+    let (x, w, y) = (
+        0.025303440609302192,
+        0.9991977183598214,
+        0.04004896533653904,
+    );
+    assert_close(
+        data.qpos.as_slice(),
+        &[
+            x,
+            0.0,
+            1.0,
+            w,
+            0.0,
+            -y,
+            0.0,
+            0.4746965593906978,
+            0.0,
+            1.0,
+            w,
+            0.0,
+            y,
+            0.0,
+        ],
+    );
+    let (v, s) = (3.8992266928548354, 12.742329462025438);
+    assert_close(
+        data.qvel.as_slice(),
+        &[
+            v,
+            0.0,
+            1.5190004365450702e-17,
+            0.0,
+            -s,
+            0.0,
+            -3.8992266928548367,
+            0.0,
+            1.500806190435355e-17,
+            0.0,
+            s,
+            0.0,
+        ],
+    );
+}
+
+/// `ours` against MuJoCo 3.5.0's `mujoco`: equal bits on macOS arm64, where
+/// MuJoCo's values were printed; elsewhere both finite and within 1e-9 of
+/// the array's largest finite entry, where the platform's libm gives other
+/// last bits.
+fn assert_close(ours: &[f64], mujoco: &[f64]) {
+    let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    assert_eq!(ours.len(), mujoco.len(), "{ours:?}");
+    let scale = mujoco
+        .iter()
+        .filter(|v| v.is_finite())
+        .fold(0.0_f64, |m, v| m.max(v.abs()));
+    let same = ours.iter().zip(mujoco).all(|(a, b)| {
+        a.to_bits() == b.to_bits()
+            || (!exact && a.is_finite() && b.is_finite() && (a - b).abs() <= 1e-9 * scale)
+    });
+    assert!(same, "ours {ours:?}\nMuJoCo {mujoco:?}");
 }
 
 // ============================================================================

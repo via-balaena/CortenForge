@@ -57,8 +57,7 @@ impl FuseReferences {
             bodies.extend(connect.body1.iter().chain(&connect.body2).cloned());
         }
         for weld in &mjcf.equality.welds {
-            bodies.push(weld.body1.clone());
-            bodies.extend(weld.body2.iter().cloned());
+            bodies.extend(weld.body1.iter().chain(&weld.body2).cloned());
         }
         for exclude in &mjcf.contact.excludes {
             bodies.push(exclude.body1.clone());

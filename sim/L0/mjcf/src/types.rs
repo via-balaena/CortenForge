@@ -1897,6 +1897,9 @@ impl MjcfConnect {
 ///
 /// Welds two bodies together with a fixed relative pose (position and orientation).
 /// This creates a 6 DOF constraint locking both translation and rotation.
+/// As MuJoCo 3.5.0's, it is written in one of two forms: `body1` (and
+/// optionally `body2`, else the world, `anchor` and `relpose`), or `site1`
+/// and `site2`, whose positions and orientations are held together.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfWeld {
@@ -1904,13 +1907,17 @@ pub struct MjcfWeld {
     pub name: Option<String>,
     /// Default class for inheriting parameters.
     pub class: Option<String>,
-    /// Name of the first body.
-    pub body1: String,
-    /// Name of the second body (optional, defaults to world).
+    /// Name of the first body (the body form).
+    pub body1: Option<String>,
+    /// Name of the second body (the body form; the world when `None`).
     pub body2: Option<String>,
-    /// Anchor point in body2's local frame, `eq_data[0..3]`; 0 where none
-    /// is written, as MuJoCo's reader leaves it.
-    pub anchor: Vector3<f64>,
+    /// Name of the first site (the site form).
+    pub site1: Option<String>,
+    /// Name of the second site (the site form).
+    pub site2: Option<String>,
+    /// Anchor point in body2's local frame, `eq_data[0..3]` (the body form);
+    /// 0 where none is written, as MuJoCo's reader leaves it.
+    pub anchor: Option<Vector3<f64>>,
     /// `relpose` as written, `eq_data[3..10]`: body1's anchor and the
     /// relative quaternion. A quaternion of all 0 has both computed at
     /// `qpos0`; any other is normalized and the position kept (`mj_setConst`,
@@ -1932,9 +1939,11 @@ impl Default for MjcfWeld {
         Self {
             name: None,
             class: None,
-            body1: String::new(),
+            body1: None,
             body2: None,
-            anchor: Vector3::zeros(),
+            site1: None,
+            site2: None,
+            anchor: None,
             relpose: None,
             torquescale: None,
             solimp: None,
@@ -1949,7 +1958,7 @@ impl MjcfWeld {
     #[must_use]
     pub fn new(body1: impl Into<String>, body2: impl Into<String>) -> Self {
         Self {
-            body1: body1.into(),
+            body1: Some(body1.into()),
             body2: Some(body2.into()),
             ..Default::default()
         }
@@ -1959,16 +1968,26 @@ impl MjcfWeld {
     #[must_use]
     pub fn to_world(body1: impl Into<String>) -> Self {
         Self {
-            body1: body1.into(),
+            body1: Some(body1.into()),
             body2: None,
             ..Default::default()
         }
     }
 
-    /// Set the anchor point in body1's frame.
+    /// Create a weld constraint between two sites (the site form).
+    #[must_use]
+    pub fn between_sites(site1: impl Into<String>, site2: impl Into<String>) -> Self {
+        Self {
+            site1: Some(site1.into()),
+            site2: Some(site2.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Set the anchor point in body2's frame.
     #[must_use]
     pub fn with_anchor(mut self, anchor: Vector3<f64>) -> Self {
-        self.anchor = anchor;
+        self.anchor = Some(anchor);
         self
     }
 
@@ -2004,7 +2023,8 @@ impl MjcfWeld {
 /// A joint equality constraint from `<joint>` element within `<equality>`.
 ///
 /// Constrains a joint to maintain a specific position, or couples two joints
-/// with a linear relationship: `q2 = polycoef\[0\] + polycoef\[1\]*q1 + ...`
+/// by a polynomial, each joint measured from its reference position:
+/// `q1 − ref1 = polycoef\[0\] + polycoef\[1\]·(q2 − ref2) + …`
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfJointEquality {
@@ -2016,8 +2036,8 @@ pub struct MjcfJointEquality {
     pub joint1: String,
     /// Name of the second joint (optional, for coupling).
     pub joint2: Option<String>,
-    /// Polynomial coefficients for coupling: `q2 = sum(polycoef\[i\] * q1^i)`.
-    /// Default is `[0, 1]` meaning `q2 = q1` (mimic).
+    /// Polynomial coefficients for coupling: `q1 − ref1 = sum(polycoef\[i\] *
+    /// (q2 − ref2)^i)`. Default is `[0, 1]`, a mimic.
     pub polycoef: Vec<f64>,
     /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
     pub solimp: Option<Prefix<5>>,
@@ -2034,7 +2054,7 @@ impl Default for MjcfJointEquality {
             class: None,
             joint1: String::new(),
             joint2: None,
-            polycoef: vec![0.0, 1.0], // Default: q2 = q1
+            polycoef: vec![0.0, 1.0], // Default: a mimic
             solimp: None,
             solref: None,
             active: None,

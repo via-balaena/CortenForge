@@ -361,18 +361,21 @@ pub enum TendonType {
 /// Equality constraint type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum EqualityType {
-    /// Connect: constrains two body points to coincide.
+    /// Connect: constrains two points to coincide, each fixed on a body or
+    /// a site's position ([`Model::eq_objtype`](crate::Model::eq_objtype)).
     /// Removes 3 DOF (translation only).
     #[default]
     Connect,
-    /// Weld: constrains two body frames to be identical.
+    /// Weld: constrains two frames to keep their relative pose, two bodies'
+    /// or two sites' ([`Model::eq_objtype`](crate::Model::eq_objtype)).
     /// Removes 6 DOF (translation + rotation).
     Weld,
-    /// Joint: polynomial constraint between two joints.
-    /// q2 = poly(q1) where poly = c0 + c1*q1 + c2*q1^2 + ...
+    /// Joint: polynomial constraint between two joints, each measured from
+    /// its `qpos0`: `q1 − qpos0₁ = poly(q2 − qpos0₂)`, `poly` = `c0 + c1·x +
+    /// c2·x² + …`; with one joint, `q1 = qpos0₁ + c0`.
     Joint,
-    /// Tendon: polynomial constraint between two tendons.
-    /// len2 = poly(len1).
+    /// Tendon: polynomial constraint between two tendons, each measured from
+    /// its `tendon_length0`: `len1 − len0₁ = poly(len2 − len0₂)`.
     Tendon,
     /// Distance: constrains distance between two geom centers.
     /// |p1 - p2| = d (removes 1 DOF).
@@ -617,13 +620,15 @@ pub enum MjSensorDataType {
     Acceleration,
 }
 
-/// Object type for sensor attachment.
+/// Object type: what a sensor is attached to, and what a connect's or a
+/// weld's two ids name ([`Model::eq_objtype`](crate::Model::eq_objtype)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum MjObjectType {
     /// No object (world-relative).
     #[default]
     None,
     /// Body — inertial/COM frame (reads `xipos`/`ximat`). MuJoCo `mjOBJ_BODY` (1).
+    /// An equality's body is its own frame (`xpos`/`xmat`), as MuJoCo's.
     Body,
     /// XBody — joint frame origin (reads `xpos`/`xmat`). MuJoCo `mjOBJ_XBODY` (2).
     XBody,

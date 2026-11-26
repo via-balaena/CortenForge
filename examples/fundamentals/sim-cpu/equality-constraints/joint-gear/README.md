@@ -25,7 +25,7 @@ Gear ratios show up whenever joints are mechanically coupled at different rates:
 
 The `polycoef` polynomial generalizes beyond simple ratios — you can encode any
 polynomial relationship `q1 = c0 + c1*q2 + c2*q2² + ...` for nonlinear
-couplings.
+couplings, each joint measured from its `ref` (0 here).
 
 ## What you see
 
