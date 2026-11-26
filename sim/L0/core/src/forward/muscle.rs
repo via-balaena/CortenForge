@@ -56,9 +56,9 @@ impl Model {
     /// [`Self::recompute_derived`], as MuJoCo's `mj_setConst` leaves the
     /// length range out (`engine_setconst.c:1088`).
     ///
-    /// Each actuator that runs steps the model twice for `opt.inttotal`, one
-    /// thread for every actuator (MuJoCo's compiler gives each thread a share
-    /// of the actuators).
+    /// Each actuator that runs steps the model twice for `opt.inttotal`, all on
+    /// the calling thread (MuJoCo's compiler, under `usethread` and with two
+    /// or more actuators to run, shares them among threads).
     ///
     /// # Errors
     ///
@@ -119,21 +119,10 @@ impl Model {
             }
         }
 
-        for (option, value) in [
-            ("accel", opt.accel),
-            ("maxforce", opt.maxforce),
-            ("timeconst", opt.timeconst),
-            ("timestep", opt.timestep),
-            ("inttotal", opt.inttotal),
-            ("interval", opt.interval),
-            ("tolrange", opt.tolrange),
-        ] {
-            if !value.is_finite() {
-                return Err(LengthRangeError::NonFiniteOption {
-                    actuator: i,
-                    option,
-                });
-            }
+        // The time never reaches an infinite `inttotal`; every other option
+        // runs as MuJoCo's comparisons take it.
+        if opt.inttotal == f64::INFINITY {
+            return Err(LengthRangeError::InfiniteInttotal { actuator: i });
         }
 
         let (mut lmin, mut lmax) = ([0.0_f64; 2], [0.0_f64; 2]);

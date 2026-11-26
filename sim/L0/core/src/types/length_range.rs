@@ -103,14 +103,12 @@ pub enum LengthRangeError {
         /// The range found.
         range: (f64, f64),
     },
-    /// An option the run reads is not finite, where an actuator needs a run:
-    /// MuJoCo's run never ends on an infinite `inttotal` (registry
-    /// `D-NONFINITE`). This crate's words; MuJoCo has none.
-    NonFiniteOption {
+    /// `inttotal` is infinite where an actuator needs a run, which then never
+    /// ends, MuJoCo's too (registry `D-NONFINITE`). This crate's words;
+    /// MuJoCo has none.
+    InfiniteInttotal {
         /// The actuator.
         actuator: usize,
-        /// The option's name.
-        option: &'static str,
     },
     /// A step of the run refused the model (MuJoCo's own step stops on some
     /// of these: a discrete inverse dynamics under RK4).
@@ -150,9 +148,9 @@ impl fmt::Display for LengthRangeError {
                 c_g(range.0),
                 c_g(range.1)
             ),
-            Self::NonFiniteOption { actuator, option } => write!(
+            Self::InfiniteInttotal { actuator } => write!(
                 f,
-                "Lengthrange option {option} is not finite, in actuator {actuator}'s simulation"
+                "Lengthrange simulation in actuator {actuator} never ends: inttotal is infinite"
             ),
             Self::Step { actuator, error } => {
                 write!(f, "Lengthrange simulation in actuator {actuator}: {error}")

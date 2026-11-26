@@ -122,17 +122,20 @@ pub fn mj_transmission_site(model: &Model, data: &mut Data) {
             // moment from difference Jacobian.
             let (ref_jac_t, ref_jac_r) = mj_jac_site(model, data, refid);
 
-            // Translational length: gear[0:3] · (R_ref^T @ (p_site - p_ref))
-            let dp = data.site_xpos[sid] - data.site_xpos[refid];
-            let dp_ref = data.site_xmat[refid].transpose() * dp;
-            let len_trans = gear[0] * dp_ref.x + gear[1] * dp_ref.y + gear[2] * dp_ref.z;
-
-            // Rotational length: gear[3:6] · the difference of the two sites'
-            // quaternions, each its own quaternion times its body's
-            // (`site_quat ⊗ xquat`, the order MuJoCo's `mj_transmission`
-            // multiplies them in, `engine_core_smooth.c:1569-1576`), where
-            // that gear is not zero.
-            data.actuator_length[i] = len_trans;
+            // The length as MuJoCo's `mj_transmission` makes it: 0, plus each
+            // part whose gear is not zero (`engine_core_smooth.c:1481-1482`,
+            // `:1534-1541`, `:1567-1576`). The translational part:
+            // gear[0:3] · (R_ref^T @ (p_site - p_ref)).
+            data.actuator_length[i] = 0.0;
+            if gear[0..3].iter().any(|&g| g != 0.0) {
+                let dp = data.site_xpos[sid] - data.site_xpos[refid];
+                let dp_ref = data.site_xmat[refid].transpose() * dp;
+                data.actuator_length[i] +=
+                    gear[0] * dp_ref.x + gear[1] * dp_ref.y + gear[2] * dp_ref.z;
+            }
+            // The rotational part: gear[3:6] · the difference of the two
+            // sites' quaternions, each its own quaternion times its body's
+            // (`site_quat ⊗ xquat`, the order MuJoCo multiplies them in).
             if gear[3..6].iter().any(|&g| g != 0.0) {
                 let quat = |s: usize| {
                     mul_quat(

@@ -1351,7 +1351,7 @@ mod tests {
         let (lo, hi) = model.actuator_lengthrange[0];
 
         // The simulation should find range close to joint limits (-1, 1) * gear(1).
-        // With 10s of simulation, ±2N force on 2kg body, velocity damping, and
+        // With 10s of simulation, velocity damping, and
         // joint limit constraints, the body converges to within a few percent of
         // the limits. Tolerance of 0.1 (10%) is conservative but catches real
         // regressions — a broken simulation would produce (0, 0) or wildly wrong values.
@@ -1786,11 +1786,10 @@ mod tests {
         );
     }
 
-    /// An option that is not finite refuses the run it would take (an
-    /// infinite `inttotal` never ends, MuJoCo's too), and is not read where
-    /// no actuator runs.
+    /// An infinite `inttotal` refuses the run it would take (it never ends,
+    /// MuJoCo's too), and is not read where no actuator runs.
     #[test]
-    fn a_non_finite_option_is_refused_where_a_run_needs_it() {
+    fn an_infinite_inttotal_is_refused_where_a_run_needs_it() {
         let mut model = build_muscle_model_joint(1.0);
         let opt = LengthRangeOpt {
             useexisting: false,
@@ -1799,16 +1798,36 @@ mod tests {
         };
         assert_eq!(
             model.set_length_range(&opt),
-            Err(LengthRangeError::NonFiniteOption {
-                actuator: 0,
-                option: "inttotal"
-            })
+            Err(LengthRangeError::InfiniteInttotal { actuator: 0 })
+        );
+        assert_eq!(
+            LengthRangeError::InfiniteInttotal { actuator: 0 }.to_string(),
+            "Lengthrange simulation in actuator 0 never ends: inttotal is infinite"
         );
         let none = LengthRangeOpt {
             mode: LengthRangeMode::None,
             ..opt
         };
         assert_eq!(model.set_length_range(&none), Ok(()));
+    }
+
+    /// A run timestep that is not positive, a NaN's among them, is the
+    /// model's, as MuJoCo's compiler takes it (`user_model.cc:2413-2415`).
+    #[test]
+    fn a_nan_run_timestep_is_the_models() {
+        let run = |timestep: f64| {
+            let mut model = build_muscle_model_joint(1.0);
+            let opt = LengthRangeOpt {
+                useexisting: false,
+                timestep,
+                ..LengthRangeOpt::default()
+            };
+            model.set_length_range(&opt).expect("the run converges");
+            let (lo, hi) = model.actuator_lengthrange[0];
+            (lo.to_bits(), hi.to_bits())
+        };
+        assert_eq!(run(f64::NAN), run(0.0));
+        assert_ne!(run(0.0), run(0.01));
     }
 
     // ---- T13: Zero lengthrange (AC15) ----
