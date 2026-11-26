@@ -400,7 +400,8 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Among themselves in MuJoCo's order: each body's inertia, geoms and
     // joints, a bending flex's thickness, the height fields' sizes
     // (`user_model.cc:4948-4950` compiles the flexes before the height
-    // fields), the flex equalities, the tendons, the actuators, the sensors,
+    // fields), the flex equalities, the joint equalities' joints (RL-10d),
+    // the tendons, the actuators, the sensors,
     // a moving body's mass and inertia, then the free joint below the world's
     // children, as MuJoCo's `CopyTree` refuses it. An automatic range that
     // does not increase is refused after the keyframes (`D-AUTO-RANGE`).
@@ -411,6 +412,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     flex::check_flex_bending_thickness(&mjcf.flex)?;
     builder.check_hfield_sizes()?;
     builder.check_flex_equalities()?;
+    builder.check_joint_equalities()?;
     builder.check_tendons()?;
     builder.check_actuators()?;
     builder.check_sensors()?;

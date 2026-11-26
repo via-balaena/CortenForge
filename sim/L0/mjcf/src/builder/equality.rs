@@ -383,22 +383,6 @@ impl ModelBuilder {
                 self.eq_type.len(),
             ));
         }
-        // MuJoCo couples scalar joints only, after the check above
-        // (`user_objects.cc:6036-6043`): a ball or free joint is refused.
-        let scalar =
-            |jnt: usize| matches!(self.jnt_type[jnt], MjJointType::Hinge | MjJointType::Slide);
-        let not_scalar = if scalar(*joint1_id) {
-            (joint2_id != usize::MAX && !scalar(joint2_id)).then_some("joint2")
-        } else {
-            Some("joint1")
-        };
-        if let Some(attribute) = not_scalar {
-            return Err(MjcfError::invalid_value(
-                "joint",
-                attribute,
-                "only HINGE and SLIDE joint allowed in constraint",
-            ));
-        }
 
         // Up to eleven coefficients (registry `D-POLYCOEF-DEGREE`): `data[10]`
         // is the degree-10 one, not MuJoCo's default 1.
@@ -656,6 +640,39 @@ impl ModelBuilder {
                     r.flex, r.eq_id
                 ))
                 .at(at()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Each joint equality's two joints scalar, as MuJoCo 3.5.0's compiler
+    /// requires after its check that they are not one
+    /// (`user_objects.cc:6034-6042`): a ball or free joint is refused,
+    /// naming the attribute of the joint refused. Made after every check
+    /// this crate made before RL-10d, as the other late checks are
+    /// ([`super::model_from_mjcf`]'s order), so that a document refused before
+    /// is refused for the same fault.
+    pub(crate) fn check_joint_equalities(&self) -> Result<()> {
+        let scalar =
+            |jnt: usize| matches!(self.jnt_type[jnt], MjJointType::Hinge | MjJointType::Slide);
+        for eq in (0..self.eq_type.len()).filter(|&eq| self.eq_type[eq] == EqualityType::Joint) {
+            let (joint1, joint2) = (self.eq_obj1id[eq], self.eq_obj2id[eq]);
+            let not_scalar = if scalar(joint1) {
+                (joint2 != usize::MAX && !scalar(joint2)).then_some("joint2")
+            } else {
+                Some("joint1")
+            };
+            if let Some(attribute) = not_scalar {
+                return Err(MjcfError::invalid_value(
+                    "joint",
+                    attribute,
+                    "only HINGE and SLIDE joint allowed in constraint",
+                )
+                .at(Location::nth(
+                    ElementKind::Equality,
+                    self.eq_name[eq].as_deref(),
+                    eq,
+                )));
             }
         }
         Ok(())
