@@ -1793,6 +1793,31 @@ mod tests {
         );
     }
 
+    /// An option that is not finite refuses the run it would take (an
+    /// infinite `inttotal` never ends, MuJoCo's too), and is not read where
+    /// no actuator runs.
+    #[test]
+    fn a_non_finite_option_is_refused_where_a_run_needs_it() {
+        let mut model = build_muscle_model_joint(1.0);
+        let opt = LengthRangeOpt {
+            useexisting: false,
+            inttotal: f64::INFINITY,
+            ..LengthRangeOpt::default()
+        };
+        assert_eq!(
+            model.set_length_range(&opt),
+            Err(LengthRangeError::NonFiniteOption {
+                actuator: 0,
+                option: "inttotal"
+            })
+        );
+        let none = LengthRangeOpt {
+            mode: LengthRangeMode::None,
+            ..opt
+        };
+        assert_eq!(model.set_length_range(&none), Ok(()));
+    }
+
     // ---- T13: Zero lengthrange (AC15) ----
     #[test]
     fn test_hill_zero_lengthrange() {

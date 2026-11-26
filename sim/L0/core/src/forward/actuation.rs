@@ -8,8 +8,7 @@ use super::muscle::muscle_activation_dynamics;
 use crate::constraint::jacobian::compute_contact_normal_row;
 use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
 use crate::linalg::dot_sparse_entries;
-use crate::quat::{neg_quat, qpos_quat, quat_to_vel, rot_vec_quat};
-use crate::tendon::subquat;
+use crate::quat::{mul_quat, neg_quat, qpos_quat, quat_array, quat_to_vel, rot_vec_quat, sub_quat};
 use crate::types::{
     ActuatorDynamics, ActuatorTransmission, BiasType, ConstraintType, Contact, Data, ENABLE_SLEEP,
     GainType, MjJointType, Model,
@@ -128,11 +127,22 @@ pub fn mj_transmission_site(model: &Model, data: &mut Data) {
             let dp_ref = data.site_xmat[refid].transpose() * dp;
             let len_trans = gear[0] * dp_ref.x + gear[1] * dp_ref.y + gear[2] * dp_ref.z;
 
-            // Rotational length: gear[3:6] · subquat(q_site, q_ref)
-            let dq = subquat(&data.site_xquat[sid], &data.site_xquat[refid]);
-            let len_rot = gear[3] * dq.x + gear[4] * dq.y + gear[5] * dq.z;
-
-            data.actuator_length[i] = len_trans + len_rot;
+            // Rotational length: gear[3:6] · the difference of the two sites'
+            // quaternions, each its own quaternion times its body's
+            // (`site_quat ⊗ xquat`, the order MuJoCo's `mj_transmission`
+            // multiplies them in, `engine_core_smooth.c:1569-1576`), where
+            // that gear is not zero.
+            data.actuator_length[i] = len_trans;
+            if gear[3..6].iter().any(|&g| g != 0.0) {
+                let quat = |s: usize| {
+                    mul_quat(
+                        &quat_array(&model.site_quat[s]),
+                        &quat_array(&data.xquat[model.site_body[s]]),
+                    )
+                };
+                let dq = sub_quat(&quat(sid), &quat(refid));
+                data.actuator_length[i] += gear[3] * dq[0] + gear[4] * dq[1] + gear[5] * dq[2];
+            }
 
             // Difference Jacobian with common-ancestor DOF zeroing.
             let mut diff_jac_t = &jac_t - &ref_jac_t;

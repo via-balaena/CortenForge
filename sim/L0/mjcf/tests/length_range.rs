@@ -2,7 +2,8 @@
 //! `mj_setLengthRange`): each actuator's length range computed as MuJoCo's
 //! compiler computes it after `mj_setConst`, a written one kept (book L44;
 //! ledgers L37, L74, L116, L272); `<compiler><lengthrange>`'s options read
-//! (book L49).
+//! (book L49); a site and refsite transmission's rotational length from each
+//! site's quaternion times its body's, as MuJoCo's `mj_transmission` makes it.
 //!
 //! Every expected value was printed by MuJoCo 3.5.0 on the census's unfused
 //! oracle (2026-11-26).
@@ -886,6 +887,118 @@ const CASES: &[(&str, &str, Expect)] = &[
             act: &[0.0],
         }),
     ),
+    // a motor through a site and a refsite with a rotational gear, the site's body turned: each site's quaternion its own times its body's, as MuJoCo multiplies them
+    (
+        "s01_motor_refsite_rot_turned_body",
+        "<mujoco model=\"m\"><option timestep=\"0.002\"/><worldbody><site name=\"r\" pos=\"0 0 1\"/><body name=\"arm\" pos=\"0 0 1\" quat=\"0.9 0.3 0.2 0.1\"><joint name=\"h\" type=\"hinge\" axis=\"0 1 0\" limited=\"true\" range=\"-30 60\"/><geom type=\"capsule\" fromto=\"0 0 0 0.3 0 0\" size=\"0.03\" mass=\"1\"/><site name=\"s1\" pos=\"0.3 0 0\" quat=\"0.8 0.3 0.1 0.2\"/></body></worldbody><actuator><motor site=\"s1\" refsite=\"r\" gear=\"0 0 0 0 1 0\"/></actuator></mujoco>\n",
+        Expect::Loads(Want {
+            lengthrange: &[0.0, 0.0],
+            acc0: &[24.36448117270548],
+            length: &[0.7286999488830352],
+            force: &[0.5],
+            qpos: &[0.03786270310437277],
+            qvel: &[1.7996011811104564],
+            act: &[],
+        }),
+    ),
+    // the same, the site's own quaternion the identity
+    (
+        "s02_motor_refsite_rot_turned_body_identity_site",
+        "<mujoco model=\"m\"><option timestep=\"0.002\"/><worldbody><site name=\"r\" pos=\"0 0 1\" quat=\"0.9 0.1 0.2 0.3\"/><body name=\"arm\" pos=\"0 0 1\" quat=\"0.9 0.3 0.2 0.1\"><joint name=\"h\" type=\"hinge\" axis=\"0 1 0\" limited=\"true\" range=\"-30 60\"/><geom type=\"capsule\" fromto=\"0 0 0 0.3 0 0\" size=\"0.03\" mass=\"1\"/><site name=\"s1\" pos=\"0.3 0 0\"/></body></worldbody><actuator><motor site=\"s1\" refsite=\"r\" gear=\"0 0 0 0 1 0\"/></actuator></mujoco>\n",
+        Expect::Loads(Want {
+            lengthrange: &[0.0, 0.0],
+            acc0: &[26.211052377373687],
+            length: &[-0.17082540042709718],
+            force: &[0.5],
+            qpos: &[0.03863666040749183],
+            qvel: &[1.8363848624287433],
+            act: &[],
+        }),
+    ),
+    // the same, a turned refsite on the world
+    (
+        "s03_motor_refsite_rot_world_site_turned",
+        "<mujoco model=\"m\"><option timestep=\"0.002\"/><worldbody><body name=\"w0\" pos=\"0 0 1\" quat=\"0.7 0.5 0.4 0.3\"><site name=\"r\" pos=\"0 0 0\" quat=\"0.9 0.1 0.2 0.3\"/></body><body name=\"arm\" pos=\"0 0 1\" quat=\"0.9 0.3 0.2 0.1\"><joint name=\"h\" type=\"hinge\" axis=\"0 1 0\" limited=\"true\" range=\"-30 60\"/><geom type=\"capsule\" fromto=\"0 0 0 0.3 0 0\" size=\"0.03\" mass=\"1\"/><site name=\"s1\" pos=\"0.3 0 0\"/></body></worldbody><actuator><motor site=\"s1\" refsite=\"r\" gear=\"0 0 0 0 1 0\"/></actuator></mujoco>\n",
+        Expect::Loads(Want {
+            lengthrange: &[0.0, 0.0],
+            acc0: &[9.580858359424674],
+            length: &[-1.304217623409159],
+            force: &[0.5],
+            qpos: &[0.0316663726143047],
+            qvel: &[1.5051064567811587],
+            act: &[],
+        }),
+    ),
+    // a position actuator through such a pair: its force from that length
+    (
+        "s04_position_refsite_rot_turned_body",
+        "<mujoco model=\"m\"><option timestep=\"0.002\"/><worldbody><site name=\"r\" pos=\"0 0 1\"/><body name=\"arm\" pos=\"0 0 1\" quat=\"0.9 0.3 0.2 0.1\"><joint name=\"h\" type=\"hinge\" axis=\"0 1 0\" limited=\"true\" range=\"-30 60\"/><geom type=\"capsule\" fromto=\"0 0 0 0.3 0 0\" size=\"0.03\" mass=\"1\"/><site name=\"s1\" pos=\"0.3 0 0\" quat=\"0.8 0.3 0.1 0.2\"/></body></worldbody><actuator><position site=\"s1\" refsite=\"r\" gear=\"0 0 0 0 1 0\" kp=\"10\"/></actuator></mujoco>\n",
+        Expect::Loads(Want {
+            lengthrange: &[0.0, 0.0],
+            acc0: &[24.36448117270548],
+            length: &[0.7286999488830352],
+            force: &[-2.286999488830352],
+            qpos: &[-0.018540279388451188],
+            qvel: &[-0.8589342677173376],
+            act: &[],
+        }),
+    ),
+    // a muscle through such a pair: the run reads that length
+    (
+        "s05_site_refsite_rotation",
+        "<mujoco model=\"m\"><option timestep=\"0.002\"/><worldbody><site name=\"r\" pos=\"0 0 1\" quat=\"0.9 0.1 0.2 0.3\"/><body name=\"arm\" pos=\"0 0 1\"><joint name=\"h\" type=\"hinge\" axis=\"0 1 0\" limited=\"true\" range=\"-30 60\"/><geom type=\"capsule\" fromto=\"0 0 0 0.3 0 0\" size=\"0.03\" mass=\"1\"/><site name=\"s1\" pos=\"0.3 0 0\" quat=\"0.8 0.3 0.1 0.2\"/></body></worldbody><actuator><general site=\"s1\" refsite=\"r\" gear=\"0 0 0 0 1 0\" gaintype=\"muscle\" biastype=\"muscle\" dyntype=\"muscle\" ctrllimited=\"true\" ctrlrange=\"0 1\" gainprm=\"0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2\" biasprm=\"0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2\" dynprm=\"0.01 0.04\"/></actuator></mujoco>\n",
+        Expect::Loads(Want {
+            lengthrange: &[-0.8452787871494463, 0.7027625088516491],
+            acc0: &[24.364481172705474],
+            length: &[-0.3292112724038184],
+            force: &[0.0],
+            qpos: &[-0.008978809143593097],
+            qvel: &[-0.6969176237835948],
+            act: &[0.4928973829054284],
+        }),
+    ),
+    // a muscle through such a pair with a translational and a rotational gear
+    (
+        "s06_site_refsite_both",
+        "<mujoco model=\"m\"><option timestep=\"0.002\"/><worldbody><site name=\"r\" pos=\"0 0 1\"/><body name=\"arm\" pos=\"0 0 1\"><joint name=\"h\" type=\"hinge\" axis=\"0 1 0\" limited=\"true\" range=\"-30 60\"/><geom type=\"capsule\" fromto=\"0 0 0 0.3 0 0\" size=\"0.03\" mass=\"1\"/><site name=\"s1\" pos=\"0.3 0 0\" quat=\"0.8 0.3 0.1 0.2\"/></body></worldbody><actuator><general site=\"s1\" refsite=\"r\" gear=\"0.5 0 0.2 0 1 0.1\" gaintype=\"muscle\" biastype=\"muscle\" dyntype=\"muscle\" ctrllimited=\"true\" ctrlrange=\"0 1\" gainprm=\"0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2\" biasprm=\"0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2\" dynprm=\"0.01 0.04\"/></actuator></mujoco>\n",
+        Expect::Loads(Want {
+            lengthrange: &[-0.0720849855856894, 1.3183715745501385],
+            acc0: &[29.009975582967982],
+            length: &[0.43061227707177496],
+            force: &[0.0],
+            qpos: &[-0.009608561704671194],
+            qvel: &[-0.7052071234469403],
+            act: &[0.4928973829054284],
+        }),
+    ),
+    // a muscle through a site and a refsite on a sibling body
+    (
+        "s07_site_refsite_sibling",
+        "<mujoco model=\"m\"><option timestep=\"0.002\"/><worldbody><body name=\"a\" pos=\"0 0 1\"><joint name=\"h0\" type=\"hinge\" axis=\"0 0 1\" limited=\"true\" range=\"-20 20\"/><geom type=\"sphere\" size=\"0.05\" mass=\"1\"/><body pos=\"0.2 0 0\"><joint name=\"h1\" type=\"hinge\" axis=\"0 1 0\" limited=\"true\" range=\"-30 60\"/><geom type=\"capsule\" fromto=\"0 0 0 0.3 0 0\" size=\"0.03\" mass=\"1\"/><site name=\"s\" pos=\"0.3 0 0\"/></body><body pos=\"-0.2 0 0\"><geom type=\"sphere\" size=\"0.05\" mass=\"1\"/><site name=\"r\" pos=\"0 0 0.1\"/></body></body></worldbody><actuator><general site=\"s\" refsite=\"r\" gear=\"1 0 1 0 0 0\" gaintype=\"muscle\" biastype=\"muscle\" dyntype=\"muscle\" ctrllimited=\"true\" ctrlrange=\"0 1\" gainprm=\"0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2\" biasprm=\"0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2\" dynprm=\"0.01 0.04\"/></actuator></mujoco>\n",
+        Expect::Loads(Want {
+            lengthrange: &[0.18995883163095661, 0.7098701381478623],
+            acc0: &[9.258502845628081],
+            length: &[0.5999999999999999],
+            force: &[0.0],
+            qpos: &[0.0, 0.07911272580946278],
+            qvel: &[0.0, 3.72459125992121],
+            act: &[0.4928973829054284],
+        }),
+    ),
+    // a muscle through such a pair, both sites' own quaternions the identity
+    (
+        "s08_muscle_refsite_rot_identity_sites",
+        "<mujoco model=\"m\"><option timestep=\"0.002\"/><worldbody><site name=\"r\" pos=\"0 0 1\"/><body name=\"arm\" pos=\"0 0 1\"><joint name=\"h\" type=\"hinge\" axis=\"0 1 0\" limited=\"true\" range=\"-30 60\"/><geom type=\"capsule\" fromto=\"0 0 0 0.3 0 0\" size=\"0.03\" mass=\"1\"/><site name=\"s1\" pos=\"0.3 0 0\"/></body></worldbody><actuator><general site=\"s1\" refsite=\"r\" gear=\"0 0 0 0 1 0\" gaintype=\"muscle\" biastype=\"muscle\" dyntype=\"muscle\" gainprm=\"0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2\" biasprm=\"0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2\"/></actuator></mujoco>\n",
+        Expect::Loads(Want {
+            lengthrange: &[-0.524168713951565, 1.0477674895498639],
+            acc0: &[30.8616761520936],
+            length: &[0.0],
+            force: &[0.0],
+            qpos: &[0.03621346068092553],
+            qvel: &[1.67698015638614],
+            act: &[0.03664940596049435],
+        }),
+    ),
     // a muscle on an unlimited hinge: the run's length still moves
     (
         "m16_unlimited_hinge",
@@ -999,6 +1112,14 @@ const CASES: &[(&str, &str, Expect)] = &[
         "k23_two_values",
         "<mujoco model=\"m\"><compiler><lengthrange accel=\"10 20\"/></compiler><option timestep=\"0.002\"/><worldbody><body name=\"arm\" pos=\"0 0 1\"><joint name=\"h\" type=\"hinge\" axis=\"0 1 0\" limited=\"true\" range=\"-30 60\"/><geom type=\"capsule\" fromto=\"0 0 0 0.3 0 0\" size=\"0.03\" mass=\"1\"/></body></worldbody><actuator><muscle joint=\"h\"/></actuator></mujoco>\n",
         Expect::Refused("expected exactly 1 values, found 2 in attribute 'accel' on <lengthrange>"),
+    ),
+    // a force cap so small the arm creeps and the run does not converge
+    (
+        "k32_creep_with_sleep",
+        "<mujoco model=\"m\"><compiler><lengthrange maxforce=\"1e-6\"/></compiler><option timestep=\"0.002\"><flag sleep=\"enable\"/></option><worldbody><body name=\"arm\" pos=\"0 0 1\"><joint name=\"h\" type=\"hinge\" axis=\"0 1 0\" limited=\"true\" range=\"-30 60\"/><geom type=\"capsule\" fromto=\"0 0 0 0.3 0 0\" size=\"0.03\" mass=\"1\"/></body></worldbody><actuator><muscle joint=\"h\"/></actuator></mujoco>\n",
+        Expect::Refused(
+            "Lengthrange computation did not converge in actuator 0:\n  eval (-0.000279302, -0.000217279)\n  range (-0.000279302, 0.000279302)",
+        ),
     ),
     // a run timestep exact in binary on an unlimited hinge: a step lands on inttotal - interval, which is not measured
     (

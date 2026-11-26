@@ -56,11 +56,16 @@ impl Model {
     /// [`Self::recompute_derived`], as MuJoCo's `mj_setConst` leaves the
     /// length range out (`engine_setconst.c:1088`).
     ///
+    /// Each actuator that runs steps the model twice for `opt.inttotal`, one
+    /// thread for every actuator (MuJoCo's compiler gives each thread a share
+    /// of the actuators).
+    ///
     /// # Errors
     ///
-    /// The first actuator's [`LengthRangeError`]; that actuator's range is
-    /// then the range its runs found, as MuJoCo's model holds it, and the
-    /// actuators after it keep theirs.
+    /// The first actuator's [`LengthRangeError`]. Its range is then the range
+    /// its completed runs found, as MuJoCo's model holds it: both sides for
+    /// an empty range or one that does not converge, the first side's bound
+    /// at most for the others. The actuators after it keep theirs.
     pub fn set_length_range(&mut self, opt: &LengthRangeOpt) -> Result<(), LengthRangeError> {
         let mut run = self.clone();
         run.disableflags = LENGTH_RANGE_DISABLE;
@@ -110,6 +115,23 @@ impl Model {
                     return Ok(());
                 }
                 _ => {}
+            }
+        }
+
+        for (option, value) in [
+            ("accel", opt.accel),
+            ("maxforce", opt.maxforce),
+            ("timeconst", opt.timeconst),
+            ("timestep", opt.timestep),
+            ("inttotal", opt.inttotal),
+            ("interval", opt.interval),
+            ("tolrange", opt.tolrange),
+        ] {
+            if !value.is_finite() {
+                return Err(LengthRangeError::NonFiniteOption {
+                    actuator: i,
+                    option,
+                });
             }
         }
 

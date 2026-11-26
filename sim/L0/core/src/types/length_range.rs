@@ -103,7 +103,17 @@ pub enum LengthRangeError {
         /// The range found.
         range: (f64, f64),
     },
-    /// A step of the run refused the model, which a MuJoCo step never does.
+    /// An option the run reads is not finite, where an actuator needs a run:
+    /// MuJoCo's run never ends on an infinite `inttotal` (registry
+    /// `D-NONFINITE`). This crate's words; MuJoCo has none.
+    NonFiniteOption {
+        /// The actuator.
+        actuator: usize,
+        /// The option's name.
+        option: &'static str,
+    },
+    /// A step of the run refused the model (MuJoCo's own step stops on some
+    /// of these: a discrete inverse dynamics under RK4).
     Step {
         /// The actuator.
         actuator: usize,
@@ -139,6 +149,10 @@ impl fmt::Display for LengthRangeError {
                 if side == 0 { "  " } else { " " },
                 c_g(range.0),
                 c_g(range.1)
+            ),
+            Self::NonFiniteOption { actuator, option } => write!(
+                f,
+                "Lengthrange option {option} is not finite, in actuator {actuator}'s simulation"
             ),
             Self::Step { actuator, error } => {
                 write!(f, "Lengthrange simulation in actuator {actuator}: {error}")

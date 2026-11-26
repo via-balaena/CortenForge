@@ -4300,3 +4300,12 @@ eefea2f7196332bf	sim/L0/mjcf/tests/length_range.rs:752
 f2da1df8a70c8f8b	sim/L0/mjcf/tests/length_range.rs:864
 fea53f48ca3f89b3	sim/L0/mjcf/src/parser/tests.rs:601
 b687c20f47138487	sim/L0/mjcf/tests/length_range.rs:794
+09a9f76104573e3f	sim/L0/mjcf/tests/length_range.rs:977
+1727b317e2a03b20	sim/L0/mjcf/tests/length_range.rs:1119
+19ca76658d5d2072	sim/L0/mjcf/tests/length_range.rs:907
+1dbc1aa4d80758f3	sim/L0/mjcf/tests/length_range.rs:935
+228d96c8d8c9230d	sim/L0/mjcf/tests/length_range.rs:963
+831ca5ebb4a0bfd9	sim/L0/mjcf/tests/length_range.rs:991
+c12472b56e3e16a3	sim/L0/mjcf/tests/length_range.rs:893
+d4001e56e71c3b71	sim/L0/mjcf/tests/length_range.rs:921
+fbc62f5aa7c0a686	sim/L0/mjcf/tests/length_range.rs:949
