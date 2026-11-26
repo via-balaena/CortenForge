@@ -422,11 +422,15 @@ pub fn model_diff(ours: &Value, mj: &Value) -> Vec<String> {
     });
     let act_limited = d.where_mj(nu, |m, i| int_at(&m["actuator_actlimited"], i) != 0);
     d.close_at("actuator_actrange", &act_limited);
+    // Every actuator's length range: MuJoCo's compiler computes a muscle's
+    // and keeps the rest as written or (0, 0), as this crate's loader does
+    // since Rigid-loading PR RL-11a (before it, every actuator took its
+    // joint's or tendon's range, so only the muscles' were compared).
+    d.close("actuator_lengthrange");
     let muscles = d.where_mj(nu, |m, i| {
         str_at(&m["actuator_gaintype"], i) == "Muscle"
             || str_at(&m["actuator_biastype"], i) == "Muscle"
     });
-    d.close_at("actuator_lengthrange", &muscles);
     d.close_at("actuator_acc0", &muscles);
 
     d.exact("tendon_limited");
