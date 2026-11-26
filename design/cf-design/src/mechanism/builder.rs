@@ -173,8 +173,9 @@ pub enum MechanismError {
         finest_mm: f64,
     },
     /// An actuator's length range, as MuJoCo's compiler computes it
-    /// ([`sim_core::Model::set_length_range`]), refuses the model: a muscle on
-    /// an unlimited joint, whose range does not converge, is one.
+    /// ([`sim_core::Model::set_length_range`]), refuses the model: a muscle
+    /// whose tendon does not lengthen at the rest pose (its points in line
+    /// through the joint), whose run finds an empty range, is one.
     LengthRange(sim_core::LengthRangeError),
 }
 

@@ -70,6 +70,7 @@ impl Model {
         let mut run = self.clone();
         run.disableflags = LENGTH_RANGE_DISABLE;
         // The compiler's `mjData` is made with sleep off (`user_model.cc:5111-5112`).
+        // Kept as MuJoCo's step: the run's `Data` already starts every tree awake.
         run.enableflags &= !ENABLE_SLEEP;
         if opt.timestep > 0.0 {
             run.timestep = opt.timestep;

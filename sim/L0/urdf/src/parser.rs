@@ -612,8 +612,8 @@ fn check_in_order(tag: &str, child: Option<&str>, element: &Element, reads: &[&s
 /// the one MuJoCo meets first is refused, where both readers see a fault: a
 /// value only sim-mjcf refuses (a `NaN` or an infinity, D-NONFINITE; a
 /// hexadecimal float, D-HEX-FLOAT) is refused at its place in MuJoCo's order,
-/// and an attribute sim-mjcf does not read is not checked (ledger L315, L455,
-/// L37). Three attributes are checked here:
+/// and an attribute sim-mjcf does not read is not checked (ledger L315,
+/// L455). Three attributes are checked here:
 /// `angle`'s keyword (MuJoCo then forces radians, `:111`, and the converter
 /// writes `radian`), `eulerseq`'s length (`rpy` is read as "XYZ" whatever it
 /// says, `:666`, and the converter writes `XYZ`) and `discardvisual`'s keyword

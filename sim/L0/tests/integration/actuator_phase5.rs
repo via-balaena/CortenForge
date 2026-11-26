@@ -3,7 +3,7 @@
 //!
 //! Spec A tests:
 //! - T11 (AC12): dampratio attribute parsed and stored as positive biasprm[2]
-//! - T7 (AC7): lengthrange from limits unchanged for muscle actuators
+//! - T7 (AC7): a limited-joint muscle's length range as MuJoCo's run finds it
 //! - T12 (AC13): lengthrange mode filtering skips non-muscle actuators
 //!
 //! Spec D tests (T1–T16): nsample, interp, delay parsing, historyadr
@@ -117,14 +117,14 @@ fn test_acc0_motor_via_mjcf() {
 }
 
 // ============================================================================
-// T7: lengthrange from limits → AC7
+// T7: a muscle on a limited hinge → AC7
 // ============================================================================
 
 /// A muscle on a limited hinge: MuJoCo 3.5.0's run pushes the joint past each
 /// soft limit, the length gear times the joint's, so the range is a little
 /// wider than the limits (±2.0944 at gear 2; measured on the oracle).
 #[test]
-fn test_lengthrange_from_joint_limits() {
+fn a_limited_hinges_muscle_range_is_mujocos_run() {
     let mjcf = r#"
         <mujoco model="muscle_lr">
             <worldbody>
@@ -184,7 +184,8 @@ fn test_lengthrange_mode_filter_nonmuscle() {
 
 /// A muscle on an unlimited hinge: its run's length still moves at the end
 /// (the force gives the same acceleration whatever the inertia, so the
-/// numbers are every such model's), and MuJoCo 3.5.0 refuses the model in
+/// numbers are every one-dof such model's at gear 1), and MuJoCo 3.5.0
+/// refuses the model in
 /// these words (measured on the oracle).
 #[test]
 fn a_muscle_on_an_unlimited_joint_is_refused() {
@@ -209,13 +210,12 @@ fn a_muscle_on_an_unlimited_joint_is_refused() {
     );
 }
 
-/// The length range is simulated with sleep disabled, as MuJoCo's compiler
-/// clears `mjENBL_SLEEP` before it (`user_model.cc:5111-5112`). Two muscles:
-/// one on a hinge a joint equality ties to a limited hinge (a constraint row
-/// every simulated step), one on a spatial tendon. Each range is MuJoCo
-/// 3.5.0's with sleep on and off (measured on the oracle).
+/// A muscle's length range is MuJoCo 3.5.0's whether the model enables sleep
+/// or not (measured on the oracle). Two muscles: one on a hinge a joint
+/// equality ties to a limited hinge (a constraint row every simulated step),
+/// one on a spatial tendon.
 #[test]
-fn lengthrange_is_simulated_with_sleep_disabled() {
+fn a_length_range_is_mujocos_with_sleep_on_and_off() {
     let models = [
         r#"<worldbody>
             <body pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/>
@@ -249,13 +249,13 @@ fn lengthrange_is_simulated_with_sleep_disabled() {
 }
 
 // ============================================================================
-// T9: Muscle on limited joint → LR from limits (useexisting skips sim)
+// T9: a muscle at gear 2 on a hinge limited to ±90°
 // ============================================================================
 
 /// A muscle at gear 2 on a hinge limited to ±90°: MuJoCo 3.5.0's run lands
 /// past each soft limit (measured on the oracle).
 #[test]
-fn test_lengthrange_muscle_limited_from_limits() {
+fn a_geared_muscles_range_is_mujocos_run() {
     let mjcf = r#"
         <mujoco model="muscle_limited">
             <worldbody>

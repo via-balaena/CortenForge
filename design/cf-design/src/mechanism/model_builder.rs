@@ -81,8 +81,8 @@ impl Mechanism {
     /// - [`MechanismError::PartNotReachable`] if a part cannot be placed in
     ///   the kinematic tree because its joints form a cycle.
     /// - [`MechanismError::LengthRange`] if an actuator's length range refuses
-    ///   the model, as MuJoCo's compiler refuses it: a muscle on an unlimited
-    ///   joint.
+    ///   the model, as MuJoCo's compiler refuses it: a muscle whose run finds
+    ///   an empty range or does not converge.
     ///
     /// # Panics
     ///
@@ -963,8 +963,7 @@ fn generate(
     sim_core::compute_dof_lengths(&mut model);
 
     // Each actuator's length range, as MuJoCo's compiler computes it on the
-    // whole model, linkages included (a muscle's; the MJCF this mechanism
-    // writes gets the same from the loader).
+    // whole model, linkages included (a muscle's).
     model
         .set_length_range(&sim_core::LengthRangeOpt::default())
         .map_err(MechanismError::LengthRange)?;

@@ -1250,19 +1250,12 @@ mod tests {
 
     // ---- LR simulation test: non-muscle with mode=All → AC8/AC9 coverage ----
 
-    /// Motor actuator on a limited slide joint: mj_set_length_range with
-    /// mode=All should produce nonzero lengthrange from the simulation.
-    ///
-    /// This tests the LR simulation infrastructure without the circular
-    /// dependency that muscles have (muscle force needs lengthrange, but
-    /// LR estimation runs muscle force). Using a motor with mode=All
-    /// exercises the simulation path on a non-muscle actuator.
+    /// A motor on a limited slide under mode=All: the run computes its range,
+    /// as MuJoCo's `mj_setLengthRange` computes any actuator's under that
+    /// mode.
     #[test]
     fn test_lengthrange_simulation_motor_mode_all() {
-        // Build a motor on a *limited* slide joint. Phase 1 will set
-        // lengthrange from limits. Then we clear it and call
-        // mj_set_length_range with mode=All + useexisting=false to force
-        // the simulation path.
+        // A motor on a *limited* slide joint.
         let mut model = Model::empty();
 
         model.nbody = 2;

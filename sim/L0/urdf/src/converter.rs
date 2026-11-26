@@ -412,7 +412,7 @@ fn section_lines(
 /// checked as sim-mjcf's reader checks them in a converted model, alone in an
 /// MJCF model, in sim-mjcf's words. sim-mjcf reads them as MuJoCo 3.5.0's MJCF
 /// reader does, but for those it does not read, which it does not check
-/// (`<size memory>`, `nkey`, …: ledger L315, L455; `<lengthrange>`: L37).
+/// (`<size memory>`, `nkey`, …: ledger L315, L455).
 ///
 /// # Errors
 ///

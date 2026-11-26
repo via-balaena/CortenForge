@@ -485,7 +485,7 @@ pub mod spatial_transport;
 // ============================================================================
 
 /// Phase 5 Spec A tests: acc0 for all actuator types, dampratio MJCF round-trip,
-/// lengthrange from limits.
+/// the length range as MuJoCo's run finds it.
 pub mod actuator_phase5;
 
 // ============================================================================

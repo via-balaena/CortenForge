@@ -32,7 +32,7 @@ impl ModelBuilder {
         model.compute_history_addresses();
 
         // Tendon and actuator derived parameters. These build a `Data` and run
-        // the pipeline on it (a muscle's length range is simulated), so a
+        // the pipeline on it, so a
         // joint layout or a range `try_make_data` refuses skips them: a slide
         // after a ball, which the loader refuses once the keyframes are
         // resolved, and a range `check_ranges` refuses that the loader passes,

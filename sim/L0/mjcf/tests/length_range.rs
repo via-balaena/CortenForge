@@ -877,7 +877,7 @@ const CASES: &[(&str, &str, Expect)] = &[
             act: &[0.4928973829054284],
         }),
     ),
-    // a muscle on a tree that starts asleep: sleep is off in the run, so it moves
+    // a muscle on a tree that starts asleep: the range MuJoCo's compiler computes
     (
         "m22_sleep_init",
         "<mujoco model=\"m\"><option timestep=\"0.002\"><flag sleep=\"enable\"/></option><worldbody><body name=\"arm\" pos=\"0 0 1\" sleep=\"init\"><joint name=\"h\" type=\"hinge\" axis=\"0 1 0\" limited=\"true\" range=\"-30 60\"/><geom type=\"capsule\" fromto=\"0 0 0 0.3 0 0\" size=\"0.03\" mass=\"1\"/></body></worldbody><actuator><muscle joint=\"h\"/></actuator></mujoco>\n",
