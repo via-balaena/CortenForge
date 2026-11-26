@@ -972,6 +972,303 @@ const CASES: &[(&str, &str, Expect)] = &[
             ],
         }),
     ),
+    // a body-form connect: eq_objtype body
+    (
+        "c05_connect_body_form",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/></body></worldbody><equality><connect body1="a" anchor="-0.1 0 0"/></equality></mujoco>"#,
+        Expect::Loads(Want {
+            eq_type: &[0],
+            eq_obj1id: &[1],
+            eq_obj2id: &[0],
+            eq_objtype: &[1],
+            eq_data: &[
+                -0.1,
+                0.0,
+                0.0,
+                0.19999999999999998,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
+            qfrc_constraint: &[0.0, 0.0, 2.4551229946524002, 0.0, 0.24551229946524003, 0.0],
+            efc_eq_pos: &[0.0, 0.0, 0.0],
+            nisland: 1,
+            efc_island: &[0, 0, 0],
+            sensordata: &[],
+            qpos: &[
+                0.29999346133323423,
+                0.0,
+                0.9983891819539331,
+                0.9999688406554172,
+                0.0,
+                0.00789415722293211,
+                0.0,
+            ],
+            qvel: &[
+                -0.0011657652430356936,
+                0.0,
+                -0.1462028928351946,
+                0.0,
+                1.4418955206286581,
+                0.0,
+            ],
+        }),
+    ),
+    // a body-form weld: eq_objtype body
+    (
+        "w08_weld_body_form",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/></body></worldbody><equality><weld body1="a"/></equality></mujoco>"#,
+        Expect::Loads(Want {
+            eq_type: &[1],
+            eq_obj1id: &[1],
+            eq_obj2id: &[0],
+            eq_objtype: &[1],
+            eq_data: &[0.0, 0.0, 0.0, -0.3, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            qfrc_constraint: &[
+                2.410866813855059,
+                0.0,
+                8.105739955843479,
+                0.0,
+                0.009286301801511224,
+                0.0,
+            ],
+            efc_eq_pos: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            nisland: 1,
+            efc_island: &[0, 0, 0, 0, 0, 0],
+            sensordata: &[],
+            qpos: &[
+                0.30055558770490914,
+                0.0,
+                0.9997146338455062,
+                0.9999999567963345,
+                0.0,
+                0.0002939512364660452,
+                0.0,
+            ],
+            qvel: &[
+                0.05134236486937464,
+                0.0,
+                -0.022886191933568445,
+                0.0,
+                0.05337419544375159,
+                0.0,
+            ],
+        }),
+    ),
+    // two free bodies' site connect at the sparse size: the sites' bodies' chain
+    (
+        "c04s_connect_two_moving_sparse",
+        r#"<mujoco model="m"><option timestep="0.002" jacobian="sparse"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s1" pos="0.1 0 0"/></body><body name="b" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s2" pos="-0.1 0 0" quat="0.9238795 0.3826834 0 0"/></body></worldbody><equality><connect site1="s1" site2="s2"/></equality></mujoco>"#,
+        Expect::Loads(Want {
+            eq_type: &[0],
+            eq_obj1id: &[0],
+            eq_obj2id: &[1],
+            eq_objtype: &[6],
+            eq_data: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            qfrc_constraint: &[
+                125.0000000000002,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                -125.0000000000002,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ],
+            efc_eq_pos: &[-0.09999999999999998, 0.0, 0.0],
+            nisland: 1,
+            efc_island: &[0, 0, 0],
+            sensordata: &[],
+            qpos: &[
+                0.014783589295672077,
+                0.0,
+                0.9978418000000002,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.28521641070432796,
+                0.0,
+                0.9978418000000002,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+            ],
+            qvel: &[
+                0.935369139580197,
+                0.0,
+                -0.1962,
+                0.0,
+                0.0,
+                0.0,
+                -0.9353691395801967,
+                0.0,
+                -0.1962,
+                0.0,
+                0.0,
+                0.0,
+            ],
+        }),
+    ),
+    // a hinge chain's site connect at the sparse size, its site ids not its bodies'
+    (
+        "c10s_connect_site_hinge_chain_sparse",
+        r#"<mujoco model="m"><option timestep="0.002" jacobian="sparse"/><worldbody><site name="w" pos="0.4 0 1"/><body name="a" pos="0 0 1"><joint type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02"/><body name="b" pos="0.2 0 0"><joint type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02"/><site name="s" pos="0.2 0 0"/></body></body></worldbody><equality><connect site1="s" site2="w"/></equality></mujoco>"#,
+        Expect::Loads(Want {
+            eq_type: &[0],
+            eq_obj1id: &[1],
+            eq_obj2id: &[0],
+            eq_objtype: &[6],
+            eq_data: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            qfrc_constraint: &[-0.33810504921285967, -0.16905252460642983],
+            efc_eq_pos: &[0.0, 0.0, 0.0],
+            nisland: 1,
+            efc_island: &[0, 0, 0],
+            sensordata: &[],
+            qpos: &[0.014874620314335736, -0.02969470323446091],
+            qvel: &[1.3369844758748635, -2.6703253910696985],
+        }),
+    ),
+    // two free bodies' site weld at the sparse size
+    (
+        "w04s_weld_two_moving_sparse",
+        r#"<mujoco model="m"><option timestep="0.002" jacobian="sparse"/><worldbody><body name="a" pos="0 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s1" pos="0.1 0 0" quat="0.9238795 0.3826834 0 0"/></body><body name="b" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s2" pos="-0.1 0 0" quat="0.8660254 0 0.5 0"/></body></worldbody><equality><weld site1="s1" site2="s2"/></equality></mujoco>"#,
+        Expect::Loads(Want {
+            eq_type: &[1],
+            eq_obj1id: &[0],
+            eq_obj2id: &[1],
+            eq_objtype: &[6],
+            eq_data: &[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            qfrc_constraint: &[
+                125.0000000000002,
+                6.750155989720945e-14,
+                -2.700062395888378e-13,
+                -0.8459262108380264,
+                3.3884233516323996,
+                1.5980435497100092,
+                -125.0000000000002,
+                -6.750155989720945e-14,
+                2.700062395888378e-13,
+                0.8459262108380264,
+                -3.388423351632346,
+                -1.5980435497099954,
+            ],
+            efc_eq_pos: &[
+                -0.09999999999999998,
+                0.0,
+                0.0,
+                0.33141355970379927,
+                -0.4619397711104239,
+                0.1913417087442235,
+            ],
+            nisland: 1,
+            efc_island: &[0, 0, 0, 0, 0, 0],
+            sensordata: &[],
+            qpos: &[
+                0.01533768817362632,
+                4.0233738463272093e-07,
+                0.9978194859474621,
+                0.9958200520383869,
+                -0.05583331695433596,
+                0.06623217561599425,
+                0.02895450896343582,
+                0.2846623118263737,
+                -4.023373846318635e-07,
+                0.9978641140525378,
+                0.9959366504360663,
+                0.053417510958810276,
+                -0.0680720001755178,
+                -0.024959179338651036,
+            ],
+            qvel: &[
+                1.0143167147816825,
+                0.0010056816073574816,
+                -0.19880632975350349,
+                -7.434610396333362,
+                8.957013902590317,
+                4.306634935738879,
+                -1.0143167147816823,
+                -0.001005681607357434,
+                -0.19359367024649657,
+                6.783858192926639,
+                -9.48484544872885,
+                -3.161850924831181,
+            ],
+        }),
+    ),
+    // a hinge chain's site weld at the sparse size, its site ids not its bodies'
+    (
+        "w11s_weld_site_hinge_chain_sparse",
+        r#"<mujoco model="m"><option timestep="0.002" jacobian="sparse"/><worldbody><site name="w" pos="0.4 0 1" quat="0.8660254 0 0.5 0"/><body name="a" pos="0 0 1"><joint type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02"/><body name="b" pos="0.2 0 0"><joint type="hinge" axis="0 0 1"/><geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02"/><site name="s" pos="0.2 0 0" quat="0.9238795 0.3826834 0 0"/></body></body></worldbody><equality><weld site1="s" site2="w"/></equality></mujoco>"#,
+        Expect::Loads(Want {
+            eq_type: &[1],
+            eq_obj1id: &[1],
+            eq_obj2id: &[0],
+            eq_objtype: &[6],
+            eq_data: &[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            qfrc_constraint: &[0.6581308930401093, 0.35720540606133966],
+            efc_eq_pos: &[
+                0.0,
+                0.0,
+                0.0,
+                0.33141355970379927,
+                -0.4619397711104239,
+                0.1913417087442235,
+            ],
+            nisland: 1,
+            efc_island: &[0, 0, 0, 0, 0, 0],
+            sensordata: &[],
+            qpos: &[0.006650634524808663, 0.01007433180311042],
+            qvel: &[0.41605704889522155, 0.6296855351581453],
+        }),
+    ),
+    // two slides with a ref, falling along their axes
+    (
+        "j14_slides_ref_moving",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="slide" axis="0 0.6 0.8" ref="0.05"/><geom type="box" size="0.05 0.05 0.05" mass="1"/></body><body name="b" pos="0.6 0 1"><joint name="j2" type="slide" axis="0 0 1" ref="-0.02"/><geom type="box" size="0.05 0.05 0.05" mass="2"/></body></worldbody><equality><joint joint1="j1" joint2="j2" polycoef="0.01 0.5 0 0 0"/></equality></mujoco>"#,
+        Expect::Loads(Want {
+            eq_type: &[2],
+            eq_obj1id: &[0],
+            eq_obj2id: &[1],
+            eq_objtype: &[0],
+            eq_data: &[0.01, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            qfrc_constraint: &[24.302382513661243, -12.151191256830622],
+            efc_eq_pos: &[-0.01],
+            nisland: 1,
+            efc_island: &[0],
+            sensordata: &[],
+            qpos: &[0.05143693549173666, -0.022949073872934173],
+            qvel: &[0.05998472426599434, -0.2504361810664986],
+        }),
+    ),
+    // one slide with a ref held as it falls
+    (
+        "j15_single_slide_ref_moving",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="slide" axis="0 0.6 0.8" ref="0.05"/><geom type="box" size="0.05 0.05 0.05" mass="1"/></body><body name="b" pos="0.6 0 1"><joint name="j2" type="slide" axis="0 0 1"/><geom type="box" size="0.05 0.05 0.05" mass="2"/></body></worldbody><equality><joint joint1="j1" polycoef="0.02 0 0 0 0"/></equality></mujoco>"#,
+        Expect::Loads(Want {
+            eq_type: &[2],
+            eq_obj1id: &[0],
+            eq_obj2id: &[-1],
+            eq_objtype: &[0],
+            eq_data: &[0.02, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            qfrc_constraint: &[57.45560000000019, 0.0],
+            efc_eq_pos: &[-0.02],
+            nisland: 1,
+            efc_island: &[0],
+            sensordata: &[],
+            qpos: &[0.05586702707475185, -0.0021582000000000003],
+            qvel: &[0.37121134502910863, -0.1962],
+        }),
+    ),
     // a ball joint coupled (MuJoCo's compiler couples hinges and slides only, L465), naming the joint refused
     (
         "j07_ball_follower",
@@ -1122,6 +1419,42 @@ const CASES: &[(&str, &str, Expect)] = &[
         r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body></worldbody><equality><weld site1="s" torquescale="x"/></equality></mujoco>"#,
         Expect::Refused("required attribute missing: 'site2' on <weld>"),
     ),
+    // a weld with no attribute
+    (
+        "n01_weld_empty",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body></worldbody><equality><weld/></equality></mujoco>"#,
+        Expect::Refused("required attribute missing: 'body1' on <weld>"),
+    ),
+    // a weld with body2 alone
+    (
+        "n02_weld_body2_only",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body></worldbody><equality><weld body2="a"/></equality></mujoco>"#,
+        Expect::Refused("required attribute missing: 'body1' on <weld>"),
+    ),
+    // a weld with site2 alone
+    (
+        "n03_weld_site2_only",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body></worldbody><equality><weld site2="s"/></equality></mujoco>"#,
+        Expect::Refused("required attribute missing: 'site1' on <weld>"),
+    ),
+    // a weld with an anchor alone
+    (
+        "n04_weld_anchor_only",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body></worldbody><equality><weld anchor="0 0 0"/></equality></mujoco>"#,
+        Expect::Refused("required attribute missing: 'body1' on <weld>"),
+    ),
+    // a weld with a relpose alone
+    (
+        "n05_weld_relpose_only",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body></worldbody><equality><weld relpose="0 0 0 1 0 0 0"/></equality></mujoco>"#,
+        Expect::Refused("required attribute missing: 'body1' on <weld>"),
+    ),
+    // a weld with body2 and an anchor
+    (
+        "n06_weld_body2_and_anchor",
+        r#"<mujoco model="m"><option timestep="0.002"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body></worldbody><equality><weld body2="a" anchor="0.1 0 0"/></equality></mujoco>"#,
+        Expect::Refused("required attribute missing: 'body1' on <weld>"),
+    ),
     // a connect with site1 alone: this names the attribute missing
     (
         "c09_connect_site1_only",
@@ -1191,13 +1524,18 @@ fn id(x: usize) -> i64 {
 }
 
 /// The fields of the model `doc` loads to that are not MuJoCo 3.5.0's
-/// `want`; `load` where it does not load.
+/// `want`; `load`, `make_data`, `forward` or `step` where that fails, so that
+/// one case's failure leaves the others compared.
 fn differing(doc: &str, want: &Want) -> Vec<&'static str> {
     let Ok(m) = load_model(doc) else {
         return vec!["load"];
     };
-    let mut d = m.make_data();
-    d.forward(&m).unwrap();
+    let Ok(mut d) = m.try_make_data() else {
+        return vec!["make_data"];
+    };
+    if d.forward(&m).is_err() {
+        return vec!["forward"];
+    }
     let efc_eq_pos: Vec<f64> = (0..d.efc_pos.len())
         .filter(|&i| d.efc_type[i] == ConstraintType::Equality)
         .map(|i| d.efc_pos[i])
@@ -1207,7 +1545,9 @@ fn differing(doc: &str, want: &Want) -> Vec<&'static str> {
     let efc_island: Vec<i64> = d.efc_island.iter().map(|&i| i64::from(i)).collect();
     let sensordata = d.sensordata.as_slice().to_vec();
     for _ in 0..10 {
-        d.step(&m).unwrap();
+        if d.step(&m).is_err() {
+            return vec!["step"];
+        }
     }
     // A joint equality's tenth entry is its degree-10 coefficient here, 0
     // where none is written, where MuJoCo stores its default 1 (registry

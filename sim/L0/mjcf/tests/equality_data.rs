@@ -13,8 +13,8 @@
 // The values are MuJoCo's, printed to the last digit.
 #![allow(clippy::unwrap_used, clippy::unreadable_literal)]
 
-use sim_core::MjObjectType;
-use sim_mjcf::load_model;
+use sim_core::{ConstraintType, MjObjectType};
+use sim_mjcf::{MjcfWeld, load_model, model_from_mjcf, parse_mjcf_str};
 
 /// Each document, and the `eq_data` row MuJoCo 3.5.0 compiles for its one
 /// equality: but the last two (a tendon equality, a flexcomp's edge
@@ -232,6 +232,46 @@ fn a_joint_equalitys_tenth_entry_is_its_coefficient() {
     let ours = model.eq_data[0];
     assert_eq!(ours[..10], mujoco[..10]);
     assert_eq!((ours[10], mujoco[10]), (0.0, 1.0));
+}
+
+/// A polynomial past MuJoCo's quartic (registry `D-POLYCOEF-DEGREE`)
+/// measures each joint from its `qpos0`, as the quartic does: at `qpos0`,
+/// whatever the joints' `ref`, its row's error is `-polycoef[0]`.
+#[test]
+fn a_polynomial_past_the_quartic_measures_each_joint_from_its_qpos0() {
+    let model = load_model(r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint name="j1" type="hinge" axis="0 1 0" ref="0.3"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02"/></body><body name="b" pos="0.6 0 1"><joint name="j2" type="hinge" axis="0 1 0" ref="-0.4"/><geom type="capsule" fromto="0 0 0 0.3 0.05 0" size="0.02"/></body></worldbody><equality><joint joint1="j1" joint2="j2" polycoef="0.1 0.2 0.3 0.4 0.5 0.6"/></equality></mujoco>"#).unwrap();
+    let mut data = model.make_data();
+    data.forward(&model).unwrap();
+    let rows: Vec<f64> = (0..data.efc_type.len())
+        .filter(|&r| data.efc_type[r] == ConstraintType::Equality)
+        .map(|r| data.efc_pos[r])
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].to_bits(), (-0.1_f64).to_bits(), "{rows:?}");
+}
+
+/// A weld built in code is checked for its form by the builder, as one read
+/// from a document is by the parser: a site weld
+/// ([`MjcfWeld::between_sites`]) keeps its two sites, and one mixing a body
+/// and a site is refused in MuJoCo's words.
+#[test]
+fn a_weld_built_in_code_is_checked_for_its_form() {
+    let base = r#"<mujoco><worldbody><site name="w" pos="0 0 1"/><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s" pos="-0.1 0 0"/></body></worldbody></mujoco>"#;
+    let mut sites = parse_mjcf_str(base).unwrap();
+    sites.equality = sites.equality.with_weld(MjcfWeld::between_sites("w", "s"));
+    let model = model_from_mjcf(&sites, None).unwrap();
+    assert_eq!(model.eq_objtype, [MjObjectType::Site]);
+    assert_eq!((model.eq_obj1id[0], model.eq_obj2id[0]), (0, 1));
+
+    let mut mixed = parse_mjcf_str(base).unwrap();
+    let mut weld = MjcfWeld::to_world("a");
+    weld.site1 = Some("s".to_string());
+    mixed.equality = mixed.equality.with_weld(weld);
+    let error = model_from_mjcf(&mixed, None).unwrap_err().to_string();
+    assert!(
+        error.contains("body and site semantics cannot be mixed"),
+        "{error}"
+    );
 }
 
 /// A weld written with `site1` and `site2` keeps its two sites, with MuJoCo
