@@ -238,6 +238,69 @@ fn a_fused_models_site_connect_holds_the_sites_it_names() {
     residual_is_the_sites(xml, "sa", "sb");
 }
 
+/// Under `fusestatic`, a site-form weld holds the sites it names, as the
+/// connect above does; MuJoCo's holds `sw` (measured: `eq_obj1id` 0)
+/// (D-FUSESTATIC-SITE-INDEX). Its first three rows are the sites' positions'
+/// difference, bit for bit.
+#[test]
+fn a_fused_models_site_weld_holds_the_sites_it_names() {
+    let xml = r#"<mujoco><compiler fusestatic="true"/><worldbody>
+<body name="a" pos="0 0 1"><freejoint/><geom size="0.1" mass="1"/><site name="sa" pos="0.1 0 0"/></body>
+<body name="w" pos="0.5 0 2"><site name="sw" pos="0 0 0"/></body>
+<body name="b" pos="1 0 1"><freejoint/><geom size="0.1" mass="1"/><site name="sb" pos="-0.1 0 0"/></body>
+</worldbody>
+<equality><weld site1="sa" site2="sb"/></equality></mujoco>"#;
+    let model = load_model(xml).expect("loads");
+    assert_eq!(model.nbody, 3, "w is fused into the world");
+    let site = |name: &str| {
+        model
+            .site_name
+            .iter()
+            .position(|n| n.as_deref() == Some(name))
+            .unwrap()
+    };
+    let (i, j) = (site("sa"), site("sb"));
+    assert_eq!((model.eq_obj1id[0], model.eq_obj2id[0]), (i, j));
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let rows: Vec<usize> = (0..data.efc_type.len())
+        .filter(|&r| data.efc_type[r] == ConstraintType::Equality)
+        .collect();
+    assert_eq!(rows.len(), 6);
+    for (k, &r) in rows.iter().take(3).enumerate() {
+        let want = data.site_xpos[i][k] - data.site_xpos[j][k];
+        assert_eq!(data.efc_pos[r].to_bits(), want.to_bits(), "row {k}");
+    }
+}
+
+/// A site connect or weld whose two sites sit on one body holds nothing:
+/// its rows are 0 and so is its force, at the dense size as MuJoCo's dense
+/// rows (measured: `qfrc_constraint` 0) and at the sparse size too, where
+/// MuJoCo's connect counts each dof twice and its weld stops the process
+/// (D-SITE-EQUALITY-ONE-BODY). The sparse documents are made here from the
+/// dense ones, outside the census: MuJoCo stops on the weld's, and its
+/// connect's moves its census record by 9.5e-2 under a 1e-15 change (measured).
+#[test]
+fn a_site_equality_on_one_body_has_its_dense_rows_at_the_sparse_size() {
+    let connect_dense = r#"<mujoco><option jacobian="dense"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s1" pos="-0.1 0 0"/><site name="s2" pos="0.1 0 0" quat="0.9238795 0.3826834 0 0"/></body></worldbody><equality><connect site1="s1" site2="s2"/></equality></mujoco>"#;
+    let weld_dense = r#"<mujoco><option jacobian="dense"/><worldbody><body name="a" pos="0.3 0 1"><freejoint/><geom type="box" size="0.1 0.05 0.02" mass="1"/><site name="s1" pos="-0.1 0 0"/><site name="s2" pos="0.1 0 0" quat="0.9238795 0.3826834 0 0"/></body></worldbody><equality><weld site1="s1" site2="s2"/></equality></mujoco>"#;
+    let sparse = |dense: &str| dense.replace(r#"jacobian="dense""#, r#"jacobian="sparse""#);
+    let force = |xml: &str| {
+        let model = load_model(xml).expect("loads");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        data.qfrc_constraint
+            .iter()
+            .map(|x| x.to_bits())
+            .collect::<Vec<_>>()
+    };
+    for dense in [connect_dense, weld_dense] {
+        let (d, s) = (force(dense), force(&sparse(dense)));
+        assert!(d.iter().all(|&bits| bits == 0), "{d:?}");
+        assert_eq!(d, s);
+    }
+}
+
 /// An empty site name is refused as no site's: MuJoCo binds an unnamed site
 /// to it (measured), D-EMPTY-NAME. A connect mixing forms names the site
 /// attribute it holds.

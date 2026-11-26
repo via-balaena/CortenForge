@@ -4173,3 +4173,6 @@ c30d3eef4ba5738b	sim/L0/mjcf/tests/equality_forms.rs:1068
 ceab1bd4de4584e4	sim/L0/mjcf/tests/equality_forms.rs:1122
 f3b35616631b8c4c	sim/L0/mjcf/tests/equality_forms.rs:1092
 fb9c23fd0c2ce3b4	sim/L0/mjcf/tests/equality_forms.rs:1050
+257e37d6bb3e6d5f	sim/L0/mjcf/tests/connect_forms.rs:286
+9093fd2ed517bfe0	sim/L0/mjcf/tests/connect_forms.rs:285
+e60f971a39ceb16f	sim/L0/mjcf/tests/connect_forms.rs:247
