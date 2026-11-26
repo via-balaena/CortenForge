@@ -84,6 +84,11 @@ pub(super) fn parse_equality<R: BufRead>(
 /// Parse connect constraint attributes.
 pub(super) fn parse_connect_attrs(e: &BytesStart) -> Result<MjcfConnect> {
     let a = Attrs::new(e)?;
+    // MuJoCo's schema gives `torquescale` to a weld only, and refuses it here
+    // before its reader reads the element.
+    if a.string("torquescale").is_some() {
+        return Err(MjcfError::unknown_attribute("connect", "torquescale"));
+    }
     let mut connect = MjcfConnect::default();
 
     connect.name = a.string("name");
@@ -114,21 +119,14 @@ pub(super) fn parse_weld_attrs(e: &BytesStart) -> Result<MjcfWeld> {
     weld.name = a.string("name");
     weld.class = a.string("class");
 
-    // body1 is required
-    weld.body1 = a
-        .string("body1")
-        .ok_or_else(|| MjcfError::missing_attribute("weld", "body1"))?;
-
-    // body2 is optional (defaults to world)
+    weld.body1 = a.string("body1");
     weld.body2 = a.string("body2");
-
-    // Parse anchor point
-    if let Some(anchor) = a.vec3("anchor")? {
-        weld.anchor = anchor;
-    }
-
-    // Parse relpose [x y z qw qx qy qz]
+    weld.site1 = a.string("site1");
+    weld.site2 = a.string("site2");
+    weld.anchor = a.vec3("anchor")?;
+    // relpose: [x y z qw qx qy qz]
     weld.relpose = a.array("relpose")?;
+    crate::builder::equality::weld_form(&weld)?;
     weld.torquescale = a.real("torquescale")?;
 
     // Parse solver parameters

@@ -8,6 +8,8 @@
 //! matching MuJoCo's semantics. The [`MjcfEquality::order`] vec records the
 //! insertion sequence from the parser; we iterate it here.
 
+use std::collections::HashMap;
+
 use nalgebra::Vector3;
 
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
@@ -78,6 +80,56 @@ pub fn connect_form(connect: &MjcfConnect) -> Result<ConnectForm<'_>> {
         body1,
         body2: connect.body2.as_deref(),
         anchor,
+    })
+}
+
+/// The form a `<weld>` is written in.
+pub enum WeldForm<'a> {
+    /// `body1` and `body2` (the world when `None`).
+    Bodies {
+        body1: &'a str,
+        body2: Option<&'a str>,
+    },
+    /// `site1` and `site2`, whose positions and orientations are held
+    /// together.
+    Sites { site1: &'a str, site2: &'a str },
+}
+
+/// A `<weld>`'s form, as MuJoCo 3.5.0's reader takes it
+/// (`xml_native_reader.cc:2148-2193`): a site attribute beside `body1`,
+/// `body2`, `anchor` or `relpose` is refused ("body and site semantics
+/// cannot be mixed"); else `site1` and `site2` must both be written, or
+/// `body1`, where MuJoCo refuses the rest in one message and this names the
+/// one attribute missing, as [`connect_form`] does. The parser checks it on
+/// what it read, and the builder on a weld built in code.
+pub fn weld_form(weld: &MjcfWeld) -> Result<WeldForm<'_>> {
+    let site = weld.site1.is_some() || weld.site2.is_some();
+    let body = weld.body1.is_some()
+        || weld.body2.is_some()
+        || weld.anchor.is_some()
+        || weld.relpose.is_some();
+    if site && body {
+        let written = if weld.site1.is_some() {
+            "site1"
+        } else {
+            "site2"
+        };
+        return Err(MjcfError::invalid_value(
+            "weld",
+            written,
+            "body and site semantics cannot be mixed",
+        ));
+    }
+    let missing = |attribute| MjcfError::missing_attribute("weld", attribute);
+    if site {
+        let site1 = weld.site1.as_deref().ok_or_else(|| missing("site1"))?;
+        let site2 = weld.site2.as_deref().ok_or_else(|| missing("site2"))?;
+        return Ok(WeldForm::Sites { site1, site2 });
+    }
+    let body1 = weld.body1.as_deref().ok_or_else(|| missing("body1"))?;
+    Ok(WeldForm::Bodies {
+        body1,
+        body2: weld.body2.as_deref(),
     })
 }
 
@@ -235,42 +287,61 @@ impl ModelBuilder {
     ///
     /// A relative quaternion of all 0 is made at `qpos0` with body1's anchor,
     /// any other normalized ([`sim_core::Model::compute_equality_data0`],
-    /// MuJoCo's `mj_setConst`).
+    /// MuJoCo's `mj_setConst`). The site form keeps its two sites, as
+    /// MuJoCo's model does (`eq_objtype` site), with MuJoCo's default row and
+    /// its `torquescale`: its points are the sites' positions and its turns
+    /// the sites' (`engine_core_constraint.c:470-476`, `:502-507`).
     fn process_weld(&mut self, weld: &MjcfWeld) -> Result<()> {
-        let body1_id = self
-            .body_name_to_id
-            .get(&weld.body1)
-            .ok_or_else(|| MjcfError::undefined(ElementKind::Body, &weld.body1))?;
-
-        let body2_id = if let Some(ref body2_name) = weld.body2 {
-            *self
-                .body_name_to_id
-                .get(body2_name)
-                .ok_or_else(|| MjcfError::undefined(ElementKind::Body, body2_name))?
-        } else {
-            0 // World body
+        let id = |names: &HashMap<String, usize>, kind: ElementKind, name: &str| {
+            names
+                .get(name)
+                .copied()
+                .ok_or_else(|| MjcfError::undefined(kind, name))
         };
-        if *body1_id == body2_id {
-            return Err(repeated("weld", "body2", &weld.body1, self.eq_type.len()));
-        }
-
-        // As MuJoCo's reader writes it (`xml_native_reader.cc:2149-2193`):
-        // the anchor, `relpose` as written (0 where none is), `torquescale`
-        // (1 where none is); a relative quaternion of all 0 is made at
-        // `qpos0` with body1's anchor (`Model::compute_equality_data0`).
-        let mut data = [0.0; 11];
-        data[..3].copy_from_slice(weld.anchor.as_slice());
-        if let Some(relpose) = weld.relpose {
-            data[3..10].copy_from_slice(&relpose);
-        }
-        data[10] = weld.torquescale.unwrap_or(1.0);
+        let (obj1_id, obj2_id, objtype, data) = match weld_form(weld)? {
+            WeldForm::Bodies { body1, body2 } => {
+                let body1_id = id(&self.body_name_to_id, ElementKind::Body, body1)?;
+                let body2_id =
+                    body2.map_or(Ok(0), |b| id(&self.body_name_to_id, ElementKind::Body, b))?; // else the world
+                if body1_id == body2_id {
+                    return Err(repeated("weld", "body2", body1, self.eq_type.len()));
+                }
+                // As MuJoCo's reader writes it (`xml_native_reader.cc:2149-2193`):
+                // the anchor (0 where none is), `relpose` as written (0 where
+                // none is), `torquescale` (1 where none is); a relative
+                // quaternion of all 0 is made at `qpos0` with body1's anchor
+                // (`Model::compute_equality_data0`).
+                let mut data = [0.0; 11];
+                if let Some(anchor) = weld.anchor {
+                    data[..3].copy_from_slice(anchor.as_slice());
+                }
+                if let Some(relpose) = weld.relpose {
+                    data[3..10].copy_from_slice(&relpose);
+                }
+                data[10] = weld.torquescale.unwrap_or(1.0);
+                (body1_id, body2_id, MjObjectType::Body, data)
+            }
+            WeldForm::Sites { site1, site2 } => {
+                let s1 = id(&self.site_name_to_id, ElementKind::Site, site1)?;
+                let s2 = id(&self.site_name_to_id, ElementKind::Site, site2)?;
+                if s1 == s2 {
+                    return Err(repeated("weld", "site2", site1, self.eq_type.len()));
+                }
+                // MuJoCo's default row, `torquescale` written over its last
+                // entry (`xml_native_reader.cc:2191`): its points and turns
+                // are the sites'.
+                let mut data = DEFAULT_EQ_DATA;
+                data[10] = weld.torquescale.unwrap_or(1.0);
+                (s1, s2, MjObjectType::Site, data)
+            }
+        };
 
         let (active, solref, solimp) = (weld.active, weld.solref, weld.solimp);
 
         self.eq_type.push(EqualityType::Weld);
-        self.eq_obj1id.push(*body1_id);
-        self.eq_obj2id.push(body2_id);
-        self.eq_objtype.push(MjObjectType::Body);
+        self.eq_obj1id.push(obj1_id);
+        self.eq_obj2id.push(obj2_id);
+        self.eq_objtype.push(objtype);
         self.eq_data.push(data);
         self.eq_active.push(active.unwrap_or(true));
         self.eq_solimp.push(written_over(solimp, DEFAULT_SOLIMP));

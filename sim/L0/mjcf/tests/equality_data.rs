@@ -13,6 +13,7 @@
 // The values are MuJoCo's, printed to the last digit.
 #![allow(clippy::unwrap_used, clippy::unreadable_literal)]
 
+use sim_core::MjObjectType;
 use sim_mjcf::load_model;
 
 /// Each document, and the `eq_data` row MuJoCo 3.5.0 compiles for its one
@@ -233,10 +234,16 @@ fn a_joint_equalitys_tenth_entry_is_its_coefficient() {
     assert_eq!((ours[10], mujoco[10]), (0.0, 1.0));
 }
 
-/// A weld written with `site1` and `site2`, which MuJoCo 3.5.0 loads
-/// (measured), is refused here (registry `D-WELD-SITE`).
+/// A weld written with `site1` and `site2` keeps its two sites, with MuJoCo
+/// 3.5.0's default row and its `torquescale` (measured: `eq_objtype` 6,
+/// `eq_obj1id` 0, `eq_obj2id` 1, the row below): no anchor or relative pose
+/// is made, the sites' positions and turns being the weld's.
 #[test]
-fn a_site_form_weld_is_refused() {
-    let error = load_model(r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint type="hinge" axis="0 1 0"/><geom type="box" size="0.1 0.05 0.05"/><site name="s1" pos="0.1 0 0"/></body><body name="c" pos="0.3 0.1 1.2"><freejoint/><geom type="box" size="0.05 0.05 0.05"/><site name="s2"/></body></worldbody><equality><weld site1="s1" site2="s2"/></equality></mujoco>"#).unwrap_err().to_string();
-    assert!(error.contains("'body1' on <weld>"), "{error}");
+fn a_site_form_welds_row_is_mujocos_default() {
+    let model = load_model(r#"<mujoco><worldbody><body name="a" pos="0 0 1"><joint type="hinge" axis="0 1 0"/><geom type="box" size="0.1 0.05 0.05"/><site name="s1" pos="0.1 0 0"/></body><body name="c" pos="0.3 0.1 1.2"><freejoint/><geom type="box" size="0.05 0.05 0.05"/><site name="s2"/></body></worldbody><equality><weld site1="s1" site2="s2"/></equality></mujoco>"#).unwrap();
+    let mujoco: [f64; 11] = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+    assert_eq!(model.eq_objtype, [MjObjectType::Site]);
+    assert_eq!((model.eq_obj1id[0], model.eq_obj2id[0]), (0, 1));
+    let bits = |row: &[f64; 11]| row.map(f64::to_bits);
+    assert_eq!(bits(&model.eq_data[0]), bits(&mujoco));
 }

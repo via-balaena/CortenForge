@@ -64,6 +64,8 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
 ///
+/// 30 since Rigid-loading PR RL-10d: `MjcfWeld` took `site1` and `site2`,
+/// and its `body1` and `anchor` became `Option`s.
 /// 29 since Rigid-loading PR RL-10b2's second commit: `MjcfGeom` took
 /// `frame`.
 /// 28 since Rigid-loading PR RL-10b2: `MjcfJoint` took `align`.
@@ -113,7 +115,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// one below mjMINVAL is refused (Rigid-loading PR RL-3b): a version-6 file
 /// holds 0.0 there for a flexcomp that did not write it. 6 since `MjcfFlex`
 /// took `vertex_bodies` (Rigid-loading L10).
-pub const MJB_VERSION: u32 = 29;
+pub const MJB_VERSION: u32 = 30;
 
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;
