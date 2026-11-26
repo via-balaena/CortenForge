@@ -372,8 +372,8 @@ pub enum EqualityType {
     /// its `qpos0`: `q1 − qpos0₁ = poly(q2 − qpos0₂)`, `poly` = `c0 + c1·x +
     /// c2·x² + …`; with one joint, `q1 = qpos0₁ + c0`.
     Joint,
-    /// Tendon: polynomial constraint between two tendons.
-    /// len2 = poly(len1).
+    /// Tendon: polynomial constraint between two tendons, each measured from
+    /// its `tendon_length0`: `len1 − len0₁ = poly(len2 − len0₂)`.
     Tendon,
     /// Distance: constrains distance between two geom centers.
     /// |p1 - p2| = d (removes 1 DOF).
