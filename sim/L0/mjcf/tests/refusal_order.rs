@@ -2236,6 +2236,162 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "invalid condim in contact pair",
         "invalid condim in contact pair (pair #0)",
     ),
+    (
+        "a height field with no data beside actuator ctrlrange",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><actuator><motor joint="j" ctrllimited="true" ctrlrange="1 0"/></actuator></mujoco>"#,
+        "hfield not specified",
+        "hfield not specified (hfield 'h')",
+    ),
+    (
+        "a height field with no data beside equality body",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><equality><weld body1="nope"/></equality></mujoco>"#,
+        "hfield not specified",
+        "hfield not specified (hfield 'h')",
+    ),
+    (
+        "a height field with no data beside equality joint",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><equality><joint joint1="nope"/></equality></mujoco>"#,
+        "hfield not specified",
+        "hfield not specified (hfield 'h')",
+    ),
+    (
+        "a height field with no data beside exclude body",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><contact><exclude body1="nope" body2="b"/></contact></mujoco>"#,
+        "hfield not specified",
+        "hfield not specified (hfield 'h')",
+    ),
+    (
+        "a height field with no data beside geom hfield name",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body><geom type="hfield" hfield="nope"/></worldbody></mujoco>"#,
+        "hfield 'nope' not found in geom 1",
+        "unknown hfield 'nope' (geom #1 in body 'world')",
+    ),
+    (
+        "a height field with no data beside joint axis",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body><body pos="2 0 1"><joint type="hinge" axis="0 0 0"/><geom size="0.1"/></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint #1 in body #2)",
+    ),
+    (
+        "a height field with no data beside key qpos",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><keyframe><key qpos="1 2 3"/></keyframe></mujoco>"#,
+        "hfield not specified",
+        "hfield not specified (hfield 'h')",
+    ),
+    (
+        "a height field with no data beside light target",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body><light mode="targetbody" target="nope"/></worldbody></mujoco>"#,
+        "unknown target body in light",
+        "unknown target body in light (body 'world')",
+    ),
+    (
+        "a height field with no data beside material texture",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/><material name="m" texture="nope"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody></mujoco>"#,
+        "hfield not specified",
+        "hfield not specified (hfield 'h')",
+    ),
+    (
+        "a height field with no data beside pair geom",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><contact><pair geom1="nope" geom2="g"/></contact></mujoco>"#,
+        "geom 'nope' not found in collision 0",
+        "unknown geom 'nope' (pair #0)",
+    ),
+    (
+        "a height field with no data beside sensor joint",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><sensor><jointpos joint="nope"/></sensor></mujoco>"#,
+        "hfield not specified",
+        "hfield not specified (hfield 'h')",
+    ),
+    (
+        "a height field with no data beside sensor noise",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><sensor><jointpos joint="j" noise="-1"/></sensor></mujoco>"#,
+        "hfield not specified",
+        "hfield not specified (hfield 'h')",
+    ),
+    (
+        "a height field with no data beside sensor site",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><sensor><accelerometer site="nope"/></sensor></mujoco>"#,
+        "hfield not specified",
+        "hfield not specified (hfield 'h')",
+    ),
+    (
+        "a height field's half-width of 0 beside actuator ctrlrange",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><actuator><motor joint="j" ctrllimited="true" ctrlrange="1 0"/></actuator></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'h')",
+    ),
+    (
+        "a height field's half-width of 0 beside equality body",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><equality><weld body1="nope"/></equality></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'h')",
+    ),
+    (
+        "a height field's half-width of 0 beside equality joint",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><equality><joint joint1="nope"/></equality></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'h')",
+    ),
+    (
+        "a height field's half-width of 0 beside exclude body",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><contact><exclude body1="nope" body2="b"/></contact></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'h')",
+    ),
+    (
+        "a height field's half-width of 0 beside geom hfield name",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body><geom type="hfield" hfield="nope"/></worldbody></mujoco>"#,
+        "hfield 'nope' not found in geom 1",
+        "unknown hfield 'nope' (geom #1 in body 'world')",
+    ),
+    (
+        "a height field's half-width of 0 beside joint axis",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body><body pos="2 0 1"><joint type="hinge" axis="0 0 0"/><geom size="0.1"/></body></worldbody></mujoco>"#,
+        "axis too small in joint",
+        "invalid axis on <joint>: axis too small (joint #1 in body #2)",
+    ),
+    (
+        "a height field's half-width of 0 beside key qpos",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><keyframe><key qpos="1 2 3"/></keyframe></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'h')",
+    ),
+    (
+        "a height field's half-width of 0 beside light target",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body><light mode="targetbody" target="nope"/></worldbody></mujoco>"#,
+        "unknown target body in light",
+        "unknown target body in light (body 'world')",
+    ),
+    (
+        "a height field's half-width of 0 beside material texture",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/><material name="m" texture="nope"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'h')",
+    ),
+    (
+        "a height field's half-width of 0 beside pair geom",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><contact><pair geom1="nope" geom2="g"/></contact></mujoco>"#,
+        "geom 'nope' not found in collision 0",
+        "unknown geom 'nope' (pair #0)",
+    ),
+    (
+        "a height field's half-width of 0 beside sensor joint",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><sensor><jointpos joint="nope"/></sensor></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'h')",
+    ),
+    (
+        "a height field's half-width of 0 beside sensor noise",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><sensor><jointpos joint="j" noise="-1"/></sensor></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'h')",
+    ),
+    (
+        "a height field's half-width of 0 beside sensor site",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><sensor><accelerometer site="nope"/></sensor></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "size parameter is not positive in hfield (hfield 'h')",
+    ),
 ];
 
 #[test]
@@ -3660,6 +3816,114 @@ const EQUALITY_COSTS: &[(&str, &str, &str, &str)] = &[
 fn a_fault_beside_an_equalitys_refusal_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in EQUALITY_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, one a height field's (no data, or a half-width of 0), where
+/// this crate names the other: an actuator's or a tendon's reference or a
+/// tendon's range, which its validation resolves before it builds the model
+/// and MuJoCo 3.5.0 after the height fields; a skin's bone and a numeric's
+/// size, which MuJoCo meets before the height fields (its skins compile
+/// first, its reader reads the numeric) and this crate after (ledger L353).
+/// `(what, document, MuJoCo's reason, this crate's error)`, measured
+/// 2026-11-27 (RL-11b's review round 1, RA's documents).
+const HFIELD_COMPILE_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "a height field with no data beside actuator joint",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><actuator><motor joint="nope"/></actuator></mujoco>"#,
+        "hfield not specified",
+        "unknown joint 'nope' (actuator #0)",
+    ),
+    (
+        "a height field with no data beside actuator site",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><actuator><motor site="nope"/></actuator></mujoco>"#,
+        "hfield not specified",
+        "unknown site 'nope' (actuator #0)",
+    ),
+    (
+        "a height field with no data beside numeric size",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><custom><numeric name="n" size="1" data="1 2"/></custom></mujoco>"#,
+        "attribute 'data' has too much data",
+        "hfield not specified (hfield 'h')",
+    ),
+    (
+        "a height field with no data beside skin bone",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><deformable><skin vertex="0 0 0 1 0 0 0 1 0" face="0 1 2"><bone body="nope" bindpos="0 0 0" bindquat="1 0 0 0" vertid="0" vertweight="1"/></skin></deformable></mujoco>"#,
+        "unknown body 'nope' in skin",
+        "hfield not specified (hfield 'h')",
+    ),
+    (
+        "a height field with no data beside tendon joint",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><tendon><fixed><joint joint="nope" coef="1"/></fixed></tendon></mujoco>"#,
+        "hfield not specified",
+        "unknown joint 'nope' (tendon #0)",
+    ),
+    (
+        "a height field with no data beside tendon range",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><tendon><fixed limited="true" range="1 0"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
+        "hfield not specified",
+        "invalid range on <tendon>: invalid limits in tendon (tendon #0)",
+    ),
+    (
+        "a height field with no data beside tendon site",
+        r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><tendon><spatial><site site="s"/><site site="nope"/></spatial></tendon></mujoco>"#,
+        "hfield not specified",
+        "unknown site 'nope' (tendon #0)",
+    ),
+    (
+        "a height field's half-width of 0 beside actuator joint",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><actuator><motor joint="nope"/></actuator></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "unknown joint 'nope' (actuator #0)",
+    ),
+    (
+        "a height field's half-width of 0 beside actuator site",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><actuator><motor site="nope"/></actuator></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "unknown site 'nope' (actuator #0)",
+    ),
+    (
+        "a height field's half-width of 0 beside numeric size",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><custom><numeric name="n" size="1" data="1 2"/></custom></mujoco>"#,
+        "attribute 'data' has too much data",
+        "size parameter is not positive in hfield (hfield 'h')",
+    ),
+    (
+        "a height field's half-width of 0 beside skin bone",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><deformable><skin vertex="0 0 0 1 0 0 0 1 0" face="0 1 2"><bone body="nope" bindpos="0 0 0" bindquat="1 0 0 0" vertid="0" vertweight="1"/></skin></deformable></mujoco>"#,
+        "unknown body 'nope' in skin",
+        "size parameter is not positive in hfield (hfield 'h')",
+    ),
+    (
+        "a height field's half-width of 0 beside tendon joint",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><tendon><fixed><joint joint="nope" coef="1"/></fixed></tendon></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "unknown joint 'nope' (tendon #0)",
+    ),
+    (
+        "a height field's half-width of 0 beside tendon range",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><tendon><fixed limited="true" range="1 0"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "invalid range on <tendon>: invalid limits in tendon (tendon #0)",
+    ),
+    (
+        "a height field's half-width of 0 beside tendon site",
+        r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><tendon><spatial><site site="s"/><site site="nope"/></spatial></tendon></mujoco>"#,
+        "size parameter is not positive in hfield",
+        "unknown site 'nope' (tendon #0)",
+    ),
+];
+
+#[test]
+fn a_height_field_beside_a_fault_this_crate_meets_first_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in HFIELD_COMPILE_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),

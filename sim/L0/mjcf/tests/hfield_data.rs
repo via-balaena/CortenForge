@@ -609,6 +609,62 @@ const REFUSED: &[Refused] = &[
         mujoco: "Error: unsupported content type: 'model/stl'",
         ours: "unsupported content type: 'model/stl' (hfield 'h')",
     },
+    Refused {
+        what: "an empty file: no data, its elevation not read",
+        xml: r#"<mujoco model="h"><option timestep="0.002"/><asset><hfield name="h" file="" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body pos="0.13 0.21 0.6"><freejoint/><geom type="sphere" size="0.05" mass="1"/></body></worldbody></mujoco>"#,
+        files: &[],
+        mujoco: "Error: hfield not specified",
+        ours: "hfield not specified (hfield 'h')",
+    },
+    Refused {
+        what: "an empty file beside counts: no data, the counts not filled",
+        xml: r#"<mujoco model="h"><option timestep="0.002"/><asset><hfield name="h" file="" nrow="2" ncol="2" elevation="0 1 2 3" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body pos="0.13 0.21 0.6"><freejoint/><geom type="sphere" size="0.05" mass="1"/></body></worldbody></mujoco>"#,
+        files: &[],
+        mujoco: "Error: hfield not specified",
+        ours: "hfield not specified (hfield 'h')",
+    },
+    Refused {
+        what: "a file `strippath` leaves nothing of: no data",
+        xml: r#"<mujoco model="h"><compiler strippath="true"/><option timestep="0.002"/><asset><hfield name="h" file="sub/" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body pos="0.13 0.21 0.6"><freejoint/><geom type="sphere" size="0.05" mass="1"/></body></worldbody></mujoco>"#,
+        files: &[],
+        mujoco: "Error: hfield not specified",
+        ours: "hfield not specified (hfield 'h')",
+    },
+    Refused {
+        what: "counts whose product passes a C int",
+        xml: r#"<mujoco model="h"><asset><hfield name="h" nrow="2147483647" ncol="2147483647" size="1 1 1 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/></worldbody></mujoco>"#,
+        files: &[],
+        mujoco: "Error: elevation data length must match nrow*ncol",
+        ours: "elevation data length must match nrow*ncol (hfield 'h')",
+    },
+    Refused {
+        what: "MuJoCo's own format, every value NaN, the file named `./`: its reduced name",
+        xml: r#"<mujoco model="h"><option timestep="0.002"/><asset><hfield name="h" file="./nan_all.bin" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body pos="0.13 0.21 0.6"><freejoint/><geom type="sphere" size="0.05" mass="1"/></body></worldbody></mujoco>"#,
+        files: &[("nan_all.bin", b"\x02\x00\x00\x00\x02\x00\x00\x00\x00\x00\xc0\x7f\x00\x00\xc0\x7f\x00\x00\xc0\x7f\x00\x00\xc0\x7f")],
+        mujoco: "Error: invalid data range in hfield 'nan_all.bin'",
+        ours: "invalid data range in hfield 'nan_all.bin' (hfield 'h')",
+    },
+    Refused {
+        what: "the same under `strippath`: its stripped name",
+        xml: r#"<mujoco model="h"><compiler strippath="true"/><option timestep="0.002"/><asset><hfield name="h" file="sub/nan_all.bin" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body pos="0.13 0.21 0.6"><freejoint/><geom type="sphere" size="0.05" mass="1"/></body></worldbody></mujoco>"#,
+        files: &[("nan_all.bin", b"\x02\x00\x00\x00\x02\x00\x00\x00\x00\x00\xc0\x7f\x00\x00\xc0\x7f\x00\x00\xc0\x7f\x00\x00\xc0\x7f")],
+        mujoco: "Error: invalid data range in hfield 'nan_all.bin'",
+        ours: "invalid data range in hfield 'nan_all.bin' (hfield 'h')",
+    },
+    Refused {
+        what: "the same through `sub/..`: its reduced name",
+        xml: r#"<mujoco model="h"><option timestep="0.002"/><asset><hfield name="h" file="sub/../nan_all.bin" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body pos="0.13 0.21 0.6"><freejoint/><geom type="sphere" size="0.05" mass="1"/></body></worldbody></mujoco>"#,
+        files: &[("nan_all.bin", b"\x02\x00\x00\x00\x02\x00\x00\x00\x00\x00\xc0\x7f\x00\x00\xc0\x7f\x00\x00\xc0\x7f\x00\x00\xc0\x7f")],
+        mujoco: "Error: invalid data range in hfield 'nan_all.bin'",
+        ours: "invalid data range in hfield 'nan_all.bin' (hfield 'h')",
+    },
+    Refused {
+        what: "an empty PNG",
+        xml: r#"<mujoco model="h"><option timestep="0.002"/><asset><hfield name="h" file="empty.png" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body pos="0.13 0.21 0.6"><freejoint/><geom type="sphere" size="0.05" mass="1"/></body></worldbody></mujoco>"#,
+        files: &[("empty.png", b"")],
+        mujoco: "Error: empty PNG file '<dir>/empty.png'",
+        ours: "empty PNG file '<dir>/empty.png' (hfield 'h')",
+    },
 ];
 
 #[test]
@@ -797,3 +853,61 @@ fn rangefinders_read_a_height_field_as_mujocos() {
         data.sensordata.as_slice()
     );
 }
+
+/// Registry `D-HFIELD-COUNTS`: a grid whose `nrow · ncol` passes a C `int`,
+/// with no data, refused before anything is allocated, in the words MuJoCo
+/// 3.5.0 gives the largest such grid. Its `int` product overflows (measured
+/// on the oracle: 65536 × 65536 crashes it, 46341 × 46341 and (2³¹ − 1) × 2
+/// allocate past 2.5 GB, (2³¹ − 1)² is refused as here).
+#[test]
+fn a_grid_past_an_int_is_refused() {
+    for (nrow, ncol) in [(65536, 65536), (46341, 46341), (2_147_483_647, 2)] {
+        let xml = format!(
+            r#"<mujoco><asset><hfield name="h" nrow="{nrow}" ncol="{ncol}" size="1 1 1 0.1"/></asset><worldbody><geom type="hfield" hfield="h"/></worldbody></mujoco>"#
+        );
+        let error = sim_mjcf::load_model(&xml).err().map(|e| e.to_string());
+        assert_eq!(
+            error.as_deref(),
+            Some("elevation data length must match nrow*ncol (hfield 'h')"),
+            "{nrow} x {ncol}"
+        );
+    }
+}
+
+/// Registry `D-HFIELD-PNG`: a malformed PNG is decided by the `png` crate,
+/// not by lodepng, as MuJoCo 3.5.0 decides it (each measured on the oracle;
+/// review round 1 RA's files): a palette whose length is not a multiple of
+/// 3, which lodepng reads to its last whole entry and the `png` crate panics
+/// on, is refused; a stream whose Adler-32 checksum is wrong, which lodepng
+/// refuses, loads.
+#[test]
+fn a_malformed_png_is_decided_by_this_crates_decoder() {
+    let xml = |file: &str| {
+        format!(
+            r#"<mujoco><asset><hfield name="h" file="{file}" size="1 1 0.5 0.1"/></asset><worldbody><geom type="hfield" hfield="h"/></worldbody></mujoco>"#
+        )
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let palette = load(
+        dir.path(),
+        &xml("palette.png"),
+        &[("palette.png", PALETTE_NOT_IN_THREES)],
+    );
+    let want = format!(
+        "error decoding PNG file '{}': the decoder failed (hfield 'h')",
+        dir.path().join("palette.png").display()
+    );
+    assert_eq!(
+        palette.err().map(|e| e.to_string().replace('\\', "/")),
+        Some(want.replace('\\', "/"))
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let adler = load(dir.path(), &xml("adler.png"), &[("adler.png", BAD_ADLER32)]);
+    assert!(adler.is_ok(), "{:?}", adler.err());
+}
+
+/// A 3 × 3 palette PNG whose `PLTE` chunk is 13 bytes long.
+const PALETTE_NOT_IN_THREES: &[u8] = b"\x89PNG\x0d\x0a\x1a\x0a\x00\x00\x00\x0dIHDR\x00\x00\x00\x04\x00\x00\x00\x03\x08\x03\x00\x00\x00\x83*^\xf4\x00\x00\x00\x0dPLTE\x0a\xc8\x1eZPF\xfa\x01\x02\x00\x00\x00\x07\x87L\xfb\xa2\x00\x00\x00\x17IDATx\x9cc``dbf`fbd``ddb\x02\x00\x00\x94\x00\x13$\xc5\xffa\x00\x00\x00\x00IEND\xaeB`\x82";
+
+/// A 3 × 3 grey PNG whose zlib stream's Adler-32 checksum is wrong.
+const BAD_ADLER32: &[u8] = b"\x89PNG\x0d\x0a\x1a\x0a\x00\x00\x00\x0dIHDR\x00\x00\x00\x04\x00\x00\x00\x03\x08\x00\x00\x00\x00\x91\x9f\xf1\x1a\x00\x00\x00\x17IDATx\x9cc`ph\xf8\xcf\xc0%\x22\xa7\xc1p\x22\xc5H\x12\x00\xe4\xc9\x03\x9b\x02\x05\x01U\x00\x00\x00\x00IEND\xaeB`\x82";

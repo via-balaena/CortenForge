@@ -1,0 +1,1 @@
+<mujoco model="h"><asset><hfield name="h" nrow="2147483647" ncol="2147483647" size="1 1 1 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/></worldbody></mujoco>

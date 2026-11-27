@@ -216,13 +216,14 @@ fn bounding_radius_box() {
 
 #[test]
 fn bounding_radius_rectangular_height_field() {
-    // 4 columns 0.5 apart and 3 rows 2 apart, heights 0 and 1: its half
-    // width 4·0.5/2 = 1, its half depth 3·2/2 = 3, its highest point 1.
+    // 4 columns 0.5 apart and 3 rows 2 apart, heights 0 and 1: from its
+    // origin, the corner (0, 0), its far corner is 3·0.5 = 1.5 along X and
+    // 2·2 = 4 along Y, at its highest point 1: √(1.5² + 4² + 1²).
     let mut heights = vec![0.0; 12];
     heights[5] = 1.0;
     let data = HeightFieldData::with_spacing(heights, 4, 3, [0.5, 2.0]);
     let radius = Shape::height_field(Arc::new(data)).bounding_radius();
-    assert!((radius - 11.0_f64.sqrt()).abs() < 1e-12, "{radius}");
+    assert!((radius - 19.25_f64.sqrt()).abs() < 1e-12, "{radius}");
 }
 
 #[test]

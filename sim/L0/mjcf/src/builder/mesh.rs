@@ -364,29 +364,39 @@ const MJ_EPS: f64 = 1e-14;
 /// A height field's data as MuJoCo 3.5.0's `mjCHField::Compile` makes it
 /// (`user_objects.cc:4456-4573`), in its order:
 ///
-/// 1. its four sizes positive ("size parameter is not positive in hfield");
-/// 2. its data: its file's where it names one ([`read_hfield_file`]), else
-///    its own elevations, `nrow · ncol` of them ("elevation data length must
-///    match nrow*ncol"), with their rows reversed, so the document's first
-///    row is the field's highest Y (`xml_native_reader.cc:3442-3449`), or
-///    `nrow · ncol` zeros where it writes none;
-/// 3. a field with no grid or no data refused ("hfield not specified");
-/// 4. its data moved to start at 0 and divided by its span where the span
+/// 1. its elevations, where it holds any, `nrow · ncol` of them ("elevation
+///    data length must match nrow*ncol"), the counts not read beside a file
+///    (`CopyFromSpec` zeroes them, `:4349-4352`);
+/// 2. its four sizes positive ("size parameter is not positive in hfield");
+/// 3. its data: its file's where it names one that `strippath` leaves
+///    something of ([`read_hfield_file`]); else its elevations with their
+///    rows reversed, so the document's first row is the field's highest Y
+///    (`xml_native_reader.cc:3442-3449`), or `nrow · ncol` zeros where it
+///    writes neither elevation nor file (MuJoCo's reader fills them);
+/// 4. a field with no grid or no data refused ("hfield not specified");
+/// 5. its data moved to start at 0 and divided by its span where the span
 ///    is above [`MJ_EPS`], in single precision ([`normalise`]).
+///
+/// A grid whose `nrow · ncol` passes a C `int` is refused before any of
+/// these, "elevation data length must match nrow*ncol" (registry
+/// `D-HFIELD-COUNTS`: MuJoCo's product overflows there).
 ///
 /// Each height is that elevation times `size[2]`, as MuJoCo's collision and
 /// rays read it (`engine_collision_convex.c:1177`). The grid's spacing along
 /// each axis is its extent over its cells, `2·size[0]/(ncol − 1)` and
 /// `2·size[1]/(nrow − 1)`; a field of one column or row has no extent along
-/// that axis, and its spacing there is the axis's whole width. MuJoCo's
-/// readers (contacts, rays, flex elements) take positions from `size` and
-/// the grid, not from this spacing, which cf-geometry's own queries read.
+/// that axis, and its spacing there is the axis's whole width; a spacing that
+/// is not positive (a step that underflows, or a size that is not a number in
+/// a model built in code) is the least positive normal double. MuJoCo's
+/// readers (contacts, rays, flex elements) take positions from `size` and the
+/// grid, not from this spacing, which cf-geometry's own queries read.
 ///
 /// # Errors
 ///
 /// MuJoCo's reason, as the list above and [`read_hfield_file`] give it.
-// The grid's counts are positive `i32`s, so exact as `usize` and as `f64`;
-// each written elevation was read as a float, so exact as one.
+// The grid's counts are positive `i32`s whose product fits one, so exact as
+// `usize` and as `f64`; each written elevation was read as a float, so exact
+// as one.
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
@@ -397,23 +407,39 @@ fn compile_hfield(
     base_path: Option<&Path>,
     compiler: &MjcfCompiler,
 ) -> std::result::Result<HeightFieldData, String> {
+    let length = || "elevation data length must match nrow*ncol".to_string();
+    // The reader's file (written, perhaps empty) and `CopyFromSpec`'s (not
+    // empty), beside which the counts are not read.
+    let written = hfield.file.as_deref();
+    let file = written.filter(|f| !f.is_empty());
+    let (nrow, ncol) = if file.is_some() {
+        (0, 0)
+    } else {
+        (hfield.nrow, hfield.ncol)
+    };
+    let cells = i64::from(nrow) * i64::from(ncol);
+    if cells > i64::from(i32::MAX) {
+        return Err(length());
+    }
+    let elevation = hfield.elevation.as_deref().filter(|e| !e.is_empty());
+    if elevation.is_some_and(|e| i64::try_from(e.len()).ok() != Some(cells)) {
+        return Err(length());
+    }
     if hfield.size.iter().any(|&s| s <= 0.0) {
         return Err("size parameter is not positive in hfield".to_string());
     }
-    let (nrow, ncol, mut data) = if let Some(file) = &hfield.file {
+    let stripped = written
+        .map(|f| stripped_file(f, compiler))
+        .unwrap_or_default();
+    let (nrow, ncol, mut data) = if let Some(file) = file.filter(|_| !stripped.is_empty()) {
         read_hfield_file(file, hfield.content_type.as_deref(), base_path, compiler)?
-    } else if hfield.nrow > 0 && hfield.ncol > 0 {
-        let (nrow, ncol) = (hfield.nrow as usize, hfield.ncol as usize);
+    } else if nrow > 0 && ncol > 0 && (elevation.is_some() || written.is_none()) {
+        let (nrow, ncol) = (nrow as usize, ncol as usize);
         let mut data = vec![0.0_f32; nrow * ncol];
-        if let Some(elevation) = &hfield.elevation {
-            if elevation.len() != data.len() {
-                return Err("elevation data length must match nrow*ncol".to_string());
-            }
-            for (i, row) in elevation.chunks_exact(ncol).enumerate() {
-                let flip = nrow - 1 - i;
-                for (j, &e) in row.iter().enumerate() {
-                    data[flip * ncol + j] = e as f32;
-                }
+        for (i, row) in elevation.unwrap_or_default().chunks_exact(ncol).enumerate() {
+            let flip = nrow - 1 - i;
+            for (j, &e) in row.iter().enumerate() {
+                data[flip * ncol + j] = e as f32;
             }
         }
         (nrow, ncol, data)
@@ -423,16 +449,17 @@ fn compile_hfield(
     if nrow < 1 || ncol < 1 || data.is_empty() {
         return Err("hfield not specified".to_string());
     }
-    normalise(&mut data, hfield.file.as_deref().unwrap_or(""))?;
+    normalise(&mut data, &stripped)?;
 
     let [x, y, top, _] = hfield.size;
     let heights = data.iter().map(|&d| f64::from(d) * top).collect();
     let step = |half: f64, n: usize| {
-        if n > 1 {
+        let step = if n > 1 {
             2.0 * half / (n - 1) as f64
         } else {
             2.0 * half
-        }
+        };
+        step.max(f64::MIN_POSITIVE)
     };
     Ok(HeightFieldData::with_spacing(
         heights,
@@ -497,6 +524,11 @@ fn read_hfield_file(
     if kind != "image/png" && kind != "image/vnd.mujoco.hfield" {
         return Err(format!("unsupported content type: '{kind}'"));
     }
+    // Without the `hfields` feature, a PNG is refused naming the feature,
+    // before its file is looked for.
+    if kind == "image/png" && !cfg!(feature = "hfields") {
+        return read_hfield_png(&[], file);
+    }
     let path = resolve_asset_path(file, base_path, compiler, AssetKind::Mesh)?;
     let bytes =
         std::fs::read(&path).map_err(|e| format!("could not read hfield file '{file}': {e}"))?;
@@ -542,16 +574,37 @@ fn hfield_content_type(file: &str, content_type: Option<&str>) -> Option<String>
 ///
 /// # Errors
 ///
-/// `error decoding PNG file '<file>': …` where the image does not decode;
-/// the `hfields` feature's absence.
+/// `empty PNG file '<file>'`, as MuJoCo's words; `error decoding PNG file
+/// '<file>': …` where the image does not decode, in the decoder's words
+/// (registry `D-HFIELD-PNG`: lodepng decides some malformed files
+/// otherwise); the `hfields` feature's absence.
 #[cfg(feature = "hfields")]
 fn read_hfield_png(
     bytes: &[u8],
     file: &str,
 ) -> std::result::Result<(usize, usize, Vec<f32>), String> {
     use image::DynamicImage;
-    let image = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
-        .map_err(|e| format!("error decoding PNG file '{file}': {e}"))?;
+    if bytes.is_empty() {
+        return Err(format!("empty PNG file '{file}'"));
+    }
+    // Without the decoder's memory limit, which MuJoCo has not; a panic in
+    // the decoder (a palette whose length is not a multiple of 3) refused
+    // (registry `D-HFIELD-PNG`).
+    let decoded = std::panic::catch_unwind(|| {
+        let mut reader =
+            image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png);
+        reader.no_limits();
+        reader.decode()
+    });
+    let image = match decoded {
+        Ok(Ok(image)) => image,
+        Ok(Err(e)) => return Err(format!("error decoding PNG file '{file}': {e}")),
+        Err(_) => {
+            return Err(format!(
+                "error decoding PNG file '{file}': the decoder failed"
+            ));
+        }
+    };
     let (ncol, nrow) = (image.width() as usize, image.height() as usize);
     let high = |v: u16| v.to_be_bytes()[0];
     let grey: Vec<u8> = match image {

@@ -82,6 +82,19 @@ fn written_over<const N: usize>(written: Option<Prefix<N>>, base: [f64; N]) -> [
     written.map_or(base, |written| written.over(base))
 }
 
+/// The fault MuJoCo 3.5.0 names first, of a height field's (`hfield`) and
+/// `later`, met building an element MuJoCo compiles after the height fields
+/// (a pair, an exclude, an equality, a tendon, an actuator, a sensor): the
+/// height field's, or before it the tree's (`tree`), which MuJoCo meets
+/// first. Without a height field's fault, `later`: a tree's fault beside a
+/// later element's is ledger L353's, as before.
+fn named_first(tree: Option<MjcfError>, hfield: Option<MjcfError>, later: MjcfError) -> MjcfError {
+    match hfield {
+        Some(hfield) => tree.unwrap_or(hfield),
+        None => later,
+    }
+}
+
 // Resolve an `MjcfKeyframe` into a `Keyframe` with model-validated dimensions.
 //
 // Validates lengths, finiteness, and fills missing fields with model defaults.
@@ -355,28 +368,46 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // The bodies made after the tree (a flexcomp's vertex bodies) from here.
     let tree_end = builder.body_parent.len();
 
+    // Each height field compiled now and its fault held: MuJoCo 3.5.0
+    // compiles the height fields after the bodies, fusestatic, the flexes and
+    // the skins, and before the pairs, excludes, equalities, tendons,
+    // actuators and sensors (`user_model.cc:4929-4955`). This crate resolves
+    // those elements' names as it builds them, below, so a fault building one
+    // gives way to the height field's ([`named_first`]); the height field's
+    // alone is returned after the flexes' checks, in the late block.
+    let hfield_fault = builder.compile_hfields(&mjcf.hfields, base_path).err();
+
     // Process tendons (must be before actuators, since actuators may reference tendons)
-    builder.process_tendons(&mjcf.tendons)?;
+    if let Err(e) = builder.process_tendons(&mjcf.tendons) {
+        return Err(named_first(tree_fault, hfield_fault, e));
+    }
 
     // Process actuators
     for (i, (actuator, spec)) in mjcf.actuators.iter().zip(&actuators).enumerate() {
-        builder.process_actuator(actuator, spec).map_err(|e| {
-            e.with_location_if_unknown(Location::nth(
+        if let Err(e) = builder.process_actuator(actuator, spec) {
+            let e = e.with_location_if_unknown(Location::nth(
                 ElementKind::Actuator,
                 Some(&actuator.name),
                 i,
-            ))
-        })?;
+            ));
+            return Err(named_first(tree_fault, hfield_fault, e));
+        }
     }
 
     // Process equality constraints (must be after bodies and joints)
-    builder.process_equality_constraints(&mjcf.equality, &mjcf.flex)?;
+    if let Err(e) = builder.process_equality_constraints(&mjcf.equality, &mjcf.flex) {
+        return Err(named_first(tree_fault, hfield_fault, e));
+    }
 
     // Process sensors (must be after bodies, joints, tendons, actuators)
-    builder.process_sensors(&mjcf.sensors)?;
+    if let Err(e) = builder.process_sensors(&mjcf.sensors) {
+        return Err(named_first(tree_fault, hfield_fault, e));
+    }
 
     // Process contact pairs and excludes (must be after body tree for name-to-id maps)
-    builder.process_contact(&mjcf.contact)?;
+    if let Err(e) = builder.process_contact(&mjcf.contact) {
+        return Err(named_first(tree_fault, hfield_fault, e));
+    }
 
     // Process flex deformable bodies (before the mass pipeline, so that a
     // flexcomp's vertex bodies are bounded as every body is)
@@ -390,7 +421,10 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Finalize user data: the tree's refusal; then the elements made after
     // the tree padded to its widths, the tendons', actuators' and sensors'
     // resolved, validated and padded
-    builder.finalize_user_data(&mjcf, tree_user?)?;
+    let tree_user = tree_user?;
+    if let Err(e) = builder.finalize_user_data(&mjcf, tree_user) {
+        return Err(named_first(tree_fault, hfield_fault, e));
+    }
 
     // MuJoCo 3.5.0's checks this crate did not make before Rigid-loading PR
     // RL-6a and the PRs after it (book L19-L22, L25, L31, L32; a sensor's
@@ -410,7 +444,9 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     }
     builder.check_bodies(tree_end)?;
     flex::check_flex_bending_thickness(&mjcf.flex)?;
-    builder.compile_hfields(&mjcf.hfields, base_path)?;
+    if let Some(fault) = hfield_fault {
+        return Err(fault);
+    }
     builder.check_equalities()?;
     builder.check_tendons()?;
     builder.check_actuators()?;

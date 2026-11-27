@@ -302,8 +302,9 @@ fn a_mocap_body_or_composite_error_names_its_element() {
 
 #[test]
 fn a_height_field_built_in_code_without_its_rows_names_it() {
-    // Its elevation without rows is no data, which the builder refuses as
-    // MuJoCo 3.5.0's compiler does, naming the height field.
+    // An elevation beside counts whose product does not match it is refused
+    // first, as MuJoCo 3.5.0's compiler refuses the same field built through
+    // its spec (measured: nrow 0, ncol 2 and four values), naming the field.
     let mut model = sim_mjcf::parse_mjcf_str(
         r#"<mujoco>
             <asset><hfield name="h" nrow="2" ncol="2" size="1 1 1 0.1" elevation="1 2 3 4"/></asset>
@@ -313,7 +314,38 @@ fn a_height_field_built_in_code_without_its_rows_names_it() {
     .unwrap();
     model.hfields[0].nrow = 0;
     let err = sim_mjcf::model_from_mjcf(&model, None).unwrap_err();
-    assert_eq!(err.to_string(), "hfield not specified (hfield 'h')");
+    assert_eq!(
+        err.to_string(),
+        "elevation data length must match nrow*ncol (hfield 'h')"
+    );
+    // Its length is checked before its sizes, as MuJoCo checks them.
+    model.hfields[0].nrow = 2;
+    model.hfields[0].size[2] = 0.0;
+    model.hfields[0].elevation = Some(vec![1.0, 2.0, 3.0]);
+    let err = sim_mjcf::model_from_mjcf(&model, None).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "elevation data length must match nrow*ncol (hfield 'h')"
+    );
+}
+
+#[test]
+fn a_height_field_built_in_code_with_a_nan_size_loads() {
+    // MuJoCo 3.5.0's size check (`size <= 0`) passes a NaN, so the field
+    // compiles; the parser refuses one written (registry `D-NONFINITE`), but a
+    // model built in code reaches the compiler, which gives the grid a spacing
+    // cf-geometry takes rather than panicking.
+    let mut model = sim_mjcf::parse_mjcf_str(
+        r#"<mujoco>
+            <asset><hfield name="h" nrow="2" ncol="2" size="1 1 1 0.1" elevation="1 2 3 4"/></asset>
+            <worldbody><geom type="hfield" hfield="h"/></worldbody>
+        </mujoco>"#,
+    )
+    .unwrap();
+    model.hfields[0].size[0] = f64::NAN;
+    let built = sim_mjcf::model_from_mjcf(&model, None).unwrap();
+    let [dx, dy] = built.hfield_data[0].spacing();
+    assert!(dx > 0.0 && dy > 0.0, "{dx} {dy}");
 }
 
 #[test]

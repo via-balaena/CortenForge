@@ -444,17 +444,12 @@ impl Shape {
                 .iter()
                 .map(|v| v.coords.norm())
                 .fold(0.0, f64::max),
+            // The grid's far corner from its origin, the corner (0, 0), at
+            // its highest or lowest point.
             Self::HeightField { data } => {
-                let [dx, dy] = data.spacing();
-                let half_width = (data.width() as f64).mul_add(dx, 0.0) * 0.5;
-                let half_depth = (data.depth() as f64).mul_add(dy, 0.0) * 0.5;
-                let max_height = data.max_height().abs().max(data.min_height().abs());
-                half_width
-                    .mul_add(
-                        half_width,
-                        half_depth.mul_add(half_depth, max_height.powi(2)),
-                    )
-                    .sqrt()
+                let (x, y) = (data.extent_x(), data.extent_y());
+                let z = data.max_height().abs().max(data.min_height().abs());
+                x.mul_add(x, y.mul_add(y, z * z)).sqrt()
             }
             Self::Sdf { data } => {
                 let origin = data.origin();
