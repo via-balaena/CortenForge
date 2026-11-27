@@ -451,7 +451,7 @@ fn compile_hfield(
 ///
 /// # Errors
 ///
-/// "invalid data range in hfield '<file>'" where the least is above the
+/// `invalid data range in hfield '<file>'` where the least is above the
 /// greatest, as where every value is NaN.
 fn normalise(data: &mut [f32], file: &str) -> std::result::Result<(), String> {
     let (mut emin, mut emax) = (1e10_f32, -1e10_f32);
@@ -484,7 +484,7 @@ fn normalise(data: &mut [f32], file: &str) -> std::result::Result<(), String> {
 ///
 /// # Errors
 ///
-/// "unsupported content type: '<type>'" for a type of neither; the file
+/// `unsupported content type: '<type>'` for a type of neither; the file
 /// not found or read; the format's own reasons.
 fn read_hfield_file(
     file: &str,
@@ -542,7 +542,7 @@ fn hfield_content_type(file: &str, content_type: Option<&str>) -> Option<String>
 ///
 /// # Errors
 ///
-/// "error decoding PNG file '<file>': …" where the image does not decode;
+/// `error decoding PNG file '<file>': …` where the image does not decode;
 /// the `hfields` feature's absence.
 #[cfg(feature = "hfields")]
 fn read_hfield_png(

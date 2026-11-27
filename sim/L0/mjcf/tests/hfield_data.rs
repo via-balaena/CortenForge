@@ -209,6 +209,16 @@ const LOADS: &[Load] = &[
         geom_size: [0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000, 0x3fc6_6666_6666_6666],
     },
     Load {
+        what: "a span of 2e-15, not above mjEPS: moved to 0, not divided",
+        xml: r#"<mujoco model="h"><option timestep="0.002"/><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0.5 0.1" elevation="0 1e-15 2e-15 0"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/></worldbody></mujoco>
+"#,
+        files: &[],
+        nrow: 2,
+        ncol: 2,
+        heights: &[0x3cd2_03af_a000_0000, 0x0000_0000_0000_0000, 0x0000_0000_0000_0000, 0x3cc2_03af_a000_0000],
+        geom_size: [0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000, 0x3fc6_6666_6666_6666],
+    },
+    Load {
         what: "the geom's size: the asset's half-widths and a quarter of its top plus half its base (ledger L356)",
         xml: r#"<mujoco model="h"><option timestep="0.002"/><asset><hfield name="h" nrow="2" ncol="2" size="1 2 0.5 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/></worldbody></mujoco>"#,
         files: &[],
