@@ -1,9 +1,7 @@
 //! A height field's sizes as MuJoCo 3.5.0 checks them (book L22): each of
 //! the four positive (`mjCHField::Compile`, `user_objects.cc:4471-4474`),
 //! whether a geom names the height field or not, after every body's checks
-//! and before the tendons' (`user_model.cc:4932-4956`). The parser refuses a
-//! first or second size that is not positive and a third or fourth that is
-//! negative, before any of them.
+//! and before the tendons' (`user_model.cc:4932-4956`).
 //!
 //! Every document below was refused by MuJoCo 3.5.0 on the census's unfused
 //! oracle (2026-11-02), "size parameter is not positive in hfield".

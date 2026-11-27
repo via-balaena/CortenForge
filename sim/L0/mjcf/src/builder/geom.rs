@@ -109,12 +109,10 @@ impl ModelBuilder {
                 .map_err(|e| e.at(at()))?;
         }
 
-        // Override geom_size for hfield geoms with asset dimensions.
-        // geom_size_to_vec3() has no access to hfield asset data (only gets the MJCF
-        // geom's size attribute, which is typically absent for hfield geoms).
+        // A height-field geom's size is its asset's, as MuJoCo 3.5.0 sets it
+        // ([`hfield_geom_size`]), whatever the geom writes.
         let size = if let Some(hfield_id) = geom_hfield_ref {
-            let hf_size = &self.hfield_size[hfield_id];
-            Vector3::new(hf_size[0], hf_size[1], hf_size[2])
+            Vector3::from(hfield_geom_size(&self.hfield_size[hfield_id]))
         } else {
             size
         };
@@ -590,8 +588,9 @@ pub(super) fn geom_volume(
 }
 
 /// The sizes MuJoCo 3.5.0 gives a height-field geom from its asset's four
-/// (`user_objects.cc:3761-3764`), which its volume and inertia read: the
-/// asset's two half-extents, and a quarter of its top plus half its base.
+/// (`user_objects.cc:3761-3764`), stored as its size and read by its volume
+/// and inertia: the asset's two half-extents, and a quarter of its top plus
+/// half its base.
 fn hfield_geom_size(asset: &[f64; 4]) -> [f64; 3] {
     [asset[0], asset[1], 0.25 * asset[2] + 0.5 * asset[3]]
 }

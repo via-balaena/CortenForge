@@ -12,12 +12,11 @@
 //! (`mjccd_support`, `:495-698`). The arithmetic is plain, as MuJoCo's C
 //! compiled without contracting multiply-adds (book C1).
 //!
-//! It departs from MuJoCo twice. In `S3D`'s fourth face MuJoCo leaves the
+//! It departs from MuJoCo once. In `S3D`'s fourth face MuJoCo leaves the
 //! fourth point's weight as an earlier face set it
 //! (`engine_collision_gjk.c:633-643`), which can read a pair apart as an
 //! overlap; this sets it to 0, as cf-geometry's `gjk_distance` does (registry
-//! `D-GJK-S3D`). And [`mjc_convex_hfield`]'s box tests take a field's highest
-//! point as its top where it passes `size[2]` (its doc says why).
+//! `D-GJK-S3D`).
 
 use nalgebra::{Matrix3, Point3, Vector3};
 
@@ -2595,12 +2594,8 @@ pub(super) fn mjc_plane_convex(
 /// margin), its normal the first witness less the second, normalised, its
 /// position their midpoint, back in the world frame. A prism whose three top
 /// corners are below the geom's lowest point is skipped; at most
-/// `mjMAXCONPAIR`.
-///
-/// The fields' tops are `size[2]` in MuJoCo, whose elevations are
-/// normalised to [0, 1]; sim-mjcf's are not yet (book Rigid-loading L45), so
-/// the two box tests take the higher of `size[2]` and the field's highest
-/// point, the same where the elevations are within [0, 1].
+/// `mjMAXCONPAIR`. The field's box reaches `size[2]` up, as MuJoCo's
+/// normalised elevations do (sim-mjcf's since Rigid-loading PR RL-11b).
 // MuJoCo's arguments, the field's data split out as sim-core holds it.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn mjc_convex_hfield(
@@ -2620,8 +2615,7 @@ pub(super) fn mjc_convex_hfield(
     if nrow < 2 || ncol < 2 {
         return Vec::new();
     }
-    let [size0, size1, size2, size3] = *size;
-    let top = size2.max(hfield.max_height());
+    let [size0, size1, top, size3] = *size;
 
     let pos = mat_t_vec(mat1, &sub3(&obj.pos, pos1));
     let radius = rbound + margin;
@@ -2931,8 +2925,8 @@ fn ellipsoid_outside(nrm: &mut [f64; 3], pos: &[f64; 3], size: &[f64; 3]) -> boo
 /// taken into the field's frame; nothing when its box (over its vertices,
 /// not their radius) is clear of the field's by the margin; else the prisms
 /// under that box against the element, a prism below the box's lowest
-/// vertex skipped. The field's top is the higher of `size[2]` and its
-/// highest point, as `mjc_convex_hfield` takes it. MuJoCo never passes its
+/// vertex skipped. The field's top is `size[2]`, as `mjc_convex_hfield`
+/// takes it. MuJoCo never passes its
 /// prism object to `mjc_initCCDObj` (`:1663-1664`); this prism is
 /// `mjc_ConvexHField`'s (`:1220`), margin 0, and
 /// `mj_triangle`'s `convex_route_contacts_as_mujoco` holds its contacts to
@@ -2954,8 +2948,7 @@ pub(super) fn mjc_hfield_elem(
     if nrow < 2 || ncol < 2 || vertices.is_empty() {
         return Vec::new();
     }
-    let [size0, size1, size2, size3] = *size;
-    let top = size2.max(hfield.max_height());
+    let [size0, size1, top, size3] = *size;
     let local: Vec<[f64; 3]> = vertices
         .iter()
         .map(|v| mat_t_vec(mat1, &sub3(v, pos1)))

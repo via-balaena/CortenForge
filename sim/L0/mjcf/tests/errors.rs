@@ -302,8 +302,8 @@ fn a_mocap_body_or_composite_error_names_its_element() {
 
 #[test]
 fn a_height_field_built_in_code_without_its_rows_names_it() {
-    // The parser refuses a missing `nrow` first, so the builder's check is
-    // reached by a model changed in code.
+    // Its elevation without rows is no data, which the builder refuses as
+    // MuJoCo 3.5.0's compiler does, naming the height field.
     let mut model = sim_mjcf::parse_mjcf_str(
         r#"<mujoco>
             <asset><hfield name="h" nrow="2" ncol="2" size="1 1 1 0.1" elevation="1 2 3 4"/></asset>
@@ -311,9 +311,9 @@ fn a_height_field_built_in_code_without_its_rows_names_it() {
         </mujoco>"#,
     )
     .unwrap();
-    model.hfields[0].nrow = None;
+    model.hfields[0].nrow = 0;
     let err = sim_mjcf::model_from_mjcf(&model, None).unwrap_err();
-    assert!(err.to_string().ends_with("(hfield 'h')"), "{err}");
+    assert_eq!(err.to_string(), "hfield not specified (hfield 'h')");
 }
 
 #[test]

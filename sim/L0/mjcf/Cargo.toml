@@ -71,8 +71,8 @@ threemf = ["mesh-io/threemf"]
 # Default-on (compat-preserving). Pulls the `image` crate plus its codec
 # chain; consumers that don't load PNG height fields can opt out via
 # `default-features = false` to drop the entire image-decoding subtree
-# from the build. Inline `elevation="..."` height fields work regardless
-# of this feature.
+# from the build. Inline `elevation="..."` height fields, and files in
+# MuJoCo's own height-field format, load regardless of this feature.
 hfields = ["dep:image"]
 
 [lints]

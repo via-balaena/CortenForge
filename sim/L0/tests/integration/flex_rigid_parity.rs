@@ -336,7 +336,10 @@ fn a_flex_vertex_contact_wakes_a_sleeping_field() {
 /// A geom turned by a NaN against a flex: each call returns, with the
 /// midphase on and off, for a height field, a box, an ellipsoid, a cylinder
 /// and a signed distance field (which collides as nothing there, its turn
-/// not a quaternion).
+/// not a quaternion). The height field's top is 0.05 but at one corner, so
+/// the cloth at 0.005 is inside it: normalised, a field of one height lies
+/// at 0, below the cloth, as MuJoCo 3.5.0 makes no contact with it (ledger
+/// L394, measured).
 #[test]
 fn a_non_finite_turn_against_a_flex_returns() {
     use nalgebra::{Quaternion, UnitQuaternion};
@@ -357,7 +360,7 @@ fn a_non_finite_turn_against_a_flex_returns() {
     let geoms = [
         (
             "hfield",
-            r#"<asset><hfield name="h" nrow="3" ncol="3" size="1 1 0.05 0.05" elevation="1 1 1 1 1 1 1 1 1"/></asset>"#,
+            r#"<asset><hfield name="h" nrow="3" ncol="3" size="1 1 0.05 0.05" elevation="1 1 1 1 1 1 1 1 0"/></asset>"#,
             r#"<geom type="hfield" hfield="h"/>"#,
         ),
         (

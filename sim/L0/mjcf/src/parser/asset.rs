@@ -179,88 +179,38 @@ fn make_builtin(mesh: &mut MjcfMesh, builtin: MeshBuiltin, a: &Attrs) -> Result<
     Ok(made_faces)
 }
 
-/// Parse hfield attributes from a `<hfield>` element.
-///
-/// Supports two data sources:
-/// - **File-based:** `file="terrain.png"` — `nrow`/`ncol`/`elevation` derived from PNG at build time.
-/// - **Inline:** `nrow`, `ncol`, `elevation` attributes in the XML.
-///
-/// At least one of `file` or `elevation` must be present.
+/// A `<hfield>`'s attributes as MuJoCo 3.5.0's reader takes them
+/// (`xml_native_reader.cc:3403-3458`): its `name`, `content_type`, `file`,
+/// `nrow`, `ncol` and `size`, and its `elevation` only where it names no file
+/// and both counts are positive, refused there where it holds other than
+/// `nrow · ncol` numbers ("elevation data length must match nrow*ncol"). The
+/// builder compiles its data (`compile_hfield`), refusing one with none
+/// ("hfield not specified"), and its sizes, as MuJoCo's compiler does.
 pub(super) fn parse_hfield_attrs(e: &BytesStart) -> Result<MjcfHfield> {
     let a = Attrs::new(e)?;
     // Unwritten, the name is the file's (the builder's `name_assets`).
     let name = a.string("name").unwrap_or_default();
-
+    let content_type = a.string("content_type");
     let file = a.string("file");
-
-    // Parse nrow/ncol (optional when file is present, required otherwise)
-    let count = |attr: &str| -> Result<Option<usize>> {
-        a.int(attr)?
-            .map(|n| {
-                usize::try_from(n).map_err(|_| {
-                    MjcfError::invalid_value("hfield", attr, "must be a positive integer")
-                })
-            })
-            .transpose()
-    };
-    let nrow = count("nrow")?;
-    let ncol = count("ncol")?;
-
-    // Parse size (always required)
+    let nrow = a.int("nrow")?.unwrap_or(0);
+    let ncol = a.int("ncol")?.unwrap_or(0);
     let size = a
         .array::<4>("size")?
         .ok_or_else(|| MjcfError::missing_attribute("hfield", "size"))?;
-    if size[0] <= 0.0 || size[1] <= 0.0 {
-        return Err(MjcfError::invalid_value(
-            "hfield",
-            "size",
-            "size[0] and size[1] (half-extents) must be > 0",
-        ));
-    }
-    if size[2] < 0.0 || size[3] < 0.0 {
-        return Err(MjcfError::invalid_value(
-            "hfield",
-            "size",
-            "size[2] (z_top) and size[3] (z_bottom) must be >= 0",
-        ));
-    }
-
-    // Parse elevation (optional when file is present, required otherwise)
-    let elevation = a.vector("elevation")?;
-
-    // Validation: at least one data source must be present
-    if file.is_none() && elevation.is_none() {
-        return Err(MjcfError::invalid_value(
-            "hfield",
-            "elevation",
-            "at least one of 'file' or 'elevation' must be specified",
-        ));
-    }
-
-    // Validate inline data completeness
-    if let Some(ref elev) = elevation {
-        let nr = nrow.ok_or_else(|| MjcfError::missing_attribute("hfield", "nrow"))?;
-        let nc = ncol.ok_or_else(|| MjcfError::missing_attribute("hfield", "ncol"))?;
-        if nr < 2 || nc < 2 {
-            return Err(MjcfError::invalid_value(
-                "hfield",
-                "nrow",
-                format!("nrow ({nr}) and ncol ({nc}) must be >= 2"),
-            ));
-        }
-        if elev.len() != nr * nc {
+    let elevation = if file.is_none() && nrow > 0 && ncol > 0 {
+        let elevation = a.vector("elevation")?;
+        let cells = usize::try_from(i64::from(nrow) * i64::from(ncol)).ok();
+        if elevation.as_ref().is_some_and(|e| Some(e.len()) != cells) {
             return Err(MjcfError::invalid_value(
                 "hfield",
                 "elevation",
-                format!(
-                    "elevation length ({}) must equal nrow * ncol ({})",
-                    elev.len(),
-                    nr * nc
-                ),
+                "elevation data length must match nrow*ncol",
             ));
         }
-    }
-
+        elevation
+    } else {
+        None
+    };
     Ok(MjcfHfield {
         name,
         size,
@@ -268,5 +218,6 @@ pub(super) fn parse_hfield_attrs(e: &BytesStart) -> Result<MjcfHfield> {
         ncol,
         elevation,
         file,
+        content_type,
     })
 }

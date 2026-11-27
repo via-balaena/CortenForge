@@ -212,7 +212,11 @@
 //! names, beside a plugin's repeated instance name, a name a flexcomp makes
 //! or a `fromto`, each named as main and MuJoCo name it; an unnamed mesh
 //! before a repeated mesh name; and a mesh's `scale` or `inertia` beside its
-//! `refpos` or `maxhullvert`.
+//! `refpos` or `maxhullvert`. RL-11b compiles each height field where MuJoCo
+//! compiles it, after the condims, and loads one with counts and no
+//! elevation, so two left `CONDIM_COSTS` for `TWO_FAULTS`: a geom's or a
+//! pair's condim beside a height field with no elevation, each named as
+//! MuJoCo names it (measured 2026-11-26).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -2220,6 +2224,18 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "repeated name 'm' in mesh",
         "repeated name 'm' in mesh",
     ),
+    (
+        "a geom's condim then a height field with no elevation",
+        r#"<mujoco><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom type="hfield" hfield="h" pos="3 0 0"/><body name="a" pos="0 0 0.09" ><freejoint/><geom name="ga" type="sphere" size="0.1" condim="2"/></body><body name="b" pos="0.5 0 0.09"><freejoint/><geom name="gb" type="box" size="0.1 0.1 0.1"/></body></worldbody><contact><pair geom1="ga" geom2="floor"/><pair geom1="gb" geom2="floor"/></contact></mujoco>"#,
+        "invalid condim in geom",
+        "invalid condim in geom (geom 'ga' in body 'a')",
+    ),
+    (
+        "a pair's condim then a height field with no elevation",
+        r#"<mujoco><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom type="hfield" hfield="h" pos="3 0 0"/><body name="a" pos="0 0 0.09" ><freejoint/><geom name="ga" type="sphere" size="0.1"/></body><body name="b" pos="0.5 0 0.09"><freejoint/><geom name="gb" type="box" size="0.1 0.1 0.1"/></body></worldbody><contact><pair geom1="ga" geom2="floor" condim="2"/><pair geom1="gb" geom2="floor"/></contact></mujoco>"#,
+        "invalid condim in contact pair",
+        "invalid condim in contact pair (pair #0)",
+    ),
 ];
 
 #[test]
@@ -2379,8 +2395,7 @@ fn a_nuser_below_minus_1_set_in_code_is_refused_first() {
 /// crate names the other: a geom's condim is checked with the checks RL-6a
 /// added, after every check this crate makes before building the model, a
 /// pair's after the assets; a sphere's `fromto` is refused when the classes
-/// are applied, a height field written without `elevation` while parsing
-/// (ledger L359), a body's orientation when the tree is built, and a pair
+/// are applied, a body's orientation when the tree is built, and a pair
 /// with no `geom1` while parsing (registry `D-PAIR-NO-GEOM`); MuJoCo 3.5.0
 /// checks each condim and pair before these (ledger L353). `(what, document,
 /// MuJoCo's reason, this crate's error)`, measured 2026-11-04 (the last five:
@@ -2481,18 +2496,6 @@ const CONDIM_COSTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .1"/><body name="a" pos="0 0 .09"><freejoint/><geom name="ga" size=".1"/></body><body name="h" pos="1 0 1"><freejoint/><geom type="sphere" size=".1" fromto="0 0 0 0 0 1"/></body></worldbody><contact><pair geom1="zz" geom2="floor"/></contact></mujoco>"#,
         "geom 'zz' not found in collision 0",
         "invalid fromto on <geom>: fromto requires a capsule, cylinder, ellipsoid or box (geom in body 'h')",
-    ),
-    (
-        "a geom's condim then a height field without elevation",
-        r#"<mujoco><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom type="hfield" hfield="h" pos="3 0 0"/><body name="a" pos="0 0 0.09" ><freejoint/><geom name="ga" type="sphere" size="0.1" condim="2"/></body><body name="b" pos="0.5 0 0.09"><freejoint/><geom name="gb" type="box" size="0.1 0.1 0.1"/></body></worldbody><contact><pair geom1="ga" geom2="floor"/><pair geom1="gb" geom2="floor"/></contact></mujoco>"#,
-        "invalid condim in geom",
-        "invalid elevation on <hfield>: at least one of 'file' or 'elevation' must be specified (line 1: asset > hfield 'h')",
-    ),
-    (
-        "a pair's condim then a height field without elevation",
-        r#"<mujoco><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom type="hfield" hfield="h" pos="3 0 0"/><body name="a" pos="0 0 0.09" ><freejoint/><geom name="ga" type="sphere" size="0.1"/></body><body name="b" pos="0.5 0 0.09"><freejoint/><geom name="gb" type="box" size="0.1 0.1 0.1"/></body></worldbody><contact><pair geom1="ga" geom2="floor" condim="2"/><pair geom1="gb" geom2="floor"/></contact></mujoco>"#,
-        "invalid condim in contact pair",
-        "invalid elevation on <hfield>: at least one of 'file' or 'elevation' must be specified (line 1: asset > hfield 'h')",
     ),
     (
         "a geom's condim then a later moving body's zaxis",

@@ -320,7 +320,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
 
     // Process hfield assets (before geoms can reference them)
     for hfield in &mjcf.hfields {
-        builder.process_hfield(hfield, base_path)?;
+        builder.process_hfield(hfield)?;
     }
 
     // Process worldbody's own geoms and sites (attached to body 0)
@@ -398,9 +398,9 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // check above, so that a document refused before they existed is refused
     // for the same fault (MuJoCo orders some of them before checks above).
     // Among themselves in MuJoCo's order: each body's inertia, geoms and
-    // joints, a bending flex's thickness, the height fields' sizes
-    // (`user_model.cc:4948-4950` compiles the flexes before the height
-    // fields), the equalities (each in turn: a flex equality's flex, a joint
+    // joints, a bending flex's thickness, the height fields, each compiled
+    // in turn, its sizes and then its data (`user_model.cc:4948-4950`
+    // compiles the flexes before the height fields), the equalities (each in turn: a flex equality's flex, a joint
     // equality's joints since RL-10d), the tendons, the actuators, the sensors,
     // a moving body's mass and inertia, then the free joint below the world's
     // children, as MuJoCo's `CopyTree` refuses it. An automatic range that
@@ -410,7 +410,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     }
     builder.check_bodies(tree_end)?;
     flex::check_flex_bending_thickness(&mjcf.flex)?;
-    builder.check_hfield_sizes()?;
+    builder.compile_hfields(&mjcf.hfields, base_path)?;
     builder.check_equalities()?;
     builder.check_tendons()?;
     builder.check_actuators()?;
@@ -1606,20 +1606,19 @@ mod tests {
         assert_eq!(model.nhfield, 1);
     }
 
+    /// A height field with no file and no grid has no data: MuJoCo 3.5.0
+    /// refuses it as it compiles it, "hfield not specified" (measured), so it
+    /// parses and is refused by the builder.
     #[test]
-    fn test_hfield_requires_file_or_elevation() {
-        // Neither file nor elevation → parser error
-        let result = crate::parse_mjcf_str(
-            r#"
-            <mujoco>
-                <asset>
-                    <hfield name="bad" size="1 1 1 0.1"/>
-                </asset>
-                <worldbody/>
-            </mujoco>
-            "#,
+    fn a_height_field_with_no_data_is_refused_as_mujoco_refuses_it() {
+        let xml =
+            r#"<mujoco><asset><hfield name="bad" size="1 1 1 0.1"/></asset><worldbody/></mujoco>"#;
+        assert!(crate::parse_mjcf_str(xml).is_ok());
+        let error = load_model(xml).err().map(|e| e.to_string());
+        assert_eq!(
+            error.as_deref(),
+            Some("hfield not specified (hfield 'bad')")
         );
-        assert!(result.is_err(), "should fail without file or elevation");
     }
 
     #[cfg(feature = "hfields")]
