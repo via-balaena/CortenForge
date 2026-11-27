@@ -64,6 +64,9 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
 ///
+/// 32 since Rigid-loading PR RL-11b: `MjcfHfield` took `content_type`, and
+/// its `nrow` and `ncol` hold MuJoCo's `int`s, 0 where unwritten, where a
+/// version-31 file holds `Option`s.
 /// 31 since Rigid-loading PR RL-11a: `MjcfCompiler` took `lengthrange` (a
 /// `sim_core::LengthRangeOpt`), and its `alignfree` moved before `usethread`.
 /// 30 since Rigid-loading PR RL-10d: `MjcfWeld` took `site1` and `site2`,
@@ -117,7 +120,7 @@ pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 /// one below mjMINVAL is refused (Rigid-loading PR RL-3b): a version-6 file
 /// holds 0.0 there for a flexcomp that did not write it. 6 since `MjcfFlex`
 /// took `vertex_bodies` (Rigid-loading L10).
-pub const MJB_VERSION: u32 = 31;
+pub const MJB_VERSION: u32 = 32;
 
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;

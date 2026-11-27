@@ -82,6 +82,20 @@ fn written_over<const N: usize>(written: Option<Prefix<N>>, base: [f64; N]) -> [
     written.map_or(base, |written| written.over(base))
 }
 
+/// The fault named of a height field's (`hfield`) and `later`, met building
+/// an element MuJoCo 3.5.0 compiles after the height fields: the tree's
+/// (`tree`: its user data's, else its checks'), else the height field's,
+/// which MuJoCo meets first; without a height field's fault, `later`, where
+/// MuJoCo can name the tree's. MuJoCo meets the tree's user data and checks
+/// body by body, so of those two this crate can name another too (ledger
+/// L353).
+fn named_first(tree: Option<MjcfError>, hfield: Option<MjcfError>, later: MjcfError) -> MjcfError {
+    match hfield {
+        Some(hfield) => tree.unwrap_or(hfield),
+        None => later,
+    }
+}
+
 // Resolve an `MjcfKeyframe` into a `Keyframe` with model-validated dimensions.
 //
 // Validates lengths, finiteness, and fills missing fields with model defaults.
@@ -202,6 +216,15 @@ fn resolve_keyframe(mjcf_kf: &MjcfKeyframe, model: &Model) -> Result<Keyframe> {
 /// numbers are checked only where validation and the builder check them
 /// (the census registry's D-NONFINITE lists where).
 ///
+/// The model is taken as built in code, which MuJoCo 3.5.0's spec compiles
+/// with no reader: of two faults, a sensor's fault MuJoCo's reader meets (a
+/// sensor naming no object, a `refname` without a `reftype`, a distance
+/// sensor's side naming other than one of a geom and a body) is named as
+/// the sensors are built, after a height field's or the tree's. A document
+/// [`load_model`] or [`load_model_from_file`] reads names it right after the
+/// front end, as MuJoCo's reader meets it, so a document parsed with
+/// [`crate::parse_mjcf_str`] and built here can name the other of the two.
+///
 /// # Arguments
 ///
 /// * `mjcf` - The parsed MJCF model
@@ -230,11 +253,16 @@ fn resolve_keyframe(mjcf_kf: &MjcfKeyframe, model: &Model) -> Result<Keyframe> {
 /// data.step(&model).expect("step failed");
 /// ```
 pub fn model_from_mjcf(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<Model> {
-    crate::stack::on_large_stack(|| model_from_mjcf_unwrapped(mjcf, base_path))
+    crate::stack::on_large_stack(|| model_from_mjcf_unwrapped(mjcf, base_path, false))
 }
 
-/// [`model_from_mjcf`]'s work, on the caller's stack.
-fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<Model> {
+/// [`model_from_mjcf`]'s work, on the caller's stack; `read` where the
+/// model is a document [`load_model`] or [`load_model_from_file`] read.
+fn model_from_mjcf_unwrapped(
+    mjcf: &MjcfModel,
+    base_path: Option<&Path>,
+    read: bool,
+) -> Result<Model> {
     // Before anything walks or clones the tree, whoever built it.
     crate::validation::check_tree_depth(&mjcf.worldbody)?;
 
@@ -245,6 +273,22 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         flexcomp_refusal,
         ..
     } = front_end(mjcf, base_path)?;
+
+    // A read document's sensor fault MuJoCo 3.5.0's reader meets
+    // ([`sensor::sensor_read_fault`]), named before every fault MuJoCo's
+    // compiler meets once the document is read, and after the front end's,
+    // some of which MuJoCo's reader meets after the sensors (ledger L353). A
+    // model built in code, which MuJoCo's spec takes with no reader, meets it
+    // as its sensors are built ([`ModelBuilder::process_sensors`]).
+    if read
+        && let Some(fault) = mjcf.sensors.iter().enumerate().find_map(|(i, s)| {
+            sensor::sensor_read_fault(s).map(|e| {
+                e.with_location_if_unknown(Location::nth(ElementKind::Sensor, Some(&s.name), i))
+            })
+        })
+    {
+        return Err(fault);
+    }
 
     // This crate's refusal of a negative `<inertial>` mass or moment, which
     // MuJoCo raises to its bounds (`D-INERTIAL-NEGATIVE`), on every body the
@@ -320,7 +364,7 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
 
     // Process hfield assets (before geoms can reference them)
     for hfield in &mjcf.hfields {
-        builder.process_hfield(hfield, base_path)?;
+        builder.process_hfield(hfield)?;
     }
 
     // Process worldbody's own geoms and sites (attached to body 0)
@@ -355,28 +399,45 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // The bodies made after the tree (a flexcomp's vertex bodies) from here.
     let tree_end = builder.body_parent.len();
 
+    // Each height field compiled now and its fault held: MuJoCo 3.5.0
+    // compiles the height fields (`user_model.cc:4950`) before the excludes,
+    // equalities, tendons, actuators and sensors (`:4954-4958`), so a fault
+    // met building one of those below gives way to the height field's
+    // ([`named_first`]); the height field's alone is returned in the late
+    // block.
+    let hfield_fault = builder.compile_hfields(&mjcf.hfields, base_path).err();
+
     // Process tendons (must be before actuators, since actuators may reference tendons)
-    builder.process_tendons(&mjcf.tendons)?;
+    if let Err(e) = builder.process_tendons(&mjcf.tendons) {
+        return Err(named_first(tree_user.err().or(tree_fault), hfield_fault, e));
+    }
 
     // Process actuators
     for (i, (actuator, spec)) in mjcf.actuators.iter().zip(&actuators).enumerate() {
-        builder.process_actuator(actuator, spec).map_err(|e| {
-            e.with_location_if_unknown(Location::nth(
+        if let Err(e) = builder.process_actuator(actuator, spec) {
+            let e = e.with_location_if_unknown(Location::nth(
                 ElementKind::Actuator,
                 Some(&actuator.name),
                 i,
-            ))
-        })?;
+            ));
+            return Err(named_first(tree_user.err().or(tree_fault), hfield_fault, e));
+        }
     }
 
     // Process equality constraints (must be after bodies and joints)
-    builder.process_equality_constraints(&mjcf.equality, &mjcf.flex)?;
+    if let Err(e) = builder.process_equality_constraints(&mjcf.equality, &mjcf.flex) {
+        return Err(named_first(tree_user.err().or(tree_fault), hfield_fault, e));
+    }
 
     // Process sensors (must be after bodies, joints, tendons, actuators)
-    builder.process_sensors(&mjcf.sensors)?;
+    if let Err(e) = builder.process_sensors(&mjcf.sensors) {
+        return Err(named_first(tree_user.err().or(tree_fault), hfield_fault, e));
+    }
 
     // Process contact pairs and excludes (must be after body tree for name-to-id maps)
-    builder.process_contact(&mjcf.contact)?;
+    if let Err(e) = builder.process_contact(&mjcf.contact) {
+        return Err(named_first(tree_user.err().or(tree_fault), hfield_fault, e));
+    }
 
     // Process flex deformable bodies (before the mass pipeline, so that a
     // flexcomp's vertex bodies are bounded as every body is)
@@ -390,7 +451,10 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Finalize user data: the tree's refusal; then the elements made after
     // the tree padded to its widths, the tendons', actuators' and sensors'
     // resolved, validated and padded
-    builder.finalize_user_data(&mjcf, tree_user?)?;
+    let tree_user = tree_user?;
+    if let Err(e) = builder.finalize_user_data(&mjcf, tree_user) {
+        return Err(named_first(tree_fault, hfield_fault, e));
+    }
 
     // MuJoCo 3.5.0's checks this crate did not make before Rigid-loading PR
     // RL-6a and the PRs after it (book L19-L22, L25, L31, L32; a sensor's
@@ -398,10 +462,11 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // check above, so that a document refused before they existed is refused
     // for the same fault (MuJoCo orders some of them before checks above).
     // Among themselves in MuJoCo's order: each body's inertia, geoms and
-    // joints, a bending flex's thickness, the height fields' sizes
-    // (`user_model.cc:4948-4950` compiles the flexes before the height
-    // fields), the equalities (each in turn: a flex equality's flex, a joint
-    // equality's joints since RL-10d), the tendons, the actuators, the sensors,
+    // joints, a bending flex's thickness, the height fields' fault (compiled
+    // after fusestatic, above; `user_model.cc:4948-4950` compiles the flexes
+    // before the height fields), the equalities (each in turn: a flex
+    // equality's flex, a joint equality's joints since RL-10d), the tendons,
+    // the actuators, the sensors,
     // a moving body's mass and inertia, then the free joint below the world's
     // children, as MuJoCo's `CopyTree` refuses it. An automatic range that
     // does not increase is refused after the keyframes (`D-AUTO-RANGE`).
@@ -410,7 +475,9 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     }
     builder.check_bodies(tree_end)?;
     flex::check_flex_bending_thickness(&mjcf.flex)?;
-    builder.check_hfield_sizes()?;
+    if let Some(fault) = hfield_fault {
+        return Err(fault);
+    }
     builder.check_equalities()?;
     builder.check_tendons()?;
     builder.check_actuators()?;
@@ -622,7 +689,7 @@ pub fn load_model(xml: &str) -> Result<Model> {
     }
     crate::stack::on_large_stack(|| {
         let mjcf = crate::parser::parse_mjcf_unwrapped(xml)?;
-        model_from_mjcf_unwrapped(&mjcf, None)
+        model_from_mjcf_unwrapped(&mjcf, None, true)
     })
 }
 
@@ -654,7 +721,7 @@ pub fn load_model_from_file<P: AsRef<Path>>(path: P) -> Result<Model> {
         // recurses once per nested include.
         let expanded_xml = crate::include::expand_includes(&xml, base_dir)?;
         let mjcf = crate::parser::parse_mjcf_unwrapped(&expanded_xml)?;
-        model_from_mjcf_unwrapped(&mjcf, base_path)
+        model_from_mjcf_unwrapped(&mjcf, base_path, true)
     })
 }
 
@@ -1606,20 +1673,19 @@ mod tests {
         assert_eq!(model.nhfield, 1);
     }
 
+    /// A height field with no file and no grid has no data: MuJoCo 3.5.0
+    /// refuses it as it compiles it, "hfield not specified" (measured), so it
+    /// parses and is refused by the builder.
     #[test]
-    fn test_hfield_requires_file_or_elevation() {
-        // Neither file nor elevation → parser error
-        let result = crate::parse_mjcf_str(
-            r#"
-            <mujoco>
-                <asset>
-                    <hfield name="bad" size="1 1 1 0.1"/>
-                </asset>
-                <worldbody/>
-            </mujoco>
-            "#,
+    fn a_height_field_with_no_data_is_refused_as_mujoco_refuses_it() {
+        let xml =
+            r#"<mujoco><asset><hfield name="bad" size="1 1 1 0.1"/></asset><worldbody/></mujoco>"#;
+        assert!(crate::parse_mjcf_str(xml).is_ok());
+        let error = load_model(xml).err().map(|e| e.to_string());
+        assert_eq!(
+            error.as_deref(),
+            Some("hfield not specified (hfield 'bad')")
         );
-        assert!(result.is_err(), "should fail without file or elevation");
     }
 
     #[cfg(feature = "hfields")]

@@ -1,0 +1,1 @@
+<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/><material name="m" texture="nope"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody></mujoco>

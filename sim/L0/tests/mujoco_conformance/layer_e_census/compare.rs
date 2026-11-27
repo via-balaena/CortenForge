@@ -354,10 +354,10 @@ pub fn model_diff(ours: &Value, mj: &Value) -> Vec<String> {
     d.exact("geom_body");
     d.close("geom_pos");
     d.quat("geom_quat");
+    // A height field's three since Rigid-loading PR RL-11b: its asset's
+    // half-extents and a quarter of its top plus half its base.
     d.close_rows("geom_size", ngeom, |g| match str_at(&mj["geom_type"], g) {
         "Capsule" | "Cylinder" => 2,
-        "Sphere" | "Plane" => 3,
-        "Hfield" => 0,
         _ => 3,
     });
     // A geom's bounds, each geom on its own scale, as a plane's box reaches

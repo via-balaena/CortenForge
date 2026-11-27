@@ -1024,12 +1024,13 @@ impl Default for MjcfMesh {
     }
 }
 
-/// Height field asset parsed from `<hfield>` element in MJCF.
+/// Height field asset parsed from `<hfield>` element in MJCF, as MuJoCo
+/// 3.5.0's reader takes it (`xml_native_reader.cc:3403-3458`).
 ///
-/// Supports two data sources (mutually exclusive):
-/// - **File-based:** `file` attribute pointing to a PNG image. Grid dimensions
-///   (`nrow`, `ncol`) and elevation data are derived from the image.
-/// - **Inline:** `nrow`, `ncol`, and `elevation` attributes in the XML.
+/// Its data is its file's where it names one, else its own: `nrow` rows of
+/// `ncol` elevations, or as many zeros where it writes none. The builder
+/// compiles either as MuJoCo's `mjCHField::Compile` does (see
+/// `compile_hfield` in the builder).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfHfield {
@@ -1039,15 +1040,23 @@ pub struct MjcfHfield {
     /// Size: `[x, y, z_top, z_bottom]`.
     /// x/y = half-extents; z_top = elevation scale; z_bottom = base depth.
     pub size: [f64; 4],
-    /// Number of rows (Y samples). Required for inline data, derived from image for file-based.
-    pub nrow: Option<usize>,
-    /// Number of columns (X samples). Required for inline data, derived from image for file-based.
-    pub ncol: Option<usize>,
-    /// Normalized elevation data, row-major (row 0 = min Y, X varies fastest).
-    /// Length: `nrow × ncol`. `None` when data comes from a file.
+    /// Number of rows (Y samples), as written; 0 where unwritten. Not read
+    /// beside a file, whose data gives the grid.
+    pub nrow: i32,
+    /// Number of columns (X samples), as written; 0 where unwritten. Not
+    /// read beside a file.
+    pub ncol: i32,
+    /// The elevations as written, `nrow` rows of `ncol`, the document's
+    /// first row the field's last (its highest Y). Read only where no file
+    /// is named and both counts are positive, as MuJoCo reads it; `None`
+    /// otherwise, and where unwritten.
     pub elevation: Option<Vec<f64>>,
-    /// Path to PNG file for file-based loading. `None` for inline data.
+    /// The file of its data: a PNG, or MuJoCo's own height-field format.
     pub file: Option<String>,
+    /// The file's format as a content type (`content_type`), as MuJoCo
+    /// 3.5.0 reads it: `image/png` or `image/vnd.mujoco.hfield`. Unwritten,
+    /// the file's extension gives it.
+    pub content_type: Option<String>,
 }
 
 impl MjcfMesh {

@@ -269,7 +269,7 @@ fn file_format(
 /// `mjuu_parseContentTypeAttrType` and `…Subtype`, `user_util.cc:895-952`):
 /// a `/` that is not its last character, and where it holds a `;`, the `;`
 /// past the `/` and an `=` past the `;`.
-fn content_type_of(text: &str) -> Option<String> {
+pub(super) fn content_type_of(text: &str) -> Option<String> {
     let slash = text.find('/').filter(|&n| n + 1 < text.len())?;
     let subtype_end = match text.find(';') {
         None => text.len(),

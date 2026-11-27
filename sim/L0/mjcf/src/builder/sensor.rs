@@ -579,6 +579,53 @@ impl ModelBuilder {
     }
 }
 
+/// Three of the faults MuJoCo 3.5.0's reader meets reading a sensor's
+/// objects, before its compiler checks anything: a sensor naming no object,
+/// a distance, normal or fromto sensor whose side names other than one of a
+/// geom and a body (`xml_native_reader.cc:4318-4329`), a `refname` without a
+/// `reftype` (`:4213-4214`). In the words and at the place
+/// [`ModelBuilder::process_sensors`] gives each as it resolves the names. A
+/// read document's is named right after the front end
+/// (`model_from_mjcf_unwrapped`); a model built in code's as its sensors are
+/// built.
+pub fn sensor_read_fault(sensor: &MjcfSensor) -> Option<MjcfError> {
+    let kind = convert_sensor_type(sensor.sensor_type)?;
+    if matches!(
+        kind,
+        MjSensorType::GeomDist | MjSensorType::GeomNormal | MjSensorType::GeomFromTo
+    ) {
+        return [
+            (&sensor.geom1, &sensor.body1, "1"),
+            (&sensor.geom2, &sensor.body2, "2"),
+        ]
+        .into_iter()
+        .find(|(geom, body, _)| geom.is_some() == body.is_some())
+        .map(|(_, _, side)| {
+            MjcfError::invalid_model(format!(
+                "distance sensor: exactly one of (geom{side}, body{side}) must be specified"
+            ))
+        });
+    }
+    // A rangefinder's site or camera the parser checks as MuJoCo's reader
+    // does (`xml_native_reader.cc:4097-4101`).
+    let objectless = [
+        MjSensorType::User,
+        MjSensorType::Clock,
+        MjSensorType::Rangefinder,
+    ];
+    if !objectless.contains(&kind) && sensor.objname.is_none() {
+        return Some(MjcfError::missing_attribute("sensor", "objname"));
+    }
+    match (&sensor.refname, &sensor.reftype) {
+        (Some(name), None) => Some(MjcfError::invalid_value(
+            "sensor",
+            "refname",
+            format!("refname '{name}' given but reftype is missing"),
+        )),
+        _ => None,
+    }
+}
+
 /// Map `MjcfSensorType` to pipeline `MjSensorType`.
 /// All standard sensor types are mapped; returns `Some(...)` for every variant.
 fn convert_sensor_type(mjcf: MjcfSensorType) -> Option<MjSensorType> {

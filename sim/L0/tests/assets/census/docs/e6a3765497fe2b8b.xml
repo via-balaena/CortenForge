@@ -1,0 +1,1 @@
+<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><sensor><jointpos joint="j" noise="-1"/></sensor></mujoco>

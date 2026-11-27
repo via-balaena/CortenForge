@@ -828,37 +828,6 @@ mod tests {
         }
     }
 
-    /// A field whose heights pass its top (`size[2]`), as sim-mjcf loads
-    /// elevations above 1 until book Rigid-loading L45 normalises them: a
-    /// sphere resting on it above the top still collides, the box tests
-    /// taking the field's highest point. MuJoCo's field never passes its top,
-    /// so its box tests take `size[2]`.
-    #[test]
-    fn a_field_above_its_top_still_collides() {
-        let model = flat_hfield_model(
-            5,
-            1.0,
-            1.0,
-            2.0,
-            GeomType::Sphere,
-            Vector3::new(0.1, 0.0, 0.0),
-            0.1,
-        );
-        assert!(model.hfield_size[0][2] < 2.0);
-        let contacts = collide_hfield_multi(
-            &model,
-            0,
-            1,
-            Vector3::zeros(),
-            Matrix3::identity(),
-            Vector3::new(0.1, 0.05, 2.09),
-            Matrix3::identity(),
-            0.0,
-        );
-        assert!(!contacts.is_empty(), "a sphere 0.01 into the field");
-        assert!(contacts.iter().all(|c| c.depth > 0.0));
-    }
-
     /// The ccd golden (`sim/L0/tests/scripts/gen_ccd_reference.py`).
     fn ccd_golden() -> serde_json::Value {
         let path = concat!(
@@ -891,8 +860,8 @@ mod tests {
     /// Book P52's must-fail: every height-field case of the ccd golden with
     /// a primitive (`hfield_convex` `pose` and `edge`), through
     /// `collide_hfield_multi` on a model holding MuJoCo's field data scaled
-    /// by its top (rows bottom to top, normalised: in code, as sim-mjcf does
-    /// not load them so yet, book Rigid-loading L45) and MuJoCo's bounding
+    /// by its top (rows bottom to top, normalised), built in code, and
+    /// MuJoCo's bounding
     /// radius: MuJoCo's contacts, the field first, each distance and
     /// position bit for bit and its normal as `mj_setContact` normalises
     /// MuJoCo's (`mju_makeFrame`).

@@ -160,8 +160,10 @@ files MuJoCo refuses too, and we load one it refuses
 moving bodies must be larger than mjMINVAL"). The rest are loader gaps: most of
 Menagerie's on `mesh '': duplicate mesh name`, many of the control suite's on a
 single-value `friction`. Since Rigid-loading RL-6d (measured 2026-11-02),
-`test_model.xml` is refused as MuJoCo refuses it, for the same body; the other
-counts are still 2026-10-20's. No test requires the submodules to load (one sim-mjcf test, behind
+`test_model.xml` is refused as MuJoCo refuses it, for the same body; since
+Rigid-loading RL-11b (measured 2026-11-26), dm_control's `suite/quadruped.xml`
+loads, its height field's counts with no elevation read as MuJoCo reads them;
+the other counts are still 2026-10-20's. No test requires the submodules to load (one sim-mjcf test, behind
 the `hfields` feature, opens a Menagerie scene if it is there and accepts a
 failure), and CI does not check them out. The tables below give each model's
 result.
@@ -211,7 +213,7 @@ https://github.com/google-deepmind/dm_control
 | `reacher` | easy | yes | Planar arm |
 | `swimmer` | swimmer6 | yes (a template: dm_control adds the links in Python) | Multi-link swimmer |
 | `walker` | walk | yes | Bipedal walker |
-| `quadruped` | walk | no (its height field) | 4-legged walker |
+| `quadruped` | walk | yes (since Rigid-loading RL-11b: its height field's counts with no elevation, as MuJoCo loads them) | 4-legged walker |
 | `dog` | run | no (single-value `friction`) | Realistic dog |
 | `stacker` | stack | no (single-value `friction`) | Block stacking |
 | `lqr` | control | yes (a template: dm_control adds the bodies in Python) | LQR benchmark |

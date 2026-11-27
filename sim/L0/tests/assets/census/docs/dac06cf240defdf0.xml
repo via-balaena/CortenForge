@@ -1,0 +1,1 @@
+<mujoco model="h"><option timestep="0.002"/><asset><hfield name="h" nrow="3" ncol="3" size="1e-300 1 1 1" elevation="0 1 0 1 0 1 0 1 0"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body pos="0.13 0.21 0.6"><freejoint/><geom type="sphere" size="0.05" mass="1"/></body></worldbody></mujoco>

@@ -14,10 +14,10 @@ use std::sync::Arc;
 use tracing::warn;
 
 use super::ModelBuilder;
-use super::asset::{AssetKind, resolve_asset_path};
+use super::asset::{AssetKind, resolve_asset_path, stripped_file};
 use super::eig3::eig3;
 use super::mass::MJ_MINVAL;
-use super::mesh_file::load_mesh_file;
+use super::mesh_file::{content_type_of, load_mesh_file};
 use super::orientation::{mulvecmat, mulvecmat_t, normvec, quat2mat};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
@@ -302,44 +302,41 @@ impl ModelBuilder {
         Ok(())
     }
 
-    /// Process a height field asset from MJCF.
-    ///
-    /// Supports two data sources:
-    /// - **File-based:** `file` attribute pointing to a PNG image
-    /// - **Inline:** `nrow`, `ncol`, `elevation` attributes in the XML
-    pub(crate) fn process_hfield(
-        &mut self,
-        hfield: &MjcfHfield,
-        base_path: Option<&Path>,
-    ) -> Result<()> {
+    /// Register a height field asset from MJCF: its name and its sizes,
+    /// which a geom reads as it is built. Its data is compiled with the other
+    /// height fields after the bodies ([`Self::compile_hfields`]), where
+    /// MuJoCo 3.5.0 compiles it.
+    pub(crate) fn process_hfield(&mut self, hfield: &MjcfHfield) -> Result<()> {
         if self.hfield_name_to_id.contains_key(&hfield.name) {
             return Err(MjcfError::duplicate_name(ElementKind::Hfield, &hfield.name));
         }
-        let data = convert_mjcf_hfield(hfield, base_path, &self.compiler)?;
-        let id = self.hfield_data.len();
+        let id = self.hfield_name.len();
         self.hfield_name_to_id.insert(hfield.name.clone(), id);
         self.hfield_name.push(hfield.name.clone());
-        self.hfield_data.push(Arc::new(data));
         self.hfield_size.push(hfield.size);
         Ok(())
     }
 
-    /// MuJoCo 3.5.0's check of each height field, in order: its four sizes
-    /// positive (`mjCHField::Compile`, `user_objects.cc:4471-4474`), used
-    /// or not. The parser has refused a first or second size that is not
-    /// positive and a third or fourth that is negative; this refuses a third
-    /// or fourth of 0, where MuJoCo does, after the bodies' checks and
-    /// before the tendons' (`user_model.cc:4932-4956`).
-    pub(crate) fn check_hfield_sizes(&self) -> Result<()> {
-        let not_positive = |size: &[f64; 4]| size.iter().any(|&s| s <= 0.0);
-        match self.hfield_size.iter().position(not_positive) {
-            Some(h) => Err(
-                MjcfError::invalid_model("size parameter is not positive in hfield").at(
-                    Location::nth(ElementKind::Hfield, Some(&self.hfield_name[h]), h),
-                ),
-            ),
-            None => Ok(()),
+    /// Each height field compiled as MuJoCo 3.5.0 compiles it, one after
+    /// another ([`compile_hfield`]), used by a geom or not; its caller,
+    /// `model_from_mjcf_unwrapped`, holds the fault and says at the call
+    /// where it is named.
+    pub(crate) fn compile_hfields(
+        &mut self,
+        hfields: &[MjcfHfield],
+        base_path: Option<&Path>,
+    ) -> Result<()> {
+        for (h, hfield) in hfields.iter().enumerate() {
+            let data = compile_hfield(hfield, base_path, &self.compiler).map_err(|reason| {
+                MjcfError::invalid_model(reason).at(Location::nth(
+                    ElementKind::Hfield,
+                    Some(&hfield.name),
+                    h,
+                ))
+            })?;
+            self.hfield_data.push(Arc::new(data));
         }
+        Ok(())
     }
 }
 
@@ -361,158 +358,404 @@ pub(super) struct InitialMesh {
     pub(super) obj: bool,
 }
 
-/// Convert an MJCF hfield asset to `HeightFieldData`.
+/// MuJoCo 3.5.0's `mjEPS`: a field whose elevations span no more is
+/// shifted to 0, not divided by its span.
+const MJ_EPS: f64 = 1e-14;
+
+/// A height field's data as MuJoCo 3.5.0's `mjCHField::Compile` makes it
+/// (`user_objects.cc:4456-4573`), in its order:
 ///
-/// Handles two data sources:
-/// 1. **File-based:** `file` attribute → load PNG, derive nrow/ncol/elevation
-///    (requires the `hfields` feature; otherwise returns a clear error)
-/// 2. **Inline:** `nrow`/`ncol`/`elevation` attributes in XML (always available)
+/// 1. its elevations, where it holds any, `nrow · ncol` of them ("elevation
+///    data length must match nrow*ncol"), the counts not read beside a file
+///    (`CopyFromSpec` zeroes them, `:4349-4352`);
+/// 2. its four sizes positive ("size parameter is not positive in hfield");
+/// 3. its data: its file's where it names one that `strippath` leaves
+///    something of ([`read_hfield_file`]); else its elevations with their
+///    rows reversed, so the document's first row is the field's highest Y
+///    (`xml_native_reader.cc:3442-3449`), or `nrow · ncol` zeros where it
+///    writes neither elevation nor file (MuJoCo's reader fills them);
+/// 4. a field with no grid or no data refused ("hfield not specified");
+/// 5. its data moved to start at 0 and divided by its span where the span
+///    is above [`MJ_EPS`], in single precision ([`normalise`]).
 ///
-/// MuJoCo elevation formula: `vertex_z = elevation[i] × size[2]`.
-/// MuJoCo vertex positions: centered at origin, x ∈ `[−size[0], +size[0]]`, y ∈ `[−size[1], +size[1]]`.
-/// `HeightFieldData` uses corner-origin `(0,0)` with uniform `cell_size`.
-// nrow/ncol are small grid extents (well within f64 mantissa); f64→usize
-// truncations sit behind explicit bounds checks; sign-loss casts apply to
-// values already proven non-negative upstream.
+/// A grid of positive counts whose product passes a C `int` is refused
+/// before any of these, "elevation data length must match nrow*ncol"
+/// (registry `D-HFIELD-COUNTS`: MuJoCo's product overflows there).
+///
+/// Each height is that elevation times `size[2]`, as MuJoCo's collision and
+/// rays read it (`engine_collision_convex.c:1177`). The grid's spacing along
+/// each axis is its extent over its cells, `2·size[0]/(ncol − 1)` and
+/// `2·size[1]/(nrow − 1)`; a field of one column or row has no extent along
+/// that axis, and its spacing there is the axis's whole width; a spacing
+/// below the least positive normal double, or not a number (a step that
+/// underflows, a size that is not a number in a model built in code), is
+/// that double. MuJoCo's
+/// readers (contacts, rays, flex elements) take positions from `size` and the
+/// grid, not from this spacing, which cf-geometry's own queries read.
+///
+/// # Errors
+///
+/// MuJoCo's reason, as the list above and [`read_hfield_file`] give it.
+// The grid's counts are positive `i32`s whose product fits one, so exact as
+// `usize` and as `f64`; each written elevation was read as a float, so exact
+// as one.
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss
 )]
-pub fn convert_mjcf_hfield(
+fn compile_hfield(
     hfield: &MjcfHfield,
     base_path: Option<&Path>,
     compiler: &MjcfCompiler,
-) -> Result<HeightFieldData> {
-    // Resolve data source: file-based or inline
-    let (ncol, nrow, elevation) = match (&hfield.file, &hfield.elevation) {
-        // Inline elevation data is taken over a file here; MuJoCo reads the
-        // file and not `elevation` beside it (ledger L431).
-        (_, Some(elev)) => {
-            let at = || Location::named(ElementKind::Hfield, &hfield.name);
-            let nr = hfield
-                .nrow
-                .ok_or_else(|| MjcfError::missing_attribute("hfield", "nrow").at(at()))?;
-            let nc = hfield
-                .ncol
-                .ok_or_else(|| MjcfError::missing_attribute("hfield", "ncol").at(at()))?;
-            (nc, nr, elev.clone())
+) -> std::result::Result<HeightFieldData, String> {
+    let length = || "elevation data length must match nrow*ncol".to_string();
+    // The reader's file (written, perhaps empty) and `CopyFromSpec`'s (not
+    // empty), beside which the counts are not read.
+    let written = hfield.file.as_deref();
+    let file = written.filter(|f| !f.is_empty());
+    let (nrow, ncol) = if file.is_some() {
+        (0, 0)
+    } else {
+        (hfield.nrow, hfield.ncol)
+    };
+    // An elevation's length is checked against the counts' product whatever
+    // their signs, as MuJoCo's compiler checks it (`user_objects.cc:4461`);
+    // a product past an int is refused only of positive counts, the only
+    // ones MuJoCo's reader multiplies (`xml_native_reader.cc:3428`).
+    let cells = i64::from(nrow) * i64::from(ncol);
+    if nrow > 0 && ncol > 0 && cells > i64::from(i32::MAX) {
+        return Err(length());
+    }
+    let elevation = hfield.elevation.as_deref().filter(|e| !e.is_empty());
+    if elevation.is_some_and(|e| i64::try_from(e.len()).ok() != Some(cells)) {
+        return Err(length());
+    }
+    if hfield.size.iter().any(|&s| s <= 0.0) {
+        return Err("size parameter is not positive in hfield".to_string());
+    }
+    let stripped = written
+        .map(|f| stripped_file(f, compiler))
+        .unwrap_or_default();
+    let (nrow, ncol, mut data) = if let Some(file) = file.filter(|_| !stripped.is_empty()) {
+        read_hfield_file(file, hfield.content_type.as_deref(), base_path, compiler)?
+    } else if nrow > 0 && ncol > 0 && (elevation.is_some() || written.is_none()) {
+        let (nrow, ncol) = (nrow as usize, ncol as usize);
+        let mut data = vec![0.0_f32; nrow * ncol];
+        for (i, row) in elevation.unwrap_or_default().chunks_exact(ncol).enumerate() {
+            let flip = nrow - 1 - i;
+            for (j, &e) in row.iter().enumerate() {
+                data[flip * ncol + j] = e as f32;
+            }
         }
-        // File-based loading (requires `hfields` feature)
-        #[cfg(feature = "hfields")]
-        (Some(file_path), None) => load_hfield_png(file_path, base_path, compiler, &hfield.name)?,
-        #[cfg(not(feature = "hfields"))]
-        (Some(file_path), None) => {
-            // Suppress unused-parameter warnings; load_hfield_png isn't compiled in.
-            let _ = (base_path, compiler);
-            return Err(MjcfError::unsupported(format!(
-                "hfield file=\"{file_path}\" without the `hfields` feature \
-                 (enable `sim-mjcf/hfields` to load PNG height fields, or use \
-                 inline `elevation=\"...\"` data)",
-            ))
-            .at(Location::named(ElementKind::Hfield, &hfield.name)));
+        (nrow, ncol, data)
+    } else {
+        (0, 0, Vec::new())
+    };
+    if nrow < 1 || ncol < 1 || data.is_empty() {
+        return Err("hfield not specified".to_string());
+    }
+    normalise(&mut data, &stripped)?;
+
+    let [x, y, top, _] = hfield.size;
+    let heights = data.iter().map(|&d| f64::from(d) * top).collect();
+    let step = |half: f64, n: usize| {
+        let step = if n > 1 {
+            2.0 * half / (n - 1) as f64
+        } else {
+            2.0 * half
+        };
+        step.max(f64::MIN_POSITIVE)
+    };
+    Ok(HeightFieldData::with_spacing(
+        heights,
+        ncol,
+        nrow,
+        [step(x, ncol), step(y, nrow)],
+    ))
+}
+
+/// MuJoCo 3.5.0's normalisation of a height field's data, in single
+/// precision (`user_objects.cc:4558-4572`): its least and greatest values,
+/// each `std::min` and `std::max` from 1E+10 and -1E+10, so a NaN changes
+/// neither and a field above 1E+10 or below -1E+10 keeps that bound; each
+/// value less the least, divided by their difference where it is above
+/// [`MJ_EPS`].
+///
+/// # Errors
+///
+/// `invalid data range in hfield '<file>'` where the least is above the
+/// greatest, as where every value is NaN.
+fn normalise(data: &mut [f32], file: &str) -> std::result::Result<(), String> {
+    let (mut emin, mut emax) = (1e10_f32, -1e10_f32);
+    for &d in data.iter() {
+        if d < emin {
+            emin = d;
         }
-        // Neither (should not happen — parser validates)
-        (None, None) => {
-            return Err(MjcfError::asset(
-                ElementKind::Hfield,
-                &hfield.name,
-                "no elevation data and no file specified",
+        if emax < d {
+            emax = d;
+        }
+    }
+    if emin > emax {
+        return Err(format!("invalid data range in hfield '{file}'"));
+    }
+    for d in data.iter_mut() {
+        *d -= emin;
+        if f64::from(emax - emin) > MJ_EPS {
+            *d /= emax - emin;
+        }
+    }
+    Ok(())
+}
+
+/// A height field file's data, as MuJoCo 3.5.0 reads it
+/// (`mjCHField::Compile`, `user_objects.cc:4484-4508`): its format by its
+/// content type ([`hfield_content_type`]), MuJoCo's own where it names
+/// none; a PNG ([`read_hfield_png`]) or MuJoCo's format
+/// ([`read_hfield_custom`]). Returns its rows, its columns and its data,
+/// the field's lowest Y first.
+///
+/// # Errors
+///
+/// `unsupported content type: '<type>'` for a type of neither; the file
+/// not found or read; the format's own reasons.
+fn read_hfield_file(
+    file: &str,
+    content_type: Option<&str>,
+    base_path: Option<&Path>,
+    compiler: &MjcfCompiler,
+) -> std::result::Result<(usize, usize, Vec<f32>), String> {
+    let kind = hfield_content_type(&stripped_file(file, compiler), content_type)
+        .unwrap_or_else(|| "image/vnd.mujoco.hfield".to_string());
+    if kind != "image/png" && kind != "image/vnd.mujoco.hfield" {
+        return Err(format!("unsupported content type: '{kind}'"));
+    }
+    // Without the `hfields` feature, a PNG is refused naming the feature,
+    // before its file is looked for.
+    if kind == "image/png" && !cfg!(feature = "hfields") {
+        return read_hfield_png(&[], file);
+    }
+    let path = resolve_asset_path(file, base_path, compiler, AssetKind::Mesh)?;
+    let bytes =
+        std::fs::read(&path).map_err(|e| format!("could not read hfield file '{file}': {e}"))?;
+    let name = path.display().to_string();
+    if kind == "image/png" {
+        read_hfield_png(&bytes, &name)
+    } else {
+        read_hfield_custom(&bytes, &name)
+    }
+}
+
+/// A height field file's content type as MuJoCo 3.5.0 names it
+/// (`GetAssetContentType`, `user_objects.cc:1225-1237`): its `content_type`'s
+/// `type/subtype` where written, none where that is not of the form MuJoCo
+/// accepts ([`content_type_of`]); else its extension's, the text from the
+/// file's last `.` in any case (`mjuu_extToContentType`,
+/// `user_util.cc:957-973`): `.png` an image's, `.stl`, `.obj`, `.ply` and
+/// `.msh` a model's, any other none.
+fn hfield_content_type(file: &str, content_type: Option<&str>) -> Option<String> {
+    if let Some(text) = content_type.filter(|text| !text.is_empty()) {
+        return content_type_of(text);
+    }
+    let ext = file
+        .rfind('.')
+        .map(|dot| file[dot..].to_ascii_lowercase())?;
+    let kind = match ext.as_str() {
+        ".stl" => "model/stl",
+        ".obj" => "model/obj",
+        ".ply" => "model/ply",
+        ".msh" => "model/vnd.mujoco.msh",
+        ".png" => "image/png",
+        _ => return None,
+    };
+    Some(kind.to_string())
+}
+
+/// A PNG height field's data as MuJoCo 3.5.0 reads it (`mjCHField::LoadPNG`,
+/// `user_objects.cc:4438-4452`): decoded to 8-bit grey as lodepng converts it
+/// (`lodepng.cpp:3500`, `:3524`, `:3593`), a colour pixel's red, a 16-bit
+/// sample's high byte, a grey of fewer bits scaled to 255; its rows reversed,
+/// so the image's top row is the field's highest Y. Returns its rows, its
+/// columns and its data.
+///
+/// # Errors
+///
+/// `empty PNG file '<file>'`, as MuJoCo's words; `error decoding PNG file
+/// '<file>': …` where the image does not decode, in the decoder's words
+/// (registry `D-HFIELD-PNG`: lodepng decides some malformed files
+/// otherwise); the `hfields` feature's absence.
+#[cfg(feature = "hfields")]
+fn read_hfield_png(
+    bytes: &[u8],
+    file: &str,
+) -> std::result::Result<(usize, usize, Vec<f32>), String> {
+    use image::DynamicImage;
+    if bytes.is_empty() {
+        return Err(format!("empty PNG file '{file}'"));
+    }
+    // An image of more pixels than a C `int` counts, MuJoCo's grid's, refused
+    // before it is decoded, in the words lodepng gives an image past 2⁶¹
+    // pixels (registry `D-HFIELD-COUNTS`).
+    if let Some((width, height)) = png_dimensions(bytes)
+        && u64::from(width) * u64::from(height) > u64::from(i32::MAX.unsigned_abs())
+    {
+        return Err(format!(
+            "error decoding PNG file '{file}': integer overflow due to too many pixels"
+        ));
+    }
+    // The decoder's memory bounded at [`PNG_DECODE_LIMIT`]; a panic in it (a
+    // palette whose length is not a multiple of 3) refused (registry
+    // `D-HFIELD-PNG`).
+    let decoded = std::panic::catch_unwind(|| {
+        let mut reader =
+            image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png);
+        let mut limits = image::Limits::default();
+        limits.max_alloc = Some(PNG_DECODE_LIMIT);
+        reader.limits(limits);
+        reader.decode()
+    });
+    let image = match decoded {
+        Ok(Ok(image)) => image,
+        Ok(Err(e)) => return Err(format!("error decoding PNG file '{file}': {e}")),
+        Err(_) => {
+            return Err(format!(
+                "error decoding PNG file '{file}': the decoder failed"
             ));
         }
     };
-
-    let z_top = hfield.size[2];
-
-    // Compute cell spacings
-    let dx = 2.0 * hfield.size[0] / (ncol as f64 - 1.0);
-    let dy = 2.0 * hfield.size[1] / (nrow as f64 - 1.0);
-
-    // HeightFieldData requires uniform cell_size (square cells)
-    let (cell_size, heights) = if (dx - dy).abs() / dx.max(dy) < 0.01 {
-        // Within 1% tolerance: use average
-        let cell_size = f64::midpoint(dx, dy);
-        let heights: Vec<f64> = elevation.iter().map(|&e| e * z_top).collect();
-        (cell_size, heights)
-    } else {
-        // Non-square: resample to finer resolution
-        warn!(
-            hfield_name = %hfield.name,
-            dx, dy,
-            "hfield has non-square cells (dx={dx:.4}, dy={dy:.4}), resampling to uniform grid"
-        );
-        let cell_size = dx.min(dy);
-        let new_ncol = ((2.0 * hfield.size[0]) / cell_size).round() as usize + 1;
-        let new_nrow = ((2.0 * hfield.size[1]) / cell_size).round() as usize + 1;
-
-        let mut heights = Vec::with_capacity(new_nrow * new_ncol);
-        for row in 0..new_nrow {
-            let fy = row as f64 / (new_nrow as f64 - 1.0) * (nrow as f64 - 1.0);
-            let iy = (fy as usize).min(nrow - 2);
-            let ty = fy - iy as f64;
-            for col in 0..new_ncol {
-                let fx = col as f64 / (new_ncol as f64 - 1.0) * (ncol as f64 - 1.0);
-                let ix = (fx as usize).min(ncol - 2);
-                let tx = fx - ix as f64;
-                // Bilinear interpolation
-                let e00 = elevation[iy * ncol + ix];
-                let e10 = elevation[iy * ncol + ix + 1];
-                let e01 = elevation[(iy + 1) * ncol + ix];
-                let e11 = elevation[(iy + 1) * ncol + ix + 1];
-                let e = e00 * (1.0 - tx) * (1.0 - ty)
-                    + e10 * tx * (1.0 - ty)
-                    + e01 * (1.0 - tx) * ty
-                    + e11 * tx * ty;
-                heights.push(e * z_top);
-            }
+    let (ncol, nrow) = (image.width() as usize, image.height() as usize);
+    let high = |v: u16| v.to_be_bytes()[0];
+    let grey: Vec<u8> = match image {
+        DynamicImage::ImageLuma8(i) => i.into_raw(),
+        DynamicImage::ImageLumaA8(i) => i.pixels().map(|p| p.0[0]).collect(),
+        DynamicImage::ImageRgb8(i) => i.pixels().map(|p| p.0[0]).collect(),
+        DynamicImage::ImageRgba8(i) => i.pixels().map(|p| p.0[0]).collect(),
+        DynamicImage::ImageLuma16(i) => i.pixels().map(|p| high(p.0[0])).collect(),
+        DynamicImage::ImageLumaA16(i) => i.pixels().map(|p| high(p.0[0])).collect(),
+        DynamicImage::ImageRgb16(i) => i.pixels().map(|p| high(p.0[0])).collect(),
+        DynamicImage::ImageRgba16(i) => i.pixels().map(|p| high(p.0[0])).collect(),
+        _ => {
+            return Err(format!(
+                "error decoding PNG file '{file}': not an 8- or 16-bit image"
+            ));
         }
-        return Ok(HeightFieldData::new(heights, new_ncol, new_nrow, cell_size));
     };
-
-    Ok(HeightFieldData::new(heights, ncol, nrow, cell_size))
+    let mut data = Vec::with_capacity(nrow * ncol);
+    for r in 0..nrow {
+        let row = (nrow - 1 - r) * ncol;
+        data.extend(grey[row..row + ncol].iter().map(|&v| f32::from(v)));
+    }
+    Ok((nrow, ncol, data))
 }
 
-/// Load hfield elevation data from a PNG image file.
-///
-/// MuJoCo behavior (from `user_model.cc`):
-/// - Loads image as grayscale
-/// - Normalizes pixel values to `[0.0, 1.0]`: 8-bit → `/255`, 16-bit → `/65535`
-/// - `nrow` = image height, `ncol` = image width
-///
-/// Returns `(ncol, nrow, elevation)`.
-// 8-bit/16-bit pixel intensities and grid dimensions are far below 2^52.
+/// The most a PNG height field's decoding may allocate, 8 GiB: above it the
+/// image is refused, "Memory limit exceeded" (registry `D-HFIELD-PNG`). The
+/// decoder's own 512 MiB refused images MuJoCo loads, and no limit let it
+/// abort on an image whose header claims more pixels than memory holds.
 #[cfg(feature = "hfields")]
-#[allow(clippy::cast_precision_loss)]
-fn load_hfield_png(
-    file_path: &str,
-    base_path: Option<&Path>,
-    compiler: &MjcfCompiler,
-    hfield_name: &str,
-) -> Result<(usize, usize, Vec<f64>)> {
-    // Resolve path using the same rules as mesh files (hfields use meshdir)
-    let refuse = |reason: String| MjcfError::asset(ElementKind::Hfield, hfield_name, reason);
-    let resolved_path =
-        resolve_asset_path(file_path, base_path, compiler, AssetKind::Mesh).map_err(refuse)?;
+const PNG_DECODE_LIMIT: u64 = 8 << 30;
 
-    // Load image
-    let img = image::open(&resolved_path)
-        .map_err(|e| refuse(format!("failed to load '{file_path}': {e}")))?;
+/// A PNG's width and height from its `IHDR`, where lodepng takes the
+/// header (`lodepng_inspect`, `lodepng.cpp:4378-4434`): its signature, a
+/// first chunk 13 bytes long named `IHDR`, a width and height above 0, a
+/// colour type and bit depth lodepng accepts, compression and filter method
+/// 0, interlace method 0 or 1, and the chunk's CRC. A header lodepng refuses
+/// is left to the decoder, which names its fault before any size.
+#[cfg(feature = "hfields")]
+fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
+    let header = bytes.get(..33)?;
+    let word = |at: usize| {
+        u32::from_be_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]])
+    };
+    let (depth, colour) = (header[24], header[25]);
+    let colour_ok = match colour {
+        0 => matches!(depth, 1 | 2 | 4 | 8 | 16),
+        3 => matches!(depth, 1 | 2 | 4 | 8),
+        2 | 4 | 6 => matches!(depth, 8 | 16),
+        _ => false,
+    };
+    let taken = header[..8] == SIGNATURE
+        && word(8) == 13
+        && &header[12..16] == b"IHDR"
+        && word(16) != 0
+        && word(20) != 0
+        && colour_ok
+        && header[26] == 0
+        && header[27] == 0
+        && header[28] <= 1
+        && crc32(&header[12..29]) == word(29);
+    taken.then(|| (word(16), word(20)))
+}
 
-    // Convert to 16-bit grayscale for maximum precision
-    let gray = img.into_luma16();
-    let ncol = gray.width() as usize;
-    let nrow = gray.height() as usize;
+/// The CRC-32 a PNG chunk carries (ISO 3309, the polynomial `0xEDB88320`).
+#[cfg(feature = "hfields")]
+fn crc32(bytes: &[u8]) -> u32 {
+    !bytes.iter().fold(u32::MAX, |crc, &byte| {
+        (0..8).fold(crc ^ u32::from(byte), |c, _| {
+            if c & 1 == 1 {
+                (c >> 1) ^ 0xEDB8_8320
+            } else {
+                c >> 1
+            }
+        })
+    })
+}
 
-    if nrow < 2 || ncol < 2 {
-        return Err(refuse(format!(
-            "image dimensions ({ncol}x{nrow}) must be >= 2x2"
-        )));
+/// Without the `hfields` feature a PNG height field is refused, naming the
+/// feature.
+#[cfg(not(feature = "hfields"))]
+fn read_hfield_png(
+    _bytes: &[u8],
+    file: &str,
+) -> std::result::Result<(usize, usize, Vec<f32>), String> {
+    Err(format!(
+        "PNG height field '{file}' needs the `hfields` feature (enable \
+         `sim-mjcf/hfields`, or write its elevations inline)"
+    ))
+}
+
+/// A height field in MuJoCo 3.5.0's own format (`mjCHField::LoadCustom`,
+/// `user_objects.cc:4394-4435`): two `int`s, its rows and its columns, then
+/// `nrow · ncol` `float`s, each in the machine's byte order, the field's
+/// lowest Y first. Returns its rows, its columns and its data.
+///
+/// # Errors
+///
+/// MuJoCo's words: an empty file, "could not read hfield file"; one shorter
+/// than the two counts, "hfield missing header"; a count below 1,
+/// "non-positive hfield dimensions in file"; a length other than the counts
+/// give, "unexpected file size in file".
+fn read_hfield_custom(
+    bytes: &[u8],
+    file: &str,
+) -> std::result::Result<(usize, usize, Vec<f32>), String> {
+    if bytes.is_empty() {
+        return Err(format!("could not read hfield file '{file}'"));
     }
-
-    // Normalize to [0.0, 1.0]
-    let elevation: Vec<f64> = gray.pixels().map(|p| f64::from(p.0[0]) / 65535.0).collect();
-
-    Ok((ncol, nrow, elevation))
+    let (Some(rows), Some(cols)) = (bytes.get(0..4), bytes.get(4..8)) else {
+        return Err(format!("hfield missing header '{file}'"));
+    };
+    let count = |b: &[u8]| i32::from_ne_bytes([b[0], b[1], b[2], b[3]]);
+    let (nrow, ncol) = (count(rows), count(cols));
+    let (Ok(nrow), Ok(ncol)) = (usize::try_from(nrow), usize::try_from(ncol)) else {
+        return Err(format!("non-positive hfield dimensions in file '{file}'"));
+    };
+    if nrow < 1 || ncol < 1 {
+        return Err(format!("non-positive hfield dimensions in file '{file}'"));
+    }
+    let expected = nrow
+        .checked_mul(ncol)
+        .and_then(|n| n.checked_mul(4))
+        .and_then(|n| n.checked_add(8));
+    if expected != Some(bytes.len()) {
+        return Err(format!("unexpected file size in file '{file}'"));
+    }
+    let data = bytes[8..]
+        .chunks_exact(4)
+        .map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+    Ok((nrow, ncol, data))
 }
 
 /// Convert MJCF mesh asset to `TriangleMeshData`, as MuJoCo 3.5.0 compiles
