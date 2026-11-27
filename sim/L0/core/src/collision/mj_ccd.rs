@@ -2926,9 +2926,8 @@ fn ellipsoid_outside(nrm: &mut [f64; 3], pos: &[f64; 3], size: &[f64; 3]) -> boo
 /// not their radius) is clear of the field's by the margin; else the prisms
 /// under that box against the element, a prism below the box's lowest
 /// vertex skipped. The field's top is `size[2]`, as `mjc_convex_hfield`
-/// takes it. MuJoCo never passes its
-/// prism object to `mjc_initCCDObj` (`:1663-1664`); this prism is
-/// `mjc_ConvexHField`'s (`:1220`), margin 0, and
+/// takes it. MuJoCo never passes its prism object to `mjc_initCCDObj`
+/// (`:1663-1664`); this prism is `mjc_ConvexHField`'s (`:1220`), margin 0, and
 /// `mj_triangle`'s `convex_route_contacts_as_mujoco` holds its contacts to
 /// the oracle's.
 // MuJoCo's arguments, the field and the element split out as sim-core holds them.

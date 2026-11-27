@@ -477,7 +477,7 @@ fn ray_indexed_mesh(
 
 /// Ray–height field intersection using ray marching with binary search refinement.
 fn ray_heightfield(ray: &Ray, data: &crate::HeightFieldData, max_dist: f64) -> Option<RayHit> {
-    // Half the smaller of a cell's two sides.
+    // A cell's smaller side, which the march steps half of.
     let [dx, dy] = data.spacing();
     let cell_size = dx.min(dy);
     if cell_size <= 0.0 || !cell_size.is_finite() {

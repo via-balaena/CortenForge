@@ -860,8 +860,8 @@ mod tests {
     /// Book P52's must-fail: every height-field case of the ccd golden with
     /// a primitive (`hfield_convex` `pose` and `edge`), through
     /// `collide_hfield_multi` on a model holding MuJoCo's field data scaled
-    /// by its top (rows bottom to top, normalised: in code, as sim-mjcf does
-    /// not load them so yet, book Rigid-loading L45) and MuJoCo's bounding
+    /// by its top (rows bottom to top, normalised), built in code, and
+    /// MuJoCo's bounding
     /// radius: MuJoCo's contacts, the field first, each distance and
     /// position bit for bit and its normal as `mj_setContact` normalises
     /// MuJoCo's (`mju_makeFrame`).

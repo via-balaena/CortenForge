@@ -432,10 +432,11 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // check above, so that a document refused before they existed is refused
     // for the same fault (MuJoCo orders some of them before checks above).
     // Among themselves in MuJoCo's order: each body's inertia, geoms and
-    // joints, a bending flex's thickness, the height fields, each compiled
-    // in turn, its sizes and then its data (`user_model.cc:4948-4950`
-    // compiles the flexes before the height fields), the equalities (each in turn: a flex equality's flex, a joint
-    // equality's joints since RL-10d), the tendons, the actuators, the sensors,
+    // joints, a bending flex's thickness, the height fields' fault (compiled
+    // after fusestatic, above; `user_model.cc:4948-4950` compiles the flexes
+    // before the height fields), the equalities (each in turn: a flex
+    // equality's flex, a joint equality's joints since RL-10d), the tendons,
+    // the actuators, the sensors,
     // a moving body's mass and inertia, then the free joint below the world's
     // children, as MuJoCo's `CopyTree` refuses it. An automatic range that
     // does not increase is refused after the keyframes (`D-AUTO-RANGE`).

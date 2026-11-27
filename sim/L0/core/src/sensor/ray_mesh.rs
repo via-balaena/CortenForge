@@ -134,12 +134,11 @@ fn ray_triangle(
 /// `size[2]`, its rows from −y (as `collision::mj_ccd::mjc_convex_hfield`
 /// reads it). The sides' test reads MuJoCo's elevation unscaled and in single
 /// precision: the height over `size[2]`, rounded to single precision, which
-/// is that elevation wherever the height is one scaled. sim-mjcf does not yet
-/// load a field's elevations as MuJoCo's (normalised, the rows flipped: book
-/// Rigid-loading L45); where a height is not one scaled, the sides' edge is
-/// that rounding of it, up to an ulp of single precision from the triangles'
-/// edge. A field of one row or column (which sim-mjcf refuses, ledger L208)
-/// has no triangles; along its one row or column, a ray's place is 0, and
+/// is that elevation wherever the height is one scaled, as every height
+/// sim-mjcf loads is (since Rigid-loading PR RL-11b); in a field set by hand
+/// whose height is not one scaled, the sides' edge is that rounding of it, up
+/// to an ulp of single precision from the triangles' edge. A field of one
+/// row or column has no triangles; along its one row or column, a ray's place is 0, and
 /// the side test's second elevation, past its row or column, is multiplied
 /// by 0, as in MuJoCo (here it reads 0).
 pub(super) fn mj_ray_hfield(
@@ -398,8 +397,7 @@ mod tests {
     /// the edges of its tests; and 480 across the sides of four fields at
     /// their edges' height, to within 2 ulps) meet each field at MuJoCo's
     /// distance, or miss it as MuJoCo's does (−1), bit for bit: each field
-    /// built from MuJoCo's elevations (`hfield_data`) scaled by its top, as
-    /// sim-mjcf does not load them yet (book Rigid-loading L45).
+    /// built from MuJoCo's elevations (`hfield_data`) scaled by its top.
     #[test]
     fn rays_meet_each_height_field_as_mujoco() {
         let golden = golden();

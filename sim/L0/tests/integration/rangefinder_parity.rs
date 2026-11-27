@@ -15,9 +15,8 @@
 //! fields, and one between two meshes MuJoCo keeps in their written frame.
 //! No geom is written turned: every turn comes from the states' qpos, but
 //! the slab's, which MuJoCo turns to its principal frame, as sim-mjcf loads
-//! it (book Rigid-loading L35). The height fields' elevations are ones
-//! sim-mjcf loads as MuJoCo compiles them, which it does not for every field
-//! until book Rigid-loading L45. Every reading is compared bit for bit on
+//! it (book Rigid-loading L35). The height fields' elevations are loaded as
+//! MuJoCo compiles them. Every reading is compared bit for bit on
 //! macOS arm64, where the golden was made, elsewhere within `1e-13 · max(1,
 //! |MuJoCo's|)`, a NaN failing.
 

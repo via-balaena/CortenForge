@@ -337,9 +337,9 @@ fn a_flex_vertex_contact_wakes_a_sleeping_field() {
 /// midphase on and off, for a height field, a box, an ellipsoid, a cylinder
 /// and a signed distance field (which collides as nothing there, its turn
 /// not a quaternion). The height field's top is 0.05 but at one corner, so
-/// the cloth at 0.005 is inside it: normalised, a field of one height lies
-/// at 0, below the cloth, as MuJoCo 3.5.0 makes no contact with it (ledger
-/// L394, measured).
+/// the cloth at 0.005 is inside it. A field of one height would normalise to
+/// 0, below the cloth, where MuJoCo 3.5.0 makes no contact (ledger L394,
+/// measured).
 #[test]
 fn a_non_finite_turn_against_a_flex_returns() {
     use nalgebra::{Quaternion, UnitQuaternion};
