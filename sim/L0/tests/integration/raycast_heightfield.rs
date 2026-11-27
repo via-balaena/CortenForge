@@ -142,7 +142,8 @@ struct Ray {
 /// meeting the base, one from inside the top box meeting a triangle and one
 /// from above missing; on the field in a body, a triangle and a side; on the
 /// two fields, a triangle of each; on the upside-down field, two rays meeting
-/// a side, MuJoCo's normal holding a −0. Each triangle's ray meets its cell at
+/// a side and one meeting the base box's side with the top box missed,
+/// MuJoCo's normal holding a −0. Each triangle's ray meets its cell at
 /// least a tenth of a cell from the cell's edges and from the diagonal its two
 /// triangles share, where a frame one ulp off would send it to the other
 /// triangle.
@@ -300,6 +301,15 @@ const RAYS: &[Ray] = &[
         x: 0x3fd09f0c1b9cff26,
         normal: [0xbff0000000000000, 0x8000000000000000, 0x0000000000000000],
     },
+    // turned_180: the base box's -x side, from beside, the top box missed, met at 0.5
+    Ray {
+        doc: "turned_180",
+        pnt: [0xbff8000000000000, 0xbfb999999999999a, 0x3fe199999999999a],
+        vec: [0x3ff0000000000000, 0x0000000000000000, 0x0000000000000000],
+        geom: 0,
+        x: 0x3fe0000000000000,
+        normal: [0xbff0000000000000, 0x8000000000000000, 0x0000000000000000],
+    },
 ];
 
 /// A run's values against MuJoCo's: bit for bit on macOS arm64, where the
@@ -371,7 +381,7 @@ fn rays_meet_height_fields_as_mujocos_mj_ray() {
     }
     assert_eq!(
         (RAYS.len(), RAYS.iter().filter(|r| r.geom >= 0).count()),
-        (17, 14),
+        (18, 15),
         "every ray read, and every hit"
     );
     assert!(bad.is_empty(), "{} differ:\n{}", bad.len(), bad.join("\n"));
