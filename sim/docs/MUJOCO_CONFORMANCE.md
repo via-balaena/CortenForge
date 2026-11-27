@@ -211,7 +211,7 @@ https://github.com/google-deepmind/dm_control
 | `reacher` | easy | yes | Planar arm |
 | `swimmer` | swimmer6 | yes (a template: dm_control adds the links in Python) | Multi-link swimmer |
 | `walker` | walk | yes | Bipedal walker |
-| `quadruped` | walk | no (its height field) | 4-legged walker |
+| `quadruped` | walk | yes (since Rigid-loading RL-11b: its height field's counts with no elevation, as MuJoCo loads them) | 4-legged walker |
 | `dog` | run | no (single-value `friction`) | Realistic dog |
 | `stacker` | stack | no (single-value `friction`) | Block stacking |
 | `lqr` | control | yes (a template: dm_control adds the bodies in Python) | LQR benchmark |
