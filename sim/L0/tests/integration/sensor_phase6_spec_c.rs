@@ -574,8 +574,7 @@ fn t15_parser_recognizes_new_elements() {
 
 #[test]
 fn t16_strict_xor_validation() {
-    // Both geom1 and body1 on side 1: refused while parsing, as MuJoCo
-    // 3.5.0's reader refuses it (`xml_native_reader.cc:4318-4322`; measured)
+    // Both geom1 and body1 on side 1 — should warn but still parse
     let mjcf = r#"
         <mujoco model="t16">
             <worldbody>
@@ -592,11 +591,12 @@ fn t16_strict_xor_validation() {
         </mujoco>
     "#;
 
-    let err = sim_mjcf::parse_mjcf_str(mjcf).unwrap_err().to_string();
-    assert!(
-        err.contains("exactly one of (geom1, body1) must be specified"),
-        "{err}"
-    );
+    // Parser should succeed (warn but not fail)
+    let parsed = sim_mjcf::parse_mjcf_str(mjcf).expect("parse");
+    assert_eq!(parsed.sensors.len(), 1);
+    // Both are populated (parser doesn't reject)
+    assert!(parsed.sensors[0].geom1.is_some());
+    assert!(parsed.sensors[0].body1.is_some());
 }
 
 // ============================================================================

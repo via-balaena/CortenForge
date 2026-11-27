@@ -1211,18 +1211,18 @@ fn rangefinders_read_a_height_field_as_mujocos() {
     );
 }
 
-/// Registry `D-HFIELD-COUNTS`: a grid of more cells than a C `int` counts is
-/// refused before anything is allocated, by each road a grid comes, where
-/// MuJoCo 3.5.0's `int` products overflow (each measured on the oracle):
-/// counts with no data, in the words MuJoCo gives the largest such grid,
-/// (2³¹ − 1)² (65536 × 65536 crashes it, 46341 × 46341 and (2³¹ − 1) × 2
-/// allocate past 2.5 GB); a PNG whose header claims one, in lodepng's words
-/// for an image past 2⁶¹ pixels (for 46341 × 46341 pixels and one row of
-/// data, MuJoCo's are "invalid decompressed idat size"); MuJoCo's own
-/// format, whose file this crate sizes in 64 bits, "unexpected file size"
-/// (MuJoCo's: "could not allocate buffers in hfield" for counts 65536 ×
-/// 65536 and no data, "nhfielddata is too large" for (2³¹ − 1)² and one
-/// value).
+/// Registry `D-HFIELD-COUNTS`: a grid of more cells than a C `int` counts,
+/// where MuJoCo 3.5.0's `int` products overflow (each measured on the
+/// oracle), refused before anything is allocated: positive counts with no
+/// data, in the words MuJoCo gives the largest such grid, (2³¹ − 1)²
+/// (65536 × 65536 crashes it, 46341 × 46341 and (2³¹ − 1) × 2 allocate past
+/// 2.5 GB); a PNG whose header claims one, in lodepng's words for an image
+/// past 2⁶¹ pixels (for 46341 × 46341 pixels and one row of data, MuJoCo's
+/// are "invalid decompressed idat size"). MuJoCo's own format's file, which
+/// this crate sizes in 64 bits, is refused where it is shorter than its
+/// header's counts give, "unexpected file size" (MuJoCo's: "could not
+/// allocate buffers in hfield" for counts 65536 × 65536 and no data,
+/// "nhfielddata is too large" for (2³¹ − 1)² and one value).
 #[test]
 fn a_grid_past_an_int_is_refused() {
     for (nrow, ncol) in [(65536, 65536), (46341, 46341), (2_147_483_647, 2)] {
@@ -1282,7 +1282,12 @@ const PNG_PAST_AN_INT: &[u8] = b"\x89PNG\x0d\x0a\x1a\x0a\x00\x00\x00\x0dIHDR\x00
 /// crate's bound (a 16-bit RGBA header of 46340 by 46340 pixels, 17 GB
 /// decoded, its data one row), which lodepng refuses as its data is short
 /// ("invalid decompressed idat size"), is refused before anything is
-/// allocated, "Memory limit exceeded".
+/// allocated, "Memory limit exceeded"; one below the bound and above the
+/// image crate's own bound of 2²⁹ bytes (an RGBA16 header of 8193 by 8192
+/// pixels, 537 MB decoded, its data one row) is decoded and refused for its
+/// short data, as MuJoCo loads the whole such image (measured, 1.7 GB); a
+/// header past an int whose IHDR CRC is wrong is refused for its CRC, as
+/// lodepng checks the header before the pixels.
 #[cfg(feature = "hfields")]
 #[test]
 fn a_malformed_png_is_decided_by_this_crates_decoder() {
@@ -1321,6 +1326,26 @@ fn a_malformed_png_is_decided_by_this_crates_decoder() {
         large.err().map(|e| e.to_string().replace('\\', "/")),
         Some(want.replace('\\', "/"))
     );
+    let below = load(
+        dir.path(),
+        &xml("below.png"),
+        &[("below.png", PNG_UNDER_THE_BOUND)],
+    );
+    let below = below.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        below.contains("does not have enough data") && !below.contains("Memory limit"),
+        "{below}"
+    );
+    let crc = load(
+        dir.path(),
+        &xml("crc.png"),
+        &[("crc.png", PNG_BAD_CRC_PAST_AN_INT)],
+    );
+    let crc = crc.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        crc.contains("CRC error") && !crc.contains("too many pixels"),
+        "{crc}"
+    );
 }
 
 /// A palette PNG 4 pixels wide and 3 high whose `PLTE` chunk is 13 bytes
@@ -1337,3 +1362,13 @@ const BAD_ADLER32: &[u8] = b"\x89PNG\x0d\x0a\x1a\x0a\x00\x00\x00\x0dIHDR\x00\x00
 /// row.
 #[cfg(feature = "hfields")]
 const PNG_PAST_THE_LIMIT: &[u8] = b"\x89PNG\x0d\x0a\x1a\x0a\x00\x00\x00\x0dIHDR\x00\x00\xb5\x04\x00\x00\xb5\x04\x10\x06\x00\x00\x00\xa5\xf0\xf0\xfb\x00\x00\x00\x0aIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82";
+
+/// A 16-bit RGBA PNG whose header claims 8193 by 8192 pixels, its data one
+/// row.
+#[cfg(feature = "hfields")]
+const PNG_UNDER_THE_BOUND: &[u8] = b"\x89PNG\x0d\x0a\x1a\x0a\x00\x00\x00\x0dIHDR\x00\x00 \x01\x00\x00 \x00\x10\x06\x00\x00\x00\xcd\xf8}$\x00\x00\x00VIDATx\xda\xed\xc11\x01\x00\x00\x00\xc2\xa0\xf5O\xedk\x08\xa0\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xe0\x0c\x00\x18\x00\x01\x8f\xe0\xb0D\x00\x00\x00\x00IEND\xaeB`\x82";
+
+/// An 8-bit grey PNG whose header claims 2147483647 by 2147483647 pixels,
+/// its IHDR's CRC 0, its data one row.
+#[cfg(feature = "hfields")]
+const PNG_BAD_CRC_PAST_AN_INT: &[u8] = b"\x89PNG\x0d\x0a\x1a\x0a\x00\x00\x00\x0dIHDR\x7f\xff\xff\xff\x7f\xff\xff\xff\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x0aIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82";

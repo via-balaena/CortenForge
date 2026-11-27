@@ -318,8 +318,9 @@ impl ModelBuilder {
     }
 
     /// Each height field compiled as MuJoCo 3.5.0 compiles it, one after
-    /// another ([`compile_hfield`]), used by a geom or not; `model_from_mjcf`
-    /// says where its fault is named.
+    /// another ([`compile_hfield`]), used by a geom or not; its caller,
+    /// `model_from_mjcf_unwrapped`, holds the fault and says at the call
+    /// where it is named.
     pub(crate) fn compile_hfields(
         &mut self,
         hfields: &[MjcfHfield],
@@ -377,17 +378,18 @@ const MJ_EPS: f64 = 1e-14;
 /// 5. its data moved to start at 0 and divided by its span where the span
 ///    is above [`MJ_EPS`], in single precision ([`normalise`]).
 ///
-/// A grid whose `nrow · ncol` passes a C `int` is refused before any of
-/// these, "elevation data length must match nrow*ncol" (registry
-/// `D-HFIELD-COUNTS`: MuJoCo's product overflows there).
+/// A grid of positive counts whose product passes a C `int` is refused
+/// before any of these, "elevation data length must match nrow*ncol"
+/// (registry `D-HFIELD-COUNTS`: MuJoCo's product overflows there).
 ///
 /// Each height is that elevation times `size[2]`, as MuJoCo's collision and
 /// rays read it (`engine_collision_convex.c:1177`). The grid's spacing along
 /// each axis is its extent over its cells, `2·size[0]/(ncol − 1)` and
 /// `2·size[1]/(nrow − 1)`; a field of one column or row has no extent along
 /// that axis, and its spacing there is the axis's whole width; a spacing
-/// below the least positive normal double (a step that underflows, or a size
-/// that is not a number in a model built in code) is raised to it. MuJoCo's
+/// below the least positive normal double, or not a number (a step that
+/// underflows, a size that is not a number in a model built in code), is
+/// that double. MuJoCo's
 /// readers (contacts, rays, flex elements) take positions from `size` and the
 /// grid, not from this spacing, which cf-geometry's own queries read.
 ///
@@ -417,7 +419,10 @@ fn compile_hfield(
     } else {
         (hfield.nrow, hfield.ncol)
     };
-    // MuJoCo multiplies the counts only where both are positive.
+    // An elevation's length is checked against the counts' product whatever
+    // their signs, as MuJoCo's compiler checks it (`user_objects.cc:4461`);
+    // a product past an int is refused only of positive counts, the only
+    // ones MuJoCo's reader multiplies (`xml_native_reader.cc:3428`).
     let cells = i64::from(nrow) * i64::from(ncol);
     if nrow > 0 && ncol > 0 && cells > i64::from(i32::MAX) {
         return Err(length());
@@ -650,21 +655,51 @@ fn read_hfield_png(
 #[cfg(feature = "hfields")]
 const PNG_DECODE_LIMIT: u64 = 8 << 30;
 
-/// A PNG's width and height from its `IHDR`, where it holds one where the
-/// format puts it (the signature, then the chunk's length and name).
+/// A PNG's width and height from its `IHDR`, where lodepng takes the
+/// header (`lodepng_inspect`, `lodepng.cpp:4378-4434`): its signature, a
+/// first chunk 13 bytes long named `IHDR`, a width and height above 0, a
+/// colour type and bit depth lodepng accepts, compression and filter method
+/// 0, interlace method 0 or 1, and the chunk's CRC. A header lodepng refuses
+/// is left to the decoder, which names its fault before any size.
 #[cfg(feature = "hfields")]
 fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
-    if bytes.get(12..16)? != b"IHDR" {
-        return None;
-    }
+    const SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
+    let header = bytes.get(..33)?;
     let word = |at: usize| {
-        bytes
-            .get(at..at + 4)?
-            .try_into()
-            .ok()
-            .map(u32::from_be_bytes)
+        u32::from_be_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]])
     };
-    Some((word(16)?, word(20)?))
+    let (depth, colour) = (header[24], header[25]);
+    let colour_ok = match colour {
+        0 => matches!(depth, 1 | 2 | 4 | 8 | 16),
+        3 => matches!(depth, 1 | 2 | 4 | 8),
+        2 | 4 | 6 => matches!(depth, 8 | 16),
+        _ => false,
+    };
+    let taken = header[..8] == SIGNATURE
+        && word(8) == 13
+        && &header[12..16] == b"IHDR"
+        && word(16) != 0
+        && word(20) != 0
+        && colour_ok
+        && header[26] == 0
+        && header[27] == 0
+        && header[28] <= 1
+        && crc32(&header[12..29]) == word(29);
+    taken.then(|| (word(16), word(20)))
+}
+
+/// The CRC-32 a PNG chunk carries (ISO 3309, the polynomial `0xEDB88320`).
+#[cfg(feature = "hfields")]
+fn crc32(bytes: &[u8]) -> u32 {
+    !bytes.iter().fold(u32::MAX, |crc, &byte| {
+        (0..8).fold(crc ^ u32::from(byte), |c, _| {
+            if c & 1 == 1 {
+                (c >> 1) ^ 0xEDB8_8320
+            } else {
+                c >> 1
+            }
+        })
+    })
 }
 
 /// Without the `hfields` feature a PNG height field is refused, naming the

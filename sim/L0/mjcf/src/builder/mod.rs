@@ -82,11 +82,12 @@ fn written_over<const N: usize>(written: Option<Prefix<N>>, base: [f64; N]) -> [
     written.map_or(base, |written| written.over(base))
 }
 
-/// The fault MuJoCo 3.5.0 names first, of a height field's (`hfield`) and
-/// `later`, met building an element MuJoCo compiles after the height fields:
-/// the height field's, or before it the tree's (`tree`, its user data's or
-/// its checks'), which MuJoCo meets first. Without a height field's fault,
-/// `later` (ledger L353).
+/// The fault named of a height field's (`hfield`) and `later`, met building
+/// an element MuJoCo 3.5.0 compiles after the height fields: the tree's
+/// (`tree`: its user data's, else its checks'), else the height field's,
+/// which MuJoCo meets first; without a height field's fault, `later`. MuJoCo
+/// meets the tree's user data and checks body by body, so of the two this
+/// crate can name another (ledger L353).
 fn named_first(tree: Option<MjcfError>, hfield: Option<MjcfError>, later: MjcfError) -> MjcfError {
     match hfield {
         Some(hfield) => tree.unwrap_or(hfield),
@@ -395,6 +396,18 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Process equality constraints (must be after bodies and joints)
     if let Err(e) = builder.process_equality_constraints(&mjcf.equality, &mjcf.flex) {
         return Err(named_first(tree_user.err().or(tree_fault), hfield_fault, e));
+    }
+
+    // A sensor's fault MuJoCo's reader meets ([`sensor::sensor_read_fault`])
+    // is named before the faults held above, which MuJoCo's compiler meets
+    // after it has read the document; and, as before, after every fault this
+    // crate meets before it builds the sensors (ledger L353).
+    if let Some(fault) = mjcf.sensors.iter().enumerate().find_map(|(i, s)| {
+        sensor::sensor_read_fault(s).map(|e| {
+            e.with_location_if_unknown(Location::nth(ElementKind::Sensor, Some(&s.name), i))
+        })
+    }) {
+        return Err(fault);
     }
 
     // Process sensors (must be after bodies, joints, tendons, actuators)
@@ -793,6 +806,9 @@ pub struct ModelBuilder {
     /// Whether each geom is a mesh or SDF geom with `shellinertia`, which
     /// `check_bodies` refuses in MuJoCo's order.
     pub(crate) geom_shellinertia_on_mesh: Vec<bool>,
+    /// Whether each geom is a height-field geom whose asset's size is not a
+    /// number, which `check_bodies` refuses in MuJoCo's order.
+    pub(crate) geom_nan_size: Vec<bool>,
     /// Whether each geom is an SDF geom that names no mesh, which
     /// `check_bodies` refuses in MuJoCo's order.
     pub(crate) geom_sdf_names_no_mesh: Vec<bool>,

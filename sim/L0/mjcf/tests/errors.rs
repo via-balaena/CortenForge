@@ -335,8 +335,8 @@ fn a_height_field_built_in_code_with_a_nan_size_is_compiled_as_mujocos() {
     // geom names compiles, its grid given a spacing cf-geometry takes; a geom
     // on it is refused, as MuJoCo checks each geom's size once it is set
     // (`user_objects.cc:3772-3776`; each measured through MuJoCo's spec, a
-    // NaN in the field's first size or its last). The parser refuses a NaN
-    // written (registry `D-NONFINITE`): only a model built in code holds one.
+    // NaN in any of the field's four sizes). The parser refuses a NaN written
+    // (registry `D-NONFINITE`): only a model built in code holds one.
     let mut model = sim_mjcf::parse_mjcf_str(
         r#"<mujoco>
             <asset><hfield name="h" nrow="2" ncol="2" size="1 1 1 0.1" elevation="1 2 3 4"/></asset>
@@ -344,7 +344,7 @@ fn a_height_field_built_in_code_with_a_nan_size_is_compiled_as_mujocos() {
         </mujoco>"#,
     )
     .unwrap();
-    for place in [0, 3] {
+    for place in 0..4 {
         let mut model = model.clone();
         model.hfields[0].size[place] = f64::NAN;
         let err = sim_mjcf::model_from_mjcf(&model, None).unwrap_err();
@@ -359,6 +359,40 @@ fn a_height_field_built_in_code_with_a_nan_size_is_compiled_as_mujocos() {
     let built = sim_mjcf::model_from_mjcf(&model, None).unwrap();
     let [dx, dy] = built.hfield_data[0].spacing();
     assert!(dx > 0.0 && dy > 0.0, "{dx} {dy}");
+}
+
+#[test]
+fn a_nan_sized_height_fields_geom_is_refused_in_mujocos_order() {
+    // MuJoCo 3.5.0 checks a geom's size once it is set, after its user data
+    // and its condim (`user_objects.cc:3639-3655`, `:3772`), and each geom
+    // in its turn: an earlier geom's condim, the same geom's condim and an
+    // earlier geom's user data are each named before the height field's
+    // geom whose size is NaN (each measured through MuJoCo's spec).
+    for (worldbody, size, words) in [
+        (
+            r#"<geom name="a" size="0.1" condim="2"/><geom name="hg" type="hfield" hfield="h"/>"#,
+            "",
+            "invalid condim in geom (geom 'a' in body 'world')",
+        ),
+        (
+            r#"<geom name="hg" type="hfield" hfield="h" condim="2"/>"#,
+            "",
+            "invalid condim in geom (geom 'hg' in body 'world')",
+        ),
+        (
+            r#"<geom name="a" size="0.1" user="1 2"/><geom name="hg" type="hfield" hfield="h"/>"#,
+            r#"<size nuser_geom="1"/>"#,
+            "invalid user on <geom>: user data exceeds nuser_geom=1",
+        ),
+    ] {
+        let mut model = sim_mjcf::parse_mjcf_str(&format!(
+            r#"<mujoco>{size}<asset><hfield name="h" nrow="2" ncol="2" size="1 1 1 0.1" elevation="1 2 3 4"/></asset><worldbody>{worldbody}</worldbody></mujoco>"#
+        ))
+        .unwrap();
+        model.hfields[0].size[0] = f64::NAN;
+        let err = sim_mjcf::model_from_mjcf(&model, None).unwrap_err();
+        assert_eq!(err.to_string(), words, "{worldbody}");
+    }
 }
 
 #[test]

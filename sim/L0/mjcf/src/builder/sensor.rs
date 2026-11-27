@@ -579,13 +579,13 @@ impl ModelBuilder {
     }
 }
 
-/// The fault MuJoCo 3.5.0's reader meets reading a sensor's objects, before
-/// its compiler checks anything: a sensor naming no object, a distance,
-/// normal or fromto sensor whose side names other than one of a geom and a
-/// body (`xml_native_reader.cc:4318-4329`), a `refname` without a `reftype`
-/// (`:4213-4214`). The parser makes it; [`ModelBuilder::process_sensors`]
-/// meets the same faults in a model built in code, in the same words, as it
-/// resolves the names.
+/// Three of the faults MuJoCo 3.5.0's reader meets reading a sensor's
+/// objects, before its compiler checks anything: a sensor naming no object,
+/// a distance, normal or fromto sensor whose side names other than one of a
+/// geom and a body (`xml_native_reader.cc:4318-4329`), a `refname` without a
+/// `reftype` (`:4213-4214`). In the words and at the place
+/// [`ModelBuilder::process_sensors`] gives each as it resolves the names;
+/// `model_from_mjcf_unwrapped` names it before the compile faults it holds.
 pub fn sensor_read_fault(sensor: &MjcfSensor) -> Option<MjcfError> {
     let kind = convert_sensor_type(sensor.sensor_type)?;
     if matches!(

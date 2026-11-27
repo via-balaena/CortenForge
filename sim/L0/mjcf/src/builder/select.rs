@@ -33,6 +33,7 @@ impl ModelBuilder {
         select(&mut self.geom_friction, order);
         select(&mut self.geom_condim, order);
         select(&mut self.geom_shellinertia_on_mesh, order);
+        select(&mut self.geom_nan_size, order);
         select(&mut self.geom_sdf_names_no_mesh, order);
         select(&mut self.geom_contype, order);
         select(&mut self.geom_conaffinity, order);

@@ -2403,25 +2403,25 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "a height field with no data beside a sensor naming no object, which MuJoCo's reader refuses",
         r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><camera name="c" pos="0 0 3"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/><body name="b2" pos="0 0 0.5"><joint name="j2" type="slide"/><geom name="g2" size="0.1"/><geom name="gx" type="box" size="0.1 0.1 0.1"/><site name="s2" pos="0.2 0 0"/><body name="b3" pos="0 0 0.5"><joint name="jb" type="ball"/><geom name="g3" size="0.1"/></body></body></body></worldbody><sensor><actuatorfrc/></sensor></mujoco>"#,
         "required attribute missing: 'actuator'",
-        "required attribute missing: 'objname' on <sensor> (line 1: sensor > actuatorfrc)",
+        "required attribute missing: 'objname' on <sensor> (sensor #0)",
     ),
     (
         "a height field with no data beside a frame sensor's refname without a reftype, which MuJoCo's reader refuses",
         r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><camera name="c" pos="0 0 3"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/><body name="b2" pos="0 0 0.5"><joint name="j2" type="slide"/><geom name="g2" size="0.1"/><geom name="gx" type="box" size="0.1 0.1 0.1"/><site name="s2" pos="0.2 0 0"/><body name="b3" pos="0 0 0.5"><joint name="jb" type="ball"/><geom name="g3" size="0.1"/></body></body></body></worldbody><sensor><framepos objtype="body" objname="b" refname="b2"/></sensor></mujoco>"#,
         "refname 'b2' given but reftype is missing",
-        "invalid refname on <sensor>: refname 'b2' given but reftype is missing (line 1: sensor > framepos)",
+        "invalid refname on <sensor>: refname 'b2' given but reftype is missing (sensor #0)",
     ),
     (
         "a height field with no data beside a distance sensor naming neither geom1 nor body1, which MuJoCo's reader refuses",
         r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><camera name="c" pos="0 0 3"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/><body name="b2" pos="0 0 0.5"><joint name="j2" type="slide"/><geom name="g2" size="0.1"/><geom name="gx" type="box" size="0.1 0.1 0.1"/><site name="s2" pos="0.2 0 0"/><body name="b3" pos="0 0 0.5"><joint name="jb" type="ball"/><geom name="g3" size="0.1"/></body></body></body></worldbody><sensor><distance geom2="g2"/></sensor></mujoco>"#,
         "exactly one of (geom1, body1) must be specified",
-        "distance sensor: exactly one of (geom1, body1) must be specified (line 1: sensor > distance)",
+        "distance sensor: exactly one of (geom1, body1) must be specified (sensor #0)",
     ),
     (
         "a height field with no data beside a distance sensor naming neither geom2 nor body2, which MuJoCo's reader refuses",
         r#"<mujoco model="f"><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><camera name="c" pos="0 0 3"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/><body name="b2" pos="0 0 0.5"><joint name="j2" type="slide"/><geom name="g2" size="0.1"/><geom name="gx" type="box" size="0.1 0.1 0.1"/><site name="s2" pos="0.2 0 0"/><body name="b3" pos="0 0 0.5"><joint name="jb" type="ball"/><geom name="g3" size="0.1"/></body></body></body></worldbody><sensor><distance geom1="g"/></sensor></mujoco>"#,
         "exactly one of (geom2, body2) must be specified",
-        "distance sensor: exactly one of (geom2, body2) must be specified (line 1: sensor > distance)",
+        "distance sensor: exactly one of (geom2, body2) must be specified (sensor #0)",
     ),
     (
         "a height field with no data beside a rangefinder on a camera no element names, which MuJoCo compiles after the field",
@@ -2447,6 +2447,45 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "hfield not specified",
         "hfield not specified (hfield 'h')",
     ),
+    (
+        "an actuator's repeated name, which MuJoCo's reader reads before the sensors, beside a sensor naming no object",
+        r#"<mujoco>
+  <worldbody><body name="b"><joint name="j"/><geom name="g" size="0.1"/></body></worldbody>
+  <actuator><motor name="a" joint="j"/><motor name="a" joint="j"/></actuator>
+  <sensor><jointpos/></sensor>
+</mujoco>"#,
+        "repeated name 'a' in actuator",
+        "repeated name 'a' in actuator",
+    ),
+    (
+        "a height field's repeated name beside a sensor naming no object",
+        r#"<mujoco>
+  <asset><hfield name="h" nrow="2" ncol="2" size="1 1 1 0.1"/><hfield name="h" nrow="2" ncol="2" size="1 1 1 0.1"/></asset>
+  <worldbody><body name="b"><joint name="j"/><geom name="g" size="0.1"/></body></worldbody>
+  <sensor><jointpos/></sensor>
+</mujoco>"#,
+        "repeated name 'h' in hfield",
+        "repeated name 'h' in hfield",
+    ),
+    (
+        "a height field's elevation of the wrong length, written after the sensors, beside a sensor naming no object",
+        r#"<mujoco>
+  <worldbody><body name="b"><joint name="j"/><geom name="g" size="0.1"/></body></worldbody>
+  <sensor><jointpos/></sensor>
+  <asset><hfield name="h" nrow="2" ncol="2" size="1 1 1 0.1" elevation="1 2 3"/></asset>
+</mujoco>"#,
+        "elevation data length must match nrow*ncol",
+        "invalid elevation on <hfield>: elevation data length must match nrow*ncol (line 4: asset > hfield 'h')",
+    ),
+    (
+        "a sensor's repeated name beside a later sensor naming no object",
+        r#"<mujoco>
+  <worldbody><body name="b"><joint name="j"/><geom name="g" size="0.1"/></body></worldbody>
+  <sensor><jointpos name="s" joint="j"/><jointpos name="s" joint="j"/><jointpos/></sensor>
+</mujoco>"#,
+        "repeated name 's' in sensor",
+        "repeated name 's' in sensor",
+    ),
 ];
 
 #[test]
@@ -2465,9 +2504,10 @@ fn a_document_with_two_faults_is_refused_for_mujocos() {
 /// Three faults: the tree's (a joint's axis, a light's target, a body's or a
 /// geom's user data), which MuJoCo 3.5.0 meets compiling the bodies, a
 /// height field's, and an element's MuJoCo compiles after the height fields,
-/// each named as MuJoCo names it (the tree's). `(what, document, MuJoCo's
+/// each named as MuJoCo names it: the tree's, or a sensor's fault MuJoCo's
+/// reader meets, before it compiles anything. `(what, document, MuJoCo's
 /// reason, sim-mjcf's error for that fault)`, measured 2026-11-27 (RL-11b's
-/// fix-diff pass, FA's and FB's documents).
+/// fix-diff passes, FA's, FB's and FC's documents).
 const THREE_FAULTS: &[(&str, &str, &str, &str)] = &[
     (
         "a joint's axis of 0, a height field with no data and an equality's unknown body",
@@ -2498,6 +2538,24 @@ const THREE_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco model="f"><size nuser_geom="1"/><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><camera name="c" pos="0 0 3"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/><body name="b2" pos="0 0 0.5"><joint name="j2" type="slide"/><geom name="g2" size="0.1"/><geom name="gx" type="box" size="0.1 0.1 0.1"/><site name="s2" pos="0.2 0 0"/><body name="b3" pos="0 0 0.5"><joint name="jb" type="ball"/><geom name="g3" size="0.1"/></body></body><geom size="0.1" user="1 2"/></body></worldbody><actuator><motor joint="j" delay="0.1"/></actuator></mujoco>"#,
         "user has more values than nuser_geom in geom '' (id = 2)",
         "invalid user on <geom>: user data exceeds nuser_geom=1",
+    ),
+    (
+        "a body's user data past nuser_body, a height field with no data and a sensor's delay with no history",
+        r#"<mujoco model="f"><size nuser_body="1"/><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><camera name="c" pos="0 0 3"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/><body name="b2" pos="0 0 0.5"><joint name="j2" type="slide"/><geom name="g2" size="0.1"/><geom name="gx" type="box" size="0.1 0.1 0.1"/><site name="s2" pos="0.2 0 0"/><body name="b3" pos="0 0 0.5"><joint name="jb" type="ball"/><geom name="g3" size="0.1"/></body></body><body name="bu" user="1 2"><geom size="0.1"/></body></body></worldbody><sensor><jointpos joint="j" delay="0.1"/></sensor></mujoco>"#,
+        "user has more values than nuser_body in body",
+        "invalid user on <body>: user data exceeds nuser_body=1",
+    ),
+    (
+        "a body's user data past nuser_body, a height field with no data and an exclude's unknown body",
+        r#"<mujoco model="f"><size nuser_body="1"/><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><camera name="c" pos="0 0 3"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/><body name="b2" pos="0 0 0.5"><joint name="j2" type="slide"/><geom name="g2" size="0.1"/><geom name="gx" type="box" size="0.1 0.1 0.1"/><site name="s2" pos="0.2 0 0"/><body name="b3" pos="0 0 0.5"><joint name="jb" type="ball"/><geom name="g3" size="0.1"/></body></body><body name="bu" user="1 2"><geom size="0.1"/></body></body></worldbody><contact><exclude body1="b" body2="nope"/></contact></mujoco>"#,
+        "user has more values than nuser_body in body",
+        "invalid user on <body>: user data exceeds nuser_body=1",
+    ),
+    (
+        "a joint's axis of 0, a height field with no data and a sensor naming no object, which MuJoCo's reader refuses before it compiles",
+        r#"<mujoco><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body><body pos="2 0 1"><joint type="hinge" axis="0 0 0"/><geom size="0.1"/></body></worldbody><sensor><jointpos/></sensor></mujoco>"#,
+        "required attribute missing: 'joint'",
+        "required attribute missing: 'objname' on <sensor> (sensor #0)",
     ),
 ];
 
@@ -2784,6 +2842,48 @@ const CONDIM_COSTS: &[(&str, &str, &str, &str)] = &[
 fn a_condim_beside_another_fault_is_named_as_ledgered() {
     let mut moved = Vec::new();
     for &(what, xml, _mujoco, ours) in CONDIM_COSTS {
+        match load_model(xml) {
+            Err(e) if e.to_string() == ours => {}
+            Err(e) => moved.push(format!("{what}: {e}")),
+            Ok(_) => moved.push(format!("{what}: loads")),
+        }
+    }
+    assert!(moved.is_empty(), "{}", moved.join("\n"));
+}
+
+/// Two faults, a sensor's MuJoCo 3.5.0's reader meets and a fault of the
+/// worldbody this crate meets as it reads or checks the document (a
+/// repeated body name, a geom's malformed size), where this crate names the
+/// other: MuJoCo's reader reads the sensors before the worldbody
+/// (`xml_native_reader.cc:1064-1078`), and this crate makes a sensor's
+/// checks as it builds the sensors (ledger L353). `(what, document, MuJoCo's
+/// reason, this crate's error)`, measured 2026-11-27 (RL-11b's second
+/// fix-diff pass, FC's documents).
+const SENSOR_READ_COSTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "a body's repeated name beside a sensor naming no object",
+        r#"<mujoco>
+  <worldbody><body name="b"><joint name="j"/><geom size="0.1"/></body><body name="b"><geom size="0.1"/></body></worldbody>
+  <sensor><jointpos/></sensor>
+</mujoco>"#,
+        "required attribute missing: 'joint'",
+        "repeated name 'b' in body",
+    ),
+    (
+        "a geom's size that is not a number beside a sensor naming no object",
+        r#"<mujoco>
+  <worldbody><body name="b"><joint name="j"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody>
+  <sensor><jointpos/></sensor><worldbody><geom size="abc"/></worldbody>
+</mujoco>"#,
+        "required attribute missing: 'joint'",
+        "bad number \"abc\" in attribute 'size' on <geom> (line 3: worldbody > geom)",
+    ),
+];
+
+#[test]
+fn a_sensors_reader_fault_beside_a_worldbody_fault_is_named_as_ledgered() {
+    let mut moved = Vec::new();
+    for &(what, xml, _mujoco, ours) in SENSOR_READ_COSTS {
         match load_model(xml) {
             Err(e) if e.to_string() == ours => {}
             Err(e) => moved.push(format!("{what}: {e}")),

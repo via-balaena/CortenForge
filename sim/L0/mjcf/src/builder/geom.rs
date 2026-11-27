@@ -110,19 +110,18 @@ impl ModelBuilder {
         }
 
         // A height-field geom's size is its asset's, as MuJoCo 3.5.0 sets it
-        // ([`hfield_geom_size`]), whatever the geom writes, and one that is not
-        // a number is refused, as MuJoCo checks every geom's size once it is
-        // set (`user_objects.cc:3772-3776`): only an asset built in code holds
+        // ([`hfield_geom_size`]), whatever the geom writes; one that is not a
+        // number is refused once every geom is built (`check_bodies`), where
+        // MuJoCo checks every geom's size once it is set
+        // (`user_objects.cc:3772-3776`). Only an asset built in code holds
         // one, the parser refusing it written (registry `D-NONFINITE`).
         let size = if let Some(hfield_id) = geom_hfield_ref {
-            let size = Vector3::from(hfield_geom_size(&self.hfield_size[hfield_id]));
-            if size.iter().any(|s| s.is_nan()) {
-                return Err(MjcfError::invalid_model("nan size in geom").at(at()));
-            }
-            size
+            Vector3::from(hfield_geom_size(&self.hfield_size[hfield_id]))
         } else {
             size
         };
+        self.geom_nan_size
+            .push(geom_hfield_ref.is_some() && size.iter().any(|s| s.is_nan()));
 
         self.geom_type.push(geom_type);
         self.geom_body.push(body_id);

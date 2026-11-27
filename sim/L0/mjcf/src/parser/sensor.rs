@@ -148,6 +148,26 @@ pub(super) fn parse_sensor_attrs(
         sensor.geom2 = a.string("geom2");
         sensor.body1 = a.string("body1");
         sensor.body2 = a.string("body2");
+
+        // Strict XOR validation: exactly one of {geom1, body1} required
+        let has_obj1 = sensor.geom1.is_some() || sensor.body1.is_some();
+        let has_both_obj1 = sensor.geom1.is_some() && sensor.body1.is_some();
+        if !has_obj1 || has_both_obj1 {
+            tracing::warn!(
+                "sensor '{}': exactly one of (geom1, body1) must be specified",
+                sensor.name
+            );
+        }
+
+        // Strict XOR validation: exactly one of {geom2, body2} required
+        let has_obj2 = sensor.geom2.is_some() || sensor.body2.is_some();
+        let has_both_obj2 = sensor.geom2.is_some() && sensor.body2.is_some();
+        if !has_obj2 || has_both_obj2 {
+            tracing::warn!(
+                "sensor '{}': exactly one of (geom2, body2) must be specified",
+                sensor.name
+            );
+        }
     }
 
     // Explicit object type (frame and user sensors — builder validates)
@@ -196,11 +216,6 @@ pub(super) fn parse_sensor_attrs(
             sensor.needstage.as_deref(),
             sensor.datatype.as_deref(),
         )?;
-    }
-    // Its objects, as MuJoCo's reader reads them, after the attributes every
-    // sensor has (`xml_native_reader.cc:4045-4058`).
-    if let Some(fault) = crate::builder::sensor::sensor_read_fault(&sensor) {
-        return Err(fault);
     }
 
     Ok(sensor)

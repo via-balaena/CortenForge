@@ -56,6 +56,7 @@ fn t02_parser_reftype_refname_separated() {
             </worldbody>
             <sensor>
                 <framepos name="fp_both" site="s1" reftype="body" refname="b1"/>
+                <framepos name="fp_refname_only" site="s1" refname="b1"/>
                 <framepos name="fp_reftype_only" site="s1" reftype="body"/>
             </sensor>
         </mujoco>
@@ -63,39 +64,19 @@ fn t02_parser_reftype_refname_separated() {
 
     let parsed = sim_mjcf::parse_mjcf_str(mjcf).expect("parse");
     let sensors = &parsed.sensors;
-    assert_eq!(sensors.len(), 2);
+    assert_eq!(sensors.len(), 3);
 
     // Both reftype and refname
     assert_eq!(sensors[0].reftype, Some("body".to_string()));
     assert_eq!(sensors[0].refname, Some("b1".to_string()));
 
-    // Only reftype
-    assert_eq!(sensors[1].reftype, Some("body".to_string()));
-    assert_eq!(sensors[1].refname, None);
+    // Only refname
+    assert_eq!(sensors[1].reftype, None);
+    assert_eq!(sensors[1].refname, Some("b1".to_string()));
 
-    // Only refname: refused while parsing, as MuJoCo 3.5.0's reader refuses
-    // it (`xml_native_reader.cc:4213-4214`; measured).
-    let refname_only = r#"
-        <mujoco model="t02_refname_only">
-            <worldbody>
-                <body name="b1" pos="0 0 1">
-                    <joint type="free"/>
-                    <geom type="sphere" size="0.1" mass="1"/>
-                    <site name="s1"/>
-                </body>
-            </worldbody>
-            <sensor>
-                <framepos name="fp_refname_only" objtype="site" objname="s1" refname="b1"/>
-            </sensor>
-        </mujoco>
-    "#;
-    let err = sim_mjcf::parse_mjcf_str(refname_only)
-        .unwrap_err()
-        .to_string();
-    assert!(
-        err.contains("refname 'b1' given but reftype is missing"),
-        "{err}"
-    );
+    // Only reftype
+    assert_eq!(sensors[2].reftype, Some("body".to_string()));
+    assert_eq!(sensors[2].refname, None);
 }
 
 // ============================================================================

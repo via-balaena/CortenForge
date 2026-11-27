@@ -4489,3 +4489,12 @@ f4e64a5fd3e65f70	sim/L0/mjcf/tests/hfield_data.rs:901
 f8f976349a07401c	sim/L0/mjcf/tests/refusal_order.rs:2486
 24c614e0867ac9ec	sim/L0/tests/integration/sensor_phase6.rs:48
 8370537cdb753150	sim/L0/tests/integration/sensor_phase6.rs:78
+09e57acc7a49e314	sim/L0/mjcf/tests/refusal_order.rs:2550
+4b7579e501061655	sim/L0/mjcf/tests/refusal_order.rs:2544
+89f67b8a3d9fdfb6	sim/L0/mjcf/tests/refusal_order.rs:2865
+8b3bf598bc117e83	sim/L0/mjcf/tests/refusal_order.rs:2556
+96c1f738e1765be3	sim/L0/mjcf/tests/refusal_order.rs:2452
+97b62354ed5c948d	sim/L0/mjcf/tests/refusal_order.rs:2874
+a9faa64c7f301eca	sim/L0/mjcf/tests/refusal_order.rs:2472
+c46686f0884f9b2a	sim/L0/mjcf/tests/refusal_order.rs:2462
+eb498693e21c4d23	sim/L0/mjcf/tests/refusal_order.rs:2482
