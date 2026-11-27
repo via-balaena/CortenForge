@@ -141,7 +141,9 @@ fn build_terrain_mesh(grid: usize, cell: f64) -> Mesh {
             let tr = tl + 1;
             let bl = tl + grid as u32;
             let br = bl + 1;
-            indices.extend_from_slice(&[tl, bl, tr, tr, bl, br]);
+            // Split along the diagonal from (c, r) to (c + 1, r + 1), as
+            // MuJoCo's field is.
+            indices.extend_from_slice(&[tl, tr, br, tl, br, bl]);
         }
     }
 

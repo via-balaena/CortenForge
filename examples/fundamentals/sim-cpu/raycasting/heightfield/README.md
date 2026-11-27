@@ -29,8 +29,10 @@ The field is centred on its geom: its extent and top come from the asset's
 `size`, its grid from the data's counts. `from_fn` samples from the field's
 −x, −y corner, so the example samples the terrain at `x − 4`, `y − 4`.
 The heights stay between 0 and the top, as a field loaded from MJCF does.
-Each ray meets the two triangles of the cells under it, and the nearest
-crossing wins.
+Each cell is two triangles, split along its diagonal from the −x, −y
+corner. A ray is tested against the triangles of the cells under its path
+through the field's top box, a cell more each way, and against the field's
+base box and sides; the nearest crossing wins.
 
 | Parameter | Value |
 |-----------|-------|

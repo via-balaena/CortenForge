@@ -348,7 +348,7 @@ fn ray_cylinder(
 /// `ray_box`: each face within its rectangle, the nearest crossing; each
 /// face's crossing within its rectangle (`all`: −x, +x, −y, +y, −z, +z), −1
 /// for a face the ray does not cross there; and the nearest crossing's face
-/// normal, turned by `mat` (`engine_ray.c:552-557`), zero where the ray
+/// normal, turned by `mat` (`engine_ray.c:550-555`), zero where the ray
 /// misses.
 pub(super) fn ray_box(
     pos: &Vector3<f64>,

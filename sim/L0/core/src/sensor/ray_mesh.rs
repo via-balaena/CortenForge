@@ -465,6 +465,7 @@ mod tests {
             );
             let theirs = ray["x"].as_f64().expect("a distance");
             let normal = numbers(&ray["normal"]);
+            assert_eq!(normal.len(), 3, "ray {i}: a normal of three parts");
             hits += usize::from(theirs >= 0.0);
             if ours.0.to_bits() != theirs.to_bits()
                 || ours

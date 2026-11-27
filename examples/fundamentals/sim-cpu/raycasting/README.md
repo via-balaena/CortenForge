@@ -13,8 +13,7 @@ ports of MuJoCo's `mj_rayMesh` and `mj_rayHfield` (`sensor::ray_mesh`).
   and the ray. Returns `Option<RaycastHit>` with distance, hit point,
   and surface normal.
 - **`raycast_scene`** — test all geoms in the model. Returns the closest
-  hit with `geom_id`. Supports body exclusion and geom group filtering
-  (matches MuJoCo's `mj_ray`).
+  hit with `geom_id`. Supports body exclusion and geom group filtering.
 
 ## Examples
 

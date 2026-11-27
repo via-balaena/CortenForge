@@ -10,7 +10,9 @@
 //!    distance and the normal.
 //! 3. A field's data replaced in code (`model.hfield_data[0]`, as the
 //!    `raycasting/heightfield` example replaces it) is cast at the asset's
-//!    size, centred on its geom.
+//!    size, centred on its geom, as `raycast_scene`'s doc says: its own
+//!    spacing unread, a height below 0 under the base box's top, one above
+//!    the field's top met only through the top box.
 
 use std::sync::Arc;
 
@@ -58,7 +60,7 @@ fn hfield_mjcf_loads() {
 /// The documents MuJoCo's rays were cast on: ledger L280's flat field of
 /// half-extents 1 × 1; a field turned and moved on the world; a field turned
 /// in a turned and moved body; two fields, the second turned a quarter, beside
-/// a sphere.
+/// a sphere; a field turned a half about x, upside down.
 const DOCS: &[(&str, &str)] = &[
     (
         "l280_flat",
@@ -105,6 +107,17 @@ const DOCS: &[(&str, &str)] = &[
   </worldbody>
 </mujoco>"#,
     ),
+    (
+        "turned_180",
+        r#"<mujoco model="turned_180">
+  <asset>
+    <hfield name="h" nrow="5" ncol="5" size="1 1 0.4 0.1" elevation="0.1 0.7 0.3 0.9 0.5 0.5 0.1 0.7 0.3 0.9 0.9 0.5 0.1 0.7 0.3 0.3 0.9 0.5 0.1 0.7 0.7 0.3 0.9 0.5 0.1"/>
+  </asset>
+  <worldbody>
+    <geom type="hfield" hfield="h" pos="0 0 0.5" euler="180 0 0"/>
+  </worldbody>
+</mujoco>"#,
+    ),
 ];
 
 /// A ray MuJoCo 3.5.0 cast through `mj_ray` (no group filter, static geoms
@@ -123,14 +136,18 @@ struct Ray {
 
 /// Ledger L280's four rays down from z 1 over its flat field, at (−0.5, −0.5),
 /// (0.5, 0.5), (1.5, 1.5) and (−1.5, −1.5): MuJoCo meets the first two at 1 and
-/// misses the others; then, on the turned field, a ray from above meeting a
-/// triangle, one from beside meeting a side, one from below meeting the base,
-/// one from inside the top box meeting a triangle and one from above missing;
-/// on the field in a body, a triangle and a side; on the two fields, a
-/// triangle of each. Each the first of its kind in the start set's order
-/// (Rigid-loading RL-11b2).
+/// misses the others; two rays starting on that field's surface, which MuJoCo
+/// meets at −0 going down and at 0 going up. On the turned field, a ray from
+/// above meeting a triangle, one from beside meeting a side, one from below
+/// meeting the base, one from inside the top box meeting a triangle and one
+/// from above missing; on the field in a body, a triangle and a side; on the
+/// two fields, a triangle of each; on the upside-down field, two rays meeting
+/// a side, MuJoCo's normal holding a −0. Each triangle's ray meets its cell at
+/// least a tenth of a cell from the cell's edges and from the diagonal its two
+/// triangles share, where a frame one ulp off would send it to the other
+/// triangle.
 const RAYS: &[Ray] = &[
-    // l280_flat ray 196: l280
+    // l280_flat: L280's ray from z 1, a hit
     Ray {
         doc: "l280_flat",
         pnt: [0xbfe0000000000000, 0xbfe0000000000000, 0x3ff0000000000000],
@@ -139,7 +156,7 @@ const RAYS: &[Ray] = &[
         x: 0x3ff0000000000000,
         normal: [0x0000000000000000, 0x0000000000000000, 0x3ff0000000000000],
     },
-    // l280_flat ray 197: l280
+    // l280_flat: L280's ray from z 1, a hit
     Ray {
         doc: "l280_flat",
         pnt: [0x3fe0000000000000, 0x3fe0000000000000, 0x3ff0000000000000],
@@ -148,7 +165,7 @@ const RAYS: &[Ray] = &[
         x: 0x3ff0000000000000,
         normal: [0x0000000000000000, 0x0000000000000000, 0x3ff0000000000000],
     },
-    // l280_flat ray 198: l280
+    // l280_flat: L280's ray from z 1, a miss
     Ray {
         doc: "l280_flat",
         pnt: [0x3ff8000000000000, 0x3ff8000000000000, 0x3ff0000000000000],
@@ -157,7 +174,7 @@ const RAYS: &[Ray] = &[
         x: 0xbff0000000000000,
         normal: [0x0000000000000000, 0x0000000000000000, 0x0000000000000000],
     },
-    // l280_flat ray 199: l280
+    // l280_flat: L280's ray from z 1, a miss
     Ray {
         doc: "l280_flat",
         pnt: [0xbff8000000000000, 0xbff8000000000000, 0x3ff0000000000000],
@@ -166,16 +183,34 @@ const RAYS: &[Ray] = &[
         x: 0xbff0000000000000,
         normal: [0x0000000000000000, 0x0000000000000000, 0x0000000000000000],
     },
-    // turned_6x6 ray 30: triangle
+    // l280_flat: starts on the surface, down, met at -0.0
+    Ray {
+        doc: "l280_flat",
+        pnt: [0x3fd3333333333333, 0x3fc999999999999a, 0x0000000000000000],
+        vec: [0x0000000000000000, 0x0000000000000000, 0xbff0000000000000],
+        geom: 0,
+        x: 0x8000000000000000,
+        normal: [0x0000000000000000, 0x0000000000000000, 0x3ff0000000000000],
+    },
+    // l280_flat: starts on the surface, up, met at 0.0
+    Ray {
+        doc: "l280_flat",
+        pnt: [0x3fd3333333333333, 0x3fc999999999999a, 0x0000000000000000],
+        vec: [0x3fe3333333333333, 0x0000000000000000, 0x3fe999999999999a],
+        geom: 0,
+        x: 0x0000000000000000,
+        normal: [0x0000000000000000, 0x0000000000000000, 0x3ff0000000000000],
+    },
+    // turned_6x6: triangle, down
     Ray {
         doc: "turned_6x6",
-        pnt: [0xbfe0349a38ec6222, 0xc0002fa236ae6b18, 0x3fe6132e4391aba5],
+        pnt: [0xbfe3d212bc557c88, 0xbffdccc7e31a768b, 0x3fe744dc8075635a],
         vec: [0x3fc63a1a7e0b7388, 0x3fd58e869f82dce1, 0xbfed9d033a6cb460],
         geom: 0,
-        x: 0x3ff4333331ffffff,
+        x: 0x3ff0999998666665,
         normal: [0x3fe174993f013f40, 0xbfe4180af7d3467c, 0x3fe1c3738a782198],
     },
-    // turned_6x6 ray 351: side
+    // turned_6x6: side, from beside
     Ray {
         doc: "turned_6x6",
         pnt: [0xbff2c39e252a8f67, 0xbff39bf360f97323, 0xbfdc67fc1381597a],
@@ -184,7 +219,7 @@ const RAYS: &[Ray] = &[
         x: 0x3fe661af5f5cf5ce,
         normal: [0xbfe9d08bcb56899a, 0xbfdf61a6a66271d9, 0xbfd51c1ba5e5816c],
     },
-    // turned_6x6 ray 300: base
+    // turned_6x6: base, from below
     Ray {
         doc: "turned_6x6",
         pnt: [0x3ff0ee9f5a32e12e, 0xbfcf91a3ee6f14bc, 0xbfeec73f286463e9],
@@ -193,16 +228,16 @@ const RAYS: &[Ray] = &[
         x: 0x3ff1f1a568986b68,
         normal: [0x3fc63a1a7e0b7385, 0x3fd58e869f82dce1, 0xbfed9d033a6cb45e],
     },
-    // turned_6x6 ray 400: triangle
+    // turned_6x6: triangle, from inside the top box
     Ray {
         doc: "turned_6x6",
-        pnt: [0x3ff1ea6ce26e1432, 0x3fb78b786bfe3374, 0x3fec00e460ca064f],
-        vec: [0xbf559eb68c6f1648, 0xbfeed5241a75a760, 0xbfd12101d22333b2],
+        pnt: [0x3fd4d5d7f898b712, 0x3fe8170659944b96, 0x3fea38b20c300c0c],
+        vec: [0x3fc846d68a64fbd0, 0xbfe2e64650cad1b8, 0xbfe9196a0fc43208],
         geom: 0,
-        x: 0x3fa118e3ada3209b,
-        normal: [0x3fe174993c4fe98a, 0xbfe4180af266d89a, 0x3fe1c373934017f9],
+        x: 0x3fbb24147cd15b25,
+        normal: [0xbfea64aad6f2499e, 0xbfb1dcc00228210c, 0x3fe1f4b1884ea36d],
     },
-    // turned_6x6 ray 201: miss
+    // turned_6x6: miss, from above
     Ray {
         doc: "turned_6x6",
         pnt: [0x3ff39559ce05c375, 0x3fcc5afff1576f94, 0x3ffa72e586cfbef6],
@@ -211,16 +246,16 @@ const RAYS: &[Ray] = &[
         x: 0xbff0000000000000,
         normal: [0x0000000000000000, 0x0000000000000000, 0x0000000000000000],
     },
-    // on_body ray 30: triangle
+    // on_body: triangle, down
     Ray {
         doc: "on_body",
-        pnt: [0xbfb35f5aa7d43e70, 0x3ff1c1e2e5a78a50, 0x3ff981f11aef0dba],
+        pnt: [0x3fb34f732d493f80, 0x3ff5e6024326316b, 0x3ff94af9eb2c851a],
         vec: [0xbfcb9d6818cd9ca1, 0x3fb35298f381f53c, 0xbfef272639f5605b],
         geom: 0,
-        x: 0x3fe8ae147aa3d70e,
+        x: 0x3fea99999770a3db,
         normal: [0x3fa04757ebe21f54, 0x3fcfaca00fe63822, 0x3feefcf2a9b89ccb],
     },
-    // on_body ray 353: side
+    // on_body: side, from beside
     Ray {
         doc: "on_body",
         pnt: [0x3fee8f54ef67b54d, 0x400d5594507b4142, 0x3fe0e96aec2b8bf6],
@@ -229,23 +264,41 @@ const RAYS: &[Ray] = &[
         x: 0x3fb6ca94ce9577c6,
         normal: [0xbfeac4bdd6e3fd73, 0x3fe0000000000001, 0x3fccb0bf0b6b7109],
     },
-    // two_fields_sphere ray 30: triangle
+    // two_fields_sphere: triangle, down, geom 0
     Ray {
         doc: "two_fields_sphere",
-        pnt: [0xc000cccccccccccd, 0xbfeccccccccccccd, 0x3ff3333333333333],
+        pnt: [0xc000cccccccccccd, 0xbfe6666666666666, 0x3ff3333333333333],
         vec: [0x0000000000000000, 0x0000000000000000, 0xbff0000000000000],
         geom: 0,
-        x: 0x3ff0e66661cccccc,
+        x: 0x3fee33332c666665,
         normal: [0x3fd3e1fcd84887b8, 0xbfddd2fb6c30c594, 0x3fea82a6aabb57a0],
     },
-    // two_fields_sphere ray 480: triangle
+    // two_fields_sphere: triangle, down, geom 1
     Ray {
         doc: "two_fields_sphere",
-        pnt: [0x3ffeb851eb851eb8, 0xbfecccccccccccce, 0x3ff0cccccccccccd],
+        pnt: [0x3ffc28f5c28f5c28, 0xbfecccccccccccce, 0x3ff0cccccccccccd],
         vec: [0x0000000000000000, 0x0000000000000000, 0xbff0000000000000],
         geom: 1,
-        x: 0x3fe7d70a3c7ae148,
-        normal: [0xbfc6a0379dd941e2, 0x3fd219c5cf79e9b6, 0x3fee2af49621195a],
+        x: 0x3fe8cccccbd70a3d,
+        normal: [0xbfc6a0373eef10dd, 0x3fd219c614598ba7, 0x3fee2af4903f54f5],
+    },
+    // turned_180: side, from beside, a -0 in its normal
+    Ray {
+        doc: "turned_180",
+        pnt: [0xbff4df2c74367752, 0xbfe834aeee6ceb04, 0x3fe0006228d0b4db],
+        vec: [0x3fdea50f09b221a7, 0x3fe945b559aaa8ea, 0xbfd889e0fe2d8147],
+        geom: 0,
+        x: 0x3fe45950c4a6046b,
+        normal: [0xbff0000000000000, 0x8000000000000000, 0x0000000000000000],
+    },
+    // turned_180: side, from inside the top box, a -0 in its normal
+    Ray {
+        doc: "turned_180",
+        pnt: [0xbfef1d441560dc76, 0xbfcf6284aeb1f628, 0x3fdc44104e53c24b],
+        vec: [0xbfbb484a4c413e6d, 0x3fef7ac2b9284649, 0xbfc28203a0634e53],
+        geom: 0,
+        x: 0x3fd09f0c1b9cff26,
+        normal: [0xbff0000000000000, 0x8000000000000000, 0x0000000000000000],
     },
 ];
 
@@ -267,7 +320,8 @@ fn close(ours: &[f64], mujoco: &[u64]) -> bool {
 }
 
 /// Each of MuJoCo's rays meets the geom MuJoCo's met, at MuJoCo's distance,
-/// with MuJoCo's normal, or misses as MuJoCo's does.
+/// with MuJoCo's normal, or misses as MuJoCo's does; a hit's point is the
+/// start plus the direction times MuJoCo's distance.
 #[test]
 fn rays_meet_height_fields_as_mujocos_mj_ray() {
     let bits3 = |b: [u64; 3]| {
@@ -285,74 +339,160 @@ fn rays_meet_height_fields_as_mujocos_mj_ray() {
         for ray in RAYS.iter().filter(|r| r.doc == *name) {
             let pnt = Point3::from(bits3(ray.pnt));
             let dir = UnitVector3::new_unchecked(bits3(ray.vec));
-            let (geom, x, normal) = raycast_scene(&model, &data, pnt, dir, 1e9, None, None).map_or(
-                (-1, -1.0, [0.0; 3]),
-                |h| {
-                    let n = h.hit.normal;
-                    (
-                        i64::try_from(h.geom_id).expect("a geom id"),
-                        h.hit.distance,
-                        [n.x, n.y, n.z],
-                    )
-                },
-            );
-            if geom != ray.geom || !close(&[x], &[ray.x]) || !close(&normal, &ray.normal) {
+            let hit = raycast_scene(&model, &data, pnt, dir, 1e9, None, None);
+            let (geom, x, normal) = hit.map_or((-1, -1.0, [0.0; 3]), |h| {
+                let n = h.hit.normal;
+                (
+                    i64::try_from(h.geom_id).expect("a geom id"),
+                    h.hit.distance,
+                    [n.x, n.y, n.z],
+                )
+            });
+            let point_off = hit.is_some_and(|h| {
+                let want = pnt + dir.into_inner() * f64::from_bits(ray.x);
+                !close(
+                    &[h.hit.point.x, h.hit.point.y, h.hit.point.z],
+                    &[want.x, want.y, want.z].map(f64::to_bits),
+                )
+            });
+            if geom != ray.geom
+                || !close(&[x], &[ray.x])
+                || !close(&normal, &ray.normal)
+                || point_off
+            {
                 bad.push(format!(
-                    "{name} from {pnt:?}: geom {geom} at {x:e} normal {normal:?}, MuJoCo geom {} at {:e}",
+                    "{name} from {pnt:?}: geom {geom} at {x:e} normal {normal:?}, MuJoCo geom {} at {:e}{}",
                     ray.geom,
-                    f64::from_bits(ray.x)
+                    f64::from_bits(ray.x),
+                    if point_off { " (the point off)" } else { "" }
                 ));
             }
         }
     }
     assert_eq!(
         (RAYS.len(), RAYS.iter().filter(|r| r.geom >= 0).count()),
-        (13, 10),
+        (17, 14),
         "every ray read, and every hit"
     );
     assert!(bad.is_empty(), "{} differ:\n{}", bad.len(), bad.join("\n"));
 }
 
+/// The model a replaced field is cast in: [`HFIELD_MJCF`]'s, its field's data
+/// replaced by `field`, after a forward.
+fn with_field(field: HeightFieldData) -> (sim_core::Model, sim_core::Data) {
+    let mut model = load_model(HFIELD_MJCF).expect("MJCF should parse");
+    model.hfield_data[0] = Arc::new(field);
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    (model, data)
+}
+
+/// A ray from `(x, y, z)` along `dir` through `raycast_scene`, cast no farther
+/// than `max`.
+fn cast(
+    model: &sim_core::Model,
+    data: &sim_core::Data,
+    from: [f64; 3],
+    dir: Vector3<f64>,
+    max: f64,
+) -> Option<sim_core::SceneRayHit> {
+    raycast_scene(
+        model,
+        data,
+        Point3::from(from),
+        UnitVector3::new_normalize(dir),
+        max,
+        None,
+        None,
+    )
+}
+
 /// A flat field replaced in code is cast at the asset's size, centred on its
 /// geom: 32 × 32 heights of 0.2 under the asset's half-extents 4 × 4 are met
 /// straight down at the field's centre and near its −x, −y corner, 2.8 below
-/// a start 3 up, with the normal +z; a ray past its +x, +y corner, which the
-/// grid read from the geom's origin would hold, misses.
+/// a start 3 up, with the normal +z, cast no farther than 20 or without
+/// bound; a ray past its +x, +y corner, which the grid read from the geom's
+/// origin would hold, misses.
 #[test]
 fn a_replaced_flat_field_is_cast_centred_at_its_assets_size() {
-    let mut model = load_model(HFIELD_MJCF).expect("MJCF should parse");
-    model.hfield_data[0] = Arc::new(HeightFieldData::flat(32, 32, 8.0 / 31.0, 0.2));
-    let mut data = model.make_data();
-    data.forward(&model).expect("forward");
-    let down = UnitVector3::new_normalize(-Vector3::z());
+    let (model, data) = with_field(HeightFieldData::flat(32, 32, 8.0 / 31.0, 0.2));
     for (x, y) in [(0.0, 0.0), (-3.5, -3.5)] {
-        let hit = raycast_scene(
-            &model,
-            &data,
-            Point3::new(x, y, 3.0),
-            down,
-            20.0,
-            None,
-            None,
-        )
-        .expect("the ray meets the field");
+        for max in [20.0, f64::INFINITY] {
+            let hit = cast(&model, &data, [x, y, 3.0], -Vector3::z(), max)
+                .expect("the ray meets the field");
+            assert!(
+                (hit.hit.distance - 2.8).abs() < 1e-12,
+                "({x}, {y}) within {max}: distance {}",
+                hit.hit.distance
+            );
+            assert_eq!(hit.hit.normal, Vector3::z(), "({x}, {y})");
+        }
+    }
+    let past = cast(&model, &data, [4.5, 4.5, 3.0], -Vector3::z(), 20.0);
+    assert!(past.is_none(), "past the corner: {past:?}");
+}
+
+/// A replaced field's own spacing is not read: 32 × 32 heights of 0.2 a cell
+/// of 0.1 apart, 3.1 across, still span the asset's 8 × 8, met at (3.5, 3.5)
+/// and (−3.5, 3.5).
+#[test]
+fn a_replaced_fields_own_spacing_is_not_read() {
+    let (model, data) = with_field(HeightFieldData::flat(32, 32, 0.1, 0.2));
+    for (x, y) in [(3.5, 3.5), (-3.5, 3.5)] {
+        let hit =
+            cast(&model, &data, [x, y, 3.0], -Vector3::z(), 20.0).expect("the ray meets the field");
         assert!(
             (hit.hit.distance - 2.8).abs() < 1e-12,
             "({x}, {y}): distance {}",
             hit.hit.distance
         );
-        assert_eq!(hit.hit.normal, Vector3::z(), "({x}, {y})");
     }
-    let past = raycast_scene(
-        &model,
-        &data,
-        Point3::new(4.5, 4.5, 3.0),
-        down,
-        20.0,
-        None,
-        None,
+}
+
+/// A replaced field's height below 0 lies under the base box's top, as
+/// MuJoCo's does (measured on the oracle with the field's data set to −0.4,
+/// times its top of 0.5): a ray down from 3 meets the base box at 0, 3.0 away,
+/// with the normal +z, and a level ray at z 0.3 misses.
+#[test]
+fn a_replaced_fields_height_below_zero_lies_under_the_base_box() {
+    let (model, data) = with_field(HeightFieldData::flat(32, 32, 8.0 / 31.0, -0.2));
+    let hit = cast(&model, &data, [0.0, 0.0, 3.0], -Vector3::z(), 20.0)
+        .expect("the ray meets the base box");
+    assert!(
+        (hit.hit.distance - 3.0).abs() < 1e-12,
+        "distance {}",
+        hit.hit.distance
     );
-    assert!(past.is_none(), "past the corner: {past:?}");
+    assert_eq!(hit.hit.normal, Vector3::z());
+    let level = cast(&model, &data, [-5.0, 0.0, 0.3], Vector3::x(), 20.0);
+    assert!(level.is_none(), "level at z 0.3: {level:?}");
+}
+
+/// A replaced field's height above the top is met only by a ray that crosses
+/// the top box, as MuJoCo's is (measured on the oracle with the field's data
+/// set to 1.6, times its top of 0.5): heights of 0.8 over a top of 0.5 are met
+/// by a ray down from 3, 2.2 away; a level ray at z 0.7, above the top box,
+/// misses; one at z 0.3 meets the box's −x side, 1 in, with the normal −x.
+#[test]
+fn a_replaced_fields_height_above_the_top_is_met_through_the_top_box_only() {
+    let (model, data) = with_field(HeightFieldData::flat(32, 32, 8.0 / 31.0, 0.8));
+    let down =
+        cast(&model, &data, [0.0, 0.0, 3.0], -Vector3::z(), 20.0).expect("the ray meets the field");
+    assert!(
+        (down.hit.distance - 2.2).abs() < 1e-12,
+        "distance {}",
+        down.hit.distance
+    );
+    let above = cast(&model, &data, [-5.0, 0.0, 0.7], Vector3::x(), 20.0);
+    assert!(above.is_none(), "level at z 0.7: {above:?}");
+    let side =
+        cast(&model, &data, [-5.0, 0.0, 0.3], Vector3::x(), 20.0).expect("the ray meets the side");
+    assert!(
+        (side.hit.distance - 1.0).abs() < 1e-12,
+        "distance {}",
+        side.hit.distance
+    );
+    assert_eq!(side.hit.normal, -Vector3::x());
 }
 
 /// A sinusoidal field replaced in code, as the `raycasting/heightfield`
@@ -362,30 +502,17 @@ fn a_replaced_flat_field_is_cast_centred_at_its_assets_size() {
 /// off it, within 0.02 of the function.
 #[test]
 fn a_replaced_sinusoidal_field_is_cast_centred_at_its_assets_size() {
-    let mut model = load_model(HFIELD_MJCF).expect("MJCF should parse");
     let terrain = |x: f64, y: f64| {
         0.25 + 0.2
             * (std::f64::consts::TAU * x / 4.0).sin()
             * (std::f64::consts::TAU * y / 4.0).cos()
     };
-    let cell = 8.0 / 31.0;
-    model.hfield_data[0] = Arc::new(HeightFieldData::from_fn(32, 32, cell, |x, y| {
+    let (model, data) = with_field(HeightFieldData::from_fn(32, 32, 8.0 / 31.0, |x, y| {
         terrain(x - 4.0, y - 4.0)
     }));
-    let mut data = model.make_data();
-    data.forward(&model).expect("forward");
-    let down = UnitVector3::new_normalize(-Vector3::z());
     for (x, y) in [(0.0, 0.0), (-1.0, 0.0)] {
-        let hit = raycast_scene(
-            &model,
-            &data,
-            Point3::new(x, y, 3.0),
-            down,
-            20.0,
-            None,
-            None,
-        )
-        .expect("the ray meets the field");
+        let hit =
+            cast(&model, &data, [x, y, 3.0], -Vector3::z(), 20.0).expect("the ray meets the field");
         let expected = terrain(x, y);
         assert!(
             (hit.hit.point.z - expected).abs() < 0.02,

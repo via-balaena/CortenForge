@@ -608,5 +608,5 @@ pub mod named_accessors;
 // Raycast Heightfield Pipeline Tests
 // ============================================================================
 
-/// MJCF hfield loading → data replacement → raycast_scene end-to-end.
+/// Height fields through `raycast_scene`: MuJoCo's rays, and data set in code.
 pub mod raycast_heightfield;
