@@ -215,6 +215,17 @@ fn bounding_radius_box() {
 }
 
 #[test]
+fn bounding_radius_rectangular_height_field() {
+    // 4 columns 0.5 apart and 3 rows 2 apart, heights 0 and 1: its half
+    // width 4·0.5/2 = 1, its half depth 3·2/2 = 3, its highest point 1.
+    let mut heights = vec![0.0; 12];
+    heights[5] = 1.0;
+    let data = HeightFieldData::with_spacing(heights, 4, 3, [0.5, 2.0]);
+    let radius = Shape::height_field(Arc::new(data)).bounding_radius();
+    assert!((radius - 11.0_f64.sqrt()).abs() < 1e-12, "{radius}");
+}
+
+#[test]
 fn bounding_radius_capsule() {
     // half_length + radius
     assert!((Shape::capsule(1.5, 0.5).bounding_radius() - 2.0).abs() < 1e-15);

@@ -477,7 +477,9 @@ fn ray_indexed_mesh(
 
 /// Ray–height field intersection using ray marching with binary search refinement.
 fn ray_heightfield(ray: &Ray, data: &crate::HeightFieldData, max_dist: f64) -> Option<RayHit> {
-    let cell_size = data.cell_size();
+    // Half the smaller of a cell's two sides.
+    let [dx, dy] = data.spacing();
+    let cell_size = dx.min(dy);
     if cell_size <= 0.0 || !cell_size.is_finite() {
         return None;
     }
@@ -940,6 +942,22 @@ mod tests {
         assert!(hit.is_some());
         let hit = hit.unwrap();
         assert_relative_eq!(hit.distance, 5.0, epsilon = 0.5);
+    }
+
+    /// A ridge one column wide (x 0.5, cells 0.1 along X) on a field whose
+    /// cells are 10 along Y: a ray along X under the ridge's top meets it only
+    /// if the march steps by the smaller side.
+    #[test]
+    fn a_ray_marches_a_rectangular_field_by_its_smaller_side() {
+        let mut heights = vec![0.0; 22];
+        heights[5] = 1.0;
+        heights[16] = 1.0;
+        let data = crate::HeightFieldData::with_spacing(heights, 11, 2, [0.1, 10.0]);
+        let shape = Shape::height_field(Arc::new(data));
+        let ray = ray_from(Point3::new(0.0, 5.0, 0.5), Vector3::x());
+        let hit = ray_cast(&ray, &shape, 0.99);
+        assert!(hit.is_some(), "the ridge");
+        assert_relative_eq!(hit.unwrap().distance, 0.45, epsilon = 1e-3);
     }
 
     #[test]

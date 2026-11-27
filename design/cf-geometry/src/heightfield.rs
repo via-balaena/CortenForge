@@ -7,8 +7,9 @@
 //!
 //! The height field is defined in the XY plane with heights along Z:
 //! - Origin is at the corner (0, 0) of the grid
-//! - X axis spans `[0, (width - 1) * cell_size]`
-//! - Y axis spans `[0, (depth - 1) * cell_size]`
+//! - X axis spans `[0, (width - 1) * dx]`
+//! - Y axis spans `[0, (depth - 1) * dy]`, where `[dx, dy]` is the field's
+//!   [`spacing`](HeightFieldData::spacing), a cell's size along each axis
 //! - Z values come from the height data
 //!
 //! # Performance
@@ -59,8 +60,8 @@ pub struct HeightFieldData {
     width: usize,
     /// Number of rows (samples along Y axis).
     depth: usize,
-    /// Size of each cell in meters.
-    cell_size: f64,
+    /// Each cell's size in meters along X and along Y.
+    spacing: [f64; 2],
     /// Minimum height value (cached for AABB).
     min_height: f64,
     /// Maximum height value (cached for AABB).
@@ -68,7 +69,8 @@ pub struct HeightFieldData {
 }
 
 impl HeightFieldData {
-    /// Create a new height field from height data.
+    /// Create a new height field from height data, its cells square, of
+    /// side `cell_size`.
     ///
     /// # Panics
     ///
@@ -76,6 +78,18 @@ impl HeightFieldData {
     /// or if `cell_size` is not positive.
     #[must_use]
     pub fn new(heights: Vec<f64>, width: usize, depth: usize, cell_size: f64) -> Self {
+        Self::with_spacing(heights, width, depth, [cell_size, cell_size])
+    }
+
+    /// Create a new height field from height data, each cell `spacing[0]`
+    /// along X and `spacing[1]` along Y.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `heights.len() != width * depth`, if dimensions are zero,
+    /// or if either spacing is not positive.
+    #[must_use]
+    pub fn with_spacing(heights: Vec<f64>, width: usize, depth: usize, spacing: [f64; 2]) -> Self {
         assert!(
             width > 0 && depth > 0,
             "HeightField dimensions must be positive"
@@ -87,7 +101,10 @@ impl HeightFieldData {
             width,
             depth
         );
-        assert!(cell_size > 0.0, "HeightField cell_size must be positive");
+        assert!(
+            spacing[0] > 0.0 && spacing[1] > 0.0,
+            "HeightField spacing must be positive"
+        );
 
         let (min_height, max_height) = heights
             .iter()
@@ -99,7 +116,7 @@ impl HeightFieldData {
             heights,
             width,
             depth,
-            cell_size,
+            spacing,
             min_height,
             max_height,
         }
@@ -143,22 +160,22 @@ impl HeightFieldData {
         self.depth
     }
 
-    /// Get the cell size in meters.
+    /// Each cell's size in meters, `[dx, dy]`: along X and along Y.
     #[must_use]
-    pub const fn cell_size(&self) -> f64 {
-        self.cell_size
+    pub const fn spacing(&self) -> [f64; 2] {
+        self.spacing
     }
 
     /// Get the total X extent in meters.
     #[must_use]
     pub fn extent_x(&self) -> f64 {
-        (self.width - 1) as f64 * self.cell_size
+        (self.width - 1) as f64 * self.spacing[0]
     }
 
     /// Get the total Y extent in meters.
     #[must_use]
     pub fn extent_y(&self) -> f64 {
-        (self.depth - 1) as f64 * self.cell_size
+        (self.depth - 1) as f64 * self.spacing[1]
     }
 
     /// Get the minimum height value.
@@ -212,8 +229,8 @@ impl HeightFieldData {
         }
 
         // Convert to grid coordinates
-        let gx = x / self.cell_size;
-        let gy = y / self.cell_size;
+        let gx = x / self.spacing[0];
+        let gy = y / self.spacing[1];
 
         // Get integer cell indices
         let x0 = gx.floor() as usize;
@@ -256,15 +273,15 @@ impl HeightFieldData {
     /// Returns `None` if the point is outside the height field bounds.
     #[must_use]
     pub fn normal(&self, x: f64, y: f64) -> Option<Vector3<f64>> {
-        let eps = self.cell_size * 0.1;
+        let (eps_x, eps_y) = (self.spacing[0] * 0.1, self.spacing[1] * 0.1);
 
         let hc = self.sample(x, y)?;
-        let hx = self.sample_clamped(x + eps, y);
-        let hy = self.sample_clamped(x, y + eps);
+        let hx = self.sample_clamped(x + eps_x, y);
+        let hy = self.sample_clamped(x, y + eps_y);
 
         // Compute gradient
-        let dx = (hx - hc) / eps;
-        let dy = (hy - hc) / eps;
+        let dx = (hx - hc) / eps_x;
+        let dy = (hy - hc) / eps_y;
 
         // Normal is perpendicular to gradient: (-dz/dx, -dz/dy, 1) normalized
         let raw = Vector3::new(-dx, -dy, 1.0);
@@ -298,8 +315,8 @@ impl HeightFieldData {
             return None;
         }
 
-        let cx = (x / self.cell_size).floor() as usize;
-        let cy = (y / self.cell_size).floor() as usize;
+        let cx = (x / self.spacing[0]).floor() as usize;
+        let cy = (y / self.spacing[1]).floor() as usize;
 
         if cx >= self.width - 1 || cy >= self.depth - 1 {
             return None;
@@ -323,22 +340,22 @@ impl HeightFieldData {
         let x_start = if has_nan {
             0
         } else {
-            (min.x / self.cell_size).floor().max(0.0) as usize
+            (min.x / self.spacing[0]).floor().max(0.0) as usize
         };
         let y_start = if has_nan {
             0
         } else {
-            (min.y / self.cell_size).floor().max(0.0) as usize
+            (min.y / self.spacing[1]).floor().max(0.0) as usize
         };
         let x_end = if has_nan {
             0
         } else {
-            ((max.x / self.cell_size).ceil() as usize).min(self.width - 1)
+            ((max.x / self.spacing[0]).ceil() as usize).min(self.width - 1)
         };
         let y_end = if has_nan {
             0
         } else {
-            ((max.y / self.cell_size).ceil() as usize).min(self.depth - 1)
+            ((max.y / self.spacing[1]).ceil() as usize).min(self.depth - 1)
         };
 
         (y_start..y_end).flat_map(move |y| (x_start..x_end).map(move |x| (x, y)))
@@ -366,8 +383,8 @@ impl HeightFieldData {
     pub fn vertex_position(&self, x: usize, y: usize) -> Option<Point3<f64>> {
         let height = self.get(x, y)?;
         Some(Point3::new(
-            x as f64 * self.cell_size,
-            y as f64 * self.cell_size,
+            x as f64 * self.spacing[0],
+            y as f64 * self.spacing[1],
             height,
         ))
     }
@@ -406,7 +423,7 @@ mod tests {
         let hf = HeightFieldData::flat(10, 10, 1.0, 5.0);
         assert_eq!(hf.width(), 10);
         assert_eq!(hf.depth(), 10);
-        assert_eq!(hf.cell_size(), 1.0);
+        assert_eq!(hf.spacing(), [1.0, 1.0]);
         assert_relative_eq!(hf.min_height(), 5.0);
         assert_relative_eq!(hf.max_height(), 5.0);
     }
@@ -432,9 +449,21 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "cell_size must be positive")]
+    #[should_panic(expected = "spacing must be positive")]
     fn negative_cell_size_panics() {
         let _ = HeightFieldData::new(vec![0.0; 4], 2, 2, -1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "spacing must be positive")]
+    fn a_spacing_not_positive_along_y_panics() {
+        let _ = HeightFieldData::with_spacing(vec![0.0; 4], 2, 2, [1.0, 0.0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "spacing must be positive")]
+    fn a_nan_spacing_panics() {
+        let _ = HeightFieldData::with_spacing(vec![0.0; 4], 2, 2, [f64::NAN, 1.0]);
     }
 
     // ── Extents ─────────────────────────────────────────────────────────
@@ -665,5 +694,72 @@ mod tests {
         let hf = HeightFieldData::from_fn(3, 3, 0.5, |x, y| x + y);
         assert_relative_eq!(hf.sample(0.25, 0.25).unwrap(), 0.5, epsilon = 1e-10);
         assert_relative_eq!(hf.sample(1.0, 1.0).unwrap(), 2.0, epsilon = 1e-10);
+    }
+
+    // ── Cells that are not square ───────────────────────────────────────
+
+    /// A 4-column, 3-row field, each cell 0.5 along X and 2 along Y, whose
+    /// height at grid point (c, r) is `c + 10·r`.
+    fn rectangular() -> HeightFieldData {
+        let heights = (0..3)
+            .flat_map(|r| (0..4).map(move |c| f64::from(c) + 10.0 * f64::from(r)))
+            .collect();
+        HeightFieldData::with_spacing(heights, 4, 3, [0.5, 2.0])
+    }
+
+    #[test]
+    fn a_rectangular_field_spans_each_axis_by_its_own_spacing() {
+        let hf = rectangular();
+        assert_eq!(hf.spacing(), [0.5, 2.0]);
+        assert_eq!((hf.extent_x(), hf.extent_y()), (1.5, 4.0));
+        assert_eq!(hf.vertex_position(3, 2), Some(Point3::new(1.5, 4.0, 23.0)));
+        let aabb = hf.aabb();
+        assert_eq!((aabb.max.x, aabb.max.y), (1.5, 4.0));
+        assert_eq!(hf.sample(1.5, 4.0), Some(23.0));
+        assert_eq!(hf.sample(1.6, 1.0), None);
+        assert_eq!(hf.sample(1.0, 4.1), None);
+    }
+
+    #[test]
+    fn a_rectangular_field_samples_between_its_grid_points() {
+        // Halfway along X between columns 1 and 2 (x 0.75), a quarter of the
+        // way along Y between rows 0 and 1 (y 0.5): 1.5 + 10·0.25.
+        assert_relative_eq!(
+            rectangular().sample(0.75, 0.5).unwrap(),
+            4.0,
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn a_rectangular_field_finds_cells_by_each_axis() {
+        let hf = rectangular();
+        assert_eq!(hf.cell_at(1.2, 3.9), Some((2, 1)));
+        assert_eq!(hf.cell_at(0.4, 1.9), Some((0, 0)));
+        assert_eq!(hf.cell_at(1.5, 1.0), None);
+        let cells: Vec<_> = hf
+            .cells_in_aabb(Point3::new(0.6, 2.5, 0.0), Point3::new(0.9, 3.0, 1.0))
+            .collect();
+        assert_eq!(cells, vec![(1, 1)]);
+    }
+
+    #[test]
+    fn a_rectangular_field_slopes_by_each_axis() {
+        // dz/dx = 1 / 0.5 = 2, dz/dy = 10 / 2 = 5: the normal (-2, -5, 1).
+        let n = rectangular().normal(0.6, 1.0).unwrap();
+        let want = Vector3::new(-2.0, -5.0, 1.0).normalize();
+        assert_relative_eq!(n, want, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn square_cells_read_the_same_either_way() {
+        let heights: Vec<f64> = (0..9).map(|i| f64::from(i * i) * 0.1).collect();
+        let a = HeightFieldData::new(heights.clone(), 3, 3, 0.7);
+        let b = HeightFieldData::with_spacing(heights, 3, 3, [0.7, 0.7]);
+        assert_eq!(a, b);
+        for (x, y) in [(0.1, 0.2), (0.65, 1.3), (1.4, 0.0)] {
+            assert_eq!(a.sample(x, y), b.sample(x, y));
+            assert_eq!(a.normal(x, y), b.normal(x, y));
+        }
     }
 }

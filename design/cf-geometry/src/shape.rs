@@ -445,8 +445,9 @@ impl Shape {
                 .map(|v| v.coords.norm())
                 .fold(0.0, f64::max),
             Self::HeightField { data } => {
-                let half_width = (data.width() as f64).mul_add(data.cell_size(), 0.0) * 0.5;
-                let half_depth = (data.depth() as f64).mul_add(data.cell_size(), 0.0) * 0.5;
+                let [dx, dy] = data.spacing();
+                let half_width = (data.width() as f64).mul_add(dx, 0.0) * 0.5;
+                let half_depth = (data.depth() as f64).mul_add(dy, 0.0) * 0.5;
                 let max_height = data.max_height().abs().max(data.min_height().abs());
                 half_width
                     .mul_add(
