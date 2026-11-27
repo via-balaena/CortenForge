@@ -1,0 +1,8 @@
+<mujoco model="turned_6x6">
+  <asset>
+    <hfield name="h" nrow="6" ncol="6" size="1.5 1 0.6 0.15" elevation="0.1 0.7 0.3 0.9 0.5 0.1 0.5 0.1 0.7 0.3 0.9 0.5 0.9 0.5 0.1 0.7 0.3 0.9 0.3 0.9 0.5 0.1 0.7 0.3 0.7 0.3 0.9 0.5 0.1 0.7 0.1 0.7 0.3 0.9 0.5 0.1"/>
+  </asset>
+  <worldbody>
+    <geom type="hfield" hfield="h" pos="0.3 -0.2 0.1" euler="20 -10 35"/>
+  </worldbody>
+</mujoco>

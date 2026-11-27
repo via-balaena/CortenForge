@@ -23,7 +23,7 @@ pub use acceleration::mj_sensor_acc;
 pub(crate) use position::mj_sensor_pos;
 pub(crate) use postprocess::mj_sensor_postprocess;
 pub(crate) use ray_geom::mj_ray_sdf;
-pub(crate) use ray_mesh::mj_ray_mesh;
+pub(crate) use ray_mesh::{mj_ray_hfield, mj_ray_mesh};
 pub(crate) use velocity::mj_sensor_vel;
 
 /// Dispatch plugin sensor computation at the given stage.

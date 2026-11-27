@@ -922,7 +922,8 @@ this module; a mesh's and a height field's rays are ports of MuJoCo's
 
 **Concepts covered:** `raycast_shape`, `raycast_scene`, `RaycastHit`,
 `SceneRayHit`, analytical intersection (sphere, plane, box, capsule,
-cylinder, ellipsoid), ray marching (heightfield), convex mesh hull test,
+cylinder, ellipsoid), a height field's ray (marched by `raycast_shape`; as
+MuJoCo's `mj_rayHfield` by `raycast_scene`), convex mesh hull test,
 body exclusion, geom group filtering, surface normals.
 
 ##### 11. `derivatives/` — Finite-Difference Linearization

@@ -1,8 +1,10 @@
-//! Heightfield — Ray Marching on Terrain
+//! Heightfield — Rays on Terrain
 //!
 //! A sinusoidal heightfield terrain with an 8×8 grid of downward rays.
-//! Hit points form a dot cloud that traces the terrain surface. Ray marching
-//! (not analytic intersection) finds the surface.
+//! Hit points form a dot cloud that traces the terrain surface. Each ray
+//! meets the field as MuJoCo's `mj_rayHfield` does: against its triangles,
+//! two a cell, the field centred on its geom at the asset's half-extents and
+//! top.
 //!
 //! Validates:
 //! 1. All 64 rays hit (100% hit rate)
@@ -42,8 +44,10 @@ use sim_core::{HeightFieldData, raycast_scene};
 
 // ── Terrain function ────────────────────────────────────────────────────────
 
+/// The terrain's height at `x`, `y` (the field's centre at the origin), from 0
+/// to the field's top.
 fn terrain(x: f64, y: f64) -> f64 {
-    0.3 * (std::f64::consts::TAU * x / 4.0).sin() * (std::f64::consts::TAU * y / 4.0).cos()
+    0.3 + 0.3 * (std::f64::consts::TAU * x / 4.0).sin() * (std::f64::consts::TAU * y / 4.0).cos()
 }
 
 /// Analytical terrain normal via gradient: n = normalize(-dz/dx, -dz/dy, 1).
@@ -57,16 +61,19 @@ fn terrain_normal(x: f64, y: f64) -> Vector3<f64> {
 // ── Heightfield parameters ──────────────────────────────────────────────────
 
 const GRID_SIZE: usize = 64;
-const CELL_SIZE: f64 = 8.0 / 63.0; // full extent 8m, 64 samples → 63 intervals
+/// The field's half-extent: the asset's `size`, centred on the geom.
+const HALF_EXTENT: f64 = 4.0;
+const CELL_SIZE: f64 = 2.0 * HALF_EXTENT / 63.0; // full extent 8m, 64 samples → 63 intervals
 const RAY_GRID: usize = 8; // 8×8 grid of rays
 const RAY_Z: f64 = 3.0;
 
-// MJCF with a small placeholder hfield (replaced before spawning geoms)
+// MJCF with a small placeholder hfield (replaced before spawning geoms): its
+// size, half-extents 4 × 4 and a top of 0.6, is the terrain's.
 const MJCF: &str = r#"
 <mujoco model="heightfield">
   <option gravity="0 0 0" timestep="0.002"/>
   <asset>
-    <hfield name="terrain" nrow="4" ncol="4" size="4 4 0.5 0.1"
+    <hfield name="terrain" nrow="4" ncol="4" size="4 4 0.6 0.1"
             elevation="0 0 0 0  0 0 0 0  0 0 0 0  0 0 0 0"/>
   </asset>
   <worldbody>
@@ -86,14 +93,13 @@ struct RayResult {
 fn cast_terrain_rays(model: &sim_core::Model, data: &sim_core::Data) -> Vec<RayResult> {
     let dir = UnitVector3::new_normalize(-Vector3::z());
     let margin = 0.5;
-    let extent = (GRID_SIZE as f64) * CELL_SIZE;
-    let step = (extent - 2.0 * margin) / (RAY_GRID as f64 - 1.0);
+    let step = (2.0 * HALF_EXTENT - 2.0 * margin) / (RAY_GRID as f64 - 1.0);
 
     let mut results = Vec::with_capacity(RAY_GRID * RAY_GRID);
     for row in 0..RAY_GRID {
         for col in 0..RAY_GRID {
-            let x = margin + col as f64 * step;
-            let y = margin + row as f64 * step;
+            let x = -HALF_EXTENT + margin + col as f64 * step;
+            let y = -HALF_EXTENT + margin + row as f64 * step;
             let origin = Point3::new(x, y, RAY_Z);
             let hit = raycast_scene(model, data, origin, dir, 20.0, None, None);
             results.push(RayResult {
@@ -108,7 +114,8 @@ fn cast_terrain_rays(model: &sim_core::Model, data: &sim_core::Data) -> Vec<RayR
 
 // ── Terrain mesh builder ────────────────────────────────────────────────────
 
-/// Build a Bevy `Mesh` from the terrain function, in Y-up coordinates.
+/// Build a Bevy `Mesh` from the terrain function, in Y-up coordinates, centred
+/// on the origin as the field is.
 fn build_terrain_mesh(grid: usize, cell: f64) -> Mesh {
     let mut positions = Vec::with_capacity(grid * grid);
     let mut normals = Vec::with_capacity(grid * grid);
@@ -117,8 +124,8 @@ fn build_terrain_mesh(grid: usize, cell: f64) -> Mesh {
     // Vertices
     for row in 0..grid {
         for col in 0..grid {
-            let x = col as f64 * cell;
-            let y = row as f64 * cell;
+            let x = col as f64 * cell - HALF_EXTENT;
+            let y = row as f64 * cell - HALF_EXTENT;
             let z = terrain(x, y);
             // Physics (x, y, z) → Bevy (x, z, y)
             positions.push([x as f32, z as f32, y as f32]);
@@ -199,8 +206,11 @@ fn setup(
 ) {
     let mut model = sim_mjcf::load_model(MJCF).expect("MJCF should parse");
 
-    // Replace placeholder with sinusoidal terrain
-    let hfield = HeightFieldData::from_fn(GRID_SIZE, GRID_SIZE, CELL_SIZE, terrain);
+    // Replace placeholder with sinusoidal terrain, sampled from the field's
+    // −x, −y corner (`from_fn`'s origin) at the asset's grid
+    let hfield = HeightFieldData::from_fn(GRID_SIZE, GRID_SIZE, CELL_SIZE, |x, y| {
+        terrain(x - HALF_EXTENT, y - HALF_EXTENT)
+    });
     model.hfield_data[0] = Arc::new(hfield);
 
     let mut data = model.make_data();
@@ -210,7 +220,7 @@ fn setup(
         "  Terrain: {}×{} samples, cell_size={CELL_SIZE:.4}m, extent={:.1}m\n",
         GRID_SIZE,
         GRID_SIZE,
-        GRID_SIZE as f64 * CELL_SIZE
+        2.0 * HALF_EXTENT
     );
 
     // Build terrain mesh manually (spawn_model_geoms skips hfield geoms)
@@ -231,10 +241,9 @@ fn setup(
     ));
 
     // Camera: above and to the side, looking at terrain center
-    let center = (GRID_SIZE as f32 * CELL_SIZE as f32) / 2.0;
     spawn_example_camera(
         &mut commands,
-        Vec3::new(center, 0.5, center),
+        Vec3::new(0.0, 0.5, 0.0),
         12.0,
         std::f32::consts::FRAC_PI_4,
         0.6,
@@ -282,7 +291,7 @@ fn draw_terrain_rays(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut gizmo
 
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
-    hud.section("Heightfield — Ray Marching");
+    hud.section("Heightfield — Rays on Terrain");
     hud.raw(String::new());
 
     let results = cast_terrain_rays(&model, &data);
@@ -351,7 +360,7 @@ fn run_validation(model: &sim_core::Model, data: &sim_core::Data) {
     };
 
     let checks = vec![check1, check2, check3];
-    let all_pass = print_report("Heightfield — Ray Marching (3 checks)", &checks);
+    let all_pass = print_report("Heightfield — Rays on Terrain (3 checks)", &checks);
     if !all_pass {
         std::process::exit(1);
     }

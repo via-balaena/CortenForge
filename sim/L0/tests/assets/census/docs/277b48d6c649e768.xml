@@ -1,0 +1,8 @@
+<mujoco model="on_body">
+  <asset>
+    <hfield name="h" nrow="5" ncol="4" size="1 1.5 0.3 0.1" elevation="0.1 0.7 0.3 0.9 0.5 0.1 0.7 0.3 0.9 0.5 0.1 0.7 0.3 0.9 0.5 0.1 0.7 0.3 0.9 0.5"/>
+  </asset>
+  <worldbody>
+    <body pos="1 2 0.5" euler="0 15 -30"><geom type="hfield" hfield="h" pos="0.2 0 -0.1" euler="5 0 0"/></body>
+  </worldbody>
+</mujoco>

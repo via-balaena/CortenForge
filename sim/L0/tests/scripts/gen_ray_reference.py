@@ -16,8 +16,9 @@ It writes ray.json:
   size (half-extents, top, base), nrow and ncol;
 - `hfield`: rays against those fields through `mj_rayHfield` (`engine_ray.c`),
   each the field's pose (`geom_xpos`, `geom_xmat`, set on the data before the
-  call), the ray's start and direction, and MuJoCo's distance, -1 where it
-  misses. `hfield_rays` says how they are drawn; `HFIELD_EDGE_RAYS` adds rays
+  call), the ray's start and direction, MuJoCo's distance, -1 where it
+  misses, and its normal (`normal`, zero where it misses). `hfield_rays` says
+  how they are drawn; `HFIELD_EDGE_RAYS` adds rays
   on the edges of its tests; `LINE_FIELDS` adds fields of one row and of one
   column, drawn as the others; `hfield_side_rays` adds rays across each side
   at its edge's height, to within a few ulps, and refuses a set of them that
@@ -166,7 +167,7 @@ def hfield_rays(name, m, d, size):
             else:
                 kinds['triangle'] += 1
         out.append({'field': name, 'pos': floats(pos), 'mat': floats(mat), 'pnt': floats(pnt),
-                    'vec': floats(vec), 'x': x})
+                    'vec': floats(vec), 'x': x, 'normal': floats(normal)})
     line = name in ('row', 'column')
     wanted = (['base', 'miss'] + ([] if line else ['triangle'])
               + ([] if name == 'flat' else ['side']))
@@ -470,9 +471,9 @@ def hfield_side_rays(name, m, d):
                 pnt[axis] = sign * (2.0 * (sx if axis == 0 else sy))
                 pnt[1 - axis] = float(along)
                 vec[axis] = -sign
-                x, _ = cast(m, d, np.zeros(3), np.eye(3).ravel(), np.array(pnt), np.array(vec))
+                x, normal = cast(m, d, np.zeros(3), np.eye(3).ravel(), np.array(pnt), np.array(vec))
                 out.append({'field': name, 'pos': [0.0] * 3, 'mat': floats(np.eye(3)), 'pnt': pnt,
-                            'vec': vec, 'x': x})
+                            'vec': vec, 'x': x, 'normal': floats(normal)})
     print(f'hfield side rays {name}: {len(out)}, {decided} decided by the single-precision reading',
           file=sys.stderr)
     return out, decided
@@ -493,9 +494,9 @@ def main():
     for name, pnt, vec in HFIELD_EDGE_RAYS:
         m, d = models[name]
         pos, mat = np.zeros(3), np.eye(3).ravel()
-        x, _ = cast(m, d, pos, mat, np.array(pnt), np.array(vec))
+        x, normal = cast(m, d, pos, mat, np.array(pnt), np.array(vec))
         rays.append({'field': name, 'pos': floats(pos), 'mat': floats(mat), 'pnt': pnt,
-                     'vec': vec, 'x': x})
+                     'vec': vec, 'x': x, 'normal': floats(normal)})
     for name, nrow, ncol, size, kind in LINE_FIELDS:
         m, d = field_model(name, nrow, ncol, size, elevation(rng, nrow, ncol, kind), pad=True)
         assert (m.hfield_nrow[0], m.hfield_ncol[0]) == (nrow, ncol)

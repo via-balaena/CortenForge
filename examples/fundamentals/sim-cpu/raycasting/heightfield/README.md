@@ -1,38 +1,42 @@
-# Heightfield — Ray Marching on Terrain
+# Heightfield — Rays on Terrain
 
 An 8×8 grid of downward rays strikes a sinusoidal heightfield terrain.
-Hit points form a dot cloud that traces the surface. Unlike convex
-primitives (which use analytic intersection), heightfields use **ray
-marching** — stepping along the ray until a surface crossing is detected,
-then refining with binary search.
+Hit points form a dot cloud that traces the surface. `raycast_scene` casts
+a height-field geom as MuJoCo's `mj_rayHfield` does: against the field's
+triangles, two a cell, and its base and sides, the field centred on its
+geom at the asset's half-extents and top.
 
-**One concept:** Ray marching on non-analytic geometry (heightfields, SDFs).
+**One concept:** A scene ray against a height field, as MuJoCo casts it.
 
 ## What you see
 
-- **Green terrain mesh** — sinusoidal surface: `z = 0.3 sin(2πx/4) cos(2πy/4)`
+- **Green terrain mesh** — sinusoidal surface: `z = 0.3 + 0.3 sin(2πx/4) cos(2πy/4)`
 - **64 cyan ray lines** descending from z=3 onto the terrain
 - **Green dots** at each hit point, forming a grid that follows the terrain
 - **Yellow arrows** — surface normals, tilting with the terrain slope
 
-The dot cloud visually confirms that ray marching tracks the surface
-accurately — dots sit right on the mesh, not floating above or below.
+The dot cloud visually confirms that the rays track the surface — dots
+sit right on the mesh, not floating above or below.
 
 ## Physics
 
 The terrain is a `HeightFieldData` with 64×64 samples at cell_size ≈ 0.127m
-(8m extent). The MJCF loads a placeholder hfield, which is replaced
+(8m extent). The MJCF loads a placeholder hfield whose `size` (half-extents
+4 × 4, top 0.6) is the terrain's, and the placeholder's data is replaced
 programmatically with `HeightFieldData::from_fn` before geom spawning.
 
-Ray marching steps at half-cell intervals. When the ray crosses from above
-to below the surface, 8 binary-search refinement steps narrow the hit to
-sub-millimeter precision.
+The field is centred on its geom: its extent and top come from the asset's
+`size`, its grid from the data's counts. `from_fn` samples from the field's
+−x, −y corner, so the example samples the terrain at `x − 4`, `y − 4`.
+The heights stay between 0 and the top, as a field loaded from MJCF does.
+Each ray meets the two triangles of the cells under it, and the nearest
+crossing wins.
 
 | Parameter | Value |
 |-----------|-------|
 | Grid | 64×64 samples |
-| Extent | ~8m × 8m |
-| Amplitude | 0.3m |
+| Extent | 8m × 8m, centred on the origin |
+| Height | 0 to 0.6m |
 | Ray grid | 8×8 (64 rays) |
 | Ray origin z | 3.0m |
 

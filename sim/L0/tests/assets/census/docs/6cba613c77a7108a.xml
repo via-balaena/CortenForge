@@ -1,0 +1,9 @@
+<mujoco model="two_fields_sphere">
+  <asset>
+    <hfield name="a" nrow="4" ncol="4" size="1 1 0.5 0.1" elevation="0.1 0.7 0.3 0.9 0.5 0.1 0.7 0.3 0.9 0.5 0.1 0.7 0.3 0.9 0.5 0.1"/>
+    <hfield name="b" nrow="3" ncol="5" size="1 0.8 0.3 0.1" elevation="0.1 0.7 0.3 0.9 0.5 0.5 0.1 0.7 0.3 0.9 0.9 0.5 0.1 0.7 0.3"/>
+  </asset>
+  <worldbody>
+    <geom type="hfield" hfield="a" pos="-1.2 0 0"/><geom type="hfield" hfield="b" pos="1.2 0 0.05" euler="0 0 90"/><geom type="sphere" size="0.2" pos="-1.2 0 1.2"/>
+  </worldbody>
+</mujoco>

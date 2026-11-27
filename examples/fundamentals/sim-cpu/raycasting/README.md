@@ -23,7 +23,7 @@ ports of MuJoCo's `mj_rayMesh` and `mj_rayHfield` (`sensor::ray_mesh`).
 | [stress-test](stress-test/) | Headless: analytical validation of all shapes, normals, scene queries, edge cases | 20 |
 | [basic-shapes](basic-shapes/) | `raycast_scene` on 6 primitives — hit dots + normal arrows | 5 |
 | [scene-query](scene-query/) | LIDAR fan of 36 rays, body exclusion, geom group filtering | 4 |
-| [heightfield](heightfield/) | Ray marching on sinusoidal terrain, dot cloud tracing the surface | 3 |
+| [heightfield](heightfield/) | A scene ray on sinusoidal terrain as MuJoCo's `mj_rayHfield` casts it, dot cloud tracing the surface | 3 |
 
 ## Run
 
