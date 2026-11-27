@@ -83,11 +83,10 @@ fn written_over<const N: usize>(written: Option<Prefix<N>>, base: [f64; N]) -> [
 }
 
 /// The fault MuJoCo 3.5.0 names first, of a height field's (`hfield`) and
-/// `later`, met building an element MuJoCo compiles after the height fields
-/// (a pair, an exclude, an equality, a tendon, an actuator, a sensor): the
-/// height field's, or before it the tree's (`tree`), which MuJoCo meets
-/// first. Without a height field's fault, `later`: a tree's fault beside a
-/// later element's is ledger L353's, as before.
+/// `later`, met building an element MuJoCo compiles after the height fields:
+/// the height field's, or before it the tree's (`tree`, its user data's or
+/// its checks'), which MuJoCo meets first. Without a height field's fault,
+/// `later` (ledger L353).
 fn named_first(tree: Option<MjcfError>, hfield: Option<MjcfError>, later: MjcfError) -> MjcfError {
     match hfield {
         Some(hfield) => tree.unwrap_or(hfield),
@@ -369,17 +368,16 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     let tree_end = builder.body_parent.len();
 
     // Each height field compiled now and its fault held: MuJoCo 3.5.0
-    // compiles the height fields after the bodies, fusestatic, the flexes and
-    // the skins, and before the pairs, excludes, equalities, tendons,
-    // actuators and sensors (`user_model.cc:4929-4955`). This crate resolves
-    // those elements' names as it builds them, below, so a fault building one
-    // gives way to the height field's ([`named_first`]); the height field's
-    // alone is returned after the flexes' checks, in the late block.
+    // compiles the height fields (`user_model.cc:4950`) before the excludes,
+    // equalities, tendons, actuators and sensors (`:4954-4958`), so a fault
+    // met building one of those below gives way to the height field's
+    // ([`named_first`]); the height field's alone is returned in the late
+    // block.
     let hfield_fault = builder.compile_hfields(&mjcf.hfields, base_path).err();
 
     // Process tendons (must be before actuators, since actuators may reference tendons)
     if let Err(e) = builder.process_tendons(&mjcf.tendons) {
-        return Err(named_first(tree_fault, hfield_fault, e));
+        return Err(named_first(tree_user.err().or(tree_fault), hfield_fault, e));
     }
 
     // Process actuators
@@ -390,23 +388,23 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
                 Some(&actuator.name),
                 i,
             ));
-            return Err(named_first(tree_fault, hfield_fault, e));
+            return Err(named_first(tree_user.err().or(tree_fault), hfield_fault, e));
         }
     }
 
     // Process equality constraints (must be after bodies and joints)
     if let Err(e) = builder.process_equality_constraints(&mjcf.equality, &mjcf.flex) {
-        return Err(named_first(tree_fault, hfield_fault, e));
+        return Err(named_first(tree_user.err().or(tree_fault), hfield_fault, e));
     }
 
     // Process sensors (must be after bodies, joints, tendons, actuators)
     if let Err(e) = builder.process_sensors(&mjcf.sensors) {
-        return Err(named_first(tree_fault, hfield_fault, e));
+        return Err(named_first(tree_user.err().or(tree_fault), hfield_fault, e));
     }
 
     // Process contact pairs and excludes (must be after body tree for name-to-id maps)
     if let Err(e) = builder.process_contact(&mjcf.contact) {
-        return Err(named_first(tree_fault, hfield_fault, e));
+        return Err(named_first(tree_user.err().or(tree_fault), hfield_fault, e));
     }
 
     // Process flex deformable bodies (before the mass pipeline, so that a

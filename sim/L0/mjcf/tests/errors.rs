@@ -330,11 +330,13 @@ fn a_height_field_built_in_code_without_its_rows_names_it() {
 }
 
 #[test]
-fn a_height_field_built_in_code_with_a_nan_size_loads() {
-    // MuJoCo 3.5.0's size check (`size <= 0`) passes a NaN, so the field
-    // compiles; the parser refuses one written (registry `D-NONFINITE`), but a
-    // model built in code reaches the compiler, which gives the grid a spacing
-    // cf-geometry takes rather than panicking.
+fn a_height_field_built_in_code_with_a_nan_size_is_compiled_as_mujocos() {
+    // MuJoCo 3.5.0's size check (`size <= 0`) passes a NaN, so a field no
+    // geom names compiles, its grid given a spacing cf-geometry takes; a geom
+    // on it is refused, as MuJoCo checks each geom's size once it is set
+    // (`user_objects.cc:3772-3776`; each measured through MuJoCo's spec, a
+    // NaN in the field's first size or its last). The parser refuses a NaN
+    // written (registry `D-NONFINITE`): only a model built in code holds one.
     let mut model = sim_mjcf::parse_mjcf_str(
         r#"<mujoco>
             <asset><hfield name="h" nrow="2" ncol="2" size="1 1 1 0.1" elevation="1 2 3 4"/></asset>
@@ -342,7 +344,18 @@ fn a_height_field_built_in_code_with_a_nan_size_loads() {
         </mujoco>"#,
     )
     .unwrap();
+    for place in [0, 3] {
+        let mut model = model.clone();
+        model.hfields[0].size[place] = f64::NAN;
+        let err = sim_mjcf::model_from_mjcf(&model, None).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "nan size in geom (geom #0 in body 'world')",
+            "size {place}"
+        );
+    }
     model.hfields[0].size[0] = f64::NAN;
+    model.worldbody.geoms.clear();
     let built = sim_mjcf::model_from_mjcf(&model, None).unwrap();
     let [dx, dy] = built.hfield_data[0].spacing();
     assert!(dx > 0.0 && dy > 0.0, "{dx} {dy}");

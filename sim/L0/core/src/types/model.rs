@@ -643,8 +643,8 @@ pub struct Model {
     /// Height field names (for lookup by name).
     pub hfield_name: Vec<String>,
     /// Height field terrain data: each height MuJoCo's normalised elevation
-    /// times `hfield_size[2]`, so within `[0, hfield_size[2]]`, the field's
-    /// lowest Y row first. A field set by hand whose heights pass
+    /// times `hfield_size[2]`, the field's lowest Y row first. A field set by
+    /// hand whose heights pass
     /// `hfield_size[2]` makes no contact above it: the collision's box tests
     /// take `hfield_size[2]` as the field's top, as MuJoCo 3.5.0's do.
     pub hfield_data: Vec<Arc<HeightFieldData>>,

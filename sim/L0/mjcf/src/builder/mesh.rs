@@ -318,8 +318,8 @@ impl ModelBuilder {
     }
 
     /// Each height field compiled as MuJoCo 3.5.0 compiles it, one after
-    /// another ([`compile_hfield`]), used by a geom or not, after the bodies'
-    /// and the flexes' checks and before the equalities' (`user_model.cc:4929-4955`).
+    /// another ([`compile_hfield`]), used by a geom or not; `model_from_mjcf`
+    /// says where its fault is named.
     pub(crate) fn compile_hfields(
         &mut self,
         hfields: &[MjcfHfield],
@@ -385,9 +385,9 @@ const MJ_EPS: f64 = 1e-14;
 /// rays read it (`engine_collision_convex.c:1177`). The grid's spacing along
 /// each axis is its extent over its cells, `2·size[0]/(ncol − 1)` and
 /// `2·size[1]/(nrow − 1)`; a field of one column or row has no extent along
-/// that axis, and its spacing there is the axis's whole width; a spacing that
-/// is not positive (a step that underflows, or a size that is not a number in
-/// a model built in code) is the least positive normal double. MuJoCo's
+/// that axis, and its spacing there is the axis's whole width; a spacing
+/// below the least positive normal double (a step that underflows, or a size
+/// that is not a number in a model built in code) is raised to it. MuJoCo's
 /// readers (contacts, rays, flex elements) take positions from `size` and the
 /// grid, not from this spacing, which cf-geometry's own queries read.
 ///
@@ -417,8 +417,9 @@ fn compile_hfield(
     } else {
         (hfield.nrow, hfield.ncol)
     };
+    // MuJoCo multiplies the counts only where both are positive.
     let cells = i64::from(nrow) * i64::from(ncol);
-    if cells > i64::from(i32::MAX) {
+    if nrow > 0 && ncol > 0 && cells > i64::from(i32::MAX) {
         return Err(length());
     }
     let elevation = hfield.elevation.as_deref().filter(|e| !e.is_empty());
@@ -587,13 +588,25 @@ fn read_hfield_png(
     if bytes.is_empty() {
         return Err(format!("empty PNG file '{file}'"));
     }
-    // Without the decoder's memory limit, which MuJoCo has not; a panic in
-    // the decoder (a palette whose length is not a multiple of 3) refused
-    // (registry `D-HFIELD-PNG`).
+    // An image of more pixels than a C `int` counts, MuJoCo's grid's, refused
+    // before it is decoded, in the words lodepng gives an image past 2⁶¹
+    // pixels (registry `D-HFIELD-COUNTS`).
+    if let Some((width, height)) = png_dimensions(bytes)
+        && u64::from(width) * u64::from(height) > u64::from(i32::MAX.unsigned_abs())
+    {
+        return Err(format!(
+            "error decoding PNG file '{file}': integer overflow due to too many pixels"
+        ));
+    }
+    // The decoder's memory bounded at [`PNG_DECODE_LIMIT`]; a panic in it (a
+    // palette whose length is not a multiple of 3) refused (registry
+    // `D-HFIELD-PNG`).
     let decoded = std::panic::catch_unwind(|| {
         let mut reader =
             image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png);
-        reader.no_limits();
+        let mut limits = image::Limits::default();
+        limits.max_alloc = Some(PNG_DECODE_LIMIT);
+        reader.limits(limits);
         reader.decode()
     });
     let image = match decoded {
@@ -628,6 +641,30 @@ fn read_hfield_png(
         data.extend(grey[row..row + ncol].iter().map(|&v| f32::from(v)));
     }
     Ok((nrow, ncol, data))
+}
+
+/// The most a PNG height field's decoding may allocate, 8 GiB: above it the
+/// image is refused, "Memory limit exceeded" (registry `D-HFIELD-PNG`). The
+/// decoder's own 512 MiB refused images MuJoCo loads, and no limit let it
+/// abort on an image whose header claims more pixels than memory holds.
+#[cfg(feature = "hfields")]
+const PNG_DECODE_LIMIT: u64 = 8 << 30;
+
+/// A PNG's width and height from its `IHDR`, where it holds one where the
+/// format puts it (the signature, then the chunk's length and name).
+#[cfg(feature = "hfields")]
+fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.get(12..16)? != b"IHDR" {
+        return None;
+    }
+    let word = |at: usize| {
+        bytes
+            .get(at..at + 4)?
+            .try_into()
+            .ok()
+            .map(u32::from_be_bytes)
+    };
+    Some((word(16)?, word(20)?))
 }
 
 /// Without the `hfields` feature a PNG height field is refused, naming the

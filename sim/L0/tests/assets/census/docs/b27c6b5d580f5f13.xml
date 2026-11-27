@@ -1,0 +1,1 @@
+<mujoco><size nuser_body="1"/><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1" user="1 2"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><equality><weld body1="nope"/></equality></mujoco>

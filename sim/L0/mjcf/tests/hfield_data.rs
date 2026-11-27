@@ -674,6 +674,17 @@ const LOADS: &[Load] = &[
         spacing: [0x3ff0_0000_0000_0000, 0x4000_0000_0000_0000],
         png: false,
     },
+    Load {
+        what: "a file beside counts whose product passes a C int: the counts not read",
+        xml: r#"<mujoco><asset><hfield name="h" file="h.bin" nrow="65536" ncol="65536" size="1 1 0.5 0.1"/></asset><worldbody><geom type="hfield" hfield="h"/></worldbody></mujoco>"#,
+        files: &[("h.bin", b"\x02\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x80?\x00\x00\x00@\x00\x00\x00?\x00\x00\x80\xbf\x00\x00\x80@")],
+        nrow: 2,
+        ncol: 3,
+        heights: &[0x3fb9_9999_a000_0000, 0x3fc9_9999_a000_0000, 0x3fd3_3333_4000_0000, 0x3fc3_3333_4000_0000, 0x0000_0000_0000_0000, 0x3fe0_0000_0000_0000],
+        geom_size: [0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000, 0x3fc6_6666_6666_6666],
+        spacing: [0x3ff0_0000_0000_0000, 0x4000_0000_0000_0000],
+        png: false,
+    },
 ];
 
 const REFUSED: &[Refused] = &[
@@ -854,7 +865,7 @@ const REFUSED: &[Refused] = &[
         png: false,
     },
     Refused {
-        what: "an empty file: no data, its elevation not read",
+        what: "a written `file=\"\"`: no data",
         xml: r#"<mujoco model="h"><option timestep="0.002"/><asset><hfield name="h" file="" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body pos="0.13 0.21 0.6"><freejoint/><geom type="sphere" size="0.05" mass="1"/></body></worldbody></mujoco>"#,
         files: &[],
         mujoco: "Error: hfield not specified",
@@ -862,7 +873,7 @@ const REFUSED: &[Refused] = &[
         png: false,
     },
     Refused {
-        what: "an empty file beside counts: no data, the counts not filled",
+        what: "a written `file=\"\"` beside counts and an elevation: neither read, no data",
         xml: r#"<mujoco model="h"><option timestep="0.002"/><asset><hfield name="h" file="" nrow="2" ncol="2" elevation="0 1 2 3" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body pos="0.13 0.21 0.6"><freejoint/><geom type="sphere" size="0.05" mass="1"/></body></worldbody></mujoco>"#,
         files: &[],
         mujoco: "Error: hfield not specified",
@@ -884,6 +895,46 @@ const REFUSED: &[Refused] = &[
         mujoco: "Error: elevation data length must match nrow*ncol",
         ours: "elevation data length must match nrow*ncol (hfield 'h')",
         png: false,
+    },
+    Refused {
+        what: "negative counts whose product passes a C int: not multiplied, no data",
+        xml: r#"<mujoco><asset><hfield name="h" nrow="-65536" ncol="-65536" size="1 1 1 0.1"/></asset><worldbody><geom type="hfield" hfield="h"/></worldbody></mujoco>"#,
+        files: &[],
+        mujoco: "Error: hfield not specified",
+        ours: "hfield not specified (hfield 'h')",
+        png: false,
+    },
+    Refused {
+        what: "the same with a top of 0: the size first",
+        xml: r#"<mujoco><asset><hfield name="h" nrow="-65536" ncol="-65536" size="1 1 0 1"/></asset><worldbody><geom type="hfield" hfield="h"/></worldbody></mujoco>"#,
+        files: &[],
+        mujoco: "Error: size parameter is not positive in hfield",
+        ours: "size parameter is not positive in hfield (hfield 'h')",
+        png: false,
+    },
+    Refused {
+        what: "a top of 0 and no data: the size first",
+        xml: r#"<mujoco><asset><hfield name="h" size="1 1 0 0.1"/></asset><worldbody><geom type="hfield" hfield="h"/></worldbody></mujoco>"#,
+        files: &[],
+        mujoco: "Error: size parameter is not positive in hfield",
+        ours: "size parameter is not positive in hfield (hfield 'h')",
+        png: false,
+    },
+    Refused {
+        what: "a top of 0 and a file not there: the size first",
+        xml: r#"<mujoco><asset><hfield name="h" file="missing.bin" size="1 1 0 0.1"/></asset><worldbody><geom type="hfield" hfield="h"/></worldbody></mujoco>"#,
+        files: &[],
+        mujoco: "Error: size parameter is not positive in hfield",
+        ours: "size parameter is not positive in hfield (hfield 'h')",
+        png: false,
+    },
+    Refused {
+        what: "a PNG whose header claims 2147483647 by 2147483647 pixels: refused before it is decoded",
+        xml: r#"<mujoco><asset><hfield name="h" file="past_2_61.png" size="1 1 0.5 0.1"/></asset><worldbody><geom type="hfield" hfield="h"/></worldbody></mujoco>"#,
+        files: &[("past_2_61.png", b"\x89PNG\x0d\x0a\x1a\x0a\x00\x00\x00\x0dIHDR\x7f\xff\xff\xff\x7f\xff\xff\xff\x08\x00\x00\x00\x001\xa2T\xba\x00\x00\x00\x0aIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82")],
+        mujoco: "Error: error decoding PNG file '<dir>/past_2_61.png': integer overflow due to too many pixels",
+        ours: "error decoding PNG file '<dir>/past_2_61.png': integer overflow due to too many pixels (hfield 'h')",
+        png: true,
     },
     Refused {
         what: "MuJoCo's own format, every value NaN, the file named `./`: its reduced name",
@@ -1160,11 +1211,18 @@ fn rangefinders_read_a_height_field_as_mujocos() {
     );
 }
 
-/// Registry `D-HFIELD-COUNTS`: a grid whose `nrow · ncol` passes a C `int`,
-/// with no data, refused before anything is allocated, in the words MuJoCo
-/// 3.5.0 gives the largest such grid. Its `int` product overflows (measured
-/// on the oracle: 65536 × 65536 crashes it, 46341 × 46341 and (2³¹ − 1) × 2
-/// allocate past 2.5 GB, (2³¹ − 1)² is refused as here).
+/// Registry `D-HFIELD-COUNTS`: a grid of more cells than a C `int` counts is
+/// refused before anything is allocated, by each road a grid comes, where
+/// MuJoCo 3.5.0's `int` products overflow (each measured on the oracle):
+/// counts with no data, in the words MuJoCo gives the largest such grid,
+/// (2³¹ − 1)² (65536 × 65536 crashes it, 46341 × 46341 and (2³¹ − 1) × 2
+/// allocate past 2.5 GB); a PNG whose header claims one, in lodepng's words
+/// for an image past 2⁶¹ pixels (for 46341 × 46341 pixels and one row of
+/// data, MuJoCo's are "invalid decompressed idat size"); MuJoCo's own
+/// format, whose file this crate sizes in 64 bits, "unexpected file size"
+/// (MuJoCo's: "could not allocate buffers in hfield" for counts 65536 ×
+/// 65536 and no data, "nhfielddata is too large" for (2³¹ − 1)² and one
+/// value).
 #[test]
 fn a_grid_past_an_int_is_refused() {
     for (nrow, ncol) in [(65536, 65536), (46341, 46341), (2_147_483_647, 2)] {
@@ -1178,14 +1236,53 @@ fn a_grid_past_an_int_is_refused() {
             "{nrow} x {ncol}"
         );
     }
+    let dir = tempfile::tempdir().unwrap();
+    let mut files: Vec<(&str, &[u8])> =
+        vec![("rows.bin", HEADER_65536), ("most.bin", HEADER_INT_MAX)];
+    if cfg!(feature = "hfields") {
+        files.push(("pixels.png", PNG_PAST_AN_INT));
+    }
+    for (file, bytes) in files {
+        let xml = format!(
+            r#"<mujoco><asset><hfield name="h" file="{file}" size="1 1 1 0.1"/></asset><worldbody><geom type="hfield" hfield="h"/></worldbody></mujoco>"#
+        );
+        let error = load(dir.path(), &xml, &[(file, bytes)]).err();
+        let path = dir.path().join(file).display().to_string();
+        let want = if file == "pixels.png" {
+            format!(
+                "error decoding PNG file '{path}': integer overflow due to too many pixels (hfield 'h')"
+            )
+        } else {
+            format!("unexpected file size in file '{path}' (hfield 'h')")
+        };
+        assert_eq!(
+            error.map(|e| e.to_string().replace('\\', "/")),
+            Some(want.replace('\\', "/")),
+            "{file}"
+        );
+    }
 }
+
+/// MuJoCo's own format: counts 65536 and 65536, and no values.
+const HEADER_65536: &[u8] = b"\x00\x00\x01\x00\x00\x00\x01\x00";
+
+/// MuJoCo's own format: counts 2147483647 and 2147483647, and one value.
+const HEADER_INT_MAX: &[u8] = b"\xff\xff\xff\x7f\xff\xff\xff\x7f\x00\x00\x00?";
+
+/// An 8-bit grey PNG whose header claims 46341 by 46341 pixels, its data one
+/// row.
+const PNG_PAST_AN_INT: &[u8] = b"\x89PNG\x0d\x0a\x1a\x0a\x00\x00\x00\x0dIHDR\x00\x00\xb5\x05\x00\x00\xb5\x05\x08\x00\x00\x00\x00\xf4\x95\xcb\xff\x00\x00\x00\x0aIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82";
 
 /// Registry `D-HFIELD-PNG`: a malformed PNG is decided by the `png` crate,
 /// not by lodepng, as MuJoCo 3.5.0 decides it (each measured on the oracle;
 /// review round 1 RA's files): a palette whose length is not a multiple of
 /// 3, which lodepng reads to its last whole entry and the `png` crate panics
 /// on, is refused; a stream whose Adler-32 checksum is wrong, which lodepng
-/// refuses, loads.
+/// refuses, loads; an image whose decoding needs more memory than this
+/// crate's bound (a 16-bit RGBA header of 46340 by 46340 pixels, 17 GB
+/// decoded, its data one row), which lodepng refuses as its data is short
+/// ("invalid decompressed idat size"), is refused before anything is
+/// allocated, "Memory limit exceeded".
 #[cfg(feature = "hfields")]
 #[test]
 fn a_malformed_png_is_decided_by_this_crates_decoder() {
@@ -1211,12 +1308,32 @@ fn a_malformed_png_is_decided_by_this_crates_decoder() {
     let dir = tempfile::tempdir().unwrap();
     let adler = load(dir.path(), &xml("adler.png"), &[("adler.png", BAD_ADLER32)]);
     assert!(adler.is_ok(), "{:?}", adler.err());
+    let large = load(
+        dir.path(),
+        &xml("large.png"),
+        &[("large.png", PNG_PAST_THE_LIMIT)],
+    );
+    let want = format!(
+        "error decoding PNG file '{}': Memory limit exceeded (hfield 'h')",
+        dir.path().join("large.png").display()
+    );
+    assert_eq!(
+        large.err().map(|e| e.to_string().replace('\\', "/")),
+        Some(want.replace('\\', "/"))
+    );
 }
 
-/// A 3 × 3 palette PNG whose `PLTE` chunk is 13 bytes long.
+/// A palette PNG 4 pixels wide and 3 high whose `PLTE` chunk is 13 bytes
+/// long.
 #[cfg(feature = "hfields")]
 const PALETTE_NOT_IN_THREES: &[u8] = b"\x89PNG\x0d\x0a\x1a\x0a\x00\x00\x00\x0dIHDR\x00\x00\x00\x04\x00\x00\x00\x03\x08\x03\x00\x00\x00\x83*^\xf4\x00\x00\x00\x0dPLTE\x0a\xc8\x1eZPF\xfa\x01\x02\x00\x00\x00\x07\x87L\xfb\xa2\x00\x00\x00\x17IDATx\x9cc``dbf`fbd``ddb\x02\x00\x00\x94\x00\x13$\xc5\xffa\x00\x00\x00\x00IEND\xaeB`\x82";
 
-/// A 3 × 3 grey PNG whose zlib stream's Adler-32 checksum is wrong.
+/// A grey PNG 4 pixels wide and 3 high whose zlib stream's Adler-32
+/// checksum is wrong.
 #[cfg(feature = "hfields")]
 const BAD_ADLER32: &[u8] = b"\x89PNG\x0d\x0a\x1a\x0a\x00\x00\x00\x0dIHDR\x00\x00\x00\x04\x00\x00\x00\x03\x08\x00\x00\x00\x00\x91\x9f\xf1\x1a\x00\x00\x00\x17IDATx\x9cc`ph\xf8\xcf\xc0%\x22\xa7\xc1p\x22\xc5H\x12\x00\xe4\xc9\x03\x9b\x02\x05\x01U\x00\x00\x00\x00IEND\xaeB`\x82";
+
+/// A 16-bit RGBA PNG whose header claims 46340 by 46340 pixels, its data one
+/// row.
+#[cfg(feature = "hfields")]
+const PNG_PAST_THE_LIMIT: &[u8] = b"\x89PNG\x0d\x0a\x1a\x0a\x00\x00\x00\x0dIHDR\x00\x00\xb5\x04\x00\x00\xb5\x04\x10\x06\x00\x00\x00\xa5\xf0\xf0\xfb\x00\x00\x00\x0aIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82";
