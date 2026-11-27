@@ -215,8 +215,9 @@
 //! `refpos` or `maxhullvert`. RL-11b compiles each height field where MuJoCo
 //! compiles it, after the condims, and loads one with counts and no
 //! elevation, so two left `CONDIM_COSTS` for `TWO_FAULTS`: a geom's or a
-//! pair's condim beside a height field with no elevation, each named as
-//! MuJoCo names it (measured 2026-11-26).
+//! pair's condim beside a height field's top of 0 (with no elevation,
+//! which main refused while parsing), each named as MuJoCo names it
+//! (measured 2026-11-26).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -2225,13 +2226,13 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "repeated name 'm' in mesh",
     ),
     (
-        "a geom's condim then a height field with no elevation",
+        "a geom's condim then a height field's top of 0",
         r#"<mujoco><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom type="hfield" hfield="h" pos="3 0 0"/><body name="a" pos="0 0 0.09" ><freejoint/><geom name="ga" type="sphere" size="0.1" condim="2"/></body><body name="b" pos="0.5 0 0.09"><freejoint/><geom name="gb" type="box" size="0.1 0.1 0.1"/></body></worldbody><contact><pair geom1="ga" geom2="floor"/><pair geom1="gb" geom2="floor"/></contact></mujoco>"#,
         "invalid condim in geom",
         "invalid condim in geom (geom 'ga' in body 'a')",
     ),
     (
-        "a pair's condim then a height field with no elevation",
+        "a pair's condim then a height field's top of 0",
         r#"<mujoco><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1"/></asset><worldbody><geom name="floor" type="plane" size="1 1 0.1"/><geom type="hfield" hfield="h" pos="3 0 0"/><body name="a" pos="0 0 0.09" ><freejoint/><geom name="ga" type="sphere" size="0.1"/></body><body name="b" pos="0.5 0 0.09"><freejoint/><geom name="gb" type="box" size="0.1 0.1 0.1"/></body></worldbody><contact><pair geom1="ga" geom2="floor" condim="2"/><pair geom1="gb" geom2="floor"/></contact></mujoco>"#,
         "invalid condim in contact pair",
         "invalid condim in contact pair (pair #0)",
@@ -2391,6 +2392,12 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         r#"<mujoco model="f"><asset><hfield name="h" nrow="2" ncol="2" size="1 1 0 0.1" elevation="0 0 1 1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body></worldbody><sensor><accelerometer site="nope"/></sensor></mujoco>"#,
         "size parameter is not positive in hfield",
         "size parameter is not positive in hfield (hfield 'h')",
+    ),
+    (
+        "a height field with no data beside a ball joint's equality",
+        r#"<mujoco><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="ba" type="ball"/><geom size="0.1"/></body></worldbody><equality><joint joint1="ba"/></equality></mujoco>"#,
+        "hfield not specified",
+        "hfield not specified (hfield 'h')",
     ),
 ];
 
@@ -2554,7 +2561,7 @@ fn a_nuser_below_minus_1_set_in_code_is_refused_first() {
 /// are applied, a body's orientation when the tree is built, and a pair
 /// with no `geom1` while parsing (registry `D-PAIR-NO-GEOM`); MuJoCo 3.5.0
 /// checks each condim and pair before these (ledger L353). `(what, document,
-/// MuJoCo's reason, this crate's error)`, measured 2026-11-04 (the last five:
+/// MuJoCo's reason, this crate's error)`, measured 2026-11-04 (the last three:
 /// review round 1's).
 const CONDIM_COSTS: &[(&str, &str, &str, &str)] = &[
     (

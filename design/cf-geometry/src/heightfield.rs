@@ -764,6 +764,18 @@ mod tests {
     }
 
     #[test]
+    fn a_rectangular_field_steps_its_normal_a_tenth_of_each_axis_along_x() {
+        // Columns 2 apart whose heights rise 0, 10, 40: the slope along X is
+        // 5 below x = 2 and 15 above it. From x = 1.9 the normal's step along
+        // X, a tenth of the 2-wide column, reaches x = 2.1: (11.5 − 9.5) / 0.2.
+        let heights = (0..4).flat_map(|_| [0.0, 10.0, 40.0]).collect();
+        let hf = HeightFieldData::with_spacing(heights, 3, 4, [2.0, 0.5]);
+        let n = hf.normal(1.9, 0.6).unwrap();
+        let want = Vector3::new(-10.0, 0.0, 1.0).normalize();
+        assert_relative_eq!(n, want, epsilon = 1e-9);
+    }
+
+    #[test]
     fn square_cells_read_the_same_either_way() {
         let heights: Vec<f64> = (0..9).map(|i| f64::from(i * i) * 0.1).collect();
         let a = HeightFieldData::new(heights.clone(), 3, 3, 0.7);
