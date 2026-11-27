@@ -2486,6 +2486,36 @@ const TWO_FAULTS: &[(&str, &str, &str, &str)] = &[
         "repeated name 's' in sensor",
         "repeated name 's' in sensor",
     ),
+    (
+        "a sensor naming no object, which MuJoCo's reader refuses, beside an equality's unknown body",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/><site name="s2" pos="0.2 0 0"/></body></worldbody><equality><connect body1="nope" anchor="0 0 0"/></equality><sensor><jointpos/></sensor></mujoco>"#,
+        "required attribute missing: 'joint'",
+        "required attribute missing: 'objname' on <sensor> (sensor #0)",
+    ),
+    (
+        "a sensor naming no object beside a spatial tendon wrapping a box",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/><site name="s2" pos="0.2 0 0"/></body><geom name="bx" type="box" size="0.1 0.1 0.1"/></worldbody><tendon><spatial><site site="s"/><geom geom="bx"/><site site="s2"/></spatial></tendon><sensor><jointpos/></sensor></mujoco>"#,
+        "required attribute missing: 'joint'",
+        "required attribute missing: 'objname' on <sensor> (sensor #0)",
+    ),
+    (
+        "a sensor naming no object beside a mesh of three vertices",
+        r#"<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0"/></asset><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/><site name="s2" pos="0.2 0 0"/></body><geom type="mesh" mesh="m"/></worldbody><sensor><jointpos/></sensor></mujoco>"#,
+        "required attribute missing: 'joint'",
+        "required attribute missing: 'objname' on <sensor> (sensor #0)",
+    ),
+    (
+        "a sensor naming no object beside a body's axisangle of no axis",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/><site name="s2" pos="0.2 0 0"/></body><body axisangle="0 0 0 1"><geom size="0.1"/></body></worldbody><sensor><jointpos/></sensor></mujoco>"#,
+        "required attribute missing: 'joint'",
+        "required attribute missing: 'objname' on <sensor> (sensor #0)",
+    ),
+    (
+        "a sensor naming no object beside an actuator's delay with no history",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/><site name="s2" pos="0.2 0 0"/></body></worldbody><actuator><motor joint="j" delay="0.1"/></actuator><sensor><jointpos/></sensor></mujoco>"#,
+        "required attribute missing: 'joint'",
+        "required attribute missing: 'objname' on <sensor> (sensor #0)",
+    ),
 ];
 
 #[test]
@@ -2554,6 +2584,12 @@ const THREE_FAULTS: &[(&str, &str, &str, &str)] = &[
     (
         "a joint's axis of 0, a height field with no data and a sensor naming no object, which MuJoCo's reader refuses before it compiles",
         r#"<mujoco><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/></body><body pos="2 0 1"><joint type="hinge" axis="0 0 0"/><geom size="0.1"/></body></worldbody><sensor><jointpos/></sensor></mujoco>"#,
+        "required attribute missing: 'joint'",
+        "required attribute missing: 'objname' on <sensor> (sensor #0)",
+    ),
+    (
+        "a sensor naming no object, a height field with no data and a spatial tendon wrapping a box",
+        r#"<mujoco><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/><site name="s2" pos="0.2 0 0"/></body><geom name="bx" type="box" size="0.1 0.1 0.1"/></worldbody><tendon><spatial><site site="s"/><geom geom="bx"/><site site="s2"/></spatial></tendon><sensor><jointpos/></sensor></mujoco>"#,
         "required attribute missing: 'joint'",
         "required attribute missing: 'objname' on <sensor> (sensor #0)",
     ),
@@ -2851,14 +2887,16 @@ fn a_condim_beside_another_fault_is_named_as_ledgered() {
     assert!(moved.is_empty(), "{}", moved.join("\n"));
 }
 
-/// Two faults, a sensor's MuJoCo 3.5.0's reader meets and a fault of the
-/// worldbody this crate meets as it reads or checks the document (a
-/// repeated body name, a geom's malformed size), where this crate names the
-/// other: MuJoCo's reader reads the sensors before the worldbody
-/// (`xml_native_reader.cc:1064-1078`), and this crate makes a sensor's
-/// checks as it builds the sensors (ledger L353). `(what, document, MuJoCo's
-/// reason, this crate's error)`, measured 2026-11-27 (RL-11b's second
-/// fix-diff pass, FC's documents).
+/// Two faults, a sensor's MuJoCo 3.5.0's reader meets and one this crate
+/// meets as it reads the document or in its front end, before it builds the
+/// model (a repeated body or sensor name, a geom's malformed size, an
+/// actuator's unknown joint, a mesh's vertex count), where this crate names
+/// the other: MuJoCo's reader reads the sensors before the worldbody
+/// (`xml_native_reader.cc:1064-1078`) and its compiler resolves names and
+/// meshes once the document is read, and this crate names a read
+/// document's sensor faults after its front end (ledger L353). `(what,
+/// document, MuJoCo's reason, this crate's error)`, measured 2026-11-27
+/// (RL-11b's second and third fix-diff passes, FC's and FE's documents).
 const SENSOR_READ_COSTS: &[(&str, &str, &str, &str)] = &[
     (
         "a body's repeated name beside a sensor naming no object",
@@ -2877,6 +2915,24 @@ const SENSOR_READ_COSTS: &[(&str, &str, &str, &str)] = &[
 </mujoco>"#,
         "required attribute missing: 'joint'",
         "bad number \"abc\" in attribute 'size' on <geom> (line 3: worldbody > geom)",
+    ),
+    (
+        "a sensor naming no object beside an actuator's unknown joint, which this crate's validation resolves",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/><site name="s2" pos="0.2 0 0"/></body></worldbody><actuator><motor joint="nope"/></actuator><sensor><jointpos/></sensor></mujoco>"#,
+        "required attribute missing: 'joint'",
+        "unknown joint 'nope' (actuator #0)",
+    ),
+    (
+        "a sensor naming no object beside a later sensor's repeated name",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/><site name="s2" pos="0.2 0 0"/></body></worldbody><sensor><jointpos/><jointpos name="x" joint="j"/><jointpos name="x" joint="j"/></sensor></mujoco>"#,
+        "required attribute missing: 'joint'",
+        "repeated name 'x' in sensor",
+    ),
+    (
+        "a sensor naming no object beside a mesh whose vertex data is not a multiple of 3",
+        r#"<mujoco><worldbody><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/><site name="s"/><site name="s2" pos="0.2 0 0"/></body></worldbody><sensor><jointpos/></sensor><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0"/></asset></mujoco>"#,
+        "required attribute missing: 'joint'",
+        "vertex data must be a multiple of 3 (mesh 'm')",
     ),
 ];
 

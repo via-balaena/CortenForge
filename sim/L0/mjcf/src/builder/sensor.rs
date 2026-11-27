@@ -584,8 +584,10 @@ impl ModelBuilder {
 /// a distance, normal or fromto sensor whose side names other than one of a
 /// geom and a body (`xml_native_reader.cc:4318-4329`), a `refname` without a
 /// `reftype` (`:4213-4214`). In the words and at the place
-/// [`ModelBuilder::process_sensors`] gives each as it resolves the names;
-/// `model_from_mjcf_unwrapped` names it before the compile faults it holds.
+/// [`ModelBuilder::process_sensors`] gives each as it resolves the names. A
+/// read document's is named right after the front end
+/// (`model_from_mjcf_unwrapped`); a model built in code's as its sensors are
+/// built.
 pub fn sensor_read_fault(sensor: &MjcfSensor) -> Option<MjcfError> {
     let kind = convert_sensor_type(sensor.sensor_type)?;
     if matches!(

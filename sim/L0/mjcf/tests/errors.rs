@@ -363,36 +363,82 @@ fn a_height_field_built_in_code_with_a_nan_size_is_compiled_as_mujocos() {
 
 #[test]
 fn a_nan_sized_height_fields_geom_is_refused_in_mujocos_order() {
-    // MuJoCo 3.5.0 checks a geom's size once it is set, after its user data
-    // and its condim (`user_objects.cc:3639-3655`, `:3772`), and each geom
-    // in its turn: an earlier geom's condim, the same geom's condim and an
-    // earlier geom's user data are each named before the height field's
-    // geom whose size is NaN (each measured through MuJoCo's spec).
-    for (worldbody, size, words) in [
+    // MuJoCo 3.5.0 checks a geom's size once it is set, after its condim
+    // (`user_objects.cc:3651-3654`, `:3772`) and before a negative density
+    // (`:3805-3807`), and before any later geom, body or site: the same
+    // geom's condim is named first, the size before a negative density on a
+    // moving body and before a later geom's orientation (each measured
+    // through MuJoCo's spec).
+    for (worldbody, words) in [
+        (
+            r#"<geom name="hg" type="hfield" hfield="h" condim="2"/>"#,
+            "invalid condim in geom (geom 'hg' in body 'world')",
+        ),
+        (
+            r#"<body pos="0 0 1"><joint/><geom name="hg" type="hfield" hfield="h" density="-1"/><geom size="0.1"/></body>"#,
+            "nan size in geom (geom 'hg' in body #1)",
+        ),
+        (
+            r#"<geom name="hg" type="hfield" hfield="h"/><geom size="0.1" axisangle="0 0 0 1"/>"#,
+            "nan size in geom (geom 'hg' in body 'world')",
+        ),
+    ] {
+        let err = nan_sized_field(worldbody, "").unwrap_err();
+        assert_eq!(err.to_string(), words, "{worldbody}");
+    }
+}
+
+#[test]
+fn a_nan_sized_height_fields_geom_is_named_before_an_earlier_geoms_as_ledgered() {
+    // MuJoCo names an earlier geom's condim or user data, each checked as
+    // that geom is compiled (`user_objects.cc:3639-3655`); this crate checks
+    // both once every geom is built and refuses the NaN as it builds the
+    // height field's geom, so it names the NaN (ledger L353; each measured
+    // through MuJoCo's spec).
+    for (worldbody, size) in [
         (
             r#"<geom name="a" size="0.1" condim="2"/><geom name="hg" type="hfield" hfield="h"/>"#,
             "",
-            "invalid condim in geom (geom 'a' in body 'world')",
-        ),
-        (
-            r#"<geom name="hg" type="hfield" hfield="h" condim="2"/>"#,
-            "",
-            "invalid condim in geom (geom 'hg' in body 'world')",
         ),
         (
             r#"<geom name="a" size="0.1" user="1 2"/><geom name="hg" type="hfield" hfield="h"/>"#,
             r#"<size nuser_geom="1"/>"#,
-            "invalid user on <geom>: user data exceeds nuser_geom=1",
         ),
     ] {
-        let mut model = sim_mjcf::parse_mjcf_str(&format!(
-            r#"<mujoco>{size}<asset><hfield name="h" nrow="2" ncol="2" size="1 1 1 0.1" elevation="1 2 3 4"/></asset><worldbody>{worldbody}</worldbody></mujoco>"#
-        ))
-        .unwrap();
-        model.hfields[0].size[0] = f64::NAN;
-        let err = sim_mjcf::model_from_mjcf(&model, None).unwrap_err();
-        assert_eq!(err.to_string(), words, "{worldbody}");
+        let err = nan_sized_field(worldbody, size).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "nan size in geom (geom 'hg' in body 'world')",
+            "{worldbody}"
+        );
     }
+}
+
+/// A document's model whose height field `h`, 2 × 2, has a first size that
+/// is not a number, built in code from `worldbody` and `size` (a `<size>`
+/// element or "").
+fn nan_sized_field(worldbody: &str, size: &str) -> sim_mjcf::Result<sim_core::Model> {
+    let mut model = sim_mjcf::parse_mjcf_str(&format!(
+        r#"<mujoco>{size}<asset><hfield name="h" nrow="2" ncol="2" size="1 1 1 0.1" elevation="1 2 3 4"/></asset><worldbody>{worldbody}</worldbody></mujoco>"#
+    ))
+    .unwrap();
+    model.hfields[0].size[0] = f64::NAN;
+    sim_mjcf::model_from_mjcf(&model, None)
+}
+
+#[test]
+fn a_sensor_built_in_code_with_no_object_beside_a_height_fields_fault_names_the_field() {
+    // A model built in code has no reader: MuJoCo 3.5.0's spec names the
+    // height field's fault, which its compiler meets before the sensors
+    // (measured), and so does this crate, which meets the sensor's as it
+    // builds the sensors; a document read names the sensor's first.
+    let mut model = sim_mjcf::parse_mjcf_str(
+        r#"<mujoco><asset><hfield name="h" size="1 1 0.5 0.1"/></asset><worldbody><geom name="hf" type="hfield" hfield="h"/><body name="b" pos="0 0 1"><joint name="j" type="hinge"/><geom name="g" size="0.1"/></body></worldbody><sensor><jointpos joint="j"/></sensor></mujoco>"#,
+    )
+    .unwrap();
+    model.sensors[0].objname = None;
+    let err = sim_mjcf::model_from_mjcf(&model, None).unwrap_err();
+    assert_eq!(err.to_string(), "hfield not specified (hfield 'h')");
 }
 
 #[test]

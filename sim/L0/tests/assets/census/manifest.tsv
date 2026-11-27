@@ -4498,3 +4498,13 @@ f8f976349a07401c	sim/L0/mjcf/tests/refusal_order.rs:2486
 a9faa64c7f301eca	sim/L0/mjcf/tests/refusal_order.rs:2472
 c46686f0884f9b2a	sim/L0/mjcf/tests/refusal_order.rs:2462
 eb498693e21c4d23	sim/L0/mjcf/tests/refusal_order.rs:2482
+14a0dc68f4922c94	sim/L0/mjcf/tests/refusal_order.rs:2503
+1c04e8d4080e524f	sim/L0/mjcf/tests/refusal_order.rs:2592
+302daa37641c110c	sim/L0/mjcf/tests/refusal_order.rs:2509
+32778af8efa28566	sim/L0/mjcf/tests/refusal_order.rs:2921
+8d07fcb166d2bc77	sim/L0/mjcf/tests/refusal_order.rs:2933
+a9fe71ca4fdee3b8	sim/L0/mjcf/tests/refusal_order.rs:2491
+ad643086092187c5	sim/L0/mjcf/tests/errors.rs:436
+bea6c75c2860ef4b	sim/L0/mjcf/tests/refusal_order.rs:2515
+c5e105178dc33aba	sim/L0/mjcf/tests/refusal_order.rs:2497
+fdf2277ff11d0aab	sim/L0/mjcf/tests/refusal_order.rs:2927

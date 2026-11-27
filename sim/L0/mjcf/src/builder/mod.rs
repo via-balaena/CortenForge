@@ -85,9 +85,10 @@ fn written_over<const N: usize>(written: Option<Prefix<N>>, base: [f64; N]) -> [
 /// The fault named of a height field's (`hfield`) and `later`, met building
 /// an element MuJoCo 3.5.0 compiles after the height fields: the tree's
 /// (`tree`: its user data's, else its checks'), else the height field's,
-/// which MuJoCo meets first; without a height field's fault, `later`. MuJoCo
-/// meets the tree's user data and checks body by body, so of the two this
-/// crate can name another (ledger L353).
+/// which MuJoCo meets first; without a height field's fault, `later`, where
+/// MuJoCo can name the tree's. MuJoCo meets the tree's user data and checks
+/// body by body, so of those two this crate can name another too (ledger
+/// L353).
 fn named_first(tree: Option<MjcfError>, hfield: Option<MjcfError>, later: MjcfError) -> MjcfError {
     match hfield {
         Some(hfield) => tree.unwrap_or(hfield),
@@ -215,6 +216,15 @@ fn resolve_keyframe(mjcf_kf: &MjcfKeyframe, model: &Model) -> Result<Keyframe> {
 /// numbers are checked only where validation and the builder check them
 /// (the census registry's D-NONFINITE lists where).
 ///
+/// The model is taken as built in code, which MuJoCo 3.5.0's spec compiles
+/// with no reader: of two faults, a sensor's fault MuJoCo's reader meets (a
+/// sensor naming no object, a `refname` without a `reftype`, a distance
+/// sensor's side naming other than one of a geom and a body) is named as
+/// the sensors are built, after a height field's or the tree's. A document
+/// [`load_model`] or [`load_model_from_file`] reads names it right after the
+/// front end, as MuJoCo's reader meets it, so a document parsed with
+/// [`crate::parse_mjcf_str`] and built here can name the other of the two.
+///
 /// # Arguments
 ///
 /// * `mjcf` - The parsed MJCF model
@@ -243,11 +253,16 @@ fn resolve_keyframe(mjcf_kf: &MjcfKeyframe, model: &Model) -> Result<Keyframe> {
 /// data.step(&model).expect("step failed");
 /// ```
 pub fn model_from_mjcf(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<Model> {
-    crate::stack::on_large_stack(|| model_from_mjcf_unwrapped(mjcf, base_path))
+    crate::stack::on_large_stack(|| model_from_mjcf_unwrapped(mjcf, base_path, false))
 }
 
-/// [`model_from_mjcf`]'s work, on the caller's stack.
-fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<Model> {
+/// [`model_from_mjcf`]'s work, on the caller's stack; `read` where the
+/// model is a document [`load_model`] or [`load_model_from_file`] read.
+fn model_from_mjcf_unwrapped(
+    mjcf: &MjcfModel,
+    base_path: Option<&Path>,
+    read: bool,
+) -> Result<Model> {
     // Before anything walks or clones the tree, whoever built it.
     crate::validation::check_tree_depth(&mjcf.worldbody)?;
 
@@ -258,6 +273,22 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
         flexcomp_refusal,
         ..
     } = front_end(mjcf, base_path)?;
+
+    // A read document's sensor fault MuJoCo 3.5.0's reader meets
+    // ([`sensor::sensor_read_fault`]), named before every fault MuJoCo's
+    // compiler meets once the document is read, and after the front end's,
+    // some of which MuJoCo's reader meets after the sensors (ledger L353). A
+    // model built in code, which MuJoCo's spec takes with no reader, meets it
+    // as its sensors are built ([`ModelBuilder::process_sensors`]).
+    if read
+        && let Some(fault) = mjcf.sensors.iter().enumerate().find_map(|(i, s)| {
+            sensor::sensor_read_fault(s).map(|e| {
+                e.with_location_if_unknown(Location::nth(ElementKind::Sensor, Some(&s.name), i))
+            })
+        })
+    {
+        return Err(fault);
+    }
 
     // This crate's refusal of a negative `<inertial>` mass or moment, which
     // MuJoCo raises to its bounds (`D-INERTIAL-NEGATIVE`), on every body the
@@ -396,18 +427,6 @@ fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Resu
     // Process equality constraints (must be after bodies and joints)
     if let Err(e) = builder.process_equality_constraints(&mjcf.equality, &mjcf.flex) {
         return Err(named_first(tree_user.err().or(tree_fault), hfield_fault, e));
-    }
-
-    // A sensor's fault MuJoCo's reader meets ([`sensor::sensor_read_fault`])
-    // is named before the faults held above, which MuJoCo's compiler meets
-    // after it has read the document; and, as before, after every fault this
-    // crate meets before it builds the sensors (ledger L353).
-    if let Some(fault) = mjcf.sensors.iter().enumerate().find_map(|(i, s)| {
-        sensor::sensor_read_fault(s).map(|e| {
-            e.with_location_if_unknown(Location::nth(ElementKind::Sensor, Some(&s.name), i))
-        })
-    }) {
-        return Err(fault);
     }
 
     // Process sensors (must be after bodies, joints, tendons, actuators)
@@ -670,7 +689,7 @@ pub fn load_model(xml: &str) -> Result<Model> {
     }
     crate::stack::on_large_stack(|| {
         let mjcf = crate::parser::parse_mjcf_unwrapped(xml)?;
-        model_from_mjcf_unwrapped(&mjcf, None)
+        model_from_mjcf_unwrapped(&mjcf, None, true)
     })
 }
 
@@ -702,7 +721,7 @@ pub fn load_model_from_file<P: AsRef<Path>>(path: P) -> Result<Model> {
         // recurses once per nested include.
         let expanded_xml = crate::include::expand_includes(&xml, base_dir)?;
         let mjcf = crate::parser::parse_mjcf_unwrapped(&expanded_xml)?;
-        model_from_mjcf_unwrapped(&mjcf, base_path)
+        model_from_mjcf_unwrapped(&mjcf, base_path, true)
     })
 }
 
@@ -806,9 +825,6 @@ pub struct ModelBuilder {
     /// Whether each geom is a mesh or SDF geom with `shellinertia`, which
     /// `check_bodies` refuses in MuJoCo's order.
     pub(crate) geom_shellinertia_on_mesh: Vec<bool>,
-    /// Whether each geom is a height-field geom whose asset's size is not a
-    /// number, which `check_bodies` refuses in MuJoCo's order.
-    pub(crate) geom_nan_size: Vec<bool>,
     /// Whether each geom is an SDF geom that names no mesh, which
     /// `check_bodies` refuses in MuJoCo's order.
     pub(crate) geom_sdf_names_no_mesh: Vec<bool>,

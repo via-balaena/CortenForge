@@ -79,7 +79,6 @@ impl ModelBuilder {
             geom_friction: vec![],
             geom_condim: vec![],
             geom_shellinertia_on_mesh: vec![],
-            geom_nan_size: vec![],
             geom_sdf_names_no_mesh: vec![],
             geom_contype: vec![],
             geom_conaffinity: vec![],

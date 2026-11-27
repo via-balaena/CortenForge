@@ -110,18 +110,25 @@ impl ModelBuilder {
         }
 
         // A height-field geom's size is its asset's, as MuJoCo 3.5.0 sets it
-        // ([`hfield_geom_size`]), whatever the geom writes; one that is not a
-        // number is refused once every geom is built (`check_bodies`), where
-        // MuJoCo checks every geom's size once it is set
-        // (`user_objects.cc:3772-3776`). Only an asset built in code holds
-        // one, the parser refusing it written (registry `D-NONFINITE`).
+        // ([`hfield_geom_size`]), whatever the geom writes, and one that is not
+        // a number is refused here, as MuJoCo checks every geom's size once it
+        // is set (`user_objects.cc:3772-3776`), after the geom's condim
+        // (`:3651-3654`), which is refused first. Only an asset built in code
+        // holds one, the parser refusing it written (registry `D-NONFINITE`).
+        // An earlier geom's condim and user data, which this crate checks
+        // once every geom is built, are named after it (ledger L353).
         let size = if let Some(hfield_id) = geom_hfield_ref {
-            Vector3::from(hfield_geom_size(&self.hfield_size[hfield_id]))
+            let size = Vector3::from(hfield_geom_size(&self.hfield_size[hfield_id]));
+            if size.iter().any(|s| s.is_nan()) {
+                if !matches!(geom.condim.unwrap_or(3), 1 | 3 | 4 | 6) {
+                    return Err(MjcfError::invalid_model("invalid condim in geom").at(at()));
+                }
+                return Err(MjcfError::invalid_model("nan size in geom").at(at()));
+            }
+            size
         } else {
             size
         };
-        self.geom_nan_size
-            .push(geom_hfield_ref.is_some() && size.iter().any(|s| s.is_nan()));
 
         self.geom_type.push(geom_type);
         self.geom_body.push(body_id);

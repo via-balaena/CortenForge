@@ -583,8 +583,7 @@ impl ModelBuilder {
     /// geom naming no mesh (`:3656-3659`), a plane
     /// only in a static body, one with no joint on it or a body above it
     /// (`:3666-3668`; fusion moves a geom only into a body that moves as its
-    /// own does), `shellinertia` on a mesh or SDF geom (`:3744-3746`), a
-    /// height-field geom's size that is not a number (`:3772-3776`), then a
+    /// own does), `shellinertia` on a mesh or SDF geom (`:3744-3746`), then a
     /// negative mass or density
     /// ([`Self::negative_mass`], `:3805-3807`).
     fn check_geom(&self, geom: usize, moving: bool, at: impl Fn() -> Location) -> Result<()> {
@@ -606,9 +605,6 @@ impl ModelBuilder {
                 "for mesh geoms, inertia should be specified in the mesh asset",
             )
             .at(at()));
-        }
-        if self.geom_nan_size[geom] {
-            return Err(MjcfError::invalid_model("nan size in geom").at(at()));
         }
         if self.body_faults[self.geom_body[geom]].negative_geom == Some(geom) {
             return Err(
