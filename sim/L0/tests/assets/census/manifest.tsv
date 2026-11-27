@@ -4514,3 +4514,4 @@ fdf2277ff11d0aab	sim/L0/mjcf/tests/refusal_order.rs:2927
 7f5ae808b424afef	sim/L0/tests/integration/raycast_heightfield.rs:76
 90066d8b00aec14c	examples/fundamentals/sim-cpu/raycasting/heightfield/src/main.rs:72
 6e3535ed2c38667a	sim/L0/tests/integration/raycast_heightfield.rs:112
+0a3c2f11bf6fa584	sim/L0/tests/integration/raycast_heightfield.rs:112

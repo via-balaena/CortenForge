@@ -8,8 +8,8 @@
 //! `mj_rayHfield` (`sensor::ray_mesh`). [`raycast_scene`] casts a height
 //! field through that port, with `mj_rayHfield`'s normal, and a signed
 //! distance field loaded from MJCF through `mj_raySdf`; it reads a plane as
-//! unbounded and hit from either side, where `mj_ray` bounds it by its size
-//! and hits its front only.
+//! unbounded and hit from either side, where `mj_ray` bounds it along each
+//! axis whose size is positive and hits its front only.
 //!
 //! [`raycast_shape`] casts a [`Shape`] in its own frame: a
 //! `Shape::height_field`'s grid from the pose's origin, as cf-geometry reads
@@ -244,10 +244,9 @@ fn track_closest(
 /// A height field is cast as MuJoCo's `mj_rayHfield` casts it: centred on its
 /// geom, its half-extents, top and base from `hfield_size`, its grid from the
 /// data's counts, with MuJoCo's normal. Data set in code
-/// (`Model::hfield_data`) is cast the same way: its own spacing is not read;
-/// a height below 0 lies under the base box's top, which a ray from above
-/// meets first; a height above `hfield_size[2]` is met only by a ray that
-/// crosses the field's top box.
+/// (`Model::hfield_data`) is cast the same way: its own spacing is not read,
+/// and its heights, below 0 or above `hfield_size[2]` too, meet a ray as
+/// `mj_rayHfield` meets such data.
 ///
 /// # Returns
 ///

@@ -142,8 +142,9 @@ fn build_terrain_mesh(grid: usize, cell: f64) -> Mesh {
             let bl = tl + grid as u32;
             let br = bl + 1;
             // Split along the diagonal from (c, r) to (c + 1, r + 1), as
-            // MuJoCo's field is.
-            indices.extend_from_slice(&[tl, tr, br, tl, br, bl]);
+            // MuJoCo's field is, each triangle wound to face up in Bevy's
+            // Y-up frame (the physics → Bevy swap reverses winding).
+            indices.extend_from_slice(&[tl, br, tr, tl, bl, br]);
         }
     }
 

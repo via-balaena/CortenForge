@@ -7,12 +7,11 @@
 //! where it read the grid from the geom's origin). Checked here:
 //! 1. MJCF with an `<hfield>` asset builds a Model with the field's data.
 //! 2. Rays MuJoCo cast meet each field as MuJoCo's do: the geom, the
-//!    distance and the normal.
+//!    distance, the normal and the hit's point.
 //! 3. A field's data replaced in code (`model.hfield_data[0]`, as the
 //!    `raycasting/heightfield` example replaces it) is cast at the asset's
-//!    size, centred on its geom, as `raycast_scene`'s doc says: its own
-//!    spacing unread, a height below 0 under the base box's top, one above
-//!    the field's top met only through the top box.
+//!    size, centred on its geom, its own spacing unread, and rays meet its
+//!    heights below 0 and above its top as MuJoCo's meet such data.
 
 use std::sync::Arc;
 
@@ -60,7 +59,8 @@ fn hfield_mjcf_loads() {
 /// The documents MuJoCo's rays were cast on: ledger L280's flat field of
 /// half-extents 1 × 1; a field turned and moved on the world; a field turned
 /// in a turned and moved body; two fields, the second turned a quarter, beside
-/// a sphere; a field turned a half about x, upside down.
+/// a sphere; a field turned a half about x, upside down; a field with one
+/// raised flat cell.
 const DOCS: &[(&str, &str)] = &[
     (
         "l280_flat",
@@ -108,6 +108,17 @@ const DOCS: &[(&str, &str)] = &[
 </mujoco>"#,
     ),
     (
+        "raised_cell",
+        r#"<mujoco model="raised_cell">
+  <asset>
+    <hfield name="h" nrow="3" ncol="3" size="1 1 0.5 0.1" elevation="1 0 0 0 0.5 0.5 0 0.5 0.5"/>
+  </asset>
+  <worldbody>
+    <geom type="hfield" hfield="h"/>
+  </worldbody>
+</mujoco>"#,
+    ),
+    (
         "turned_180",
         r#"<mujoco model="turned_180">
   <asset>
@@ -143,10 +154,13 @@ struct Ray {
 /// from above missing; on the field in a body, a triangle and a side; on the
 /// two fields, a triangle of each; on the upside-down field, two rays meeting
 /// a side and one meeting the base box's side with the top box missed,
-/// MuJoCo's normal holding a −0. Each triangle's ray meets its cell at
-/// least a tenth of a cell from the cell's edges and from the diagonal its two
-/// triangles share, where a frame one ulp off would send it to the other
-/// triangle.
+/// MuJoCo's normal holding a −0; two rays starting on the raised cell, met by
+/// its triangle at 0 going down and at −0 going up. A −0 is told from 0 only
+/// where `close` compares bits, on macOS arm64. Each triangle's ray meets its
+/// cell at least a tenth of a cell from each of the cell's edges, its two
+/// coordinates in the cell at least a tenth apart, off the diagonal the
+/// cell's two triangles share, where a frame one ulp off sent an earlier
+/// pinned ray to the other triangle.
 const RAYS: &[Ray] = &[
     // l280_flat: L280's ray from z 1, a hit
     Ray {
@@ -310,6 +324,24 @@ const RAYS: &[Ray] = &[
         x: 0x3fe0000000000000,
         normal: [0xbff0000000000000, 0x8000000000000000, 0x0000000000000000],
     },
+    // raised_cell: starts on a raised flat cell, down, met at 0.0
+    Ray {
+        doc: "raised_cell",
+        pnt: [0x3fe0000000000000, 0xbfe0000000000000, 0x3fd0000000000000],
+        vec: [0x0000000000000000, 0x0000000000000000, 0xbff0000000000000],
+        geom: 0,
+        x: 0x0000000000000000,
+        normal: [0x0000000000000000, 0x0000000000000000, 0x3ff0000000000000],
+    },
+    // raised_cell: starts on a raised flat cell, up and along, met at -0.0
+    Ray {
+        doc: "raised_cell",
+        pnt: [0x3fe0000000000000, 0xbfe0000000000000, 0x3fd0000000000000],
+        vec: [0x3fe3333333333333, 0x0000000000000000, 0x3fe999999999999a],
+        geom: 0,
+        x: 0x8000000000000000,
+        normal: [0x0000000000000000, 0x0000000000000000, 0x3ff0000000000000],
+    },
 ];
 
 /// A run's values against MuJoCo's: bit for bit on macOS arm64, where the
@@ -381,7 +413,7 @@ fn rays_meet_height_fields_as_mujocos_mj_ray() {
     }
     assert_eq!(
         (RAYS.len(), RAYS.iter().filter(|r| r.geom >= 0).count()),
-        (18, 15),
+        (20, 17),
         "every ray read, and every hit"
     );
     assert!(bad.is_empty(), "{} differ:\n{}", bad.len(), bad.join("\n"));
@@ -397,7 +429,7 @@ fn with_field(field: HeightFieldData) -> (sim_core::Model, sim_core::Data) {
     (model, data)
 }
 
-/// A ray from `(x, y, z)` along `dir` through `raycast_scene`, cast no farther
+/// A ray from `from` along `dir` through `raycast_scene`, cast no farther
 /// than `max`.
 fn cast(
     model: &sim_core::Model,
@@ -459,12 +491,12 @@ fn a_replaced_fields_own_spacing_is_not_read() {
     }
 }
 
-/// A replaced field's height below 0 lies under the base box's top, as
-/// MuJoCo's does (measured on the oracle with the field's data set to −0.4,
-/// times its top of 0.5): a ray down from 3 meets the base box at 0, 3.0 away,
-/// with the normal +z, and a level ray at z 0.3 misses.
+/// A replaced field's heights below 0 meet rays as MuJoCo's meet such data
+/// (its field's data set to −0.4, times its top of 0.5, on the oracle): a ray
+/// down from 3 meets the base box's top, 3.0 away, with the normal +z, and a
+/// level ray at z 0.3 misses.
 #[test]
-fn a_replaced_fields_height_below_zero_lies_under_the_base_box() {
+fn a_replaced_fields_height_below_zero_meets_rays_as_mujocos() {
     let (model, data) = with_field(HeightFieldData::flat(32, 32, 8.0 / 31.0, -0.2));
     let hit = cast(&model, &data, [0.0, 0.0, 3.0], -Vector3::z(), 20.0)
         .expect("the ray meets the base box");
@@ -478,13 +510,16 @@ fn a_replaced_fields_height_below_zero_lies_under_the_base_box() {
     assert!(level.is_none(), "level at z 0.3: {level:?}");
 }
 
-/// A replaced field's height above the top is met only by a ray that crosses
-/// the top box, as MuJoCo's is (measured on the oracle with the field's data
-/// set to 1.6, times its top of 0.5): heights of 0.8 over a top of 0.5 are met
-/// by a ray down from 3, 2.2 away; a level ray at z 0.7, above the top box,
-/// misses; one at z 0.3 meets the box's −x side, 1 in, with the normal −x.
+/// A replaced field's heights above its top meet rays as MuJoCo's meet such
+/// data (a 32 × 32 field's data set to 1.6, times its top of 0.5, on the
+/// oracle): heights of 0.8 are met by a ray down from 3, 2.2 away (MuJoCo
+/// 2.199999988079071, its data single precision); a level ray at z 0.7
+/// misses, one at z 0.3 meets the top box's −x side, 1 in, with the normal −x;
+/// a ray up from (0, 0, 0.7), under the surface and above the top box,
+/// misses; a ray from (−4.5, 0, 1) along (1, 0, −0.1), through the surface at
+/// x −2.5, meets the +x side 8.542394277952756 away, with the normal +x.
 #[test]
-fn a_replaced_fields_height_above_the_top_is_met_through_the_top_box_only() {
+fn a_replaced_fields_height_above_the_top_meets_rays_as_mujocos() {
     let (model, data) = with_field(HeightFieldData::flat(32, 32, 8.0 / 31.0, 0.8));
     let down =
         cast(&model, &data, [0.0, 0.0, 3.0], -Vector3::z(), 20.0).expect("the ray meets the field");
@@ -503,6 +538,42 @@ fn a_replaced_fields_height_above_the_top_is_met_through_the_top_box_only() {
         side.hit.distance
     );
     assert_eq!(side.hit.normal, -Vector3::x());
+    let up = cast(&model, &data, [0.0, 0.0, 0.7], Vector3::z(), 20.0);
+    assert!(up.is_none(), "up from z 0.7: {up:?}");
+    let through = cast(
+        &model,
+        &data,
+        [-4.5, 0.0, 1.0],
+        Vector3::new(1.0, 0.0, -0.1),
+        20.0,
+    )
+    .expect("the ray meets the far side");
+    assert!(
+        (through.hit.distance - 8.542_394_277_952_756).abs() < 1e-12,
+        "distance {}",
+        through.hit.distance
+    );
+    assert_eq!(through.hit.normal, Vector3::x());
+}
+
+/// A hit exactly `max_distance` away is not returned; one a float nearer than
+/// `max_distance` is, as `raycast_scene`'s doc says ("nearer than").
+#[test]
+fn a_hit_exactly_at_max_distance_is_not_returned() {
+    let (model, data) = with_field(HeightFieldData::flat(32, 32, 8.0 / 31.0, 0.2));
+    let d = cast(&model, &data, [0.0, 0.0, 3.0], -Vector3::z(), 20.0)
+        .expect("the ray meets the field")
+        .hit
+        .distance;
+    assert!(
+        cast(&model, &data, [0.0, 0.0, 3.0], -Vector3::z(), d).is_none(),
+        "at {d}"
+    );
+    let past = f64::from_bits(d.to_bits() + 1);
+    assert!(
+        cast(&model, &data, [0.0, 0.0, 3.0], -Vector3::z(), past).is_some(),
+        "within {past}"
+    );
 }
 
 /// A sinusoidal field replaced in code, as the `raycasting/heightfield`
