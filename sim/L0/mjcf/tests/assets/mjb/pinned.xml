@@ -1,5 +1,7 @@
 <mujoco model="pinned">
-  <compiler angle="radian" fitaabb="true" autolimits="true"/>
+  <compiler angle="radian" fitaabb="true" autolimits="true">
+    <lengthrange mode="all" useexisting="false" uselimit="true" inttotal="5" tolrange="0.1"/>
+  </compiler>
   <option timestep="0.002" gravity="0 0 -9.81" integrator="RK4">
     <flag warmstart="disable"/>
   </option>

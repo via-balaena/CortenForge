@@ -579,6 +579,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 
 ### L50 · M26 · `docs: MuJoCo divergences, sim-mjcf docs, conformance status`
 - **Implements:** each divergence row a commit introduces arrives with that commit (Conventions); L50 adds the rows of deviations that exist at `main` and stay, enumerated from the research (A9 §6's stricter composite `initial` is gone: RL-2b reads `initial` as MuJoCo does). The rest is prose: the stale "Real-World Model Loading ✅ COMPLETE" (A1 §10); `MUJOCO_CONFORMANCE.md` 3.5.0 vs 3.4.0 references (A1 "Found in passing"; A20 §2.1); the lengthrange docs list (A11 §5); `POST_V1_ROADMAP.md` DT-107/DT-108 (A7 H-4).
+- **Also (Rigid-loading PR RL-11a, which made L44 and L49):** the lengthrange docs list (A11 §5) is done there: `MUJOCO_REFERENCE.md`, `ARCHITECTURE.md`, `MUJOCO_GAP_ANALYSIS.md`, `MUJOCO_CONFORMANCE.md`, the forearm-flexion README and `POST_V1_ROADMAP.md`'s rows.
 
 ## Merged, split, dropped
 

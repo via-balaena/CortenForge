@@ -574,7 +574,8 @@ fn test_parse_compiler_invalid_eulerseq() {
 
 #[test]
 fn test_parse_compiler_with_children() {
-    // Compiler element with children should be parsed (attrs) and children skipped
+    // A compiler's attributes and its <lengthrange> are read; an empty
+    // <lengthrange> keeps MuJoCo's options.
     let xml = r#"
             <mujoco model="test">
                 <compiler angle="radian">
@@ -586,6 +587,45 @@ fn test_parse_compiler_with_children() {
 
     let model = parse_mjcf_str(xml).expect("should parse");
     assert_eq!(model.compiler.angle, AngleUnit::Radian);
+    assert_eq!(
+        model.compiler.lengthrange,
+        sim_core::LengthRangeOpt::default()
+    );
+}
+
+/// Each of `<lengthrange>`'s ten attributes is read; a later `<compiler>`'s
+/// sets only what it writes, as MuJoCo's reader does (measured on MuJoCo
+/// 3.5.0: an empty second `<lengthrange>` keeps the first's options).
+#[test]
+fn a_lengthrange_reads_its_ten_attributes() {
+    let xml = r#"
+            <mujoco model="test">
+                <compiler>
+                    <lengthrange mode="all" useexisting="false" uselimit="true" accel="10"
+                                 maxforce="2" timeconst="0.5" timestep="0.005" inttotal="4"
+                                 interval="1" tolrange="0.1"/>
+                </compiler>
+                <compiler><lengthrange mode="muscleuser"/></compiler>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+    let model = parse_mjcf_str(xml).expect("should parse");
+    assert_eq!(
+        model.compiler.lengthrange,
+        sim_core::LengthRangeOpt {
+            mode: sim_core::LengthRangeMode::MuscleUser,
+            useexisting: false,
+            uselimit: true,
+            accel: 10.0,
+            maxforce: 2.0,
+            timeconst: 0.5,
+            timestep: 0.005,
+            inttotal: 4.0,
+            interval: 1.0,
+            tolrange: 0.1,
+        }
+    );
 }
 
 #[test]

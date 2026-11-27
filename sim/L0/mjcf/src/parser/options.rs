@@ -12,6 +12,8 @@ use crate::types::{
     MjcfSolverType,
 };
 
+use sim_core::{LengthRangeMode, LengthRangeOpt};
+
 use super::attrs::{Attrs, skip_element};
 use crate::error::ValueCount;
 
@@ -237,7 +239,81 @@ fn parse_option_attrs(e: &BytesStart, option: &mut MjcfOption) -> Result<()> {
 
 /// A `<compiler>`'s attributes, read onto `compiler`: MuJoCo reads every
 /// `<compiler>` onto the same settings, each setting only what it writes.
-pub(super) fn parse_compiler_attrs(e: &BytesStart, compiler: &mut MjcfCompiler) -> Result<()> {
+/// A `<compiler>`: its attributes, then the `<lengthrange>` it may hold, onto
+/// the same values, each setting only what it writes, so that a later
+/// `<compiler>` lies over an earlier one as MuJoCo's reader reads them. Its
+/// other children are skipped.
+pub(super) fn parse_compiler<R: BufRead>(
+    reader: &mut Reader<R>,
+    start: &BytesStart,
+    compiler: &mut MjcfCompiler,
+    empty: bool,
+) -> Result<()> {
+    parse_compiler_attrs(start, compiler)?;
+    if empty {
+        return Ok(());
+    }
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(ref event @ (Event::Start(ref e) | Event::Empty(ref e))) => {
+                let child_empty = matches!(event, Event::Empty(_));
+                if e.name().as_ref() == b"lengthrange" {
+                    parse_lengthrange_attrs(e, &mut compiler.lengthrange)?;
+                }
+                skip_element(reader, e.name().as_ref(), child_empty)?;
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"compiler" => break,
+            Ok(Event::Eof) => return Err(MjcfError::eof_in("compiler")),
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::xml(e)),
+        }
+        buf.clear();
+    }
+    Ok(())
+}
+
+/// A `<lengthrange>`'s ten attributes, as MuJoCo's reader reads them
+/// (`xml_native_reader.cc:1154-1176`): `mode` from `none`, `muscle`,
+/// `muscleuser` or `all`, the two flags each `false` or `true`, and one
+/// number for each of the rest.
+fn parse_lengthrange_attrs(e: &BytesStart, opt: &mut LengthRangeOpt) -> Result<()> {
+    let a = Attrs::new(e)?;
+    if let Some(mode) = a.keyword("mode", |s| match s {
+        "none" => Some(LengthRangeMode::None),
+        "muscle" => Some(LengthRangeMode::Muscle),
+        "muscleuser" => Some(LengthRangeMode::MuscleUser),
+        "all" => Some(LengthRangeMode::All),
+        _ => None,
+    })? {
+        opt.mode = mode;
+    }
+    for (name, flag) in [
+        ("useexisting", &mut opt.useexisting),
+        ("uselimit", &mut opt.uselimit),
+    ] {
+        if let Some(value) = a.boolean(name)? {
+            *flag = value;
+        }
+    }
+    for (name, value) in [
+        ("accel", &mut opt.accel),
+        ("maxforce", &mut opt.maxforce),
+        ("timeconst", &mut opt.timeconst),
+        ("timestep", &mut opt.timestep),
+        ("inttotal", &mut opt.inttotal),
+        ("interval", &mut opt.interval),
+        ("tolrange", &mut opt.tolrange),
+    ] {
+        if let Some(x) = a.real(name)? {
+            *value = x;
+        }
+    }
+    Ok(())
+}
+
+/// A `<compiler>`'s attributes, read onto `compiler`.
+fn parse_compiler_attrs(e: &BytesStart, compiler: &mut MjcfCompiler) -> Result<()> {
     let a = Attrs::new(e)?;
 
     // A1. angle — angular unit

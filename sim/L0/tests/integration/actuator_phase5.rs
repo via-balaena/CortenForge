@@ -3,7 +3,7 @@
 //!
 //! Spec A tests:
 //! - T11 (AC12): dampratio attribute parsed and stored as positive biasprm[2]
-//! - T7 (AC7): lengthrange from limits unchanged for muscle actuators
+//! - T7 (AC7): a limited-joint muscle's length range as MuJoCo's run finds it
 //! - T12 (AC13): lengthrange mode filtering skips non-muscle actuators
 //!
 //! Spec D tests (T1–T16): nsample, interp, delay parsing, historyadr
@@ -117,13 +117,14 @@ fn test_acc0_motor_via_mjcf() {
 }
 
 // ============================================================================
-// T7: lengthrange from limits → AC7
+// T7: a muscle on a limited hinge → AC7
 // ============================================================================
 
-/// Muscle actuator on limited joint gets lengthrange from joint limits.
+/// A muscle on a limited hinge: MuJoCo 3.5.0's run pushes the joint past each
+/// soft limit, the length gear times the joint's, so the range is a little
+/// wider than the limits (±2.0944 at gear 2; measured on the oracle).
 #[test]
-fn test_lengthrange_from_joint_limits() {
-    // range="-60 60" in degrees → ±1.0472 radians after MuJoCo degree-to-radian conversion
+fn a_limited_hinges_muscle_range_is_mujocos_run() {
     let mjcf = r#"
         <mujoco model="muscle_lr">
             <worldbody>
@@ -141,12 +142,11 @@ fn test_lengthrange_from_joint_limits() {
     "#;
 
     let model = load_model(mjcf).expect("should load");
-
-    // lengthrange = gear * joint_range_radians = 2 * [-π/3, π/3]
-    let expected_rad = std::f64::consts::FRAC_PI_3; // 60° in radians
     let (lo, hi) = model.actuator_lengthrange[0];
-    assert_relative_eq!(lo, -2.0 * expected_rad, epsilon = 1e-6);
-    assert_relative_eq!(hi, 2.0 * expected_rad, epsilon = 1e-6);
+    assert_close(
+        &[lo, hi],
+        &[-2.095_534_979_099_727_7, 2.095_534_979_099_727_7],
+    );
 }
 
 // ============================================================================
@@ -179,18 +179,16 @@ fn test_lengthrange_mode_filter_nonmuscle() {
 }
 
 // ============================================================================
-// T8: Muscle on unlimited joint → LR simulation silently fails (AC8)
+// T8: Muscle on unlimited joint → refused, as MuJoCo's run does not converge
 // ============================================================================
 
-/// Muscle actuator on unlimited joint: simulation-based LR silently fails
-/// because the muscle force model requires valid lengthrange to compute
-/// sensible forces (circular dependency). MuJoCo also fails silently here —
-/// the utility is for non-muscle actuators in mode=All, or for muscles
-/// where lengthrange is already partially set from limits.
-///
-/// Verify that the failure is silent: lengthrange remains (0, 0) and no panic.
+/// A muscle on an unlimited hinge: its run's length still moves at the end
+/// (the force gives the same acceleration whatever the inertia, so the
+/// numbers are every one-dof such model's at gear 1), and MuJoCo 3.5.0
+/// refuses the model in
+/// these words (measured on the oracle).
 #[test]
-fn test_lengthrange_muscle_unlimited_silently_fails() {
+fn a_muscle_on_an_unlimited_joint_is_refused() {
     let mjcf = r#"
         <mujoco model="muscle_unlimited">
             <worldbody>
@@ -205,25 +203,19 @@ fn test_lengthrange_muscle_unlimited_silently_fails() {
         </mujoco>
     "#;
 
-    let model = load_model(mjcf).expect("should load");
-
-    // Muscle on unlimited joint: LR estimation silently fails (matching MuJoCo).
-    // lengthrange should remain (0, 0).
-    let (lo, hi) = model.actuator_lengthrange[0];
-    assert_relative_eq!(lo, 0.0, epsilon = 1e-10);
-    assert_relative_eq!(hi, 0.0, epsilon = 1e-10);
+    let error = load_model(mjcf).expect_err("MuJoCo refuses it");
+    assert_eq!(
+        error.to_string(),
+        "Lengthrange computation did not converge in actuator 0:\n  eval (-181.003, -140.808)\n  range (-181.003, 181.003)"
+    );
 }
 
-/// The length range is simulated with sleep disabled, as MuJoCo's compiler
-/// clears `mjENBL_SLEEP` before it (`user_model.cc:5111-5112`). The
-/// simulation runs before sim-mjcf derives the kinematic trees. Two muscles
-/// MuJoCo 3.5.0 loads with sleep on: one on a hinge a joint equality ties to
-/// a limited hinge (a constraint row every simulated step), one on a spatial
-/// tendon. Both load here with sleep on; their ranges are (0, 0) with sleep
-/// on and off, where MuJoCo's are not (Rigid-loading L44), so the comparison
-/// pins the load, not the range.
+/// A muscle's length range is MuJoCo 3.5.0's whether the model enables sleep
+/// or not (measured on the oracle). Two muscles: one on a hinge a joint
+/// equality ties to a limited hinge (a constraint row every simulated step),
+/// one on a spatial tendon.
 #[test]
-fn lengthrange_is_simulated_with_sleep_disabled() {
+fn a_length_range_is_mujocos_with_sleep_on_and_off() {
     let models = [
         r#"<worldbody>
             <body pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/>
@@ -241,26 +233,29 @@ fn lengthrange_is_simulated_with_sleep_disabled() {
           <tendon><spatial name="t"><site site="s0"/><site site="s1"/></spatial></tendon>
           <actuator><muscle tendon="t"/></actuator>"#,
     ];
-    for body in models {
-        let range = |sleep: &str| {
+    let mujoco = [
+        [-0.018_866_751_053_947_05, 0.018_866_751_053_947_05],
+        [0.494_593_325_863_761_5, 0.505_406_678_884_890_8],
+    ];
+    for (body, want) in models.iter().zip(mujoco) {
+        for sleep in ["enable", "disable"] {
             let xml = format!(
                 r#"<mujoco><option timestep="0.002"><flag sleep="{sleep}"/></option>{body}</mujoco>"#
             );
-            load_model(&xml).expect("load").actuator_lengthrange
-        };
-        assert_eq!(range("enable"), range("disable"));
+            let (lo, hi) = load_model(&xml).expect("load").actuator_lengthrange[0];
+            assert_close(&[lo, hi], &want);
+        }
     }
 }
 
 // ============================================================================
-// T9: Muscle on limited joint → LR from limits (useexisting skips sim)
+// T9: a muscle at gear 2 on a hinge limited to ±90°
 // ============================================================================
 
-/// Muscle actuator on limited joint: Phase 1 copies limits, then
-/// useexisting=true causes the simulation phase to skip this actuator.
-/// The lengthrange should match gear * joint_range.
+/// A muscle at gear 2 on a hinge limited to ±90°: MuJoCo 3.5.0's run lands
+/// past each soft limit (measured on the oracle).
 #[test]
-fn test_lengthrange_muscle_limited_from_limits() {
+fn a_geared_muscles_range_is_mujocos_run() {
     let mjcf = r#"
         <mujoco model="muscle_limited">
             <worldbody>
@@ -277,12 +272,29 @@ fn test_lengthrange_muscle_limited_from_limits() {
     "#;
 
     let model = load_model(mjcf).expect("should load");
-
-    // Limited joint: lengthrange = gear * joint_range (in radians)
-    let expected_rad = std::f64::consts::FRAC_PI_2; // 90° in radians
     let (lo, hi) = model.actuator_lengthrange[0];
-    assert_relative_eq!(lo, -2.0 * expected_rad, epsilon = 1e-6);
-    assert_relative_eq!(hi, 2.0 * expected_rad, epsilon = 1e-6);
+    assert_close(
+        &[lo, hi],
+        &[-3.142_732_530_296_325_6, 3.142_732_530_296_325_6],
+    );
+}
+
+/// `ours` against MuJoCo 3.5.0's `mujoco`: equal bits on macOS arm64, where
+/// MuJoCo's values were printed; elsewhere both finite and within 1e-9 of
+/// the array's largest finite entry, where the platform's libm gives other
+/// last bits.
+fn assert_close(ours: &[f64], mujoco: &[f64]) {
+    let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    assert_eq!(ours.len(), mujoco.len(), "{ours:?}");
+    let scale = mujoco
+        .iter()
+        .filter(|v| v.is_finite())
+        .fold(0.0_f64, |m, v| m.max(v.abs()));
+    let same = ours.iter().zip(mujoco).all(|(a, b)| {
+        a.to_bits() == b.to_bits()
+            || (!exact && a.is_finite() && b.is_finite() && (a - b).abs() <= 1e-9 * scale)
+    });
+    assert!(same, "ours {ours:?}\nMuJoCo {mujoco:?}");
 }
 
 // ============================================================================

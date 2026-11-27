@@ -5,10 +5,10 @@
 //! of the unified constraint arrays.
 //! Corresponds to equality machinery in MuJoCo's `engine_core_constraint.c` (§15).
 
-use nalgebra::{DMatrix, UnitQuaternion, Vector3};
+use nalgebra::{DMatrix, Vector3};
 
 use crate::jacobian::mj_jac;
-use crate::quat::{mul_mat_vec3, mul_quat, mul_quat_axis, neg_quat};
+use crate::quat::{mul_mat_vec3, mul_quat, mul_quat_axis, neg_quat, quat_array};
 use crate::types::{Data, MjObjectType, Model};
 
 // =============================================================================
@@ -33,11 +33,6 @@ pub struct EqualityConstraintRows {
 fn anchor_point(data: &Data, body: usize, anchor: &[f64]) -> Vector3<f64> {
     let r = mul_mat_vec3(&data.xmat[body], &[anchor[0], anchor[1], anchor[2]]);
     Vector3::new(r[0], r[1], r[2]) + data.xpos[body]
-}
-
-fn quat_array(q: &UnitQuaternion<f64>) -> [f64; 4] {
-    let q = q.quaternion();
-    [q.w, q.i, q.j, q.k]
 }
 
 /// Connect or weld `eq_id`'s two points in the world and the bodies they sit

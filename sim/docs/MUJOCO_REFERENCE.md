@@ -297,11 +297,22 @@ stored unclamped.
 Called after `compute_ancestors()` and `compute_implicit_params()`, for each
 actuator:
 
-1. **`actuator_lengthrange`** — computed from tendon limits (if limited) or
-   joint range sums (fixed tendons), gear-scaled with sign awareness.
-2. **`actuator_acc0`** — forward pass at `qpos0` → CRBA → sparse solve:
+1. **`actuator_acc0`** — forward pass at `qpos0` → CRBA → sparse solve:
    `acc0 = ‖M⁻¹J‖₂` where J is the gear-scaled transmission moment vector,
    unclamped.
+
+### Model Build: `Model::set_length_range()`
+
+MuJoCo's compiler step after `mj_setConst` (`mjCModel::LengthRange`,
+`mj_setLengthRange`), which the MJCF loader calls last. For each actuator the
+mode takes (muscles by default) whose range is not already increasing: under
+`uselimit`, a limited joint's or tendon's range as written; otherwise two runs
+from `qpos0`, pushing the length down then up with the force that gives an
+acceleration of `accel`, each `inttotal` long, with friction loss, contacts,
+springs, dampers, gravity and actuation disabled and sleep off. The range is
+the first run's least length and the second's greatest over the last
+`interval`; an empty range, or a side whose length still moves more than
+`tolrange` of it, refuses the model in MuJoCo's words.
 
 ---
 
@@ -916,7 +927,7 @@ available as `Data::transition_derivatives()`.
 | `actuator_dynprm[i]` | `[f64; 3]` | Dynamics params (Muscle: [τ_act, τ_deact, τ_smooth]; Filter/FilterExact: [τ, 0, 0]) |
 | `actuator_gainprm[i]` | `[f64; 9]` | Gain params (per-type: Motor=[1,0,...], Position=[kp,0,...], Damper=[0,0,-kv,...], Muscle=[range0..1, F0, scale, lmin..vmax, fpmax, fvmax]) |
 | `actuator_biasprm[i]` | `[f64; 9]` | Bias params (per-type: Position=[0,-kp,-kv,...], Velocity=[0,0,-kv,...], Muscle=shared with gainprm) |
-| `actuator_lengthrange[i]` | `(f64, f64)` | Transmission length extremes (gear-scaled) |
+| `actuator_lengthrange[i]` | `(f64, f64)` | The actuator length's range: as written, or as MuJoCo's compiler computes it (`Model::set_length_range`) |
 | `actuator_acc0[i]` | `f64` | ‖M⁻¹J‖ at qpos0 (for F0 auto-computation) |
 | `actuator_ctrlrange[i]` | `(f64, f64)` | Control input limits (gated by ctrllimited) |
 | `actuator_forcerange[i]` | `(f64, f64)` | Force output limits (gated by forcelimited) |

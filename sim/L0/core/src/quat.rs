@@ -2,7 +2,7 @@
 //! step's rotations round as MuJoCo's do. Quaternions are `[w, x, y, z]`.
 
 use crate::constraint::impedance::MJ_MINVAL;
-use nalgebra::{DVector, Matrix3};
+use nalgebra::{DVector, Matrix3, UnitQuaternion};
 
 /// Scales `vec` to unit length and returns its length before (MuJoCo
 /// `mju_normalize3`, `engine_util_blas.c:120-135`). Below [`MJ_MINVAL`] it
@@ -84,6 +84,12 @@ pub fn quat_z2vec(vec: &[f64; 3]) -> [f64; 4] {
         };
     }
     axis_angle_to_quat(&axis, a.atan2(along))
+}
+
+/// `q` as MuJoCo's array `[w, x, y, z]`.
+pub fn quat_array(q: &UnitQuaternion<f64>) -> [f64; 4] {
+    let q = q.quaternion();
+    [q.w, q.i, q.j, q.k]
 }
 
 /// The product `a * b` (MuJoCo `mju_mulQuat`, `engine_util_spatial.c:66-77`).

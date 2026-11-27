@@ -167,7 +167,7 @@ DT-181 added during derivatives examples (sensor FD optimization).
 | DT-1 | T1 | Mesh defaults `apply_to_mesh()` -- root-only mesh scale defaults deferred | 10b |
 | DT-5 | T2 | `gaintype/biastype/dyntype="user"` -- callback-based types require plugin system | 10b |
 | DT-7 | T1 | `actdim` explicit override not supported (auto-detection only) | 10b |
-| DT-10 | T1 | Deferred `<compiler>` attributes: ~~`fitaabb`~~ (**Done** -- Rigid-loading PR RL-9b3, book L35), `usethread`, ~~`alignfree`~~ (**Done** -- Rigid-loading PR RL-10b2, ledger L403), `saveinertial`, ~~`inertiagrouprange`~~ (**Done** -- Rigid-loading PR RL-9a, book L33), `<lengthrange>` child | 10b |
+| DT-10 | T1 | Deferred `<compiler>` attributes: ~~`fitaabb`~~ (**Done** -- Rigid-loading PR RL-9b3, book L35), `usethread`, ~~`alignfree`~~ (**Done** -- Rigid-loading PR RL-10b2, ledger L403), `saveinertial`, ~~`inertiagrouprange`~~ (**Done** -- Rigid-loading PR RL-9a, book L33), ~~`<lengthrange>` child~~ (**Done** -- Rigid-loading PR RL-11a, book L49) | 10b |
 | DT-12 | T1 | Programmatic API enforcement that `worldbody.childclass` must be `None` | 10b |
 | DT-15 | T1 | ~~Sentinel-value detection for `gear`/`kp`/`noise`/`cutoff` should migrate to `Option<T>`. Phase 7 Spec A added 14 sentinel-detection fields -- primary migration candidates.~~ **Done** -- Rigid-loading PR RL-5b (book L17) | 10b |
 | DT-17 | T1 | Global `<option o_margin>` override -- per-geom margin is correct foundation; this covers the separate global option | 10b |
@@ -243,8 +243,8 @@ number is accounted for.
 | DT-56 | `dampratio` for position actuators (requires `acc0`) | Phase 5 Spec A |
 | DT-57 | `acc0` computation for non-muscle actuators | Phase 5 Spec A |
 | DT-58 | Hill-type muscle model as `ActuatorDynamics::HillMuscle` variant | Phase 5 Spec C |
-| DT-59 | Bisection-based `lengthrange` for unlimited slide joints | Phase 5 Spec A |
-| DT-106 | Gear-scaling in `uselimit` lengthrange (intentional MuJoCo deviation) | Phase 5 Spec A |
+| DT-59 | Bisection-based `lengthrange` for unlimited slide joints | Phase 5 Spec A; since Rigid-loading PR RL-11a refused, as MuJoCo's run does not converge |
+| DT-106 | Gear-scaling in `uselimit` lengthrange (intentional MuJoCo deviation) | Phase 5 Spec A; retired by Rigid-loading PR RL-11a: the range copied as written, as MuJoCo's |
 
 ### Sensor Completeness (Phase 6)
 
@@ -265,7 +265,7 @@ number is accounted for.
 | DT-35 | Tendon spring/damper forces in implicit mode (non-diagonal K/D coupling) | Phase 8 |
 | DT-74 | Canonical `mj_jac` -- full body Jacobian API | Phase 4 |
 | DT-75 | `add_body_jacobian` free joint bug (world-frame vs body-frame) | Phase 4 |
-| DT-78 | `actuator_lengthrange` for unlimited spatial tendons | Phase 1 |
+| DT-78 | `actuator_lengthrange` for unlimited spatial tendons | Phase 1; (0, 0) until Rigid-loading PR RL-11a, which computes it as MuJoCo's run |
 | DT-79 | User callbacks `mjcb_*` Rust equivalents | Phase 4 |
 
 ### Tendon (Phase 8)
@@ -323,7 +323,7 @@ number is accounted for.
 
 | DT | Description | Resolved In |
 |----|-------------|-------------|
-| DT-77 | Length-range auto-estimation for site-transmission actuators | Phase 5 Spec A |
+| DT-77 | Length-range auto-estimation for site-transmission actuators | Phase 5 Spec A; (0, 0) until Rigid-loading PR RL-11a, which computes it as MuJoCo's run |
 | DT-97 | Golden file generation for per-flag trajectory conformance | Phase 12 |
 
 ### Retired

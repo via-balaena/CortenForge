@@ -572,8 +572,9 @@ MuJoCo's `user_api.cc`), populating `actuator_gaintype`, `actuator_biastype`,
 `<general>` actuators support explicit `gaintype`, `biastype`, `dyntype`,
 `gainprm`, `biasprm`, `dynprm` attributes with default class inheritance.
 Muscle parameters are parsed and transferred; `compute_actuator_params()`
-resolves `lengthrange` and `acc0`; a negative `F0` stays in the model and is
-resolved at each call (`muscle_f0`).
+resolves `acc0`, and `Model::set_length_range` the length range, which the
+loader calls last, as MuJoCo's compiler computes it after `mj_setConst`; a
+negative `F0` stays in the model and is resolved at each call (`muscle_f0`).
 A `<flex>` is parsed by `parse_flex()` (`parser/deformable.rs`) and a
 `<flexcomp>` by `parse_flexcomp()` (`parser/flexcomp.rs`), made into bodies and
 a flex by `builder/flexcomp.rs`; `process_flex_bodies()` in `builder/flex.rs`

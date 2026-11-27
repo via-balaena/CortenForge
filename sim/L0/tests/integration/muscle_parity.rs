@@ -5,9 +5,8 @@
 //!
 //! The golden is `assets/golden/muscle/muscle.json`, from the unfused MuJoCo
 //! 3.5.0 oracle (`scripts/gen_muscle_reference.py`, which describes its
-//! fixtures). sim-mjcf does not read `lengthrange` yet (ledger L44), so each
-//! test sets MuJoCo's after loading; `a_written_length_range_is_not_read_yet`
-//! fails once it does.
+//! fixtures). Each fixture writes its `lengthrange`, which the loader keeps
+//! as MuJoCo's compiler does; each test checks it against MuJoCo's.
 
 use serde_json::Value;
 use sim_mjcf::load_model;
@@ -39,9 +38,13 @@ fn assert_matches_mujoco(name: &str, tol: f64) {
         .iter()
         .find(|c| c["name"] == name)
         .unwrap_or_else(|| panic!("no fixture {name}"));
-    let mut model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
     let lr = floats(&case["lengthrange"]);
-    model.actuator_lengthrange[0] = (lr[0], lr[1]);
+    assert_eq!(
+        model.actuator_lengthrange[0],
+        (lr[0], lr[1]),
+        "{name}: lengthrange"
+    );
     assert!(
         (model.actuator_acc0[0] - num(&case["acc0"])).abs() <= 1e-12,
         "{name}: acc0 {}, MuJoCo {}",
@@ -175,8 +178,12 @@ fn assert_implicit_steps(name: &str) {
     for step in steps {
         let state =
             &states[usize::try_from(step["state"].as_u64().expect("state")).expect("index")];
-        let mut model = load_model(step["xml"].as_str().expect("xml")).expect("load");
-        model.actuator_lengthrange[0] = (lr[0], lr[1]);
+        let model = load_model(step["xml"].as_str().expect("xml")).expect("load");
+        assert_eq!(
+            model.actuator_lengthrange[0],
+            (lr[0], lr[1]),
+            "{name}: lengthrange"
+        );
         let mut data = model.make_data();
         data.qpos[0] = num(&state["qpos"]);
         data.qvel[0] = num(&state["qvel"]);
@@ -196,13 +203,12 @@ fn assert_implicit_steps(name: &str) {
     }
 }
 
-/// sim-mjcf drops a written `lengthrange` (ledgers L37, L272): a muscle on an
-/// unlimited hinge, its range written, loads with (0, 0), where MuJoCo 3.5.0
-/// compiles the written (-1.5, 1.5) (and refuses the model without it: the
-/// range's simulation does not converge). Rigid-loading's L44 keeps the
-/// written range, and this test fails there.
+/// A written `lengthrange` is kept, as MuJoCo 3.5.0's compiler keeps it
+/// (ledgers L37, L272): a muscle on an unlimited hinge, its range written,
+/// loads with the written (-1.5, 1.5), where MuJoCo refuses the model without
+/// it (the range's simulation does not converge).
 #[test]
-fn a_written_length_range_is_not_read_yet() {
+fn a_written_length_range_is_kept() {
     let model = load_model(
         r#"<mujoco>
           <worldbody>
@@ -217,5 +223,5 @@ fn a_written_length_range_is_not_read_yet() {
         </mujoco>"#,
     )
     .expect("load");
-    assert_eq!(model.actuator_lengthrange[0], (0.0, 0.0));
+    assert_eq!(model.actuator_lengthrange[0], (-1.5, 1.5));
 }

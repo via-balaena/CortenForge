@@ -210,7 +210,8 @@ impl ActuatorSpec {
 
     /// The attributes `OneActuator` reads alike for every kind
     /// (`xml_native_reader.cc:2297-2308`), and `cranklength` (`:2349`), but
-    /// `lengthrange`, which the builder does not take yet (book L44).
+    /// `lengthrange`, which no default sets (MuJoCo's default actuators have
+    /// none) and the builder takes from the actuator as written.
     fn write_common(&mut self, actuator: &MjcfActuator) {
         set(&mut self.group, actuator.group);
         set(&mut self.nsample, actuator.nsample);

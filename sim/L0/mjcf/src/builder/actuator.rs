@@ -266,8 +266,11 @@ impl ModelBuilder {
         // Per-actuator group assignment (§41 S7b)
         self.actuator_group.push(spec.group.unwrap_or(0));
 
-        // Lengthrange and acc0: initialized to zero, computed by compute_actuator_params()
-        self.actuator_lengthrange.push((0.0, 0.0));
+        // The written length range, as MuJoCo's compiler copies it
+        // (`user_model.cc:3784`), (0, 0) where none is written; the loader's
+        // `Model::set_length_range` computes the rest after the build.
+        self.actuator_lengthrange
+            .push(actuator.lengthrange.unwrap_or((0.0, 0.0)));
         self.actuator_acc0.push(0.0);
 
         Ok(act_id)
@@ -764,12 +767,14 @@ mod tests {
                        dyntype="muscle"
                        gainprm="0.75 1.05 -1 200 0.5 1.6 1.5 0.6 1.4"
                        biasprm="0.75 1.05 -1 200 0.5 1.6 1.5 0.6 1.4"
-                       dynprm="0.01 0.04 0"/>"#,
+                       dynprm="0.01 0.04 0" lengthrange="-1 1"/>"#,
         );
+        // Each with a written range: on the helper's unlimited hinge MuJoCo's
+        // run does not converge, and refuses the model.
         let muscle_xml = general_actuator_model(
             r#"<muscle joint="j" range="0.75 1.05" force="-1" scale="200"
                       lmin="0.5" lmax="1.6" vmax="1.5" fpmax="0.6" fvmax="1.4"
-                      timeconst="0.01 0.04"/>"#,
+                      timeconst="0.01 0.04" lengthrange="-1 1"/>"#,
         );
 
         let m_gen = load_model(&general_xml).expect("should load general");

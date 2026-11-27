@@ -214,14 +214,19 @@ impl Data {
     /// acceleration computation fails (`CholeskyFailed` under the implicit
     /// spring-damper integrator, or when Newton's sparse Hessian loses rank).
     pub fn step2(&mut self, model: &Model) -> Result<(), StepError> {
-        check::check_step_inputs(model, self)?;
-
         // §53: RK4 is not compatible with split-step — warn if configured.
         if model.integrator == Integrator::RungeKutta4 {
             log::warn!(
                 "step2() uses Euler integration; RK4 requires step() for correct multi-stage substeps"
             );
         }
+        self.step2_stages(model)
+    }
+
+    /// [`Self::step2`] without its warning under RK4: the length-range run
+    /// steps so, as MuJoCo's `evalAct` calls `mj_step2` (`engine_setconst.c:1135`).
+    pub(crate) fn step2_stages(&mut self, model: &Model) -> Result<(), StepError> {
+        check::check_step_inputs(model, self)?;
 
         // §53: Acceleration stage (actuation, constraints, sensors).
         self.forward_acc(model, true)?;

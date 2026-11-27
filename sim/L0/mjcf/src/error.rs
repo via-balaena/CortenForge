@@ -282,6 +282,18 @@ pub enum MjcfError {
         at: Location,
     },
 
+    /// An actuator's length range, as MuJoCo's compiler computes it, refuses
+    /// the model: its words (`mj_setLengthRange`'s), or a step of the run
+    /// this crate refuses.
+    #[error("{source}{at}")]
+    #[non_exhaustive]
+    LengthRange {
+        /// The actuator's refusal.
+        source: sim_core::LengthRangeError,
+        /// Where it was found.
+        at: Location,
+    },
+
     /// A mesh, height field or asset file could not be loaded or is not valid.
     #[error("{kind} '{name}': {reason}{at}")]
     #[non_exhaustive]
@@ -816,6 +828,14 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::LengthRange`].
+    pub(crate) fn length_range(source: sim_core::LengthRangeError) -> Self {
+        Self::LengthRange {
+            source,
+            at: Location::unknown(),
+        }
+    }
+
     /// An [`MjcfError::Asset`].
     pub(crate) fn asset(
         kind: ElementKind,
@@ -879,6 +899,7 @@ impl MjcfError {
             | Self::EmptyClassName { at }
             | Self::RenamedRootClass { at, .. }
             | Self::InvalidModel { at, .. }
+            | Self::LengthRange { at, .. }
             | Self::Asset { at, .. }
             | Self::Unsupported { at, .. } => Some(at),
             Self::Io { .. } => None,

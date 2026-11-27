@@ -22,7 +22,7 @@
 //! `nuser_site`, `nuser_tendon`, `nuser_actuator` and `nuser_sensor` (a
 //! URDF makes no object of those kinds, and with none MuJoCo keeps the
 //! written count where sim-mjcf has 0: ledger L461), `nkey` (ledger L455),
-//! `<lengthrange>` (ledger L37), and the `nativeccd` flag (making its
+//! `<lengthrange>`'s options (a URDF makes no actuator), and the `nativeccd` flag (making its
 //! `Data` panics here, D-NATIVECCD).
 
 // The values are MuJoCo's, printed to the last digit.
@@ -4593,6 +4593,11 @@ const CASES: &[(&str, Expect)] = &[
         r#"<robot name="r"><mujoco><compiler boundmass="x"><lengthrange/><lengthrange/></compiler></mujoco><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0.1"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5" rpy="0.3 0 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="2" velocity="1"/></joint></robot>"#,
         Expect::Refused("bad number \"x\" in attribute 'boundmass' on <compiler>"),
     ),
+    // MuJoCo: "XML Error: invalid keyword: 'bogus'"
+    (
+        r#"<robot name="r"><mujoco><compiler><lengthrange mode="bogus"/></compiler></mujoco><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0.1"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5" rpy="0.3 0 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="2" velocity="1"/></joint></robot>"#,
+        Expect::Refused("invalid keyword \"bogus\" in attribute 'mode' on <lengthrange>"),
+    ),
     // MuJoCo: "XML Error: invalid keyword: 'grad'"
     (
         r#"<robot name="r"><mujoco><compiler angle="grad"/><option/><option/></mujoco><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0.1"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5" rpy="0.3 0 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="2" velocity="1"/></joint></robot>"#,
@@ -4637,11 +4642,6 @@ const DIVERGENT: &[(&str, &str, bool)] = &[
         r#"<robot name="r"><mujoco><option timestep="-0.01"/></mujoco><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0.1"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5" rpy="0.3 0 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="2" velocity="1"/></joint></robot>"#,
         "D-OPTION-TIMESTEP",
         false,
-    ),
-    (
-        r#"<robot name="r"><mujoco><compiler><lengthrange mode="bogus"/></compiler></mujoco><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0.1"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5" rpy="0.3 0 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="2" velocity="1"/></joint></robot>"#,
-        "ledger L37: <compiler><lengthrange> is not read",
-        true,
     ),
     (
         r#"<robot name="r"><mujoco><size memory="lots"/></mujoco><link name="base"><inertial><mass value="2"/><inertia ixx="0.5" iyy="0.5" izz="0.5" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><link name="arm"><inertial><origin xyz="0.1 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial><collision><origin xyz="0 0 0.1"/><geometry><box size="0.1 0.2 0.3"/></geometry></collision></link><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.5" rpy="0.3 0 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="2" velocity="1"/></joint></robot>"#,

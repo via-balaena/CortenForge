@@ -16,10 +16,9 @@ impl Model {
     /// order building a model computes them, after [`Self::check_joint_layout`],
     /// [`Self::check_ranges`], [`Self::check_actuators`] and
     /// [`Self::check_tendons`]: the
-    /// equivalent of MuJoCo's `mj_setConst` (3.5.0 `engine_setconst.c:1089-1101`)
-    /// plus the muscle length-range simulation, which `mj_setConst` leaves out
-    /// (`:1088`). The factories and the test fixtures' `finalize` run it; call
-    /// it after editing a primary field.
+    /// equivalent of MuJoCo's `mj_setConst` (3.5.0 `engine_setconst.c:1089-1101`).
+    /// The factories and the test fixtures' `finalize` run it; call it after
+    /// editing a primary field.
     ///
     /// | After editing | Stale | Recomputed by |
     /// |---|---|---|
@@ -29,7 +28,7 @@ impl Model {
     /// | `dof_parent`, `dof_simplenum` | the mass matrix's pattern and the implicit integrator's (`M_*`, `D_*`), so the lengths of `Data::qLD_data`, `Data::qH` and `Data::qLU`: make a new `Data` | [`Self::compute_dof_patterns`] |
     /// | masses, inertias, `dof_armature`, body poses, `qpos0`, joint axes | `dof_M0`, a simple dof's row of the mass matrix (at every state): first, as what follows builds the mass matrix at `qpos0` | [`Self::compute_dof_m0`] |
     /// | masses, inertias, body poses, `qpos0`, joint axes, flex equalities, `tendon_armature` | `body_subtreemass`, `body_invweight0`, `dof_invweight0`, `tendon_invweight0`, `flex_edgeequality`, `flexedge_invweight0`, `stat_meaninertia` | [`Self::compute_invweight0`], [`Self::compute_stat_meaninertia`] |
-    /// | gears, transmissions, joint and tendon ranges, masses, `tendon_armature` | `actuator_lengthrange`, `actuator_acc0` | [`Self::compute_actuator_params`] |
+    /// | gears, transmissions, joint and tendon ranges, masses, `tendon_armature` | `actuator_acc0` | [`Self::compute_actuator_params`] |
     /// | spatial tendon geometry, `qpos0`, `qpos_spring` | spatial `tendon_length0`, `tendon_lengthspring` | [`Self::compute_spatial_tendon_length0`] |
     /// | fixed tendon wraps, `qpos0`, `qpos_spring` | fixed `tendon_length0`, `tendon_lengthspring` | [`Self::compute_fixed_tendon_lengths`] |
     /// | `geom_size`, `geom_type`, mesh, height field or SDF data | `geom_rbound`, `geom_aabb` | [`Self::compute_geom_bounding_radii`] |
@@ -47,7 +46,10 @@ impl Model {
     /// from them; a later edit of the input is not derived again. Not
     /// recomputed here: the tree's own tables `body_rootid` and `dof_parent`,
     /// which an edit of the tree sets; the connects' and welds' `eq_data`
-    /// [`Self::compute_equality_data0`] makes; and the flex
+    /// [`Self::compute_equality_data0`] makes; `actuator_lengthrange`, which
+    /// `mj_setConst` leaves out (`:1088`) and [`Self::set_length_range`]
+    /// computes (it keeps a range that increases: set one to (0, 0) to have it
+    /// computed again); and the flex
     /// edge Jacobian's pattern
     /// (`flexedge_J_rownnz`, `flexedge_J_rowadr`, `flexedge_J_colind`), the
     /// MJCF builder's, from each end body's own dofs, where MuJoCo's `set0`

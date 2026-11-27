@@ -1,0 +1,1 @@
+<mujoco model="m"><compiler><lengthrange inttotal="22"/></compiler><option timestep="0.002"/><worldbody><body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody><actuator><muscle joint="h"/></actuator></mujoco>

@@ -32,17 +32,15 @@ impl ModelBuilder {
         model.compute_history_addresses();
 
         // Tendon and actuator derived parameters. These build a `Data` and run
-        // the pipeline on it (a muscle's length range is simulated), so a
-        // joint layout or a range `try_make_data` refuses skips them: a slide
-        // after a ball, which the loader refuses once the keyframes are
-        // resolved, and a range `check_ranges` refuses that the loader passes,
-        // as MuJoCo loads it (registry D-MODEL-CHECKS): a limited range in
-        // degrees whose bounds become one value in radians, an intvelocity's
-        // `inheritrange` whose activation range overflows to an infinite
-        // bound (an infinite control range passes `check_ranges`), and a
-        // caller-built
-        // `MjcfModel`'s infinite bound, which the parser refuses in a
-        // document.
+        // the pipeline on it, so a joint layout or a range `try_make_data`
+        // refuses skips them: a slide after a ball, which the loader refuses
+        // once the keyframes are resolved, and a range `check_ranges` refuses
+        // that the loader passes, as MuJoCo loads it (registry D-MODEL-CHECKS):
+        // a limited range in degrees whose bounds become one value in radians,
+        // an intvelocity's `inheritrange` whose activation range overflows to
+        // an infinite bound (an infinite control range passes `check_ranges`),
+        // and a caller-built `MjcfModel`'s infinite bound, which the parser
+        // refuses in a document.
         if model.check_joint_layout().is_ok() && model.check_ranges().is_ok() {
             model.compute_dof_m0();
             model.compute_spatial_tendon_length0();

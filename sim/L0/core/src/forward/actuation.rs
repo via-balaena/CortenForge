@@ -8,8 +8,7 @@ use super::muscle::muscle_activation_dynamics;
 use crate::constraint::jacobian::compute_contact_normal_row;
 use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
 use crate::linalg::dot_sparse_entries;
-use crate::quat::{neg_quat, qpos_quat, quat_to_vel, rot_vec_quat};
-use crate::tendon::subquat;
+use crate::quat::{mul_quat, neg_quat, qpos_quat, quat_array, quat_to_vel, rot_vec_quat, sub_quat};
 use crate::types::{
     ActuatorDynamics, ActuatorTransmission, BiasType, ConstraintType, Contact, Data, ENABLE_SLEEP,
     GainType, MjJointType, Model,
@@ -123,16 +122,30 @@ pub fn mj_transmission_site(model: &Model, data: &mut Data) {
             // moment from difference Jacobian.
             let (ref_jac_t, ref_jac_r) = mj_jac_site(model, data, refid);
 
-            // Translational length: gear[0:3] · (R_ref^T @ (p_site - p_ref))
-            let dp = data.site_xpos[sid] - data.site_xpos[refid];
-            let dp_ref = data.site_xmat[refid].transpose() * dp;
-            let len_trans = gear[0] * dp_ref.x + gear[1] * dp_ref.y + gear[2] * dp_ref.z;
-
-            // Rotational length: gear[3:6] · subquat(q_site, q_ref)
-            let dq = subquat(&data.site_xquat[sid], &data.site_xquat[refid]);
-            let len_rot = gear[3] * dq.x + gear[4] * dq.y + gear[5] * dq.z;
-
-            data.actuator_length[i] = len_trans + len_rot;
+            // The length as MuJoCo's `mj_transmission` makes it: 0, plus each
+            // part whose gear is not zero (`engine_core_smooth.c:1481-1482`,
+            // `:1534-1541`, `:1567-1576`). The translational part:
+            // gear[0:3] · (R_ref^T @ (p_site - p_ref)).
+            data.actuator_length[i] = 0.0;
+            if gear[0..3].iter().any(|&g| g != 0.0) {
+                let dp = data.site_xpos[sid] - data.site_xpos[refid];
+                let dp_ref = data.site_xmat[refid].transpose() * dp;
+                data.actuator_length[i] +=
+                    gear[0] * dp_ref.x + gear[1] * dp_ref.y + gear[2] * dp_ref.z;
+            }
+            // The rotational part: gear[3:6] · the difference of the two
+            // sites' quaternions, each its own quaternion times its body's
+            // (`site_quat ⊗ xquat`, the order MuJoCo multiplies them in).
+            if gear[3..6].iter().any(|&g| g != 0.0) {
+                let quat = |s: usize| {
+                    mul_quat(
+                        &quat_array(&model.site_quat[s]),
+                        &quat_array(&data.xquat[model.site_body[s]]),
+                    )
+                };
+                let dq = sub_quat(&quat(sid), &quat(refid));
+                data.actuator_length[i] += gear[3] * dq[0] + gear[4] * dq[1] + gear[5] * dq[2];
+            }
 
             // Difference Jacobian with common-ancestor DOF zeroing.
             let mut diff_jac_t = &jac_t - &ref_jac_t;
