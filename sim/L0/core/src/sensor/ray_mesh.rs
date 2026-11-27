@@ -221,10 +221,6 @@ pub fn mj_ray_hfield(
             .min(nrow as i64 - 1),
     );
 
-    // The height at column `c`, row `r` (within the grid), and the grid
-    // point there.
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-    let height = |c: i64, r: i64| hfield.get(c as usize, r as usize).unwrap_or(0.0);
     // The normal so far, in the field's frame: the base box's, where the ray
     // meets it.
     let mut normal_local = if x >= 0.0 {
@@ -232,6 +228,10 @@ pub fn mj_ray_hfield(
     } else {
         [0.0; 3]
     };
+    // The height at column `c`, row `r` (within the grid), and the grid
+    // point there.
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let height = |c: i64, r: i64| hfield.get(c as usize, r as usize).unwrap_or(0.0);
     #[allow(clippy::cast_precision_loss)]
     let corner = |c: i64, r: i64| {
         [
