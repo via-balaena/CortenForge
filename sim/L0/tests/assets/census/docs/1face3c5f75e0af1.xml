@@ -1,0 +1,2 @@
+<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody><body name="a" pos="0 0 1" sleep="init"><joint name="ja" axis="0 1 0" damping="0.1"/><geom type="sphere" size="0.05" mass="1"/><site name="sa"/></body></worldbody><actuator><motor joint="ja"/></actuator></mujoco>

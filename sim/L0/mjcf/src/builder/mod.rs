@@ -34,6 +34,7 @@ pub mod orientation;
 mod resolve;
 mod select;
 pub mod sensor;
+mod sleep;
 pub mod tendon;
 
 use nalgebra::{DVector, UnitQuaternion, Vector3};
@@ -503,7 +504,12 @@ fn model_from_mjcf_unwrapped(
     }
 
     // Build final model
+    let body_sleep_policy = builder.body_sleep_policy.clone();
     let mut model = builder.build();
+    // Each body's `sleep` policy, refused on a body that is not a moving
+    // tree's first, as MuJoCo's `CopyTree` numbers the trees after the checks
+    // above and before the keyframes.
+    sleep::apply_body_sleep_policies(&mut model, &body_sleep_policy)?;
 
     // Process keyframes (after build, so nq/nv/na/nu/nmocap are finalized).
     // Collect into a temporary Vec first — calling resolve_keyframe(&model)
@@ -527,6 +533,11 @@ fn model_from_mjcf_unwrapped(
         .filter(|(_, kf)| !kf.name.is_empty())
         .map(|(i, kf)| (kf.name.clone(), i))
         .collect();
+
+    // An explicit `allowed` or `init` on a tree a coupling tendon reaches,
+    // refused as `mj_setConst` refuses it, after the keyframes and before
+    // the refusals below, which MuJoCo does not make.
+    sleep::check_tendon_sleep_policies(&model)?;
 
     // The refusals this crate makes and MuJoCo does not, after the
     // keyframes: a slide after a ball, a fixed tendon's negative armature,
@@ -584,6 +595,11 @@ fn model_from_mjcf_unwrapped(
             .set_length_range(&mjcf.compiler.lengthrange)
             .map_err(MjcfError::length_range)?;
     }
+
+    // With sleep enabled, the `init` trees put to sleep, as MuJoCo's compiler
+    // puts them last: after the length ranges, so after this crate's own
+    // refusals above (ledger L353).
+    sleep::check_init_sleep(&model)?;
 
     Ok(model)
 }

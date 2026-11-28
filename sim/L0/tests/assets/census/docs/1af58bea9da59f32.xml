@@ -1,0 +1,2 @@
+<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody><geom type="plane" size="5 5 0.1"/><body name="a" pos="0 0 0.0995"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body><body name="b" pos="0 0 0.2985" sleep="init"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body><body name="c" pos="2 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/></body></worldbody></mujoco>

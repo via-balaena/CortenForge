@@ -1,0 +1,2 @@
+<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody><body name="a" pos="0 0 1"><joint name="ja" axis="0 1 0" damping="0.1"/><geom type="sphere" size="0.05" mass="1"/><site name="sa"/><body name="b" pos="0.2 0 0"><joint name="jb" axis="0 1 0" damping="0.1"/><geom type="sphere" size="0.05" mass="1"/><site name="sb"/></body></body><body name="c" pos="1 0 1" sleep="init"><joint name="jc" axis="0 1 0" damping="0.1"/><geom type="sphere" size="0.05" mass="1"/><site name="sc"/></body></worldbody></mujoco>

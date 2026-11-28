@@ -2607,8 +2607,11 @@ fn test_init_sleep_valid() {
 }
 
 /// T60: A tree that starts asleep, joined by a connect to one that does not,
-/// cannot be put to sleep (its island is not all ready): making its `Data`
-/// is refused, as MuJoCo 3.5.0 refuses the model.
+/// cannot be put to sleep (its island is not all ready): the load is refused,
+/// with MuJoCo 3.5.0's message (measured: "1 trees were marked as
+/// sleep='init' but only 0 could be slept.", then "Body 'A' (id=1) is the root
+/// of the first tree that could not be slept."); built with sleep enabled after
+/// the load, making its `Data` is refused.
 #[test]
 fn test_init_sleep_mixed_island_refused() {
     // Two bodies connected by equality constraint: A is Init, B is not.
@@ -2632,7 +2635,15 @@ fn test_init_sleep_mixed_island_refused() {
         </equality>
     </mujoco>
     "#;
-    let model = load_model(mjcf).expect("load");
+    assert_eq!(
+        load_model(mjcf).expect_err("refused at load").to_string(),
+        "1 trees were marked as sleep='init' but only 0 could be slept. Body 'A' (id=1) is \
+         the root of the first tree that could not be slept."
+    );
+    let mut parsed = sim_mjcf::parse_mjcf_str(mjcf).expect("parse");
+    parsed.option.flag.sleep = false;
+    let mut model = sim_mjcf::model_from_mjcf(&parsed, None).expect("built with sleep disabled");
+    model.enableflags |= ENABLE_SLEEP;
     let tree_a = model.body_treeid[1];
     assert_eq!(model.tree_sleep_policy[tree_a], SleepPolicy::Init);
     assert_eq!(
