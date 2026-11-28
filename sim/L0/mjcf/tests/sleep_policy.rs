@@ -3,17 +3,18 @@
 //! (`user_model.cc:3036-3048`); an explicit `allowed` or `init` on no tree
 //! that a tendon coupling it to others reaches (`engine_setconst.c:203-246`);
 //! with sleep enabled, every `init` tree put to sleep (`user_model.cc:5159-5185`);
-//! each where MuJoCo checks it among its checks, the `init` trees after this
-//! crate's own refusals, which MuJoCo does not make (ledger L353).
+//! each among MuJoCo's checks where MuJoCo makes it. Where each falls among
+//! this crate's own refusals, which MuJoCo does not make: ledger L353.
 //!
 //! Every expected outcome in `REFUSED` and `LOADS` was printed by MuJoCo 3.5.0
 //! on the census's unfused oracle (2026-11-27) for the same document: a
-//! refusal's message, which this crate's is, followed by the body MuJoCo names
+//! refusal's message less its prefixes ("Error: ", "engine error:
+//! <function>: "), which this crate's is, followed by the body MuJoCo names
 //! (its "Element name"), the `init` trees' two lines on one; a load's trees'
-//! policies, and each tree's `tree_asleep` once its `Data` is made. The last
-//! two tests give this crate's words for the faults it names: a keyframe's,
-//! which MuJoCo names too, and its own refusals, which it names where MuJoCo
-//! names an `init` tree.
+//! policies, and each tree's `tree_asleep` once its `Data` is made.
+//! `a_keyframe_is_named_before_a_coupled_trees_policy` and
+//! `this_crates_own_refusal_is_named_before_an_init_tree` give this crate's
+//! words for the faults they name.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -423,11 +424,10 @@ fn a_keyframe_is_named_before_a_coupled_trees_policy() {
 }
 
 /// An `init` tree that cannot sleep beside a refusal this crate makes and
-/// MuJoCo does not: this crate names its own, where MuJoCo names the tree
-/// ("1 trees were marked as sleep='init' but only 0 could be slept.", then
-/// "Body 'b' (id=2) is the root of the first tree that could not be slept.",
-/// for both documents), as it puts the `init` trees to sleep after the length
-/// ranges, which it computes after its own refusals (ledger L353).
+/// MuJoCo does not: this crate names its refusal, MuJoCo the tree ("1 trees
+/// were marked as sleep='init' but only 0 could be slept.", then "Body 'b'
+/// (id=2) is the root of the first tree that could not be slept.", for each
+/// document; ledger L353).
 #[test]
 fn this_crates_own_refusal_is_named_before_an_init_tree() {
     for (xml, ours) in [
@@ -439,6 +439,11 @@ fn this_crates_own_refusal_is_named_before_an_init_tree() {
         (
             INIT_BESIDE_NEGATIVE_ARMATURE,
             "invalid armature on <tendon>: tendon armature cannot be negative (tendon 't')",
+        ),
+        (
+            INIT_BESIDE_NEGATIVE_INERTIAL,
+            "invalid mass on <inertial>: must not be negative, got -1 (MuJoCo raises it to \
+             boundmass, D-INERTIAL-NEGATIVE) (body 'c')",
         ),
     ] {
         assert_eq!(load_model(xml).expect_err("refused").to_string(), ours);
@@ -452,3 +457,6 @@ const INIT_BESIDE_BALL_SLIDE: &str = r#"<mujoco><option timestep="0.002"><flag s
 
 const INIT_BESIDE_NEGATIVE_ARMATURE: &str = r#"<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
 <worldbody><geom type="plane" size="5 5 0.1"/><body name="a" pos="0 0 0.0995"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body><body name="b" pos="0 0 0.2985" sleep="init"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body><body name="c" pos="2 0 1"><joint name="jc" axis="0 1 0" damping="0.1"/><geom type="sphere" size="0.05" mass="1"/><site name="sc"/></body></worldbody><tendon><fixed name="t" armature="-1"><joint joint="jc" coef="1"/></fixed></tendon></mujoco>"#;
+
+const INIT_BESIDE_NEGATIVE_INERTIAL: &str = r#"<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody><geom type="plane" size="5 5 0.1"/><body name="a" pos="0 0 0.0995"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body><body name="b" pos="0 0 0.2985" sleep="init"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body><body name="c" pos="2 0 1"><inertial pos="0 0 0" mass="-1" diaginertia="1 1 1"/></body></worldbody></mujoco>"#;

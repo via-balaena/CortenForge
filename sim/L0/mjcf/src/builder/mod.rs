@@ -598,8 +598,7 @@ fn model_from_mjcf_unwrapped(
 
     // With sleep enabled, the `init` trees put to sleep, as MuJoCo's compiler
     // puts them last: after the length ranges, so after this crate's own
-    // refusals above too, one of which is named where a document also holds
-    // an `init` tree MuJoCo names (ledger L353).
+    // refusals above (ledger L353).
     sleep::check_init_sleep(&model)?;
 
     Ok(model)
