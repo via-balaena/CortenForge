@@ -1,15 +1,15 @@
 //! Final Model assembly.
 //!
 //! Consumes a fully-populated [`ModelBuilder`] and produces a physics-ready
-//! [`Model`]. Handles kinematic tree enumeration, sleep policy resolution,
+//! [`Model`]. Handles kinematic tree enumeration and the automatic sleep
+//! policies (the explicit ones are set by the caller, `sleep.rs`),
 //! tendon length computation, bounding sphere pre-computation, and all other
 //! post-processing that requires the complete builder state.
 
 use std::collections::HashMap;
 
 use nalgebra::DVector;
-use sim_core::{Model, SleepPolicy, compute_dof_lengths};
-use tracing::warn;
+use sim_core::{Model, compute_dof_lengths};
 
 use super::ModelBuilder;
 use super::flex::{
@@ -21,7 +21,6 @@ impl ModelBuilder {
     ///
     /// Orchestrates model assembly and all post-construction computations.
     pub(crate) fn build(self) -> Model {
-        let body_sleep_policy = self.body_sleep_policy.clone();
         let mut model = self.assemble_model();
 
         // Structural pre-computation
@@ -66,9 +65,8 @@ impl ModelBuilder {
         }
         model.compute_fixed_tendon_lengths();
 
-        // Kinematic tree enumeration and sleep policy
+        // Kinematic tree enumeration and the automatic sleep policies
         model.compute_kinematic_trees();
-        apply_explicit_sleep_policies(&mut model, &body_sleep_policy);
         compute_dof_lengths(&mut model);
 
         model
@@ -548,36 +546,6 @@ impl ModelBuilder {
             plugin_attradr: Vec::new(),
             plugin_attrnum: Vec::new(),
             plugin_name: Vec::new(),
-        }
-    }
-}
-
-// ===== Post-construction standalone helpers =====
-//
-// These operate on a fully-assembled Model and cannot be `impl Model` methods
-// because `Model` is defined in sim-core, not sim-mjcf.
-
-/// Apply the explicit `sleep=` body attributes to their trees (§16.0 step 2).
-/// `Model::compute_kinematic_trees` has resolved the automatic policies. An
-/// explicit `auto` is the default and changes nothing, as MuJoCo applies only
-/// a policy other than auto (`user_model.cc:3041`).
-fn apply_explicit_sleep_policies(model: &mut Model, body_sleep_policy: &[Option<SleepPolicy>]) {
-    for (body_id, policy_opt) in body_sleep_policy.iter().enumerate().skip(1) {
-        if let Some(policy) = policy_opt
-            && *policy != SleepPolicy::Auto
-        {
-            let tree = model.body_treeid[body_id];
-            if tree < model.ntree {
-                let root_body = model.tree_body_adr[tree];
-                if body_id != root_body {
-                    let body_name = model.body_name[body_id].as_deref().unwrap_or("unnamed");
-                    warn!(
-                        "body '{}': sleep attribute on non-root body propagates to tree root",
-                        body_name
-                    );
-                }
-                model.tree_sleep_policy[tree] = *policy;
-            }
         }
     }
 }

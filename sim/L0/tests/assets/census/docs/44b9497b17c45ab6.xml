@@ -1,0 +1,2 @@
+<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody><body name="m" pos="0 0 1" mocap="true" sleep="init"><geom type="sphere" size="0.05" contype="0" conaffinity="0"/></body></worldbody></mujoco>

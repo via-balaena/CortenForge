@@ -2762,9 +2762,13 @@ const SLEEP_TENDON_ALL_ASLEEP: &str = r#"<mujoco>
     </tendon>
 </mujoco>"#;
 
-/// Two separate trees, tendon spans both, both start asleep (coupled group
-/// requires uniform sleep="init"). T56 wakes body 1 at runtime so the
-/// tendon is awake; T57 leaves both asleep, and the tendon with them.
+/// Two separate trees, a damped tendon across both, both marked to start
+/// asleep. MuJoCo 3.5.0 refuses the document at load, as the tendon couples
+/// the trees (`engine_setconst.c:203-246`), and so does `load_model`
+/// (`the_cross_tree_document_is_refused_at_load`); T56 and T57 take its model
+/// with the policy set after the load ([`tendon_cross_tree_asleep`]). T56
+/// wakes body 1 at runtime so the tendon is awake; T57 leaves both asleep,
+/// and the tendon with them.
 const SLEEP_TENDON_CROSS_TREE: &str = r#"<mujoco>
     <option density="0" viscosity="0" integrator="implicit">
         <flag sleep="enable"/>
@@ -2974,6 +2978,35 @@ fn t55_tendon_all_asleep_skipped() {
     }
 }
 
+/// [`SLEEP_TENDON_CROSS_TREE`]'s model with both trees starting asleep: built
+/// with its bodies' policies cleared, then `Init` set on the built model, as
+/// a caller who edits a compiled model sets it. MuJoCo's `mj_makeData` takes
+/// such a model with no check of the tendon (measured: both trees asleep),
+/// and so does `make_data`.
+fn tendon_cross_tree_asleep() -> Model {
+    let mut mjcf = sim_mjcf::parse_mjcf_str(SLEEP_TENDON_CROSS_TREE).expect("parse");
+    for body in &mut mjcf.worldbody.children {
+        body.sleep = None;
+    }
+    let mut model = sim_mjcf::model_from_mjcf(&mjcf, None).expect("should load");
+    model.tree_sleep_policy.fill(sim_core::SleepPolicy::Init);
+    model
+}
+
+/// The document's `sleep="init"` on a tree its damped tendon couples to
+/// another is refused at load, with MuJoCo 3.5.0's message (measured:
+/// "tree 0 connected to tendon 0 with non-zero stiffness or damping, sleeping
+/// not allowed", from `setFixed`).
+#[test]
+fn the_cross_tree_document_is_refused_at_load() {
+    assert_eq!(
+        load_model(SLEEP_TENDON_CROSS_TREE)
+            .expect_err("refused")
+            .to_string(),
+        "tree 0 connected to tendon 0 with non-zero stiffness or damping, sleeping not allowed"
+    );
+}
+
 // ============================================================================
 // T56: Tendon — cross-tree with sleeping body → NOT skipped
 // ============================================================================
@@ -2988,7 +3021,7 @@ fn t55_tendon_all_asleep_skipped() {
 ///           qDeriv[(1,1)] = -5.0*0.3*0.3 = -0.45
 #[test]
 fn t56_tendon_cross_tree_not_skipped() {
-    let model = load_model(SLEEP_TENDON_CROSS_TREE).expect("should load");
+    let model = tendon_cross_tree_asleep();
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
 
@@ -3043,7 +3076,7 @@ fn t56_tendon_cross_tree_not_skipped() {
 /// The tendon is asleep (both its trees are) → tendon skipped → qDeriv is zero.
 #[test]
 fn t57_tendon_cross_tree_all_asleep_skipped() {
-    let model = load_model(SLEEP_TENDON_CROSS_TREE).expect("should load");
+    let model = tendon_cross_tree_asleep();
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
 

@@ -812,27 +812,54 @@ fn init_tree_has_reset_values() {
     assert_trace("box_init", &["tree_asleep", "ncon", "nefc", "cb"]);
 }
 
-fn refusal(name: &str) -> (Model, String) {
-    let golden = golden();
-    let case = golden["refusals"]
+fn refusal_case(golden: &Value, name: &str) -> Value {
+    golden["refusals"]
         .as_array()
         .expect("refusals")
         .iter()
         .find(|c| c["name"] == name)
-        .unwrap_or_else(|| panic!("no refusal {name}"));
+        .unwrap_or_else(|| panic!("no refusal {name}"))
+        .clone()
+}
+
+fn refusal(name: &str) -> (Model, String) {
+    let case = refusal_case(&golden(), name);
     let message = case["message"].as_str().expect("MuJoCo refuses").to_owned();
-    (model_of(case), message)
+    (model_of(&case), message)
+}
+
+/// A case with a tree that starts asleep, which MuJoCo refuses at load:
+/// MuJoCo's message, `load_model`'s refusal's, and the model built with
+/// sleep disabled, then enabled on the built model, as a caller who enables
+/// it on a compiled model makes it (MuJoCo's `mj_makeData` refuses that
+/// model, as `try_make_data` does).
+fn init_refusal(name: &str) -> (Model, String, String) {
+    let case = refusal_case(&golden(), name);
+    let xml = case["xml"].as_str().expect("xml");
+    let theirs = case["message"].as_str().expect("MuJoCo refuses").to_owned();
+    let ours = load_model(xml).expect_err("refused at load").to_string();
+    let mut mjcf = sim_mjcf::parse_mjcf_str(xml).expect("parse");
+    mjcf.option.flag.sleep = false;
+    let mut model = sim_mjcf::model_from_mjcf(&mjcf, None).expect("built with sleep disabled");
+    model.enableflags |= ENABLE_SLEEP;
+    (model, theirs, ours)
 }
 
 /// A tree that starts asleep but cannot sleep, because a connect or a
 /// contact joins it to an awake tree, is refused where MuJoCo refuses it: at
-/// making a `Data` and at a reset, with MuJoCo's counts.
+/// load, with MuJoCo's message on one line; and, built with sleep enabled
+/// after the load, at making a `Data` and at a reset, with MuJoCo's counts.
 #[test]
 fn init_mixed_island_refused() {
     for (name, tree, root_body) in [("initmix", 0, 1), ("initmix_contact", 1, 2)] {
-        let (model, theirs) = refusal(name);
+        let (model, theirs, ours) = init_refusal(name);
         assert!(theirs.contains("1 trees were marked as sleep='init' but only 0 could be slept"));
         assert!(theirs.contains(&format!("(id={root_body}) is the root of the first tree")));
+        let at_load = theirs
+            .strip_prefix("Error: engine error: _resetData: ")
+            .expect("MuJoCo's compile error")
+            .replace('\n', " ");
+        assert_eq!(ours, at_load, "{name}");
         let refused = MakeDataError::InitSleep {
             marked: 1,
             slept: 0,
@@ -948,13 +975,18 @@ fn tendon_equality_with_sleep_refused() {
 
 /// A tree that starts asleep beside an active tendon equality: MuJoCo
 /// refuses the model at compile, where its reset's `mj_forward` raises the
-/// tendon-equality error; making its `Data` here refuses it with that error.
+/// tendon-equality error; `load_model` refuses it with that error, and so does
+/// making its `Data`, built with sleep enabled after the load.
 #[test]
 fn init_sleep_with_a_tendon_equality_refused() {
-    let (model, theirs) = refusal("init_tendon_equality");
+    let (model, theirs, ours) = init_refusal("init_tendon_equality");
     assert!(
         theirs.ends_with("mj_wakeEquality: tendon equality does not yet support sleeping"),
         "{theirs}"
+    );
+    assert!(
+        ours.ends_with("equality 0: tendon equality does not yet support sleeping"),
+        "{ours}"
     );
     assert_eq!(
         model.try_make_data().err(),
@@ -982,13 +1014,18 @@ fn flex_equality_with_sleep_refused() {
 
 /// A vertex body that starts asleep beside an active flex equality: MuJoCo
 /// refuses the model at compile, where its reset's `mj_forward` raises the
-/// flex-equality error; making its `Data` here refuses it with that error.
+/// flex-equality error; `load_model` refuses it with that error, and so does
+/// making its `Data`, built with sleep enabled after the load.
 #[test]
 fn init_sleep_with_a_flex_equality_refused() {
-    let (model, theirs) = refusal("init_flex_equality");
+    let (model, theirs, ours) = init_refusal("init_flex_equality");
     assert!(
         theirs.ends_with("mj_wakeEquality: flex equality does not yet support sleeping"),
         "{theirs}"
+    );
+    assert!(
+        ours.ends_with("equality 0: flex equality does not yet support sleeping"),
+        "{ours}"
     );
     assert_eq!(
         model.try_make_data().err(),
