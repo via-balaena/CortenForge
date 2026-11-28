@@ -4561,3 +4561,9 @@ fc272cd076207a41	sim/L0/mjcf/tests/sleep_policy.rs:317
 fe2597eeb2e97a83	sim/L0/mjcf/tests/sleep_policy.rs:97
 ff84ca6e53a3ee3b	sim/L0/mjcf/tests/sleep_policy.rs:118
 ffe89bd8681e352b	sim/L0/mjcf/tests/sleep_policy.rs:190
+17c845348c4b2aea	sim/L0/mjcf/tests/sleep_policy.rs:453
+3729a00049109f97	sim/L0/mjcf/tests/sleep_policy.rs:101
+56981dd75348c746	sim/L0/mjcf/tests/sleep_policy.rs:450
+6a37ed705a4c01db	sim/L0/mjcf/tests/sleep_policy.rs:208
+ec82f6a5b7ccab95	sim/L0/mjcf/tests/sleep_policy.rs:215
+f09b08f1e817da9d	sim/L0/mjcf/tests/sleep_policy.rs:94

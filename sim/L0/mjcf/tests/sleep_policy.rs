@@ -3,13 +3,17 @@
 //! (`user_model.cc:3036-3048`); an explicit `allowed` or `init` on no tree
 //! that a tendon coupling it to others reaches (`engine_setconst.c:203-246`);
 //! with sleep enabled, every `init` tree put to sleep (`user_model.cc:5159-5185`);
-//! each where MuJoCo checks it among the checks around it.
+//! each where MuJoCo checks it among its checks, the `init` trees after this
+//! crate's own refusals, which MuJoCo does not make (ledger L353).
 //!
-//! Every expected outcome below was printed by MuJoCo 3.5.0 on the census's
-//! unfused oracle (2026-11-27) for the same document: a refusal's message,
-//! which this crate's is, followed by the body MuJoCo names (its "Element
-//! name"), MuJoCo's two lines on one; a load's trees' policies, and each
-//! tree's `tree_asleep` once its `Data` is made.
+//! Every expected outcome in `REFUSED` and `LOADS` was printed by MuJoCo 3.5.0
+//! on the census's unfused oracle (2026-11-27) for the same document: a
+//! refusal's message, which this crate's is, followed by the body MuJoCo names
+//! (its "Element name"), the `init` trees' two lines on one; a load's trees'
+//! policies, and each tree's `tree_asleep` once its `Data` is made. The last
+//! two tests give this crate's words for the faults it names: a keyframe's,
+//! which MuJoCo names too, and its own refusals, which it names where MuJoCo
+//! names an `init` tree.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -84,6 +88,20 @@ const REFUSED: &[Refused] = &[
         xml: r#"<mujoco><compiler fusestatic="true"/><option timestep="0.002"><flag sleep="enable"/></option><worldbody><body name="a" pos="0 0 1" sleep="never"><geom type="sphere" size="0.05" mass="1"/><site name="sa"/></body><body name="b" pos="1 0 1"><joint name="jb" axis="0 1 0" damping="0.1"/><geom type="sphere" size="0.05" mass="1"/><site name="sb"/></body></worldbody><sensor><framepos objtype="body" objname="a"/></sensor></mujoco>"#,
         mujoco: "sleep policy only allowed for movable root bodies",
         body: Some("a"),
+    },
+    Refused {
+        what: "a static body's never after a moving tree's body",
+        xml: r#"<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody><body name="a" pos="0 0 1"><joint name="ja" axis="0 1 0" damping="0.1"/><geom type="sphere" size="0.05" mass="1"/><site name="sa"/></body><body name="s" pos="1 0 1" sleep="never"><geom type="sphere" size="0.05" mass="1"/><site name="ss"/></body></worldbody></mujoco>"#,
+        mujoco: "sleep policy only allowed for movable root bodies",
+        body: Some("s"),
+    },
+    Refused {
+        what: "a mocap body's init after a moving tree's body",
+        xml: r#"<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody><body name="a" pos="0 0 1"><joint name="ja" axis="0 1 0" damping="0.1"/><geom type="sphere" size="0.05" mass="1"/><site name="sa"/></body><body name="m" pos="2 0 1" mocap="true" sleep="init"><geom type="sphere" size="0.05" contype="0" conaffinity="0"/></body></worldbody></mujoco>"#,
+        mujoco: "sleep policy only allowed for movable root bodies",
+        body: Some("m"),
     },
     Refused {
         what: "init on the first of two trees a stiff fixed tendon couples",
@@ -183,6 +201,20 @@ const REFUSED: &[Refused] = &[
         what: "init on a coupled tree and a slide after a ball, which this crate refuses: the tree named",
         xml: r#"<mujoco><option timestep="0.002"><flag sleep="enable"/></option><worldbody><body name="a" pos="0 0 1"><joint name="ja" axis="0 1 0" damping="0.1"/><geom type="sphere" size="0.05" mass="1"/><site name="sa"/></body><body name="b" pos="1 0 1" sleep="init"><joint name="jb" type="ball"/><joint name="js" type="slide"/><geom type="sphere" size="0.05" mass="1"/></body></worldbody><tendon><fixed name="t" stiffness="1"><joint joint="ja" coef="1"/><joint joint="js" coef="1"/></fixed></tendon></mujoco>"#,
         mujoco: "tree 1 connected to tendon 0 with non-zero stiffness or damping, sleeping not allowed",
+        body: None,
+    },
+    Refused {
+        what: "init on a coupled tree and an actuator whose length range does not converge: the tree named",
+        xml: r#"<mujoco><compiler><lengthrange mode="all"/></compiler><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody><body name="a" pos="0 0 1"><joint name="ja" axis="0 1 0" damping="0.1"/><geom type="sphere" size="0.05" mass="1"/><site name="sa"/></body><body name="b" pos="1 0 1" sleep="init"><joint name="jb" axis="0 1 0" damping="0.1"/><geom type="sphere" size="0.05" mass="1"/><site name="sb"/></body><body name="c" pos="2 0 1"><joint name="jc" axis="0 1 0" damping="0.1"/><geom type="sphere" size="0.05" mass="1"/><site name="sc"/></body></worldbody><tendon><fixed name="t" stiffness="1"><joint joint="ja" coef="1"/><joint joint="jb" coef="1"/></fixed></tendon><actuator><position joint="jc"/></actuator></mujoco>"#,
+        mujoco: "tree 1 connected to tendon 0 with non-zero stiffness or damping, sleeping not allowed",
+        body: None,
+    },
+    Refused {
+        what: "an init tree on an awake one and an actuator whose length range does not converge: the length range named",
+        xml: r#"<mujoco><compiler><lengthrange mode="all"/></compiler><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody><geom type="plane" size="5 5 0.1"/><body name="a" pos="0 0 0.0995"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body><body name="b" pos="0 0 0.2985" sleep="init"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body><body name="c" pos="2 0 1"><joint name="jc" axis="0 1 0" damping="0.1"/><geom type="sphere" size="0.05" mass="1"/><site name="sc"/></body></worldbody><actuator><position joint="jc"/></actuator></mujoco>"#,
+        mujoco: "Lengthrange computation did not converge in actuator 0:\n  eval (-181.003, -140.808)\n  range (-181.003, 181.003)",
         body: None,
     },
     Refused {
@@ -390,4 +422,33 @@ fn a_keyframe_is_named_before_a_coupled_trees_policy() {
     );
 }
 
+/// An `init` tree that cannot sleep beside a refusal this crate makes and
+/// MuJoCo does not: this crate names its own, where MuJoCo names the tree
+/// ("1 trees were marked as sleep='init' but only 0 could be slept.", then
+/// "Body 'b' (id=2) is the root of the first tree that could not be slept.",
+/// for both documents), as it puts the `init` trees to sleep after the length
+/// ranges, which it computes after its own refusals (ledger L353).
+#[test]
+fn this_crates_own_refusal_is_named_before_an_init_tree() {
+    for (xml, ours) in [
+        (
+            INIT_BESIDE_BALL_SLIDE,
+            "not supported by sim-mjcf (valid in MuJoCo 3.5.0): a slide joint after a ball joint \
+             on one body (body 'c')",
+        ),
+        (
+            INIT_BESIDE_NEGATIVE_ARMATURE,
+            "invalid armature on <tendon>: tendon armature cannot be negative (tendon 't')",
+        ),
+    ] {
+        assert_eq!(load_model(xml).expect_err("refused").to_string(), ours);
+    }
+}
+
 const KEY_THEN_COUPLED: &str = r#"<mujoco><option timestep="0.002"><flag sleep="enable"/></option><worldbody><body name="a" pos="0 0 1"><joint name="ja" axis="0 1 0" damping="0.1"/><geom type="sphere" size="0.05" mass="1"/><site name="sa"/></body><body name="b" pos="1 0 1" sleep="init"><joint name="jb" axis="0 1 0" damping="0.1"/><geom type="sphere" size="0.05" mass="1"/><site name="sb"/></body></worldbody><tendon><fixed name="t" stiffness="1"><joint joint="ja" coef="1"/><joint joint="jb" coef="1"/></fixed></tendon><keyframe><key qpos="0 0 0"/></keyframe></mujoco>"#;
+
+const INIT_BESIDE_BALL_SLIDE: &str = r#"<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody><geom type="plane" size="5 5 0.1"/><body name="a" pos="0 0 0.0995"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body><body name="b" pos="0 0 0.2985" sleep="init"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body><body name="c" pos="2 0 1"><joint name="jc1" type="ball"/><joint name="jc2" type="slide"/><geom type="sphere" size="0.05" mass="1"/></body></worldbody></mujoco>"#;
+
+const INIT_BESIDE_NEGATIVE_ARMATURE: &str = r#"<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody><geom type="plane" size="5 5 0.1"/><body name="a" pos="0 0 0.0995"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body><body name="b" pos="0 0 0.2985" sleep="init"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body><body name="c" pos="2 0 1"><joint name="jc" axis="0 1 0" damping="0.1"/><geom type="sphere" size="0.05" mass="1"/><site name="sc"/></body></worldbody><tendon><fixed name="t" armature="-1"><joint joint="jc" coef="1"/></fixed></tendon></mujoco>"#;
