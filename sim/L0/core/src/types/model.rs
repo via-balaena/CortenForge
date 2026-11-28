@@ -646,7 +646,8 @@ pub struct Model {
     /// times `hfield_size[2]`, the field's lowest Y row first. A field set by
     /// hand whose heights pass
     /// `hfield_size[2]` makes no contact above it: the collision's box tests
-    /// take `hfield_size[2]` as the field's top, as MuJoCo 3.5.0's do.
+    /// take `hfield_size[2]` as the field's top, as MuJoCo 3.5.0's do. A ray
+    /// reads it as [`crate::raycast_scene`] says.
     pub hfield_data: Vec<Arc<HeightFieldData>>,
     /// Original MuJoCo size `[x, y, z_top, z_bottom]` for centering offset at collision time.
     pub hfield_size: Vec<[f64; 4]>,

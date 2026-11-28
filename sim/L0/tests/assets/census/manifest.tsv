@@ -4508,3 +4508,10 @@ ad643086092187c5	sim/L0/mjcf/tests/errors.rs:436
 bea6c75c2860ef4b	sim/L0/mjcf/tests/refusal_order.rs:2515
 c5e105178dc33aba	sim/L0/mjcf/tests/refusal_order.rs:2497
 fdf2277ff11d0aab	sim/L0/mjcf/tests/refusal_order.rs:2927
+277b48d6c649e768	sim/L0/tests/integration/raycast_heightfield.rs:87
+66d5a804090f3a00	sim/L0/tests/integration/raycast_heightfield.rs:65
+6cba613c77a7108a	sim/L0/tests/integration/raycast_heightfield.rs:98
+7f5ae808b424afef	sim/L0/tests/integration/raycast_heightfield.rs:76
+90066d8b00aec14c	examples/fundamentals/sim-cpu/raycasting/heightfield/src/main.rs:72
+6e3535ed2c38667a	sim/L0/tests/integration/raycast_heightfield.rs:112
+0a3c2f11bf6fa584	sim/L0/tests/integration/raycast_heightfield.rs:112

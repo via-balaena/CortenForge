@@ -5,17 +5,19 @@
 //! A rangefinder casts MuJoCo's `mj_ray` (`sensor::ray_geom`), which reads a
 //! signed distance field's shape here where it has one (registry D-SDF-RAY);
 //! a mesh's and a height field's rays are ports of MuJoCo's `mj_rayMesh` and
-//! `mj_rayHfield` (`sensor::ray_mesh`), and a signed distance field loaded
-//! from MJCF casts `mj_raySdf`, here too. [`raycast_scene`]
-//! reads a height field's grid from the geom's origin, where MuJoCo's is
-//! centred on it (ledger L280), and a plane as unbounded and hit from either
-//! side, where `mj_ray` bounds it by its size and hits its front only.
+//! `mj_rayHfield` (`sensor::ray_mesh`). [`raycast_scene`] casts a height
+//! field through that port, with `mj_rayHfield`'s normal, and a signed
+//! distance field loaded from MJCF through `mj_raySdf`; it reads a plane as
+//! unbounded and hit from either side, where `mj_ray` bounds it along each
+//! axis whose size is positive and hits its front only.
+//!
+//! [`raycast_shape`] casts a [`Shape`] in its own frame: a
+//! `Shape::height_field`'s grid from the pose's origin, as cf-geometry reads
+//! it, where [`raycast_scene`] centres a model's height field on its geom.
 //!
 //! Shape-level intersection is delegated to [`cf_geometry::ray_cast`], which
 //! supports all 10 shape types in local space. This module adds world-space
 //! pose transforms and the scene-level [`raycast_scene`] query.
-
-use std::sync::Arc;
 
 use nalgebra::{Point3, Rotation3, UnitQuaternion, UnitVector3, Vector3};
 use sim_types::Pose;
@@ -24,7 +26,7 @@ use cf_geometry::{Ray, Shape, ray_cast, ray_triangle};
 
 use crate::collision::narrow::geom_to_shape;
 use crate::collision::sdf_collide::is_loaded_sdf;
-use crate::sensor::mj_ray_sdf;
+use crate::sensor::{mj_ray_hfield, mj_ray_sdf};
 use crate::types::{Data, GeomType, Model};
 
 /// Result of a ray cast against a shape.
@@ -237,9 +239,19 @@ fn track_closest(
 /// - `geomgroup` — 6-element boolean array. A geom is skipped if
 ///   `!geomgroup[geom.group]`. Pass `None` to include all groups.
 ///
+/// # Height fields
+///
+/// A height field is cast as MuJoCo's `mj_rayHfield` casts it: centred on its
+/// geom, its half-extents, top and base from `hfield_size`, its grid from the
+/// data's counts, with MuJoCo's normal. Data set in code
+/// (`Model::hfield_data`) is cast the same way: its own spacing is not read,
+/// and its heights, below 0 or above `hfield_size[2]` too, meet a ray as
+/// `mj_rayHfield` meets such data.
+///
 /// # Returns
 ///
-/// The closest [`SceneRayHit`], or `None` if no geom is hit within `max_distance`.
+/// The closest [`SceneRayHit`], or `None` if no geom is hit nearer than
+/// `max_distance`.
 #[must_use]
 pub fn raycast_scene(
     model: &Model,
@@ -279,6 +291,24 @@ pub fn raycast_scene(
     closest
 }
 
+/// The hit `distance` along the ray from `origin` in `direction`, with
+/// `normal`, where it is at or past the start and within `max_distance`.
+fn hit_along(
+    origin: Point3<f64>,
+    direction: UnitVector3<f64>,
+    distance: f64,
+    normal: [f64; 3],
+    max_distance: f64,
+) -> Option<RaycastHit> {
+    (distance >= 0.0 && distance <= max_distance).then(|| {
+        RaycastHit::new(
+            distance,
+            origin + direction.into_inner() * distance,
+            Vector3::from(normal),
+        )
+    })
+}
+
 /// Geom `geom_id`'s nearest hit along a ray within `max_distance`, as
 /// [`raycast_scene`] casts it at each geom.
 pub(crate) fn raycast_geom(
@@ -313,9 +343,18 @@ pub(crate) fn raycast_geom(
                 max_distance,
             )
         }),
+        // MuJoCo's `mj_rayHfield`: the field centred on the geom, its extent
+        // and top from `hfield_size`, with its normal.
         GeomType::Hfield => model.geom_hfield[geom_id].and_then(|hfield_id| {
-            let shape = Shape::height_field(Arc::clone(&model.hfield_data[hfield_id]));
-            raycast_shape(&shape, &pose, ray_origin, ray_direction, max_distance)
+            let (distance, normal) = mj_ray_hfield(
+                &model.hfield_data[hfield_id],
+                &model.hfield_size[hfield_id],
+                &data.geom_xpos[geom_id],
+                &data.geom_xmat[geom_id],
+                &ray_origin.coords,
+                &ray_direction.into_inner(),
+            );
+            hit_along(ray_origin, ray_direction, distance, normal, max_distance)
         }),
         // A field loaded from MJCF: MuJoCo's `mj_raySdf` along the unit
         // direction.
@@ -329,13 +368,7 @@ pub(crate) fn raycast_geom(
                 &ray_origin.coords,
                 &ray_direction.into_inner(),
             );
-            (distance >= 0.0 && distance <= max_distance).then(|| {
-                RaycastHit::new(
-                    distance,
-                    ray_origin + ray_direction.into_inner() * distance,
-                    Vector3::from(normal),
-                )
-            })
+            hit_along(ray_origin, ray_direction, distance, normal, max_distance)
         }
         GeomType::Sdf => model.geom_shape[geom_id].and_then(|shape_id| {
             let shape = Shape::sdf(model.shape_data[shape_id].sdf_grid_arc());
@@ -349,6 +382,8 @@ pub(crate) fn raycast_geom(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use approx::assert_relative_eq;
 

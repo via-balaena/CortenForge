@@ -9,7 +9,7 @@ use nalgebra::{Matrix3, Vector3};
 use super::ray_geom::{ray_box, ray_map};
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::heightfield::HeightFieldData;
-use crate::quat::normalize3;
+use crate::quat::{mul_mat_t_vec3, mul_mat_vec3, normalize3};
 use crate::types::Model;
 
 /// `mju_dot3`.
@@ -78,20 +78,23 @@ fn ray_basis(lvec: &[f64; 3]) -> ([f64; 3], [f64; 3]) {
 /// ray passes through the triangle as seen along it (each corner's offset
 /// from the start on `b0` and `b1`, [`ray_basis`]'s), or −1. The distance is
 /// below 0 for a triangle behind the start; the callers keep one at or past
-/// 0.
+/// 0. With it, the triangle's normal, `(v0 − v2) × (v1 − v2)` normalised
+/// (`engine_ray.c:191-195`), wherever it reaches the triangle's plane; zero
+/// where it stops before that with −1.
 fn ray_triangle(
     v: &[[f64; 3]; 3],
     lpnt: &[f64; 3],
     lvec: &[f64; 3],
     b0: &[f64; 3],
     b1: &[f64; 3],
-) -> f64 {
+) -> (f64, [f64; 3]) {
+    let miss = (-1.0, [0.0; 3]);
     let dif: [[f64; 3]; 3] = std::array::from_fn(|i| sub3(&v[i], lpnt));
     let planar: [[f64; 2]; 3] = std::array::from_fn(|i| [dot3(b0, &dif[i]), dot3(b1, &dif[i])]);
     let all_above = |k: usize| planar.iter().all(|p| p[k] > 0.0);
     let all_below = |k: usize| planar.iter().all(|p| p[k] < 0.0);
     if all_above(0) || all_below(0) || all_above(1) || all_below(1) {
-        return -1.0;
+        return miss;
     }
 
     // The start within the triangle as seen along the ray: A t = b, with A's
@@ -105,20 +108,22 @@ fn ray_triangle(
     let b = [-planar[2][0], -planar[2][1]];
     let det = a[0] * a[3] - a[1] * a[2];
     if det.abs() < MJ_MINVAL {
-        return -1.0;
+        return miss;
     }
     let t0 = (a[3] * b[0] - a[1] * b[1]) / det;
     let t1 = (-a[2] * b[0] + a[0] * b[1]) / det;
     if t0 < 0.0 || t1 < 0.0 || t0 + t1 > 1.0 {
-        return -1.0;
+        return miss;
     }
 
-    let nrm = cross3(&sub3(&v[0], &v[2]), &sub3(&v[1], &v[2]));
+    let mut nrm = cross3(&sub3(&v[0], &v[2]), &sub3(&v[1], &v[2]));
     let denom = dot3(lvec, &nrm);
     if denom.abs() < MJ_MINVAL {
-        return -1.0;
+        return miss;
     }
-    -dot3(&sub3(lpnt, &v[2]), &nrm) / denom
+    let x = -dot3(&sub3(lpnt, &v[2]), &nrm) / denom;
+    normalize3(&mut nrm);
+    (x, nrm)
 }
 
 /// `mj_rayHfield`: along a ray from `pnt` in the direction `vec`, the
@@ -128,7 +133,13 @@ fn ray_triangle(
 /// its top box (`size[2]` high, above), each triangle of the cells under the
 /// ray's path through that box, a cell more each way, the cells split along
 /// (c, r)–(c + 1, r + 1); and the top box's four sides, each where the
-/// ray's crossing is below the field's edge there; the nearest.
+/// ray's crossing is below the field's edge there; the nearest. With it, the
+/// normal there in the world's frame, zero where the ray misses: the base
+/// box's face's; or, in the field's frame, the triangle's, or the side's
+/// (−x, +x, −y, +y), turned by `xmat` (`engine_ray.c:598-606`, `:654-656`,
+/// `:663-686`, `:720-734`), the base box's turned back into the field's
+/// frame and out again where the ray crosses the top box and meets nothing
+/// nearer.
 ///
 /// `hfield` is the field as sim-core holds it, MuJoCo's elevations scaled by
 /// `size[2]`, its rows from −y (as `collision::mj_ccd::mjc_convex_hfield`
@@ -141,14 +152,14 @@ fn ray_triangle(
 /// row or column has no triangles; along its one row or column, a ray's place is 0, and
 /// the side test's second elevation, past its row or column, is multiplied
 /// by 0, as in MuJoCo (here it reads 0).
-pub(super) fn mj_ray_hfield(
+pub fn mj_ray_hfield(
     hfield: &HeightFieldData,
     size: &[f64; 4],
     xpos: &Vector3<f64>,
     xmat: &Matrix3<f64>,
     pnt: &Vector3<f64>,
     vec: &Vector3<f64>,
-) -> f64 {
+) -> (f64, [f64; 3]) {
     let (nrow, ncol) = (hfield.depth(), hfield.width());
     // The field's z axis, its frame's third column.
     let up = [xmat[(0, 2)], xmat[(1, 2)], xmat[(2, 2)]];
@@ -165,10 +176,10 @@ pub(super) fn mj_ray_hfield(
         xpos.z + up[2] * size[2] * 0.5,
     );
 
-    let mut x = ray_box(&base_pos, xmat, &base_size, pnt, vec).0;
-    let (top_intersect, all) = ray_box(&top_pos, xmat, &top_size, pnt, vec);
+    let (mut x, _, normal_base) = ray_box(&base_pos, xmat, &base_size, pnt, vec);
+    let (top_intersect, all, _) = ray_box(&top_pos, xmat, &top_size, pnt, vec);
     if top_intersect < 0.0 {
-        return x;
+        return (x, normal_base);
     }
 
     let (lpnt, lvec) = ray_map(xpos, xmat, pnt, vec);
@@ -210,6 +221,13 @@ pub(super) fn mj_ray_hfield(
             .min(nrow as i64 - 1),
     );
 
+    // The normal so far, in the field's frame: the base box's, where the ray
+    // meets it.
+    let mut normal_local = if x >= 0.0 {
+        mul_mat_t_vec3(xmat, &normal_base)
+    } else {
+        [0.0; 3]
+    };
     // The height at column `c`, row `r` (within the grid), and the grid
     // point there.
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
@@ -228,9 +246,10 @@ pub(super) fn mj_ray_hfield(
                 [corner(c, r), corner(c + 1, r), corner(c + 1, r + 1)],
                 [corner(c, r), corner(c + 1, r + 1), corner(c, r + 1)],
             ] {
-                let sol = ray_triangle(&v, &lpnt, &lvec, &b0, &b1);
+                let (sol, normal_tri) = ray_triangle(&v, &lpnt, &lvec, &b0, &b1);
                 if sol >= 0.0 && (x < 0.0 || sol < x) {
                     x = sol;
+                    normal_local = normal_tri;
                 }
             }
         }
@@ -275,10 +294,15 @@ pub(super) fn mj_ray_hfield(
             };
             if z < z0 * (y0 + 1.0 - y) + z1 * (y - y0) {
                 x = a;
+                normal_local = [0.0; 3];
+                normal_local[i / 2] = if i % 2 == 0 { -1.0 } else { 1.0 };
             }
         }
     }
-    x
+    if x < 0.0 {
+        return (x, [0.0; 3]);
+    }
+    (x, mul_mat_vec3(xmat, &normal_local))
 }
 
 /// `mju_raySlab` (`engine_ray.c:741-766`): whether the ray from `src` in the
@@ -347,7 +371,7 @@ pub fn mj_ray_mesh(
                 continue;
             };
             let v = face.map(|i| vertices[i as usize].coords.into());
-            let sol = ray_triangle(&v, &lpnt, &lvec, &b0, &b1);
+            let sol = ray_triangle(&v, &lpnt, &lvec, &b0, &b1).0;
             if sol >= 0.0 && (x < 0.0 || sol < x) {
                 x = sol;
             }
@@ -396,8 +420,9 @@ mod tests {
     /// from above, below, beside and inside them, unturned and turned; 17 on
     /// the edges of its tests; and 480 across the sides of four fields at
     /// their edges' height, to within 2 ulps) meet each field at MuJoCo's
-    /// distance, or miss it as MuJoCo's does (−1), bit for bit: each field
-    /// built from MuJoCo's elevations (`hfield_data`) scaled by its top.
+    /// distance with MuJoCo's normal, or miss it as MuJoCo's does (−1, the
+    /// normal zero), bit for bit: each field built from MuJoCo's elevations
+    /// (`hfield_data`) scaled by its top.
     #[test]
     fn rays_meet_each_height_field_as_mujoco() {
         let golden = golden();
@@ -439,9 +464,20 @@ mod tests {
                 &vector(&ray["vec"]),
             );
             let theirs = ray["x"].as_f64().expect("a distance");
+            let normal = numbers(&ray["normal"]);
+            assert_eq!(normal.len(), 3, "ray {i}: a normal of three parts");
             hits += usize::from(theirs >= 0.0);
-            if ours.to_bits() != theirs.to_bits() {
-                differ.push(format!("ray {i} ({name}): {ours:e}, MuJoCo {theirs:e}"));
+            if ours.0.to_bits() != theirs.to_bits()
+                || ours
+                    .1
+                    .iter()
+                    .zip(&normal)
+                    .any(|(a, b)| a.to_bits() != b.to_bits())
+            {
+                differ.push(format!(
+                    "ray {i} ({name}): {:e} {:?}, MuJoCo {theirs:e} {normal:?}",
+                    ours.0, ours.1
+                ));
             }
         }
         assert!(hits > 0 && hits < rays.len(), "hits and misses: {hits}");

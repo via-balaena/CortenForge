@@ -264,7 +264,7 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `raycasting/stress-test` | `example-raycasting-stress-test` | Working | Headless validation (20 checks: all shapes, normals, scene queries, edge cases) |
 | `raycasting/basic-shapes` | `example-raycasting-basic-shapes` | Working | 6 primitives struck by downward rays — hit dots + normal arrows (5 checks) |
 | `raycasting/scene-query` | `example-raycasting-scene-query` | Working | LIDAR fan of 36 rays, body exclusion, geom group filter (4 checks) |
-| `raycasting/heightfield` | `example-raycasting-heightfield` | Working | Ray marching on sinusoidal terrain, dot cloud tracing surface (3 checks) |
+| `raycasting/heightfield` | `example-raycasting-heightfield` | Working | A scene ray on sinusoidal terrain as MuJoCo's `mj_rayHfield` casts it, dot cloud tracing surface (3 checks) |
 
 ### Derivatives
 

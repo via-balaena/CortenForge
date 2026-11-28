@@ -48,6 +48,7 @@ pub fn mj_ray(
                     pnt,
                     vec,
                 )
+                .0
             }),
             GeomType::Mesh => model.geom_mesh[g].map_or(-1.0, |m| {
                 super::ray_mesh::mj_ray_mesh(
@@ -344,25 +345,28 @@ fn ray_cylinder(
     x
 }
 
-/// `ray_box`: each face within its rectangle, the nearest crossing; and
-/// each face's crossing within its rectangle (`all`: −x, +x, −y, +y, −z,
-/// +z), −1 for a face the ray does not cross there.
+/// `ray_box`: each face within its rectangle, the nearest crossing; each
+/// face's crossing within its rectangle (`all`: −x, +x, −y, +y, −z, +z), −1
+/// for a face the ray does not cross there; and the nearest crossing's face
+/// normal, turned by `mat` (`engine_ray.c:550-555`), zero where the ray
+/// misses.
 pub(super) fn ray_box(
     pos: &Vector3<f64>,
     mat: &Matrix3<f64>,
     size: &[f64; 3],
     pnt: &Vector3<f64>,
     vec: &Vector3<f64>,
-) -> (f64, [f64; 6]) {
+) -> (f64, [f64; 6], [f64; 3]) {
     // Each axis's face, and the two axes its rectangle spans.
     const IFACE: [[usize; 2]; 3] = [[1, 2], [0, 2], [0, 1]];
     let mut all = [-1.0; 6];
     let ssz = size[0] * size[0] + size[1] * size[1] + size[2] * size[2];
     if ray_sphere(pos, ssz, pnt, vec) < 0.0 {
-        return (-1.0, all);
+        return (-1.0, all, [0.0; 3]);
     }
     let (lp, lv) = ray_map(pos, mat, pnt, vec);
     let mut x = -1.0;
+    let mut face = (0, 0.0);
     for (i, [j, k]) in IFACE.into_iter().enumerate() {
         if lv[i].abs() > MJ_MINVAL {
             for (s, side) in [-1.0, 1.0].into_iter().enumerate() {
@@ -373,6 +377,7 @@ pub(super) fn ray_box(
                     if p0.abs() <= size[j] && p1.abs() <= size[k] {
                         if x < 0.0 || sol < x {
                             x = sol;
+                            face = (i, side);
                         }
                         all[2 * i + s] = sol;
                     }
@@ -380,7 +385,12 @@ pub(super) fn ray_box(
             }
         }
     }
-    (x, all)
+    if x < 0.0 {
+        return (x, all, [0.0; 3]);
+    }
+    let mut n_local = [0.0; 3];
+    n_local[face.0] = face.1;
+    (x, all, mul_mat_vec3(mat, &n_local))
 }
 
 #[cfg(test)]
